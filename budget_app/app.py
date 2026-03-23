@@ -44,7 +44,10 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "century-budget-dev-key"
 db = SQLAlchemy(app)
 
 # Register workflow blueprint (PM review, admin, dashboard)
-from workflow import create_workflow_blueprint
+try:
+    from workflow import create_workflow_blueprint
+except ImportError:
+    from budget_app.workflow import create_workflow_blueprint
 workflow_bp, workflow_models, workflow_helpers = create_workflow_blueprint(db)
 app.register_blueprint(workflow_bp)
 

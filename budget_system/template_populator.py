@@ -536,9 +536,11 @@ def apply_pm_projections(workbook_path: Path, projections: Dict) -> bool:
     try:
         from workflow import RM_GL_MAP
     except ImportError:
-        # Fallback: build mapping dynamically from template
-        logger.warning("Could not import RM_GL_MAP, skipping PM projections")
-        return False
+        try:
+            from budget_app.workflow import RM_GL_MAP
+        except ImportError:
+            logger.warning("Could not import RM_GL_MAP, skipping PM projections")
+            return False
 
     try:
         wb = load_workbook(workbook_path, data_only=False)
