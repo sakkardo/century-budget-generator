@@ -292,6 +292,305 @@ class TemplatePopulator:
         return self.stats.copy()
 
 
+def apply_assumptions(workbook_path: Path, assumptions: Dict) -> bool:
+    """
+    Apply budget assumptions to yellow input cells in a generated workbook.
+
+    Args:
+        workbook_path: Path to the generated budget .xlsx
+        assumptions: Merged assumptions dict (portfolio defaults + building overrides)
+
+    Returns:
+        True if successful
+    """
+    if not assumptions:
+        logger.info("No assumptions provided, skipping")
+        return True
+
+    try:
+        wb = load_workbook(workbook_path, data_only=False)
+
+        # === PAYROLL SHEET ===
+        if "Payroll" in wb.sheetnames:
+            ws = wb["Payroll"]
+
+            # Tax rates: B7-B12
+            tax = assumptions.get("payroll_tax", {})
+            tax_mapping = [
+                (7, "FICA"), (8, "SUI"), (9, "FUI"),
+                (10, "MTA"), (11, "NYS_Disability"), (12, "PFL"),
+            ]
+            for row, key in tax_mapping:
+                val = tax.get(key)
+                if val:
+                    ws.cell(row=row, column=2, value=val)
+
+            # Union benefit rates: H7-H12
+            union = assumptions.get("union_benefits", {})
+            union_mapping = [
+                (7, "welfare_monthly"), (8, "pension_weekly"),
+                (9, "supp_retirement_weekly"), (10, "legal_monthly"),
+                (11, "training_monthly"), (12, "profit_sharing_quarterly"),
+            ]
+            for row, key in union_mapping:
+                val = union.get(key)
+                if val:
+                    ws.cell(row=row, column=8, value=val)  # Col H
+
+            # Workers comp %: L7
+            wc = assumptions.get("workers_comp", {})
+            if wc.get("percent"):
+                ws.cell(row=7, column=12, value=wc["percent"])  # L7
+
+            # Wage increase: L8, L9, L10, L11
+            wage = assumptions.get("wage_increase", {})
+            if wage.get("percent"):
+                ws.cell(row=8, column=12, value=wage["percent"])  # L8
+            if wage.get("effective_week"):
+                ws.cell(row=9, column=12, value=wage["effective_week"])  # L9
+            if wage.get("pre_increase_weeks"):
+                ws.cell(row=10, column=12, value=wage["pre_increase_weeks"])  # L10
+            if wage.get("post_increase_weeks"):
+                ws.cell(row=11, column=12, value=wage["post_increase_weeks"])  # L11
+
+            # Employee positions: A17-C24 (name, count, rate)
+            payroll = assumptions.get("payroll", {})
+            positions = payroll.get("positions", [])
+            for i, pos in enumerate(positions[:8]):
+                row = 17 + i
+                if pos.get("name"):
+                    ws.cell(row=row, column=1, value=pos["name"])
+                if pos.get("employee_count"):
+                    ws.cell(row=row, column=2, value=pos["employee_count"])
+                if pos.get("hourly_rate"):
+                    ws.cell(row=row, column=3, value=pos["hourly_rate"])
+
+        # === INSURANCE SCHEDULE ===
+        if "Insurance Schedule" in wb.sheetnames:
+            ws = wb["Insurance Schedule"]
+
+            ins_renewal = assumptions.get("insurance_renewal", {})
+            if ins_renewal.get("increase_percent"):
+                ws.cell(row=6, column=3, value=ins_renewal["increase_percent"])  # C6
+            if ins_renewal.get("effective_date"):
+                ws.cell(row=7, column=3, value=ins_renewal["effective_date"])  # C7
+            if ins_renewal.get("pre_renewal_months"):
+                ws.cell(row=8, column=3, value=ins_renewal["pre_renewal_months"])  # C8
+            if ins_renewal.get("post_renewal_months"):
+                ws.cell(row=9, column=3, value=ins_renewal["post_renewal_months"])  # C9
+
+            # Per-policy data: rows 12-20
+            ins_gl_rows = {
+                "6105-0000": 12, "6110-0000": 13, "6115-0000": 14,
+                "6125-0000": 15, "6126-0000": 16, "6135-0000": 17,
+                "6195-0000": 18, "6120-0000": 19, "6180-0000": 20,
+            }
+            for policy in assumptions.get("insurance", []):
+                gl = policy.get("gl_code", "")
+                if gl in ins_gl_rows:
+                    row = ins_gl_rows[gl]
+                    if policy.get("current_premium"):
+                        ws.cell(row=row, column=3, value=policy["current_premium"])  # C
+                    if policy.get("current_budget"):
+                        ws.cell(row=row, column=4, value=policy["current_budget"])  # D
+                    if policy.get("expiration_date"):
+                        ws.cell(row=row, column=5, value=policy["expiration_date"])  # E
+                    if policy.get("override_increase"):
+                        ws.cell(row=row, column=11, value=policy["override_increase"])  # K
+
+        # === INCOME SHEET ===
+        if "Income" in wb.sheetnames:
+            ws = wb["Income"]
+
+            income = assumptions.get("income", {})
+            maint = income.get("maintenance", {})
+            if maint.get("total_shares"):
+                ws.cell(row=6, column=2, value=maint["total_shares"])  # B6
+            if maint.get("per_share_monthly"):
+                ws.cell(row=6, column=4, value=maint["per_share_monthly"])  # D6
+            if maint.get("increase_percent"):
+                ws.cell(row=7, column=2, value=maint["increase_percent"])  # B7
+
+            # Storage: rows 12-15 (B=count, C=occupied, D=rate)
+            for i, unit in enumerate(income.get("storage", [])[:4]):
+                row = 12 + i
+                if unit.get("size_label"):
+                    ws.cell(row=row, column=1, value=unit["size_label"])  # A
+                if unit.get("units"):
+                    ws.cell(row=row, column=2, value=unit["units"])  # B
+                if unit.get("occupied"):
+                    ws.cell(row=row, column=3, value=unit["occupied"])  # C
+                if unit.get("monthly"):
+                    ws.cell(row=row, column=4, value=unit["monthly"])  # D
+
+            # Bike storage: B19, C19, D19
+            bike = income.get("bike_storage", {})
+            if bike.get("racks"):
+                ws.cell(row=19, column=2, value=bike["racks"])
+            if bike.get("occupied"):
+                ws.cell(row=19, column=3, value=bike["occupied"])
+            if bike.get("monthly"):
+                ws.cell(row=19, column=4, value=bike["monthly"])
+
+            # Laundry: C23, D23
+            laundry = income.get("laundry_vending", {})
+            if laundry.get("description"):
+                ws.cell(row=23, column=3, value=laundry["description"])
+            if laundry.get("monthly"):
+                ws.cell(row=23, column=4, value=laundry["monthly"])
+
+        # === ENERGY SHEET ===
+        if "Energy" in wb.sheetnames:
+            ws = wb["Energy"]
+
+            energy = assumptions.get("energy", {})
+            if energy.get("gas_esco_rate"):
+                ws.cell(row=6, column=2, value=energy["gas_esco_rate"])  # B6
+            if energy.get("electric_esco_rate"):
+                ws.cell(row=7, column=2, value=energy["electric_esco_rate"])  # B7
+            if energy.get("gas_rate_increase"):
+                ws.cell(row=8, column=2, value=energy["gas_rate_increase"])  # B8
+            if energy.get("electric_rate_increase"):
+                ws.cell(row=9, column=2, value=energy["electric_rate_increase"])  # B9
+            if energy.get("consumption_basis"):
+                ws.cell(row=10, column=2, value=energy["consumption_basis"])  # B10
+            if energy.get("oil_price_per_gallon"):
+                ws.cell(row=11, column=2, value=energy["oil_price_per_gallon"])  # B11 (repurposed)
+            if energy.get("oil_rate_increase"):
+                # Oil rate increase goes to the GL adjustment row L59
+                ws.cell(row=59, column=12, value=energy["oil_rate_increase"])
+
+            # Energy GL adjustments
+            energy_gl_rows = {
+                "5252-0000": 56, "5252-0001": 57, "5252-0010": 58,
+                "5253-0000": 59, "5250-0000": 60,
+            }
+            for gl, row in energy_gl_rows.items():
+                adj = energy.get("gl_adjustments", {}).get(gl, {})
+                if adj.get("accrual"):
+                    ws.cell(row=row, column=6, value=adj["accrual"])  # F
+                if adj.get("unpaid"):
+                    ws.cell(row=row, column=7, value=adj["unpaid"])  # G
+                if adj.get("rate_increase"):
+                    ws.cell(row=row, column=12, value=adj["rate_increase"])  # L
+
+        # === WATER & SEWER SHEET ===
+        if "Water & Sewer" in wb.sheetnames:
+            ws = wb["Water & Sewer"]
+
+            water = assumptions.get("water_sewer", {})
+            if water.get("rate_increase"):
+                ws.cell(row=6, column=2, value=water["rate_increase"])  # B6
+
+            # Water GL adjustments
+            water_gl_rows = {
+                "6305-0000": 30, "6305-0010": 31, "6305-0020": 32,
+            }
+            for gl, row in water_gl_rows.items():
+                adj = water.get("gl_adjustments", {}).get(gl, {})
+                if adj.get("accrual"):
+                    ws.cell(row=row, column=6, value=adj["accrual"])  # F
+                if adj.get("unpaid"):
+                    ws.cell(row=row, column=7, value=adj["unpaid"])  # G
+                if adj.get("rate_increase"):
+                    ws.cell(row=row, column=12, value=adj["rate_increase"])  # L
+
+        wb.save(workbook_path)
+        wb.close()
+        logger.info(f"Assumptions applied to {workbook_path.name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error applying assumptions: {e}")
+        return False
+
+
+def apply_pm_projections(workbook_path: Path, projections: Dict) -> bool:
+    """
+    Apply PM R&M projections to the Repairs & Supplies sheet in a generated workbook.
+
+    Writes to:
+        - Col C (notes)
+        - Col F (accrual adjustment)
+        - Col G (unpaid bills)
+        - Col L (increase %)
+
+    The template formulas then compute:
+        - Col I: Sep-Dec Estimate
+        - Col J: 12-Month Forecast = E + F + G + I
+        - Col M: Proposed Budget = J * (1 + L)
+
+    Args:
+        workbook_path: Path to the generated budget .xlsx
+        projections: Dict of {gl_code: {accrual_adj, unpaid_bills, increase_pct, notes}}
+                     Typically from workflow_helpers['get_pm_projections'](entity)
+
+    Returns:
+        True if successful
+    """
+    if not projections:
+        logger.info("No PM projections to apply")
+        return True
+
+    # Import the GL→row mapping from workflow module
+    try:
+        from workflow import RM_GL_MAP
+    except ImportError:
+        # Fallback: build mapping dynamically from template
+        logger.warning("Could not import RM_GL_MAP, skipping PM projections")
+        return False
+
+    try:
+        wb = load_workbook(workbook_path, data_only=False)
+
+        if "Repairs & Supplies" not in wb.sheetnames:
+            logger.warning("No 'Repairs & Supplies' sheet found")
+            wb.close()
+            return False
+
+        ws = wb["Repairs & Supplies"]
+        cells_written = 0
+
+        for gl_code, pm_data in projections.items():
+            if gl_code not in RM_GL_MAP:
+                continue
+
+            _, row_num, _ = RM_GL_MAP[gl_code]
+
+            # Col C (3) = Notes
+            notes = pm_data.get("notes", "")
+            if notes:
+                ws.cell(row=row_num, column=3, value=notes)
+                cells_written += 1
+
+            # Col F (6) = Accrual Adjustment
+            accrual = float(pm_data.get("accrual_adj", 0) or 0)
+            if accrual:
+                ws.cell(row=row_num, column=6, value=accrual)
+                cells_written += 1
+
+            # Col G (7) = Unpaid Bills
+            unpaid = float(pm_data.get("unpaid_bills", 0) or 0)
+            if unpaid:
+                ws.cell(row=row_num, column=7, value=unpaid)
+                cells_written += 1
+
+            # Col L (12) = Increase %
+            increase = float(pm_data.get("increase_pct", 0) or 0)
+            if increase:
+                ws.cell(row=row_num, column=12, value=increase)
+                cells_written += 1
+
+        wb.save(workbook_path)
+        wb.close()
+        logger.info(f"PM projections applied: {cells_written} cells written to {workbook_path.name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error applying PM projections: {e}")
+        return False
+
+
 def populate_template(
     template_path: Path,
     gl_data: Dict[str, Dict[str, float]],

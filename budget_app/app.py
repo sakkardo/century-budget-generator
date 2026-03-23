@@ -1,5 +1,5 @@
 """
-Century Management Budget Generator — Web App
+Century Management Unified Budget & Assumptions System
 Run: python app.py
 Open: http://localhost:5000
 """
@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify, send_file
+from flask_sqlalchemy import SQLAlchemy
 
 # Detect cloud deployment (Railway sets PORT env var)
 IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
@@ -23,15 +24,45 @@ BUDGET_SYSTEM = Path(__file__).parent.parent / "budget_system"
 sys.path.insert(0, str(BUDGET_SYSTEM))
 
 from ysl_parser import parse_ysl_file
-from template_populator import populate_template
+from template_populator import populate_template, apply_assumptions, apply_pm_projections
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# ─── Database Configuration ──────────────────────────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///" + str(Path(__file__).parent / "data" / "budget.db")
+
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "century-budget-dev-key")
+
+db = SQLAlchemy(app)
+
+# Register workflow blueprint (PM review, admin, dashboard)
+from workflow import create_workflow_blueprint
+workflow_bp, workflow_models, workflow_helpers = create_workflow_blueprint(db)
+app.register_blueprint(workflow_bp)
+
+# Create all tables on startup
+with app.app_context():
+    db.create_all()
+    logger.info("Database tables initialized")
+
+# Paths
 TEMPLATE_PATH = BUDGET_SYSTEM / "Budget_Final_Template_v2.xlsx"
 BUILDINGS_CSV = BUDGET_SYSTEM / "buildings.csv"
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+# Data files
+PORTFOLIO_DEFAULTS_FILE = DATA_DIR / "portfolio_defaults.json"
+BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 
 # Default save location
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
@@ -39,6 +70,81 @@ DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 # The Console JS script template — entities/email/period get injected
 CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text()
 
+# Default portfolio values
+DEFAULT_PORTFOLIO = {
+    "payroll_tax": {
+        "FICA": 0.0765,
+        "SUI": 0.0525,
+        "FUI": 0.006,
+        "MTA": 0.0034,
+        "NYS_Disability": 0.005,
+        "PFL": 0.00455
+    },
+    "union_benefits": {
+        "welfare_monthly": 1072.55,
+        "pension_weekly": 82.75,
+        "supp_retirement_weekly": 10.00,
+        "legal_monthly": 16.63,
+        "training_monthly": 14.13,
+        "profit_sharing_quarterly": 130.00
+    },
+    "workers_comp": {
+        "percent": 0.15
+    },
+    "wage_increase": {
+        "percent": 0.03,
+        "effective_week": "Wk 16",
+        "pre_increase_weeks": 15,
+        "post_increase_weeks": 37
+    },
+    "insurance_renewal": {
+        "increase_percent": 0.15,
+        "effective_date": "Mar 2027",
+        "pre_renewal_months": 3,
+        "post_renewal_months": 9
+    },
+    "energy": {
+        "gas_esco_rate": 0,
+        "electric_esco_rate": 0,
+        "oil_price_per_gallon": 0,
+        "gas_rate_increase": 0.05,
+        "electric_rate_increase": 0.05,
+        "oil_rate_increase": 0.05,
+        "consumption_basis": "2-Year Average"
+    },
+    "water_sewer": {
+        "rate_increase": 0.05
+    }
+}
+
+INSURANCE_POLICIES = [
+    {"gl_code": "6105-0000", "name": "Package"},
+    {"gl_code": "6110-0000", "name": "Gen Liability"},
+    {"gl_code": "6115-0000", "name": "Umbrella Excess"},
+    {"gl_code": "6120-0000", "name": "Umbrella Primary"},
+    {"gl_code": "6125-0000", "name": "D&O"},
+    {"gl_code": "6126-0000", "name": "Cyber"},
+    {"gl_code": "6135-0000", "name": "Crime"},
+    {"gl_code": "6180-0000", "name": "D&O Excess"},
+    {"gl_code": "6195-0000", "name": "Other"}
+]
+
+ENERGY_GL_ACCOUNTS = [
+    {"gl": "5252-0000", "desc": "Gas - Heating"},
+    {"gl": "5252-0001", "desc": "Gas - Cooking"},
+    {"gl": "5252-0010", "desc": "Gas - Common Area"},
+    {"gl": "5253-0000", "desc": "Oil / Fuel"},
+    {"gl": "5250-0000", "desc": "Electric"}
+]
+
+WATER_GL_ACCOUNTS = [
+    {"gl": "6305-0000", "desc": "Water/Sewer"},
+    {"gl": "6305-0010", "desc": "Water - Common Area"},
+    {"gl": "6305-0020", "desc": "Sewer Charges"}
+]
+
+
+# ─── Settings Functions ───────────────────────────────────────────────────────
 
 def load_settings():
     """Load app settings from disk."""
@@ -51,6 +157,8 @@ def save_settings(settings):
     """Persist app settings to disk."""
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
 
+
+# ─── Buildings Functions ──────────────────────────────────────────────────────
 
 def load_buildings():
     """Load building list from CSV."""
@@ -74,11 +182,77 @@ def save_buildings(buildings):
         writer.writerows(buildings)
 
 
+# ─── Assumptions Functions ────────────────────────────────────────────────────
+
+def load_portfolio_defaults():
+    """Load portfolio-wide defaults, or return defaults."""
+    if PORTFOLIO_DEFAULTS_FILE.exists():
+        return json.loads(PORTFOLIO_DEFAULTS_FILE.read_text())
+    return DEFAULT_PORTFOLIO
+
+
+def save_portfolio_defaults(data):
+    """Save portfolio defaults to disk."""
+    PORTFOLIO_DEFAULTS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def load_building_assumptions():
+    """Load all building assumptions, or return empty dict."""
+    if BUILDING_ASSUMPTIONS_FILE.exists():
+        return json.loads(BUILDING_ASSUMPTIONS_FILE.read_text())
+    return {}
+
+
+def save_building_assumptions(data):
+    """Save building assumptions to disk."""
+    BUILDING_ASSUMPTIONS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def merge_assumptions(entity_code):
+    """Merge portfolio defaults with building-specific overrides."""
+    defaults = load_portfolio_defaults()
+    building_data = load_building_assumptions().get(entity_code, {})
+
+    # Start with defaults
+    merged = json.loads(json.dumps(defaults))
+
+    # Override with building-specific data
+    if "payroll_tax" in building_data:
+        merged["payroll_tax"].update(building_data["payroll_tax"])
+    if "union_benefits" in building_data:
+        merged["union_benefits"].update(building_data["union_benefits"])
+    if "workers_comp" in building_data:
+        merged["workers_comp"].update(building_data["workers_comp"])
+    if "wage_increase" in building_data:
+        merged["wage_increase"].update(building_data["wage_increase"])
+    if "insurance_renewal" in building_data:
+        merged["insurance_renewal"].update(building_data["insurance_renewal"])
+    if "energy" in building_data:
+        merged["energy"].update(building_data["energy"])
+    if "water_sewer" in building_data:
+        merged["water_sewer"].update(building_data["water_sewer"])
+
+    merged["payroll"] = building_data.get("payroll", {})
+    merged["income"] = building_data.get("income", {})
+    merged["insurance"] = building_data.get("insurance", [])
+
+    return merged
+
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
+    """Unified home page."""
+    return render_template_string(HOME_TEMPLATE)
+
+
+@app.route("/generate")
+def generate():
+    """Budget generator page."""
     settings = load_settings()
     return render_template_string(
-        HTML_TEMPLATE,
+        GENERATE_TEMPLATE,
         buildings=load_buildings(),
         save_dir=settings.get("save_dir", DEFAULT_SAVE_DIR),
     )
@@ -86,8 +260,30 @@ def index():
 
 @app.route("/manage")
 def manage():
+    """Building management page."""
     return render_template_string(MANAGE_TEMPLATE)
 
+
+@app.route("/assumptions")
+def assumptions():
+    """Portfolio defaults page."""
+    data = load_portfolio_defaults()
+    return render_template_string(ASSUMPTIONS_TEMPLATE, data=json.dumps(data))
+
+
+@app.route("/assumptions/buildings")
+def assumptions_buildings():
+    """Building assumptions grid."""
+    bldgs = load_buildings()
+    policies = INSURANCE_POLICIES
+    return render_template_string(
+        ASSUMPTIONS_BUILDINGS_TEMPLATE,
+        buildings=json.dumps(bldgs),
+        policies=json.dumps(policies)
+    )
+
+
+# ─── API Routes ───────────────────────────────────────────────────────────────
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def settings_api():
@@ -250,6 +446,31 @@ def process_files():
                 )
 
                 if success and output_path.exists():
+                    # Store R&M GL data in database for PM review workflow
+                    try:
+                        workflow_helpers["store_rm_lines"](entity, name, gl_data)
+                        logger.info(f"R&M GL data stored for entity {entity}")
+                    except Exception as wfe:
+                        logger.warning(f"Could not store R&M data for {entity}: {wfe}")
+
+                    # Apply assumptions if available for this building
+                    try:
+                        merged = merge_assumptions(entity)
+                        if merged:
+                            apply_assumptions(output_path, merged)
+                            logger.info(f"Assumptions applied for entity {entity}")
+                    except Exception as ae:
+                        logger.warning(f"Could not apply assumptions for {entity}: {ae}")
+
+                    # Apply PM R&M projections if available
+                    try:
+                        pm_proj = workflow_helpers["get_pm_projections"](entity)
+                        if pm_proj:
+                            apply_pm_projections(output_path, pm_proj)
+                            logger.info(f"PM projections applied for entity {entity}")
+                    except Exception as pe:
+                        logger.warning(f"Could not apply PM projections for {entity}: {pe}")
+
                     output_files.append((output_name, output_path))
                     size_kb = output_path.stat().st_size / 1024
 
@@ -316,6 +537,44 @@ def process_files():
             return resp
 
 
+@app.route("/api/defaults", methods=["GET", "POST"])
+def api_defaults():
+    """Get or save portfolio defaults."""
+    if request.method == "GET":
+        return jsonify(load_portfolio_defaults())
+
+    data = request.json
+    save_portfolio_defaults(data)
+    return jsonify({"status": "saved"})
+
+
+@app.route("/api/building-assumptions/<entity_code>", methods=["GET", "POST"])
+def api_building_assumptions(entity_code):
+    """Get or save building-specific assumptions."""
+    if request.method == "GET":
+        assumptions = load_building_assumptions()
+        return jsonify(assumptions.get(entity_code, {}))
+
+    data = request.json
+    assumptions = load_building_assumptions()
+    assumptions[entity_code] = data
+    save_building_assumptions(assumptions)
+    return jsonify({"status": "saved"})
+
+
+@app.route("/api/assumptions/<entity_code>")
+def merged_assumptions(entity_code):
+    """Return merged assumptions (portfolio + building overrides)."""
+    return jsonify(merge_assumptions(entity_code))
+
+
+@app.route("/api/export-assumptions")
+def bulk_export():
+    """Export all building assumptions."""
+    buildings = {b["entity_code"]: merge_assumptions(b["entity_code"]) for b in load_buildings()}
+    return jsonify(buildings)
+
+
 # Cache the template GL list
 _template_gls_cache = None
 def _get_template_gls():
@@ -328,531 +587,136 @@ def _get_template_gls():
 
 # ─── HTML Templates ──────────────────────────────────────────────────────────
 
-MANAGE_TEMPLATE = r"""
+HOME_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Manage Buildings — Century Budget Generator</title>
+<title>Century Management Budget System</title>
 <style>
-  :root {
-    --blue: #1a56db;
-    --blue-light: #e1effe;
-    --green: #057a55;
-    --green-light: #def7ec;
-    --red: #e02424;
-    --red-light: #fde8e8;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
-    --radius: 8px;
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f9fafb; }
+  header {
+    background: linear-gradient(135deg, #1a56db 0%, #1e429f 100%);
+    color: white;
+    padding: 60px 20px;
+    text-align: center;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--gray-50);
-    color: var(--gray-900);
-    line-height: 1.5;
-  }
+  header h1 { font-size: 36px; font-weight: 700; margin-bottom: 8px; }
+  header p { font-size: 16px; opacity: 0.95; }
   .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-  h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
-  .subtitle { color: var(--gray-500); font-size: 15px; margin-bottom: 32px; }
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 32px;
-  }
-  .back-link {
-    color: var(--blue);
-    text-decoration: none;
-    font-weight: 600;
-    padding: 8px 16px;
-    border: 1px solid var(--blue);
-    border-radius: 6px;
-    transition: all 0.15s;
-  }
-  .back-link:hover { background: var(--blue-light); }
-
-  /* Card */
-  .card {
-    background: white;
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius);
-    padding: 24px;
-    margin-bottom: 24px;
-  }
-  .card-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
-
-  /* Form */
-  .form-grid {
+  .nav-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
-    margin-bottom: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+    margin-top: 24px;
   }
-  .form-group {
+  .nav-card {
+    background: white;
+    border-radius: 12px;
+    padding: 32px 24px;
+    border: 1px solid #e5e7eb;
+    text-decoration: none;
+    color: #111827;
+    transition: all 0.3s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     display: flex;
     flex-direction: column;
   }
-  .form-group label {
-    font-size: 13px;
+  .nav-card:hover {
+    border-color: #1a56db;
+    box-shadow: 0 10px 25px rgba(26, 86, 219, 0.15);
+    transform: translateY(-4px);
+  }
+  .nav-card h2 {
+    font-size: 20px;
+    color: #1a56db;
+    margin-bottom: 12px;
     font-weight: 600;
-    margin-bottom: 4px;
-    color: var(--gray-700);
   }
-  .form-group input {
-    padding: 8px 12px;
-    border: 1px solid var(--gray-300);
-    border-radius: 6px;
+  .nav-card p {
     font-size: 14px;
-    outline: none;
-  }
-  .form-group input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
-
-  /* Search */
-  .search-box {
-    width: 100%;
-    padding: 10px 14px;
-    border: 1px solid var(--gray-300);
-    border-radius: var(--radius);
-    font-size: 14px;
+    color: #6b7280;
+    line-height: 1.6;
+    flex-grow: 1;
     margin-bottom: 16px;
-    outline: none;
   }
-  .search-box:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
-
-  /* Table */
-  .table-wrapper {
-    overflow-x: auto;
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius);
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-  }
-  th {
-    background: var(--gray-100);
-    padding: 12px;
-    text-align: left;
+  .nav-card .arrow {
+    display: inline-block;
+    color: #1a56db;
     font-weight: 600;
-    border-bottom: 1px solid var(--gray-200);
+    font-size: 16px;
   }
-  td {
-    padding: 12px;
-    border-bottom: 1px solid var(--gray-200);
+  .nav-card:hover .arrow { transform: translateX(4px); transition: all 0.2s; }
+  .icon {
+    font-size: 32px;
+    margin-bottom: 12px;
   }
-  tr:hover { background: var(--gray-50); }
-  .code-cell { font-weight: 600; color: var(--blue); }
-
-  /* Buttons */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 24px;
-    border-radius: var(--radius);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    border: none;
-    transition: all 0.15s;
-  }
-  .btn-primary { background: var(--blue); color: white; }
-  .btn-primary:hover { background: #1e429f; }
-  .btn-primary:disabled { background: var(--gray-300); cursor: not-allowed; }
-  .btn-sm {
-    padding: 6px 12px;
-    font-size: 12px;
-    gap: 4px;
-  }
-  .btn-edit {
-    background: var(--blue);
-    color: white;
-    padding: 6px 12px;
-    border: none;
-    border-radius: 4px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .btn-edit:hover { background: #1e429f; }
-  .btn-delete {
-    background: var(--red);
-    color: white;
-    padding: 6px 12px;
-    border: none;
-    border-radius: 4px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.15s;
-    margin-left: 4px;
-  }
-  .btn-delete:hover { background: #c91c1c; }
-
-  /* Modal */
-  .modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 1000;
-    align-items: center;
-    justify-content: center;
-  }
-  .modal.active { display: flex; }
-  .modal-content {
-    background: white;
-    border-radius: var(--radius);
-    padding: 24px;
-    max-width: 500px;
-    width: 90%;
-    max-height: 90vh;
-    overflow-y: auto;
-  }
-  .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
-  .modal-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 24px;
-    justify-content: flex-end;
-  }
-
-  /* Alert */
-  .alert {
-    padding: 12px 16px;
-    border-radius: 6px;
-    margin-bottom: 16px;
-    font-size: 14px;
-    display: none;
-  }
-  .alert.active { display: block; }
-  .alert.success { background: var(--green-light); color: var(--green); }
-  .alert.error { background: var(--red-light); color: var(--red); }
-
-  /* Empty state */
-  .empty-state {
-    text-align: center;
-    padding: 40px;
-    color: var(--gray-500);
-  }
-  .empty-state p { margin-bottom: 8px; }
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <div>
-      <h1>Manage Buildings</h1>
-      <p class="subtitle">Add, edit, or remove buildings from the budget generator.</p>
-    </div>
-    <a href="/" class="back-link">← Back to Generator</a>
-  </div>
-
-  <div id="alert" class="alert"></div>
-
-  <!-- Add Building Card -->
-  <div class="card">
-    <div class="card-title">Add New Building</div>
-    <div class="form-grid">
-      <div class="form-group">
-        <label>Entity Code</label>
-        <input type="text" id="newEntityCode" placeholder="e.g., 148">
-      </div>
-      <div class="form-group">
-        <label>Building Name</label>
-        <input type="text" id="newBuildingName" placeholder="e.g., Main Office">
-      </div>
-      <div class="form-group">
-        <label>Address</label>
-        <input type="text" id="newAddress" placeholder="e.g., 130 E. 18th St">
-      </div>
-      <div class="form-group">
-        <label>City</label>
-        <input type="text" id="newCity" placeholder="e.g., New York">
-      </div>
-      <div class="form-group">
-        <label>ZIP</label>
-        <input type="text" id="newZIP" placeholder="e.g., 10003">
-      </div>
-      <div class="form-group">
-        <label>Type</label>
-        <input type="text" id="newType" placeholder="e.g., Residential">
-      </div>
-      <div class="form-group">
-        <label>Units</label>
-        <input type="text" id="newUnits" placeholder="e.g., 50">
-      </div>
-    </div>
-    <button class="btn btn-primary" onclick="addBuilding()">
-      + Add Building
-    </button>
-  </div>
-
-  <!-- Buildings List Card -->
-  <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <div class="card-title">Buildings (<span id="buildingCount">0</span>)</div>
-    </div>
-    <input type="text" class="search-box" id="searchBox" placeholder="Search buildings..." oninput="filterTable()">
-    <div class="table-wrapper">
-      <table id="buildingsTable">
-        <thead>
-          <tr>
-            <th>Entity Code</th>
-            <th>Building Name</th>
-            <th>Address</th>
-            <th>City</th>
-            <th>ZIP</th>
-            <th>Type</th>
-            <th>Units</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="buildingsBody">
-        </tbody>
-      </table>
-    </div>
-    <div id="emptyState" class="empty-state" style="display: none;">
-      <p>No buildings found.</p>
+  <header>
+    <h1>Century Management</h1>
+    <p>Budget & Assumptions System</p>
+  </header>
+  <div class="container">
+    <div class="nav-grid">
+      <a href="/generate" class="nav-card">
+        <div class="icon">📊</div>
+        <h2>Budget Generator</h2>
+        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/manage" class="nav-card">
+        <div class="icon">🏢</div>
+        <h2>Manage Buildings</h2>
+        <p>Add, edit, or remove buildings from the portfolio.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/assumptions" class="nav-card">
+        <div class="icon">⚙️</div>
+        <h2>Portfolio Defaults</h2>
+        <p>Manage portfolio-wide default values for all buildings.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/assumptions/buildings" class="nav-card">
+        <div class="icon">📋</div>
+        <h2>Building Assumptions</h2>
+        <p>View and edit assumptions for individual buildings.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/dashboard" class="nav-card">
+        <div class="icon">📈</div>
+        <h2>FA Dashboard</h2>
+        <p>Review budget status, manage workflow, approve PM submissions.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/pm" class="nav-card">
+        <div class="icon">🔧</div>
+        <h2>PM Budget Review</h2>
+        <p>Property managers: review and enter R&M budget projections.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/admin" class="nav-card">
+        <div class="icon">👤</div>
+        <h2>User Management</h2>
+        <p>Manage users and assign buildings to FAs and PMs.</p>
+        <span class="arrow">→</span>
+      </a>
     </div>
   </div>
-</div>
-
-<!-- Edit Modal -->
-<div id="editModal" class="modal">
-  <div class="modal-content">
-    <div class="modal-title">Edit Building</div>
-    <div class="form-grid" style="grid-template-columns: 1fr;">
-      <div class="form-group">
-        <label>Entity Code (read-only)</label>
-        <input type="text" id="editEntityCode" readonly style="background: var(--gray-100); cursor: not-allowed;">
-      </div>
-      <div class="form-group">
-        <label>Building Name</label>
-        <input type="text" id="editBuildingName">
-      </div>
-      <div class="form-group">
-        <label>Address</label>
-        <input type="text" id="editAddress">
-      </div>
-      <div class="form-group">
-        <label>City</label>
-        <input type="text" id="editCity">
-      </div>
-      <div class="form-group">
-        <label>ZIP</label>
-        <input type="text" id="editZIP">
-      </div>
-      <div class="form-group">
-        <label>Type</label>
-        <input type="text" id="editType">
-      </div>
-      <div class="form-group">
-        <label>Units</label>
-        <input type="text" id="editUnits">
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" style="background: var(--gray-200); color: var(--gray-900);" onclick="closeEditModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
-    </div>
-  </div>
-</div>
-
-<script>
-let buildings = [];
-
-async function loadBuildings() {
-  const resp = await fetch('/api/buildings');
-  buildings = await resp.json();
-  renderTable();
-  updateCount();
-}
-
-function renderTable() {
-  const tbody = document.getElementById('buildingsBody');
-  const searchTerm = document.getElementById('searchBox').value.toLowerCase();
-
-  const filtered = buildings.filter(b =>
-    b.entity_code.toLowerCase().includes(searchTerm) ||
-    b.building_name.toLowerCase().includes(searchTerm) ||
-    b.address.toLowerCase().includes(searchTerm) ||
-    b.city.toLowerCase().includes(searchTerm)
-  );
-
-  const empty = document.getElementById('emptyState');
-  if (filtered.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = 'block';
-    return;
-  }
-  empty.style.display = 'none';
-
-  tbody.innerHTML = filtered.map(b =>
-    `<tr>
-      <td class="code-cell">${escapeHtml(b.entity_code)}</td>
-      <td>${escapeHtml(b.building_name)}</td>
-      <td>${escapeHtml(b.address)}</td>
-      <td>${escapeHtml(b.city)}</td>
-      <td>${escapeHtml(b.zip)}</td>
-      <td>${escapeHtml(b.type)}</td>
-      <td>${escapeHtml(b.units)}</td>
-      <td>
-        <button class="btn-edit" onclick="openEditModal('${escapeAttr(b.entity_code)}')">Edit</button>
-        <button class="btn-delete" onclick="deleteBuilding('${escapeAttr(b.entity_code)}')">Delete</button>
-      </td>
-    </tr>`
-  ).join('');
-}
-
-function filterTable() {
-  renderTable();
-}
-
-function updateCount() {
-  document.getElementById('buildingCount').textContent = buildings.length;
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-function escapeAttr(text) {
-  return text.replace(/'/g, "\\'");
-}
-
-async function addBuilding() {
-  const code = document.getElementById('newEntityCode').value.trim();
-  const name = document.getElementById('newBuildingName').value.trim();
-  const address = document.getElementById('newAddress').value.trim();
-  const city = document.getElementById('newCity').value.trim();
-  const zip = document.getElementById('newZIP').value.trim();
-  const type = document.getElementById('newType').value.trim();
-  const units = document.getElementById('newUnits').value.trim();
-
-  if (!code || !name) {
-    showAlert('Entity code and building name are required', 'error');
-    return;
-  }
-
-  const resp = await fetch('/api/buildings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entity_code: code, building_name: name, address, city, zip, type, units }),
-  });
-
-  if (resp.ok) {
-    document.getElementById('newEntityCode').value = '';
-    document.getElementById('newBuildingName').value = '';
-    document.getElementById('newAddress').value = '';
-    document.getElementById('newCity').value = '';
-    document.getElementById('newZIP').value = '';
-    document.getElementById('newType').value = '';
-    document.getElementById('newUnits').value = '';
-    await loadBuildings();
-    showAlert(`Building "${name}" added successfully`, 'success');
-  } else {
-    const data = await resp.json();
-    showAlert(data.error || 'Failed to add building', 'error');
-  }
-}
-
-function openEditModal(code) {
-  const building = buildings.find(b => b.entity_code === code);
-  if (!building) return;
-  document.getElementById('editEntityCode').value = building.entity_code;
-  document.getElementById('editBuildingName').value = building.building_name;
-  document.getElementById('editAddress').value = building.address;
-  document.getElementById('editCity').value = building.city;
-  document.getElementById('editZIP').value = building.zip;
-  document.getElementById('editType').value = building.type;
-  document.getElementById('editUnits').value = building.units;
-  document.getElementById('editModal').classList.add('active');
-}
-
-function closeEditModal() {
-  document.getElementById('editModal').classList.remove('active');
-}
-
-async function saveEdit() {
-  const code = document.getElementById('editEntityCode').value;
-  const name = document.getElementById('editBuildingName').value.trim();
-  const address = document.getElementById('editAddress').value.trim();
-  const city = document.getElementById('editCity').value.trim();
-  const zip = document.getElementById('editZIP').value.trim();
-  const type = document.getElementById('editType').value.trim();
-  const units = document.getElementById('editUnits').value.trim();
-
-  if (!name) {
-    showAlert('Building name is required', 'error');
-    return;
-  }
-
-  const resp = await fetch(`/api/buildings/${code}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ building_name: name, address, city, zip, type, units }),
-  });
-
-  if (resp.ok) {
-    closeEditModal();
-    await loadBuildings();
-    showAlert(`Building "${name}" updated successfully`, 'success');
-  } else {
-    const data = await resp.json();
-    showAlert(data.error || 'Failed to update building', 'error');
-  }
-}
-
-async function deleteBuilding(code) {
-  const building = buildings.find(b => b.entity_code === code);
-  if (!confirm(`Are you sure you want to delete "${building.building_name}"?`)) return;
-
-  const resp = await fetch(`/api/buildings/${code}`, { method: 'DELETE' });
-
-  if (resp.ok) {
-    await loadBuildings();
-    showAlert(`Building deleted successfully`, 'success');
-  } else {
-    const data = await resp.json();
-    showAlert(data.error || 'Failed to delete building', 'error');
-  }
-}
-
-function showAlert(msg, type) {
-  const el = document.getElementById('alert');
-  el.textContent = msg;
-  el.className = `alert active ${type}`;
-  setTimeout(() => el.classList.remove('active'), 4000);
-}
-
-// Load on page load
-document.addEventListener('DOMContentLoaded', loadBuildings);
-</script>
 </body>
 </html>
 """
 
-HTML_TEMPLATE = r"""
+GENERATE_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Century Budget Generator</title>
+<title>Budget Generator — Century Management</title>
 <style>
   :root {
     --blue: #1a56db;
@@ -880,6 +744,18 @@ HTML_TEMPLATE = r"""
   .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
   h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
   .subtitle { color: var(--gray-500); font-size: 15px; margin-bottom: 32px; }
+  .back-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-weight: 600;
+    padding: 8px 16px;
+    border: 1px solid var(--blue);
+    border-radius: 6px;
+    transition: all 0.15s;
+    display: inline-block;
+    margin-bottom: 24px;
+  }
+  .back-link:hover { background: var(--blue-light); }
 
   /* Steps */
   .step {
@@ -1099,15 +975,11 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
 <div class="container">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-    <div>
-      <h1>Century Budget Generator</h1>
-      <p class="subtitle">Download YSL reports from Yardi, then generate 2027 budgets in one click.</p>
-    </div>
-    <a href="/manage" style="color: var(--blue); font-weight: 600; text-decoration: none; padding: 8px 16px; border: 1px solid var(--blue); border-radius: 6px; transition: all 0.15s;"
-       onmouseover="this.style.background='var(--blue-light)'" onmouseout="this.style.background='transparent'">
-      ⚙️ Manage Buildings
-    </a>
+  <a href="/" class="back-link">← Back to Home</a>
+
+  <div>
+    <h1>Budget Generator</h1>
+    <p class="subtitle">Download YSL reports from Yardi, then generate 2027 budgets in one click.</p>
   </div>
 
   <!-- STEP 1 -->
@@ -1399,13 +1271,1499 @@ async function processFiles() {
 </html>
 """
 
+MANAGE_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manage Buildings — Century Management</title>
+<style>
+  :root {
+    --blue: #1a56db;
+    --blue-light: #e1effe;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --red: #e02424;
+    --red-light: #fde8e8;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+    --gray-900: #111827;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--gray-50);
+    color: var(--gray-900);
+    line-height: 1.5;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { color: var(--gray-500); font-size: 15px; margin-bottom: 32px; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 32px;
+  }
+  .back-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-weight: 600;
+    padding: 8px 16px;
+    border: 1px solid var(--blue);
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .back-link:hover { background: var(--blue-light); }
+
+  /* Card */
+  .card {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .card-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+
+  /* Form */
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+  }
+  .form-group label {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--gray-700);
+  }
+  .form-group input {
+    padding: 8px 12px;
+    border: 1px solid var(--gray-300);
+    border-radius: 6px;
+    font-size: 14px;
+    outline: none;
+  }
+  .form-group input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
+
+  /* Search */
+  .search-box {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--gray-300);
+    border-radius: var(--radius);
+    font-size: 14px;
+    margin-bottom: 16px;
+    outline: none;
+  }
+  .search-box:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
+
+  /* Table */
+  .table-wrapper {
+    overflow-x: auto;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th {
+    background: var(--gray-100);
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  td {
+    padding: 12px;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  tr:hover { background: var(--gray-50); }
+  .code-cell { font-weight: 600; color: var(--blue); }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+  }
+  .btn-primary { background: var(--blue); color: white; }
+  .btn-primary:hover { background: #1e429f; }
+  .btn-primary:disabled { background: var(--gray-300); cursor: not-allowed; }
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+    gap: 4px;
+  }
+  .btn-edit {
+    background: var(--blue);
+    color: white;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-edit:hover { background: #1e429f; }
+  .btn-delete {
+    background: var(--red);
+    color: white;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-left: 4px;
+  }
+  .btn-delete:hover { background: #c91c1c; }
+
+  /* Modal */
+  .modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal.active { display: flex; }
+  .modal-content {
+    background: white;
+    border-radius: var(--radius);
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 24px;
+    justify-content: flex-end;
+  }
+
+  /* Alert */
+  .alert {
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    font-size: 14px;
+    display: none;
+  }
+  .alert.active { display: block; }
+  .alert.success { background: var(--green-light); color: var(--green); }
+  .alert.error { background: var(--red-light); color: var(--red); }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 40px;
+    color: var(--gray-500);
+  }
+  .empty-state p { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div>
+      <h1>Manage Buildings</h1>
+      <p class="subtitle">Add, edit, or remove buildings from the budget generator.</p>
+    </div>
+    <a href="/" class="back-link">← Back to Home</a>
+  </div>
+
+  <div id="alert" class="alert"></div>
+
+  <!-- Add Building Card -->
+  <div class="card">
+    <div class="card-title">Add New Building</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Entity Code</label>
+        <input type="text" id="newEntityCode" placeholder="e.g., 148">
+      </div>
+      <div class="form-group">
+        <label>Building Name</label>
+        <input type="text" id="newBuildingName" placeholder="e.g., Main Office">
+      </div>
+      <div class="form-group">
+        <label>Address</label>
+        <input type="text" id="newAddress" placeholder="e.g., 130 E. 18th St">
+      </div>
+      <div class="form-group">
+        <label>City</label>
+        <input type="text" id="newCity" placeholder="e.g., New York">
+      </div>
+      <div class="form-group">
+        <label>ZIP</label>
+        <input type="text" id="newZIP" placeholder="e.g., 10003">
+      </div>
+      <div class="form-group">
+        <label>Type</label>
+        <input type="text" id="newType" placeholder="e.g., Residential">
+      </div>
+      <div class="form-group">
+        <label>Units</label>
+        <input type="text" id="newUnits" placeholder="e.g., 50">
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="addBuilding()">
+      + Add Building
+    </button>
+  </div>
+
+  <!-- Buildings List Card -->
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <div class="card-title">Buildings (<span id="buildingCount">0</span>)</div>
+    </div>
+    <input type="text" class="search-box" id="searchBox" placeholder="Search buildings..." oninput="filterTable()">
+    <div class="table-wrapper">
+      <table id="buildingsTable">
+        <thead>
+          <tr>
+            <th>Entity Code</th>
+            <th>Building Name</th>
+            <th>Address</th>
+            <th>City</th>
+            <th>ZIP</th>
+            <th>Type</th>
+            <th>Units</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="buildingsBody">
+        </tbody>
+      </table>
+    </div>
+    <div id="emptyState" class="empty-state" style="display: none;">
+      <p>No buildings found.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-title">Edit Building</div>
+    <div class="form-grid" style="grid-template-columns: 1fr;">
+      <div class="form-group">
+        <label>Entity Code (read-only)</label>
+        <input type="text" id="editEntityCode" readonly style="background: var(--gray-100); cursor: not-allowed;">
+      </div>
+      <div class="form-group">
+        <label>Building Name</label>
+        <input type="text" id="editBuildingName">
+      </div>
+      <div class="form-group">
+        <label>Address</label>
+        <input type="text" id="editAddress">
+      </div>
+      <div class="form-group">
+        <label>City</label>
+        <input type="text" id="editCity">
+      </div>
+      <div class="form-group">
+        <label>ZIP</label>
+        <input type="text" id="editZIP">
+      </div>
+      <div class="form-group">
+        <label>Type</label>
+        <input type="text" id="editType">
+      </div>
+      <div class="form-group">
+        <label>Units</label>
+        <input type="text" id="editUnits">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" style="background: var(--gray-200); color: var(--gray-900);" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let buildings = [];
+
+async function loadBuildings() {
+  const resp = await fetch('/api/buildings');
+  buildings = await resp.json();
+  renderTable();
+  updateCount();
+}
+
+function renderTable() {
+  const tbody = document.getElementById('buildingsBody');
+  const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+
+  const filtered = buildings.filter(b =>
+    b.entity_code.toLowerCase().includes(searchTerm) ||
+    b.building_name.toLowerCase().includes(searchTerm) ||
+    b.address.toLowerCase().includes(searchTerm) ||
+    b.city.toLowerCase().includes(searchTerm)
+  );
+
+  const empty = document.getElementById('emptyState');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = filtered.map(b =>
+    `<tr>
+      <td class="code-cell">${escapeHtml(b.entity_code)}</td>
+      <td>${escapeHtml(b.building_name)}</td>
+      <td>${escapeHtml(b.address)}</td>
+      <td>${escapeHtml(b.city)}</td>
+      <td>${escapeHtml(b.zip)}</td>
+      <td>${escapeHtml(b.type)}</td>
+      <td>${escapeHtml(b.units)}</td>
+      <td>
+        <button class="btn-edit" onclick="openEditModal('${escapeAttr(b.entity_code)}')">Edit</button>
+        <button class="btn-delete" onclick="deleteBuilding('${escapeAttr(b.entity_code)}')">Delete</button>
+      </td>
+    </tr>`
+  ).join('');
+}
+
+function filterTable() {
+  renderTable();
+}
+
+function updateCount() {
+  document.getElementById('buildingCount').textContent = buildings.length;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function escapeAttr(text) {
+  return text.replace(/'/g, "\\'");
+}
+
+async function addBuilding() {
+  const code = document.getElementById('newEntityCode').value.trim();
+  const name = document.getElementById('newBuildingName').value.trim();
+  const address = document.getElementById('newAddress').value.trim();
+  const city = document.getElementById('newCity').value.trim();
+  const zip = document.getElementById('newZIP').value.trim();
+  const type = document.getElementById('newType').value.trim();
+  const units = document.getElementById('newUnits').value.trim();
+
+  if (!code || !name) {
+    showAlert('Entity code and building name are required', 'error');
+    return;
+  }
+
+  const resp = await fetch('/api/buildings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_code: code, building_name: name, address, city, zip, type, units }),
+  });
+
+  if (resp.ok) {
+    document.getElementById('newEntityCode').value = '';
+    document.getElementById('newBuildingName').value = '';
+    document.getElementById('newAddress').value = '';
+    document.getElementById('newCity').value = '';
+    document.getElementById('newZIP').value = '';
+    document.getElementById('newType').value = '';
+    document.getElementById('newUnits').value = '';
+    await loadBuildings();
+    showAlert(`Building "${name}" added successfully`, 'success');
+  } else {
+    const data = await resp.json();
+    showAlert(data.error || 'Failed to add building', 'error');
+  }
+}
+
+function openEditModal(code) {
+  const building = buildings.find(b => b.entity_code === code);
+  if (!building) return;
+  document.getElementById('editEntityCode').value = building.entity_code;
+  document.getElementById('editBuildingName').value = building.building_name;
+  document.getElementById('editAddress').value = building.address;
+  document.getElementById('editCity').value = building.city;
+  document.getElementById('editZIP').value = building.zip;
+  document.getElementById('editType').value = building.type;
+  document.getElementById('editUnits').value = building.units;
+  document.getElementById('editModal').classList.add('active');
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('active');
+}
+
+async function saveEdit() {
+  const code = document.getElementById('editEntityCode').value;
+  const name = document.getElementById('editBuildingName').value.trim();
+  const address = document.getElementById('editAddress').value.trim();
+  const city = document.getElementById('editCity').value.trim();
+  const zip = document.getElementById('editZIP').value.trim();
+  const type = document.getElementById('editType').value.trim();
+  const units = document.getElementById('editUnits').value.trim();
+
+  if (!name) {
+    showAlert('Building name is required', 'error');
+    return;
+  }
+
+  const resp = await fetch(`/api/buildings/${code}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ building_name: name, address, city, zip, type, units }),
+  });
+
+  if (resp.ok) {
+    closeEditModal();
+    await loadBuildings();
+    showAlert(`Building "${name}" updated successfully`, 'success');
+  } else {
+    const data = await resp.json();
+    showAlert(data.error || 'Failed to update building', 'error');
+  }
+}
+
+async function deleteBuilding(code) {
+  const building = buildings.find(b => b.entity_code === code);
+  if (!confirm(`Are you sure you want to delete "${building.building_name}"?`)) return;
+
+  const resp = await fetch(`/api/buildings/${code}`, { method: 'DELETE' });
+
+  if (resp.ok) {
+    await loadBuildings();
+    showAlert(`Building deleted successfully`, 'success');
+  } else {
+    const data = await resp.json();
+    showAlert(data.error || 'Failed to delete building', 'error');
+  }
+}
+
+function showAlert(msg, type) {
+  const el = document.getElementById('alert');
+  el.textContent = msg;
+  el.className = `alert active ${type}`;
+  setTimeout(() => el.classList.remove('active'), 4000);
+}
+
+// Load on page load
+document.addEventListener('DOMContentLoaded', loadBuildings);
+</script>
+</body>
+</html>
+"""
+
+ASSUMPTIONS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Portfolio Defaults</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+        header { background: #1a56db; color: white; padding: 24px; }
+        header h1 { font-size: 24px; font-weight: 600; }
+        .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+        .back-link { display: inline-block; margin-bottom: 24px; color: #1a56db; text-decoration: none; font-size: 14px; }
+        .back-link:hover { text-decoration: underline; }
+        .section { background: white; border-radius: 8px; padding: 24px; margin-bottom: 24px; border: 1px solid #e0e0e0; }
+        .section h2 { font-size: 18px; color: #1a56db; margin-bottom: 16px; font-weight: 600; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-size: 13px; font-weight: 500; color: #333; margin-bottom: 6px; }
+        .form-group input, .form-group select { padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #1a56db; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
+        .form-group input[type="number"] { font-family: 'Courier New', monospace; }
+        .button-row { display: flex; gap: 12px; margin-top: 24px; }
+        button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #1a56db; color: white; }
+        .btn-primary:hover { background: #0f1f38; }
+        .toast { position: fixed; bottom: 20px; right: 20px; background: #4caf50; color: white; padding: 16px 20px; border-radius: 4px; display: none; z-index: 1000; }
+        .toast.show { display: block; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(400px); } to { transform: translateX(0); } }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Portfolio Defaults</h1>
+    </header>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Home</a>
+
+        <div class="section">
+            <h2>Payroll Tax Rates</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>FICA</label>
+                    <input type="number" step="0.0001" id="fica" />
+                </div>
+                <div class="form-group">
+                    <label>SUI</label>
+                    <input type="number" step="0.0001" id="sui" />
+                </div>
+                <div class="form-group">
+                    <label>FUI</label>
+                    <input type="number" step="0.0001" id="fui" />
+                </div>
+                <div class="form-group">
+                    <label>MTA</label>
+                    <input type="number" step="0.0001" id="mta" />
+                </div>
+                <div class="form-group">
+                    <label>NYS Disability</label>
+                    <input type="number" step="0.0001" id="nys_disability" />
+                </div>
+                <div class="form-group">
+                    <label>Paid Family Leave</label>
+                    <input type="number" step="0.0001" id="pfl" />
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>32BJ Union Benefits</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Welfare ($/mo)</label>
+                    <input type="number" step="0.01" id="welfare_monthly" />
+                </div>
+                <div class="form-group">
+                    <label>Pension ($/wk)</label>
+                    <input type="number" step="0.01" id="pension_weekly" />
+                </div>
+                <div class="form-group">
+                    <label>Supp Retirement ($/wk)</label>
+                    <input type="number" step="0.01" id="supp_retirement_weekly" />
+                </div>
+                <div class="form-group">
+                    <label>Legal ($/mo)</label>
+                    <input type="number" step="0.01" id="legal_monthly" />
+                </div>
+                <div class="form-group">
+                    <label>Training ($/mo)</label>
+                    <input type="number" step="0.01" id="training_monthly" />
+                </div>
+                <div class="form-group">
+                    <label>Profit Sharing ($/qtr)</label>
+                    <input type="number" step="0.01" id="profit_sharing_quarterly" />
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Workers Comp</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Workers Comp %</label>
+                    <input type="number" step="0.0001" id="workers_comp_percent" />
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Mid-Year Wage Increase</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Increase %</label>
+                    <input type="number" step="0.0001" id="wage_increase_percent" />
+                </div>
+                <div class="form-group">
+                    <label>Effective Week</label>
+                    <input type="text" id="wage_increase_effective_week" />
+                </div>
+                <div class="form-group">
+                    <label>Pre-increase Weeks</label>
+                    <input type="number" id="wage_increase_pre_weeks" />
+                </div>
+                <div class="form-group">
+                    <label>Post-increase Weeks</label>
+                    <input type="number" id="wage_increase_post_weeks" />
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Insurance Renewal</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Expected Renewal Increase %</label>
+                    <input type="number" step="0.0001" id="insurance_renewal_increase_percent" />
+                </div>
+                <div class="form-group">
+                    <label>Renewal Effective Date</label>
+                    <input type="text" id="insurance_renewal_effective_date" />
+                </div>
+                <div class="form-group">
+                    <label>Pre-renewal Months</label>
+                    <input type="number" id="insurance_renewal_pre_months" />
+                </div>
+                <div class="form-group">
+                    <label>Post-renewal Months</label>
+                    <input type="number" id="insurance_renewal_post_months" />
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Energy Rates</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Gas ESCO Rate ($/Therm)</label>
+                    <input type="number" step="0.0001" id="energy_gas_esco_rate" />
+                </div>
+                <div class="form-group">
+                    <label>Electric ESCO Rate ($/kWh)</label>
+                    <input type="number" step="0.0001" id="energy_electric_esco_rate" />
+                </div>
+                <div class="form-group">
+                    <label>Gas Rate Increase %</label>
+                    <input type="number" step="0.0001" id="energy_gas_rate_increase" />
+                </div>
+                <div class="form-group">
+                    <label>Electric Rate Increase %</label>
+                    <input type="number" step="0.0001" id="energy_electric_rate_increase" />
+                </div>
+                <div class="form-group">
+                    <label>Oil/Fuel Price ($/Gallon)</label>
+                    <input type="number" step="0.01" id="energy_oil_price" />
+                </div>
+                <div class="form-group">
+                    <label>Oil/Fuel Rate Increase %</label>
+                    <input type="number" step="0.0001" id="energy_oil_rate_increase" />
+                </div>
+                <div class="form-group">
+                    <label>Consumption Basis</label>
+                    <select id="energy_consumption_basis">
+                        <option value="2-Year Average">2-Year Average</option>
+                        <option value="Prior Year">Prior Year</option>
+                        <option value="Custom">Custom</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Water & Sewer</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Rate Increase %</label>
+                    <input type="number" step="0.0001" id="water_sewer_rate_increase" />
+                </div>
+            </div>
+        </div>
+
+        <div class="button-row">
+            <button class="btn-primary" onclick="saveDefaults()">Save Defaults</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const data = {{ data | safe }};
+
+        function loadUI() {
+            // Payroll tax
+            document.getElementById('fica').value = data.payroll_tax.FICA;
+            document.getElementById('sui').value = data.payroll_tax.SUI;
+            document.getElementById('fui').value = data.payroll_tax.FUI;
+            document.getElementById('mta').value = data.payroll_tax.MTA;
+            document.getElementById('nys_disability').value = data.payroll_tax.NYS_Disability;
+            document.getElementById('pfl').value = data.payroll_tax.PFL;
+
+            // Union benefits
+            document.getElementById('welfare_monthly').value = data.union_benefits.welfare_monthly;
+            document.getElementById('pension_weekly').value = data.union_benefits.pension_weekly;
+            document.getElementById('supp_retirement_weekly').value = data.union_benefits.supp_retirement_weekly;
+            document.getElementById('legal_monthly').value = data.union_benefits.legal_monthly;
+            document.getElementById('training_monthly').value = data.union_benefits.training_monthly;
+            document.getElementById('profit_sharing_quarterly').value = data.union_benefits.profit_sharing_quarterly;
+
+            // Workers comp
+            document.getElementById('workers_comp_percent').value = data.workers_comp.percent;
+
+            // Wage increase
+            document.getElementById('wage_increase_percent').value = data.wage_increase.percent;
+            document.getElementById('wage_increase_effective_week').value = data.wage_increase.effective_week;
+            document.getElementById('wage_increase_pre_weeks').value = data.wage_increase.pre_increase_weeks;
+            document.getElementById('wage_increase_post_weeks').value = data.wage_increase.post_increase_weeks;
+
+            // Insurance renewal
+            document.getElementById('insurance_renewal_increase_percent').value = data.insurance_renewal.increase_percent;
+            document.getElementById('insurance_renewal_effective_date').value = data.insurance_renewal.effective_date;
+            document.getElementById('insurance_renewal_pre_months').value = data.insurance_renewal.pre_renewal_months;
+            document.getElementById('insurance_renewal_post_months').value = data.insurance_renewal.post_renewal_months;
+
+            // Energy
+            if (data.energy) {
+                document.getElementById('energy_gas_esco_rate').value = data.energy.gas_esco_rate || 0;
+                document.getElementById('energy_electric_esco_rate').value = data.energy.electric_esco_rate || 0;
+                document.getElementById('energy_oil_price').value = data.energy.oil_price_per_gallon || 0;
+                document.getElementById('energy_gas_rate_increase').value = data.energy.gas_rate_increase || 0;
+                document.getElementById('energy_electric_rate_increase').value = data.energy.electric_rate_increase || 0;
+                document.getElementById('energy_oil_rate_increase').value = data.energy.oil_rate_increase || 0;
+                document.getElementById('energy_consumption_basis').value = data.energy.consumption_basis || '2-Year Average';
+            }
+
+            // Water & Sewer
+            if (data.water_sewer) {
+                document.getElementById('water_sewer_rate_increase').value = data.water_sewer.rate_increase || 0;
+            }
+        }
+
+        function saveDefaults() {
+            const payload = {
+                payroll_tax: {
+                    FICA: parseFloat(document.getElementById('fica').value),
+                    SUI: parseFloat(document.getElementById('sui').value),
+                    FUI: parseFloat(document.getElementById('fui').value),
+                    MTA: parseFloat(document.getElementById('mta').value),
+                    NYS_Disability: parseFloat(document.getElementById('nys_disability').value),
+                    PFL: parseFloat(document.getElementById('pfl').value)
+                },
+                union_benefits: {
+                    welfare_monthly: parseFloat(document.getElementById('welfare_monthly').value),
+                    pension_weekly: parseFloat(document.getElementById('pension_weekly').value),
+                    supp_retirement_weekly: parseFloat(document.getElementById('supp_retirement_weekly').value),
+                    legal_monthly: parseFloat(document.getElementById('legal_monthly').value),
+                    training_monthly: parseFloat(document.getElementById('training_monthly').value),
+                    profit_sharing_quarterly: parseFloat(document.getElementById('profit_sharing_quarterly').value)
+                },
+                workers_comp: {
+                    percent: parseFloat(document.getElementById('workers_comp_percent').value)
+                },
+                wage_increase: {
+                    percent: parseFloat(document.getElementById('wage_increase_percent').value),
+                    effective_week: document.getElementById('wage_increase_effective_week').value,
+                    pre_increase_weeks: parseInt(document.getElementById('wage_increase_pre_weeks').value),
+                    post_increase_weeks: parseInt(document.getElementById('wage_increase_post_weeks').value)
+                },
+                insurance_renewal: {
+                    increase_percent: parseFloat(document.getElementById('insurance_renewal_increase_percent').value),
+                    effective_date: document.getElementById('insurance_renewal_effective_date').value,
+                    pre_renewal_months: parseInt(document.getElementById('insurance_renewal_pre_months').value),
+                    post_renewal_months: parseInt(document.getElementById('insurance_renewal_post_months').value)
+                },
+                energy: {
+                    gas_esco_rate: parseFloat(document.getElementById('energy_gas_esco_rate').value) || 0,
+                    electric_esco_rate: parseFloat(document.getElementById('energy_electric_esco_rate').value) || 0,
+                    oil_price_per_gallon: parseFloat(document.getElementById('energy_oil_price').value) || 0,
+                    gas_rate_increase: parseFloat(document.getElementById('energy_gas_rate_increase').value) || 0,
+                    electric_rate_increase: parseFloat(document.getElementById('energy_electric_rate_increase').value) || 0,
+                    oil_rate_increase: parseFloat(document.getElementById('energy_oil_rate_increase').value) || 0,
+                    consumption_basis: document.getElementById('energy_consumption_basis').value
+                },
+                water_sewer: {
+                    rate_increase: parseFloat(document.getElementById('water_sewer_rate_increase').value) || 0
+                }
+            };
+
+            fetch('/api/defaults', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(() => {
+                showToast('Defaults saved successfully');
+            })
+            .catch(e => console.error(e));
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
+
+        loadUI();
+    </script>
+</body>
+</html>
+"""
+
+ASSUMPTIONS_BUILDINGS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Building Assumptions</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+        header { background: #1a56db; color: white; padding: 24px; }
+        header h1 { font-size: 24px; font-weight: 600; }
+        .main { display: flex; height: calc(100vh - 80px); }
+        .sidebar {
+            width: 280px;
+            background: white;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .sidebar-header { font-size: 13px; font-weight: 600; color: #666; text-transform: uppercase; margin-bottom: 12px; }
+        .sidebar-search { display: flex; margin-bottom: 12px; }
+        .sidebar-search input { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+        .sidebar-list { display: flex; flex-direction: column; gap: 4px; }
+        .building-item {
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            background: white;
+        }
+        .building-item:hover { background: #f9f9f9; border-color: #1a56db; }
+        .building-item.active { background: #1a56db; color: white; border-color: #1a56db; }
+        .content {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+        }
+        .back-link { display: inline-block; margin-bottom: 24px; color: #1a56db; text-decoration: none; font-size: 14px; }
+        .back-link:hover { text-decoration: underline; }
+        .building-title { font-size: 24px; color: #1a56db; margin-bottom: 8px; font-weight: 600; }
+        .building-code { font-size: 13px; color: #999; margin-bottom: 24px; }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid #e0e0e0;
+            margin-bottom: 24px;
+        }
+        .tab {
+            padding: 12px 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #666;
+            border-bottom: 2px solid transparent;
+        }
+        .tab:hover { color: #1a56db; }
+        .tab.active { color: #1a56db; border-bottom-color: #1a56db; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .section { background: white; border-radius: 8px; padding: 24px; border: 1px solid #e0e0e0; margin-bottom: 24px; }
+        .section h3 { font-size: 16px; color: #1a56db; margin-bottom: 16px; font-weight: 600; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { background: #f5f5f5; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 1px solid #e0e0e0; }
+        td { padding: 12px; border-bottom: 1px solid #e0e0e0; }
+        input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+        input[type="number"] { font-family: 'Courier New', monospace; text-align: right; }
+        input:focus { outline: none; border-color: #1a56db; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-size: 13px; font-weight: 500; color: #333; margin-bottom: 6px; }
+        .button-row { display: flex; gap: 12px; margin-top: 24px; }
+        button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary { background: #1a56db; color: white; }
+        .btn-primary:hover { background: #0f1f38; }
+        .btn-secondary { background: #e0e0e0; color: #333; }
+        .btn-secondary:hover { background: #d0d0d0; }
+        .toast { position: fixed; bottom: 20px; right: 20px; background: #4caf50; color: white; padding: 16px 20px; border-radius: 4px; display: none; z-index: 1000; }
+        .toast.show { display: block; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(400px); } to { transform: translateX(0); } }
+        .empty { padding: 40px; text-align: center; color: #999; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Building Assumptions</h1>
+    </header>
+    <div class="main">
+        <div class="sidebar">
+            <div class="sidebar-header">Buildings</div>
+            <div class="sidebar-search">
+                <input type="text" id="searchInput" placeholder="Search..." />
+            </div>
+            <div class="sidebar-list" id="buildingList"></div>
+        </div>
+        <div class="content">
+            <a href="/" class="back-link">← Back to Home</a>
+
+            <div id="noBuildingSelected" class="empty">
+                <p>Select a building from the list to view and edit assumptions</p>
+            </div>
+
+            <div id="buildingContent" style="display: none;">
+                <div class="building-title" id="buildingName"></div>
+                <div class="building-code" id="buildingCode"></div>
+
+                <div class="tabs">
+                    <button class="tab active" onclick="switchTab('payroll')">Payroll</button>
+                    <button class="tab" onclick="switchTab('income')">Income</button>
+                    <button class="tab" onclick="switchTab('insurance')">Insurance</button>
+                    <button class="tab" onclick="switchTab('utilities')">Utilities</button>
+                </div>
+
+                <!-- Payroll Tab -->
+                <div id="payroll" class="tab-content active">
+                    <div class="section">
+                        <h3>Position Details</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Position</th>
+                                    <th># Employees</th>
+                                    <th>Hourly Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody id="payrollTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Income Tab -->
+                <div id="income" class="tab-content">
+                    <div class="section">
+                        <h3>Maintenance</h3>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Total Shares</label>
+                                <input type="number" id="income_maint_shares" />
+                            </div>
+                            <div class="form-group">
+                                <label>$/Share/Mo</label>
+                                <input type="number" step="0.01" id="income_maint_per_share" />
+                            </div>
+                            <div class="form-group">
+                                <label>Increase %</label>
+                                <input type="number" step="0.0001" id="income_maint_increase" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Storage Units</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Size Label</th>
+                                    <th># Units</th>
+                                    <th># Occupied</th>
+                                    <th>$/Month</th>
+                                </tr>
+                            </thead>
+                            <tbody id="storageTable"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="section">
+                        <h3>Bike Storage</h3>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label># Racks</label>
+                                <input type="number" id="income_bike_racks" />
+                            </div>
+                            <div class="form-group">
+                                <label># Occupied</label>
+                                <input type="number" id="income_bike_occupied" />
+                            </div>
+                            <div class="form-group">
+                                <label>$/Month</label>
+                                <input type="number" step="0.01" id="income_bike_monthly" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Laundry/Vending</h3>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Contract Description</label>
+                                <input type="text" id="income_laundry_desc" />
+                            </div>
+                            <div class="form-group">
+                                <label>Monthly Amount</label>
+                                <input type="number" step="0.01" id="income_laundry_monthly" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Insurance Tab -->
+                <div id="insurance" class="tab-content">
+                    <div class="section">
+                        <h3>Insurance Policies</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>GL Code</th>
+                                    <th>Policy Name</th>
+                                    <th>Current Annual Premium</th>
+                                    <th>Current Year Budget</th>
+                                    <th>Expiration Date</th>
+                                    <th>Override Increase %</th>
+                                </tr>
+                            </thead>
+                            <tbody id="insuranceTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Utilities Tab -->
+                <div id="utilities" class="tab-content">
+                    <div class="section">
+                        <h3>Energy — Rate Overrides</h3>
+                        <p style="font-size:13px;color:#666;margin-bottom:16px;">Leave blank or 0 to use portfolio defaults. Only enter values here to override for this building.</p>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Gas ESCO Rate ($/Therm)</label>
+                                <input type="number" step="0.0001" id="util_gas_esco_rate" />
+                            </div>
+                            <div class="form-group">
+                                <label>Electric ESCO Rate ($/kWh)</label>
+                                <input type="number" step="0.0001" id="util_electric_esco_rate" />
+                            </div>
+                            <div class="form-group">
+                                <label>Gas Rate Increase % Override</label>
+                                <input type="number" step="0.0001" id="util_gas_rate_increase" />
+                            </div>
+                            <div class="form-group">
+                                <label>Electric Rate Increase % Override</label>
+                                <input type="number" step="0.0001" id="util_electric_rate_increase" />
+                            </div>
+                            <div class="form-group">
+                                <label>Oil/Fuel Price ($/Gallon) Override</label>
+                                <input type="number" step="0.01" id="util_oil_price" />
+                            </div>
+                            <div class="form-group">
+                                <label>Oil/Fuel Rate Increase % Override</label>
+                                <input type="number" step="0.0001" id="util_oil_rate_increase" />
+                            </div>
+                            <div class="form-group">
+                                <label>Consumption Basis</label>
+                                <select id="util_consumption_basis">
+                                    <option value="">Use Default</option>
+                                    <option value="2-Year Average">2-Year Average</option>
+                                    <option value="Prior Year">Prior Year</option>
+                                    <option value="Custom">Custom</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Energy — GL Account Adjustments</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>GL Code</th>
+                                    <th>Description</th>
+                                    <th>Accrual Adjustment</th>
+                                    <th>Unpaid Bills</th>
+                                    <th>Rate Increase % Override</th>
+                                </tr>
+                            </thead>
+                            <tbody id="energyGLTable"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="section">
+                        <h3>Water & Sewer</h3>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Rate Increase % Override</label>
+                                <input type="number" step="0.0001" id="util_water_rate_increase" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Water & Sewer — GL Account Adjustments</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>GL Code</th>
+                                    <th>Description</th>
+                                    <th>Accrual Adjustment</th>
+                                    <th>Unpaid Bills</th>
+                                    <th>Rate Increase % Override</th>
+                                </tr>
+                            </thead>
+                            <tbody id="waterGLTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const buildings = {{ buildings | safe }};
+        const policies = {{ policies | safe }};
+        let currentBuilding = null;
+        let buildingData = {};
+        let debounceTimer = null;
+
+        const ENERGY_GL_ACCOUNTS = [
+            { gl: '5252-0000', desc: 'Gas - Heating' },
+            { gl: '5252-0001', desc: 'Gas - Cooking' },
+            { gl: '5252-0010', desc: 'Gas - Common Area' },
+            { gl: '5253-0000', desc: 'Oil / Fuel' },
+            { gl: '5250-0000', desc: 'Electric' }
+        ];
+        const WATER_GL_ACCOUNTS = [
+            { gl: '6305-0000', desc: 'Water/Sewer' },
+            { gl: '6305-0010', desc: 'Water - Common Area' },
+            { gl: '6305-0020', desc: 'Sewer Charges' }
+        ];
+
+        function loadBuildingsList() {
+            const list = document.getElementById('buildingList');
+            list.innerHTML = buildings.map(b =>
+                `<div class="building-item" onclick="selectBuilding('${b.entity_code}', '${b.building_name}')">
+                    <strong>${b.entity_code}</strong><br/>
+                    ${b.building_name.substring(0, 40)}
+                </div>`
+            ).join('');
+        }
+
+        function selectBuilding(code, name) {
+            currentBuilding = code;
+            document.querySelectorAll('.building-item').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+
+            fetch(`/api/building-assumptions/${code}`)
+                .then(r => r.json())
+                .then(data => {
+                    buildingData = data;
+                    document.getElementById('noBuildingSelected').style.display = 'none';
+                    document.getElementById('buildingContent').style.display = 'block';
+                    document.getElementById('buildingName').textContent = name;
+                    document.getElementById('buildingCode').textContent = `Entity Code: ${code}`;
+                    loadPayrollTab();
+                    loadIncomeTab();
+                    loadInsuranceTab();
+                    loadUtilitiesTab();
+                });
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            event.currentTarget.classList.add('active');
+        }
+
+        function loadPayrollTab() {
+            const payroll = buildingData.payroll || {};
+            const positions = payroll.positions || [
+                { name: 'Resident Manager', employee_count: 0, hourly_rate: 0 },
+                { name: 'Handyman', employee_count: 0, hourly_rate: 0 },
+                { name: 'Porter/Doorman', employee_count: 0, hourly_rate: 0 },
+                { name: 'Porter 80%', employee_count: 0, hourly_rate: 0 },
+                { name: 'Employee 5', employee_count: 0, hourly_rate: 0 },
+                { name: 'Employee 6', employee_count: 0, hourly_rate: 0 },
+                { name: 'Employee 7', employee_count: 0, hourly_rate: 0 },
+                { name: 'Employee 8', employee_count: 0, hourly_rate: 0 }
+            ];
+
+            const table = document.getElementById('payrollTable');
+            table.innerHTML = positions.map((p, i) => `
+                <tr>
+                    <td><input type="text" value="${p.name}" class="payroll-name" data-idx="${i}" /></td>
+                    <td><input type="number" value="${p.employee_count || 0}" class="payroll-count" data-idx="${i}" /></td>
+                    <td><input type="number" step="0.01" value="${p.hourly_rate || 0}" class="payroll-rate" data-idx="${i}" /></td>
+                </tr>
+            `).join('');
+
+            document.querySelectorAll('.payroll-name, .payroll-count, .payroll-rate').forEach(el => {
+                el.addEventListener('change', savePayroll);
+            });
+        }
+
+        function savePayroll() {
+            const positions = [];
+            document.querySelectorAll('#payrollTable tr').forEach(tr => {
+                const name = tr.querySelector('.payroll-name').value;
+                const count = parseInt(tr.querySelector('.payroll-count').value) || 0;
+                const rate = parseFloat(tr.querySelector('.payroll-rate').value) || 0;
+                positions.push({ name, employee_count: count, hourly_rate: rate });
+            });
+
+            buildingData.payroll = { positions };
+            debouncedSave();
+        }
+
+        function loadIncomeTab() {
+            const income = buildingData.income || {};
+            const maint = income.maintenance || { total_shares: 0, per_share_monthly: 0, increase_percent: 0 };
+            const storage = income.storage || [];
+            const bike = income.bike_storage || { racks: 0, occupied: 0, monthly: 0 };
+            const laundry = income.laundry_vending || { description: '', monthly: 0 };
+
+            document.getElementById('income_maint_shares').value = maint.total_shares || 0;
+            document.getElementById('income_maint_per_share').value = maint.per_share_monthly || 0;
+            document.getElementById('income_maint_increase').value = maint.increase_percent || 0;
+
+            const storageTable = document.getElementById('storageTable');
+            const storageRows = storage.length > 0 ? storage : [
+                { size_label: 'Small', units: 0, occupied: 0, monthly: 0 },
+                { size_label: 'Medium', units: 0, occupied: 0, monthly: 0 },
+                { size_label: 'Large', units: 0, occupied: 0, monthly: 0 },
+                { size_label: 'XL', units: 0, occupied: 0, monthly: 0 }
+            ];
+            storageTable.innerHTML = storageRows.map((s, i) => `
+                <tr>
+                    <td><input type="text" value="${s.size_label || ''}" class="storage-label" data-idx="${i}" /></td>
+                    <td><input type="number" value="${s.units || 0}" class="storage-units" data-idx="${i}" /></td>
+                    <td><input type="number" value="${s.occupied || 0}" class="storage-occupied" data-idx="${i}" /></td>
+                    <td><input type="number" step="0.01" value="${s.monthly || 0}" class="storage-monthly" data-idx="${i}" /></td>
+                </tr>
+            `).join('');
+
+            document.getElementById('income_bike_racks').value = bike.racks || 0;
+            document.getElementById('income_bike_occupied').value = bike.occupied || 0;
+            document.getElementById('income_bike_monthly').value = bike.monthly || 0;
+
+            document.getElementById('income_laundry_desc').value = laundry.description || '';
+            document.getElementById('income_laundry_monthly').value = laundry.monthly || 0;
+
+            document.querySelectorAll('.storage-label, .storage-units, .storage-occupied, .storage-monthly').forEach(el => {
+                el.addEventListener('change', saveIncome);
+            });
+            document.querySelectorAll('#income_maint_shares, #income_maint_per_share, #income_maint_increase, #income_bike_racks, #income_bike_occupied, #income_bike_monthly, #income_laundry_desc, #income_laundry_monthly').forEach(el => {
+                el.addEventListener('change', saveIncome);
+            });
+        }
+
+        function saveIncome() {
+            const income = {
+                maintenance: {
+                    total_shares: parseFloat(document.getElementById('income_maint_shares').value) || 0,
+                    per_share_monthly: parseFloat(document.getElementById('income_maint_per_share').value) || 0,
+                    increase_percent: parseFloat(document.getElementById('income_maint_increase').value) || 0
+                },
+                storage: Array.from(document.querySelectorAll('#storageTable tr')).map(tr => ({
+                    size_label: tr.querySelector('.storage-label').value,
+                    units: parseInt(tr.querySelector('.storage-units').value) || 0,
+                    occupied: parseInt(tr.querySelector('.storage-occupied').value) || 0,
+                    monthly: parseFloat(tr.querySelector('.storage-monthly').value) || 0
+                })),
+                bike_storage: {
+                    racks: parseInt(document.getElementById('income_bike_racks').value) || 0,
+                    occupied: parseInt(document.getElementById('income_bike_occupied').value) || 0,
+                    monthly: parseFloat(document.getElementById('income_bike_monthly').value) || 0
+                },
+                laundry_vending: {
+                    description: document.getElementById('income_laundry_desc').value,
+                    monthly: parseFloat(document.getElementById('income_laundry_monthly').value) || 0
+                }
+            };
+
+            buildingData.income = income;
+            debouncedSave();
+        }
+
+        function loadInsuranceTab() {
+            const insurance = buildingData.insurance || [];
+            const table = document.getElementById('insuranceTable');
+
+            table.innerHTML = policies.map((policy, i) => {
+                const existing = insurance.find(p => p.gl_code === policy.gl_code) || {};
+                return `
+                    <tr>
+                        <td>${policy.gl_code}</td>
+                        <td>${policy.name}</td>
+                        <td><input type="number" step="0.01" value="${existing.current_premium || 0}" class="ins-current-premium" data-gl="${policy.gl_code}" /></td>
+                        <td><input type="number" step="0.01" value="${existing.current_budget || 0}" class="ins-budget" data-gl="${policy.gl_code}" /></td>
+                        <td><input type="text" value="${existing.expiration_date || ''}" class="ins-expiration" data-gl="${policy.gl_code}" /></td>
+                        <td><input type="number" step="0.0001" value="${existing.override_increase || 0}" class="ins-override-increase" data-gl="${policy.gl_code}" /></td>
+                    </tr>
+                `;
+            }).join('');
+
+            document.querySelectorAll('.ins-current-premium, .ins-budget, .ins-expiration, .ins-override-increase').forEach(el => {
+                el.addEventListener('change', saveInsurance);
+            });
+        }
+
+        function saveInsurance() {
+            const insurance = policies.map(policy => {
+                const gl = policy.gl_code;
+                return {
+                    gl_code: gl,
+                    name: policy.name,
+                    current_premium: parseFloat(document.querySelector(`.ins-current-premium[data-gl="${gl}"]`).value) || 0,
+                    current_budget: parseFloat(document.querySelector(`.ins-budget[data-gl="${gl}"]`).value) || 0,
+                    expiration_date: document.querySelector(`.ins-expiration[data-gl="${gl}"]`).value,
+                    override_increase: parseFloat(document.querySelector(`.ins-override-increase[data-gl="${gl}"]`).value) || 0
+                };
+            });
+
+            buildingData.insurance = insurance;
+            debouncedSave();
+        }
+
+        function loadUtilitiesTab() {
+            const energy = buildingData.energy || {};
+            const water = buildingData.water_sewer || {};
+
+            document.getElementById('util_gas_esco_rate').value = energy.gas_esco_rate || 0;
+            document.getElementById('util_electric_esco_rate').value = energy.electric_esco_rate || 0;
+            document.getElementById('util_oil_price').value = energy.oil_price_per_gallon || 0;
+            document.getElementById('util_gas_rate_increase').value = energy.gas_rate_increase || 0;
+            document.getElementById('util_electric_rate_increase').value = energy.electric_rate_increase || 0;
+            document.getElementById('util_oil_rate_increase').value = energy.oil_rate_increase || 0;
+            document.getElementById('util_consumption_basis').value = energy.consumption_basis || '';
+            document.getElementById('util_water_rate_increase').value = water.rate_increase || 0;
+
+            const energyAdj = energy.gl_adjustments || {};
+            const energyTable = document.getElementById('energyGLTable');
+            energyTable.innerHTML = ENERGY_GL_ACCOUNTS.map(a => {
+                const adj = energyAdj[a.gl] || {};
+                return `<tr>
+                    <td>${a.gl}</td>
+                    <td>${a.desc}</td>
+                    <td><input type="number" step="0.01" value="${adj.accrual || 0}" class="energy-accrual" data-gl="${a.gl}" /></td>
+                    <td><input type="number" step="0.01" value="${adj.unpaid || 0}" class="energy-unpaid" data-gl="${a.gl}" /></td>
+                    <td><input type="number" step="0.0001" value="${adj.rate_increase || 0}" class="energy-gl-rate" data-gl="${a.gl}" /></td>
+                </tr>`;
+            }).join('');
+
+            const waterAdj = water.gl_adjustments || {};
+            const waterTable = document.getElementById('waterGLTable');
+            waterTable.innerHTML = WATER_GL_ACCOUNTS.map(a => {
+                const adj = waterAdj[a.gl] || {};
+                return `<tr>
+                    <td>${a.gl}</td>
+                    <td>${a.desc}</td>
+                    <td><input type="number" step="0.01" value="${adj.accrual || 0}" class="water-accrual" data-gl="${a.gl}" /></td>
+                    <td><input type="number" step="0.01" value="${adj.unpaid || 0}" class="water-unpaid" data-gl="${a.gl}" /></td>
+                    <td><input type="number" step="0.0001" value="${adj.rate_increase || 0}" class="water-gl-rate" data-gl="${a.gl}" /></td>
+                </tr>`;
+            }).join('');
+
+            // Bind change events
+            document.querySelectorAll('#util_gas_esco_rate, #util_electric_esco_rate, #util_oil_price, #util_gas_rate_increase, #util_electric_rate_increase, #util_oil_rate_increase, #util_consumption_basis, #util_water_rate_increase').forEach(el => {
+                el.addEventListener('change', saveUtilities);
+            });
+            document.querySelectorAll('.energy-accrual, .energy-unpaid, .energy-gl-rate, .water-accrual, .water-unpaid, .water-gl-rate').forEach(el => {
+                el.addEventListener('change', saveUtilities);
+            });
+        }
+
+        function saveUtilities() {
+            const energyGLAdj = {};
+            ENERGY_GL_ACCOUNTS.forEach(a => {
+                energyGLAdj[a.gl] = {
+                    accrual: parseFloat(document.querySelector(`.energy-accrual[data-gl="${a.gl}"]`).value) || 0,
+                    unpaid: parseFloat(document.querySelector(`.energy-unpaid[data-gl="${a.gl}"]`).value) || 0,
+                    rate_increase: parseFloat(document.querySelector(`.energy-gl-rate[data-gl="${a.gl}"]`).value) || 0
+                };
+            });
+
+            const waterGLAdj = {};
+            WATER_GL_ACCOUNTS.forEach(a => {
+                waterGLAdj[a.gl] = {
+                    accrual: parseFloat(document.querySelector(`.water-accrual[data-gl="${a.gl}"]`).value) || 0,
+                    unpaid: parseFloat(document.querySelector(`.water-unpaid[data-gl="${a.gl}"]`).value) || 0,
+                    rate_increase: parseFloat(document.querySelector(`.water-gl-rate[data-gl="${a.gl}"]`).value) || 0
+                };
+            });
+
+            buildingData.energy = {
+                gas_esco_rate: parseFloat(document.getElementById('util_gas_esco_rate').value) || 0,
+                electric_esco_rate: parseFloat(document.getElementById('util_electric_esco_rate').value) || 0,
+                oil_price_per_gallon: parseFloat(document.getElementById('util_oil_price').value) || 0,
+                gas_rate_increase: parseFloat(document.getElementById('util_gas_rate_increase').value) || 0,
+                electric_rate_increase: parseFloat(document.getElementById('util_electric_rate_increase').value) || 0,
+                oil_rate_increase: parseFloat(document.getElementById('util_oil_rate_increase').value) || 0,
+                consumption_basis: document.getElementById('util_consumption_basis').value,
+                gl_adjustments: energyGLAdj
+            };
+
+            buildingData.water_sewer = {
+                rate_increase: parseFloat(document.getElementById('util_water_rate_increase').value) || 0,
+                gl_adjustments: waterGLAdj
+            };
+
+            debouncedSave();
+        }
+
+        function debouncedSave() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                fetch(`/api/building-assumptions/${currentBuilding}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildingData)
+                }).then(() => showToast('Saved'));
+            }, 500);
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
+
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            const search = e.target.value.toLowerCase();
+            document.querySelectorAll('.building-item').forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(search) ? '' : 'none';
+            });
+        });
+
+        loadBuildingsList();
+    </script>
+</body>
+</html>
+"""
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     if IS_CLOUD:
         app.run(host="0.0.0.0", port=port)
     else:
         print("\n" + "=" * 50)
-        print("  Century Budget Generator")
+        print("  Century Budget & Assumptions System")
         print("  Open http://localhost:5000 in your browser")
         print("=" * 50 + "\n")
         app.run(debug=True, port=port)
