@@ -51,6 +51,14 @@ except ImportError:
 workflow_bp, workflow_models, workflow_helpers = create_workflow_blueprint(db)
 app.register_blueprint(workflow_bp)
 
+# Register audited financials blueprint
+try:
+    from audited_financials import create_audited_financials_blueprint
+except ImportError:
+    from budget_app.audited_financials import create_audited_financials_blueprint
+af_bp, af_models, af_helpers = create_audited_financials_blueprint(db)
+app.register_blueprint(af_bp)
+
 # Create all tables on startup
 with app.app_context():
     db.create_all()
@@ -705,6 +713,12 @@ HOME_TEMPLATE = r"""
         <div class="icon">👤</div>
         <h2>User Management</h2>
         <p>Manage users and assign buildings to FAs and PMs.</p>
+        <span class="arrow">→</span>
+      </a>
+      <a href="/audited-financials" class="nav-card">
+        <div class="icon">📋</div>
+        <h2>Audited Financials</h2>
+        <p>Extract and map audited financial data into budget templates.</p>
         <span class="arrow">→</span>
       </a>
     </div>
