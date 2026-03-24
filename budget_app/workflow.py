@@ -71,8 +71,42 @@ RM_GL_MAP = {
     "5809-0016": ("Sprinkler Maintenance", 66, "maintenance"),
 }
 
-BUDGET_STATUSES = ["draft", "pm_pending", "pm_in_progress", "fa_review", "approved", "returned"]
-USER_ROLES = ["fa", "pm", "admin"]
+BUDGET_STATUSES = [
+    "not_started",       # Building exists but budget cycle not initiated
+    "data_collection",   # Phase 1: gathering YSL + other reports
+    "data_ready",        # All data sources collected
+    "draft",             # Phase 2: first draft generated
+    "fa_first_review",   # FA reviewing first draft
+    "pm_pending",        # Phase 3: sent to PM
+    "pm_in_progress",    # PM actively editing
+    "fa_second_review",  # Phase 4: FA reviewing PM input
+    "exec_review",       # Phase 5: CFO/Director review
+    "presentation",      # Phase 6: client presentation (live link active)
+    "approved",          # Phase 7: final approval
+    "ar_pending",        # AR handoff form created, awaiting AR action
+    "ar_complete",       # AR has entered increase into Yardi
+    "returned",          # Returned at any review stage
+]
+
+# Valid status transitions (from -> [allowed targets])
+VALID_TRANSITIONS = {
+    "not_started":      ["data_collection"],
+    "data_collection":  ["data_ready"],
+    "data_ready":       ["draft"],
+    "draft":            ["fa_first_review"],
+    "fa_first_review":  ["pm_pending", "exec_review", "returned"],
+    "pm_pending":       ["pm_in_progress"],
+    "pm_in_progress":   ["fa_second_review"],
+    "fa_second_review": ["exec_review", "returned"],
+    "exec_review":      ["presentation", "approved", "returned"],
+    "presentation":     ["approved", "returned"],
+    "approved":         ["ar_pending"],
+    "ar_pending":       ["ar_complete"],
+    "ar_complete":      [],
+    "returned":         ["fa_first_review", "pm_pending", "fa_second_review", "exec_review"],
+}
+
+USER_ROLES = ["fa", "pm", "admin", "cfo", "director", "ar"]
 
 
 def create_workflow_blueprint(db):
@@ -143,13 +177,31 @@ def create_workflow_blueprint(db):
         entity_code = db.Column(db.String(50), nullable=False, index=True)
         building_name = db.Column(db.String(255), nullable=False)
         year = db.Column(db.Integer, default=2027)
-        status = db.Column(db.String(20), default="draft")  # draft, pm_pending, pm_in_progress, fa_review, approved, returned
+        status = db.Column(db.String(20), default="not_started")
         fa_notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+        # Pipeline tracking
+        initiated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        initiated_at = db.Column(db.DateTime, nullable=True)
+        return_to_status = db.Column(db.String(20), nullable=True)
+
+        # Presentation
+        presentation_token = db.Column(db.String(64), unique=True, nullable=True)
+        presentation_created_at = db.Column(db.DateTime, nullable=True)
+
+        # Approval
+        approved_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        approved_at = db.Column(db.DateTime, nullable=True)
+        increase_pct = db.Column(db.Float, nullable=True)
+        effective_date = db.Column(db.String(20), nullable=True)
+        ar_notes = db.Column(db.Text, default="")
+
         # Relationships
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
+        data_sources = db.relationship("DataSource", back_populates="budget", cascade="all, delete-orphan")
+        revisions = db.relationship("BudgetRevision", back_populates="budget", cascade="all, delete-orphan")
 
         __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
 
@@ -161,21 +213,32 @@ def create_workflow_blueprint(db):
                 "year": self.year,
                 "status": self.status,
                 "fa_notes": self.fa_notes,
+                "initiated_by": self.initiated_by,
+                "initiated_at": self.initiated_at.isoformat() if self.initiated_at else None,
+                "return_to_status": self.return_to_status,
+                "presentation_token": self.presentation_token,
+                "approved_by": self.approved_by,
+                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+                "increase_pct": self.increase_pct,
+                "effective_date": self.effective_date,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
 
     class BudgetLine(db.Model):
-        """Individual R&M line item within a budget."""
+        """Individual budget line item (all GL codes, not just R&M)."""
         __tablename__ = "budget_lines"
 
         id = db.Column(db.Integer, primary_key=True)
         budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
         gl_code = db.Column(db.String(50), nullable=False)
         description = db.Column(db.String(255), nullable=False)
-        category = db.Column(db.String(50), nullable=False)  # supplies, repairs, maintenance
+        category = db.Column(db.String(50), nullable=False)  # supplies, repairs, maintenance, income, payroll, etc.
         row_num = db.Column(db.Integer, nullable=False)
+
+        # Sheet tracking (which template sheet this GL belongs to)
+        sheet_name = db.Column(db.String(50), nullable=True)  # Income, Payroll, Energy, Water & Sewer, Repairs & Supplies, Gen & Admin
 
         # YSL-sourced columns (from prior runs, don't overwrite PM inputs)
         prior_year = db.Column(db.Float, default=0.0)
@@ -188,6 +251,15 @@ def create_workflow_blueprint(db):
         unpaid_bills = db.Column(db.Float, default=0.0)
         increase_pct = db.Column(db.Float, default=0.0)
         notes = db.Column(db.Text, default="")
+        pm_editable = db.Column(db.Boolean, default=False)  # FA flags which lines need PM input
+
+        # Reclassification (PM can request moving expenses to different GL)
+        reclass_to_gl = db.Column(db.String(50), nullable=True)
+        reclass_amount = db.Column(db.Float, default=0.0)
+        reclass_notes = db.Column(db.Text, default="")
+
+        # Proposed budget (computed or entered)
+        proposed_budget = db.Column(db.Float, default=0.0)
 
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -201,6 +273,7 @@ def create_workflow_blueprint(db):
                 "gl_code": self.gl_code,
                 "description": self.description,
                 "category": self.category,
+                "sheet_name": self.sheet_name,
                 "row_num": self.row_num,
                 "prior_year": float(self.prior_year or 0),
                 "ytd_actual": float(self.ytd_actual or 0),
@@ -209,12 +282,196 @@ def create_workflow_blueprint(db):
                 "accrual_adj": float(self.accrual_adj or 0),
                 "unpaid_bills": float(self.unpaid_bills or 0),
                 "increase_pct": float(self.increase_pct or 0),
+                "pm_editable": self.pm_editable,
+                "reclass_to_gl": self.reclass_to_gl,
+                "reclass_amount": float(self.reclass_amount or 0),
+                "reclass_notes": self.reclass_notes,
+                "proposed_budget": float(self.proposed_budget or 0),
                 "notes": self.notes,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
 
+    # ─── New Pipeline Tables ────────────────────────────────────────────────
+
+    class DataSource(db.Model):
+        """Tracks collection status of each data source per building per budget year."""
+        __tablename__ = "data_sources"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        source_type = db.Column(db.String(50), nullable=False)  # "ysl", "audit", "sharepoint_payroll", etc.
+        status = db.Column(db.String(20), default="pending")     # pending, collecting, collected, failed, not_required
+        file_path = db.Column(db.Text, nullable=True)
+        collected_at = db.Column(db.DateTime, nullable=True)
+        error_message = db.Column(db.Text, default="")
+        metadata_json = db.Column(db.Text, default="{}")
+
+        budget = db.relationship("Budget", back_populates="data_sources")
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "budget_id": self.budget_id,
+                "source_type": self.source_type,
+                "status": self.status,
+                "file_path": self.file_path,
+                "collected_at": self.collected_at.isoformat() if self.collected_at else None,
+                "error_message": self.error_message,
+            }
+
+
+    class BudgetRevision(db.Model):
+        """Audit trail — every change to every budget line."""
+        __tablename__ = "budget_revisions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_lines.id"), nullable=True)
+        user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        action = db.Column(db.String(50), nullable=False)  # create, update, status_change, reclass, presentation_edit
+        field_name = db.Column(db.String(100), default="")
+        old_value = db.Column(db.Text, default="")
+        new_value = db.Column(db.Text, default="")
+        notes = db.Column(db.Text, default="")
+        source = db.Column(db.String(30), default="web")  # web, presentation, api, system
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget", back_populates="revisions")
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "budget_id": self.budget_id,
+                "budget_line_id": self.budget_line_id,
+                "user_id": self.user_id,
+                "action": self.action,
+                "field_name": self.field_name,
+                "old_value": self.old_value,
+                "new_value": self.new_value,
+                "notes": self.notes,
+                "source": self.source,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+            }
+
+
+    class PresentationSession(db.Model):
+        """Tracks live client presentation sessions."""
+        __tablename__ = "presentation_sessions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        token = db.Column(db.String(64), unique=True, nullable=False)
+        created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        is_active = db.Column(db.Boolean, default=True)
+        expires_at = db.Column(db.DateTime, nullable=True)
+        client_name = db.Column(db.String(255), default="")
+        notes = db.Column(db.Text, default="")
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget")
+        edits = db.relationship("PresentationEdit", back_populates="session", cascade="all, delete-orphan")
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "budget_id": self.budget_id,
+                "token": self.token,
+                "is_active": self.is_active,
+                "client_name": self.client_name,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+            }
+
+
+    class PresentationEdit(db.Model):
+        """Individual cell edits made during a client presentation."""
+        __tablename__ = "presentation_edits"
+
+        id = db.Column(db.Integer, primary_key=True)
+        session_id = db.Column(db.Integer, db.ForeignKey("presentation_sessions.id"), nullable=False)
+        budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_lines.id"), nullable=False)
+        field_name = db.Column(db.String(100), nullable=False)
+        old_value = db.Column(db.Text, default="")
+        new_value = db.Column(db.Text, default="")
+        edited_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        session = db.relationship("PresentationSession", back_populates="edits")
+        line = db.relationship("BudgetLine")
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "session_id": self.session_id,
+                "budget_line_id": self.budget_line_id,
+                "field_name": self.field_name,
+                "old_value": self.old_value,
+                "new_value": self.new_value,
+                "edited_at": self.edited_at.isoformat() if self.edited_at else None,
+            }
+
+
+    class ARHandoff(db.Model):
+        """AR department handoff form — tracks increase entry into Yardi."""
+        __tablename__ = "ar_handoffs"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False, unique=True)
+        entity_code = db.Column(db.String(50), nullable=False)
+        building_name = db.Column(db.String(255), nullable=False)
+        approved_increase_pct = db.Column(db.Float, nullable=False)
+        effective_date = db.Column(db.String(20), nullable=False)
+        approved_by_name = db.Column(db.String(255), default="")
+        approved_at = db.Column(db.DateTime, nullable=True)
+        total_current_budget = db.Column(db.Float, default=0.0)
+        total_proposed_budget = db.Column(db.Float, default=0.0)
+        supporting_notes = db.Column(db.Text, default="")
+        ar_status = db.Column(db.String(20), default="pending")  # pending, acknowledged, entered, verified
+        ar_acknowledged_by = db.Column(db.String(255), default="")
+        ar_acknowledged_at = db.Column(db.DateTime, nullable=True)
+        ar_entered_at = db.Column(db.DateTime, nullable=True)
+        yardi_confirmation = db.Column(db.Text, default="")
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False))
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "budget_id": self.budget_id,
+                "entity_code": self.entity_code,
+                "building_name": self.building_name,
+                "approved_increase_pct": self.approved_increase_pct,
+                "effective_date": self.effective_date,
+                "approved_by_name": self.approved_by_name,
+                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+                "total_current_budget": self.total_current_budget,
+                "total_proposed_budget": self.total_proposed_budget,
+                "ar_status": self.ar_status,
+                "ar_acknowledged_by": self.ar_acknowledged_by,
+                "yardi_confirmation": self.yardi_confirmation,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+            }
+
+
     # ─── Helper Functions ────────────────────────────────────────────────────
+
+    def record_revision(budget_id, budget_line_id=None, user_id=None, action="update",
+                        field_name="", old_value="", new_value="", notes="", source="web"):
+        """Record a change in the audit trail."""
+        rev = BudgetRevision(
+            budget_id=budget_id,
+            budget_line_id=budget_line_id,
+            user_id=user_id,
+            action=action,
+            field_name=field_name,
+            old_value=str(old_value),
+            new_value=str(new_value),
+            notes=notes,
+            source=source,
+        )
+        db.session.add(rev)
+        return rev
+
 
     def store_rm_lines(entity_code, building_name, gl_data):
         """
@@ -297,6 +554,91 @@ def create_workflow_blueprint(db):
             return False
 
 
+    def store_all_lines(entity_code, building_name, gl_data, sheet_mapping=None):
+        """
+        Store ALL GL codes from YSL data into the database (not just R&M).
+
+        gl_data: dict of {gl_code: {period_2, period_3, period_4, period_5, ...}}
+        sheet_mapping: dict of {gl_code: (sheet_name, row_number)} from gl_mapper.py
+
+        Stores every GL code. R&M lines get pm_editable=True by default.
+        """
+        try:
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            if not budget:
+                budget = Budget(
+                    entity_code=entity_code,
+                    building_name=building_name,
+                    year=2027,
+                    status="draft"
+                )
+                db.session.add(budget)
+                db.session.flush()
+
+            is_draft = budget.status == "draft"
+
+            for gl_code, gl_values in gl_data.items():
+                prior_year = float(gl_values.get("period_2", 0) or 0)
+                ytd_actual = float(gl_values.get("period_3", 0) or 0)
+                ytd_budget = float(gl_values.get("period_4", 0) or 0)
+                current_budget = float(gl_values.get("period_5", 0) or 0)
+
+                # Determine sheet and row from gl_mapper or RM_GL_MAP
+                sheet_name = None
+                row_num = 0
+                category = "other"
+
+                if gl_code in RM_GL_MAP:
+                    desc, row_num, category = RM_GL_MAP[gl_code]
+                    sheet_name = "Repairs & Supplies"
+                elif sheet_mapping and gl_code in sheet_mapping:
+                    sheet_name, row_num = sheet_mapping[gl_code]
+                    category = sheet_name.lower().replace(" & ", "_").replace(" ", "_")
+                    desc = gl_values.get("description", gl_code)
+                else:
+                    desc = gl_values.get("description", gl_code)
+
+                is_rm = gl_code in RM_GL_MAP
+
+                line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
+
+                if line:
+                    line.prior_year = prior_year
+                    line.ytd_actual = ytd_actual
+                    line.ytd_budget = ytd_budget
+                    line.current_budget = current_budget
+                    if sheet_name:
+                        line.sheet_name = sheet_name
+                    if is_draft:
+                        line.accrual_adj = 0.0
+                        line.unpaid_bills = 0.0
+                        line.increase_pct = 0.0
+                        line.notes = ""
+                else:
+                    line = BudgetLine(
+                        budget_id=budget.id,
+                        gl_code=gl_code,
+                        description=desc,
+                        category=category,
+                        sheet_name=sheet_name,
+                        row_num=row_num,
+                        prior_year=prior_year,
+                        ytd_actual=ytd_actual,
+                        ytd_budget=ytd_budget,
+                        current_budget=current_budget,
+                        pm_editable=is_rm,  # R&M lines editable by PM by default
+                    )
+                    db.session.add(line)
+
+            db.session.commit()
+            logger.info(f"Stored all GL lines for {entity_code}")
+            return True
+        except Exception as e:
+            logger.error(f"Error storing all lines: {e}")
+            db.session.rollback()
+            return False
+
+
     def get_pm_projections(entity_code):
         """
         Get PM-entered projections for a building.
@@ -345,6 +687,22 @@ def create_workflow_blueprint(db):
 
 
     # ─── Blueprint Creation ──────────────────────────────────────────────────
+
+    # Status change hooks — registered externally (e.g. by AR handoff module)
+    _status_hooks = {}
+
+    def register_status_hook(status, callback):
+        """Register a callback to run when budget transitions to a status."""
+        _status_hooks[status] = callback
+
+    def _run_status_hooks(budget, new_status):
+        """Run any registered hooks for this status transition."""
+        hook = _status_hooks.get(new_status)
+        if hook:
+            try:
+                hook(budget)
+            except Exception as e:
+                logger.warning(f"Status hook failed for {new_status}: {e}")
 
     bp = Blueprint("workflow", __name__)
 
@@ -396,7 +754,7 @@ def create_workflow_blueprint(db):
 
     @bp.route("/pm/<entity_code>", methods=["GET"])
     def pm_edit(entity_code):
-        """PM Edit Page - spreadsheet-style R&M grid."""
+        """PM Edit Page - spreadsheet-style grid for PM-editable lines."""
         budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
 
         if not budget:
@@ -405,7 +763,15 @@ def create_workflow_blueprint(db):
         # Check if PM can edit this budget
         can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned"]
 
-        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(BudgetLine.row_num).all()
+        # Show only PM-editable lines (R&M by default + any FA-flagged lines)
+        lines = (BudgetLine.query
+                 .filter_by(budget_id=budget.id)
+                 .filter(db.or_(
+                     BudgetLine.pm_editable == True,
+                     BudgetLine.category.in_(["supplies", "repairs", "maintenance"]),
+                 ))
+                 .order_by(BudgetLine.row_num)
+                 .all())
         import json as json_mod
 
         lines_data = [l.to_dict() for l in lines]
@@ -418,6 +784,36 @@ def create_workflow_blueprint(db):
             can_edit="true" if can_edit else "false",
             fa_notes=budget.fa_notes or "",
             lines_json=json_mod.dumps(lines_data),
+        )
+
+    @bp.route("/exec/<entity_code>", methods=["GET"])
+    def exec_review(entity_code):
+        """Executive review page - full budget view for CFO/Director."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        can_edit = budget.status in ["exec_review"]
+
+        # Show ALL lines grouped by sheet
+        lines = (BudgetLine.query
+                 .filter_by(budget_id=budget.id)
+                 .order_by(BudgetLine.sheet_name, BudgetLine.row_num)
+                 .all())
+        import json as json_mod
+
+        lines_data = [l.to_dict() for l in lines]
+
+        return render_template_string(
+            EXEC_REVIEW_TEMPLATE,
+            entity_code=entity_code,
+            building_name=budget.building_name,
+            status=budget.status,
+            can_edit="true" if can_edit else "false",
+            fa_notes=budget.fa_notes or "",
+            lines_json=json_mod.dumps(lines_data),
+            budget_json=json_mod.dumps(budget.to_dict()),
         )
 
 
@@ -565,7 +961,7 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/budgets/<entity_code>/status", methods=["POST"])
     def change_budget_status(entity_code):
-        """Change budget status with validation."""
+        """Change budget status with transition validation and audit trail."""
         data = request.get_json()
         new_status = data.get("status")
 
@@ -576,20 +972,51 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        # Validation rules
-        if new_status == "pm_pending" and budget.status != "draft":
-            return jsonify({"error": "Can only move to pm_pending from draft"}), 400
+        # Validate transition using the transition map
+        allowed = VALID_TRANSITIONS.get(budget.status, [])
+        if new_status not in allowed:
+            return jsonify({
+                "error": f"Cannot move from '{budget.status}' to '{new_status}'. "
+                         f"Allowed transitions: {allowed}"
+            }), 400
 
-        if new_status == "approved" and budget.status != "fa_review":
-            return jsonify({"error": "Can only approve from fa_review"}), 400
+        old_status = budget.status
 
-        if new_status == "returned" and budget.status != "fa_review":
-            return jsonify({"error": "Can only return from fa_review"}), 400
+        # Handle return_to_status for returned budgets
+        if new_status == "returned":
+            budget.return_to_status = data.get("return_to_status", old_status)
 
         if "notes" in data:
             budget.fa_notes = data["notes"]
 
+        # Track approval
+        if new_status == "approved":
+            budget.approved_at = datetime.utcnow()
+            if data.get("approved_by"):
+                budget.approved_by = data["approved_by"]
+            if data.get("increase_pct") is not None:
+                budget.increase_pct = float(data["increase_pct"])
+            if data.get("effective_date"):
+                budget.effective_date = data["effective_date"]
+
         budget.status = new_status
+
+        # Auto-create AR handoff when moving to ar_pending
+        if new_status == "ar_pending":
+            _run_status_hooks(budget, "ar_pending")
+
+        # Record in audit trail
+        record_revision(
+            budget_id=budget.id,
+            user_id=data.get("user_id"),
+            action="status_change",
+            field_name="status",
+            old_value=old_status,
+            new_value=new_status,
+            notes=data.get("notes", ""),
+            source="web",
+        )
+
         db.session.commit()
 
         return jsonify(budget.to_dict())
@@ -610,18 +1037,23 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/lines/<entity_code>", methods=["PUT"])
     def update_lines(entity_code):
-        """Update R&M lines for a building (PM data entry)."""
+        """Update budget lines for a building (PM/FA/exec data entry)."""
         data = request.get_json()
 
         budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        # Check if PM can edit
-        if budget.status not in ["pm_pending", "pm_in_progress", "returned"]:
+        # Determine which roles can edit at which statuses
+        editable_statuses = [
+            "pm_pending", "pm_in_progress", "returned",  # PM edit
+            "fa_first_review", "fa_second_review",        # FA edit
+            "exec_review",                                 # Exec edit
+        ]
+        if budget.status not in editable_statuses:
             return jsonify({"error": "Budget is not in editable status"}), 400
 
-        # Mark as in progress
+        # Mark as in progress if PM is starting
         if budget.status == "pm_pending":
             budget.status = "pm_in_progress"
 
@@ -639,10 +1071,48 @@ def create_workflow_blueprint(db):
             if not line:
                 continue
 
-            line.accrual_adj = float(line_data.get("accrual_adj", 0) or 0)
-            line.unpaid_bills = float(line_data.get("unpaid_bills", 0) or 0)
-            line.increase_pct = float(line_data.get("increase_pct", 0) or 0)
-            line.notes = line_data.get("notes", "")
+            # Track changes for audit trail
+            changes = {}
+            for field in ["accrual_adj", "unpaid_bills", "increase_pct", "notes",
+                          "reclass_to_gl", "reclass_amount", "reclass_notes", "proposed_budget"]:
+                if field in line_data:
+                    old_val = getattr(line, field)
+                    new_val = line_data[field]
+                    if field in ("accrual_adj", "unpaid_bills", "increase_pct", "reclass_amount", "proposed_budget"):
+                        new_val = float(new_val or 0)
+                    if str(old_val) != str(new_val):
+                        changes[field] = (old_val, new_val)
+
+            # Apply updates
+            line.accrual_adj = float(line_data.get("accrual_adj", line.accrual_adj) or 0)
+            line.unpaid_bills = float(line_data.get("unpaid_bills", line.unpaid_bills) or 0)
+            line.increase_pct = float(line_data.get("increase_pct", line.increase_pct) or 0)
+            line.notes = line_data.get("notes", line.notes)
+
+            # Reclass fields
+            if "reclass_to_gl" in line_data:
+                line.reclass_to_gl = line_data["reclass_to_gl"] or None
+            if "reclass_amount" in line_data:
+                line.reclass_amount = float(line_data["reclass_amount"] or 0)
+            if "reclass_notes" in line_data:
+                line.reclass_notes = line_data["reclass_notes"] or ""
+
+            # Proposed budget
+            if "proposed_budget" in line_data:
+                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+
+            # Record revisions
+            for field, (old_val, new_val) in changes.items():
+                record_revision(
+                    budget_id=budget.id,
+                    budget_line_id=line.id,
+                    user_id=data.get("user_id"),
+                    action="update",
+                    field_name=field,
+                    old_value=old_val,
+                    new_value=new_val,
+                    source="web",
+                )
 
         db.session.commit()
 
@@ -651,9 +1121,19 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
-            {"store_rm_lines": store_rm_lines, "get_pm_projections": get_pm_projections,
-             "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
+    return (bp, {
+                "User": User, "BuildingAssignment": BuildingAssignment,
+                "Budget": Budget, "BudgetLine": BudgetLine,
+                "DataSource": DataSource, "BudgetRevision": BudgetRevision,
+                "PresentationSession": PresentationSession, "PresentationEdit": PresentationEdit,
+                "ARHandoff": ARHandoff,
+            }, {
+                "store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
+                "get_pm_projections": get_pm_projections,
+                "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget,
+                "record_revision": record_revision,
+                "register_status_hook": register_status_hook,
+            })
 
 
 # ─── HTML Template Strings ───────────────────────────────────────────────────
@@ -1155,6 +1635,30 @@ DASHBOARD_TEMPLATE = r"""
     background: var(--red-light);
     color: var(--red);
   }
+  .pill-fa_first_review, .pill-fa_second_review {
+    background: var(--orange-light);
+    color: var(--orange);
+  }
+  .pill-exec_review {
+    background: #f0fdf4;
+    color: #166534;
+  }
+  .pill-presentation {
+    background: #eff6ff;
+    color: #1e40af;
+  }
+  .pill-data_collection, .pill-data_ready {
+    background: var(--yellow-light);
+    color: #a16207;
+  }
+  .pill-ar_pending {
+    background: var(--yellow-light);
+    color: #a16207;
+  }
+  .pill-ar_complete, .pill-not_started {
+    background: var(--gray-100);
+    color: var(--gray-700);
+  }
 </style>
 </head>
 <body>
@@ -1185,11 +1689,19 @@ DASHBOARD_TEMPLATE = r"""
 
 <script>
 const statusLabels = {
+  'not_started': 'Not Started',
+  'data_collection': 'Collecting',
+  'data_ready': 'Data Ready',
   'draft': 'Draft',
+  'fa_first_review': 'FA 1st Review',
   'pm_pending': 'Pending PM',
-  'pm_in_progress': 'PM In Progress',
-  'fa_review': 'FA Review',
+  'pm_in_progress': 'PM Working',
+  'fa_second_review': 'FA 2nd Review',
+  'exec_review': 'Exec Review',
+  'presentation': 'Presentation',
   'approved': 'Approved',
+  'ar_pending': 'AR Pending',
+  'ar_complete': 'Complete',
   'returned': 'Returned'
 };
 
@@ -1210,25 +1722,21 @@ function renderStatusSummary(budgets) {
   const summary = document.getElementById('status-summary');
   summary.innerHTML = '';
 
-  const counts = {
-    'draft': 0,
-    'pm_pending': 0,
-    'pm_in_progress': 0,
-    'fa_review': 0,
-    'approved': 0,
-    'returned': 0
-  };
+  const counts = {};
+  budgets.forEach(b => { counts[b.status] = (counts[b.status] || 0) + 1; });
 
-  budgets.forEach(b => {
-    if (counts.hasOwnProperty(b.status)) counts[b.status]++;
-  });
+  // Show total first, then each status that has budgets
+  const totalCard = document.createElement('div');
+  totalCard.className = 'status-card';
+  totalCard.innerHTML = `<div class="count">${budgets.length}</div><div class="label">Total</div>`;
+  summary.appendChild(totalCard);
 
   Object.entries(counts).forEach(([status, count]) => {
     const card = document.createElement('div');
     card.className = 'status-card';
     card.innerHTML = `
       <div class="count">${count}</div>
-      <div class="label">${statusLabels[status]}</div>
+      <div class="label">${statusLabels[status] || status}</div>
     `;
     summary.appendChild(card);
   });
@@ -1246,12 +1754,21 @@ function renderBudgets(budgets) {
 
     let actionHtml = '';
     if (b.status === 'draft') {
-      actionHtml = `<button onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
-    } else if (b.status === 'fa_review') {
+      actionHtml = `<button onclick="changeStatus('${b.entity_code}', 'fa_first_review')">Start Review</button>`;
+    } else if (b.status === 'fa_first_review') {
       actionHtml = `
-        <button onclick="approveStatus('${b.entity_code}')">Approve</button>
-        <button onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px; background: #f59e0b;">Return</button>
+        <button onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>
+        <button onclick="changeStatus('${b.entity_code}', 'exec_review')" style="margin-left:4px;">Skip PM</button>
       `;
+    } else if (b.status === 'fa_second_review') {
+      actionHtml = `
+        <button onclick="changeStatus('${b.entity_code}', 'exec_review')">Send to Exec</button>
+        <button onclick="returnBudget('${b.entity_code}')" style="margin-left:4px; background:#f59e0b;">Return</button>
+      `;
+    } else if (b.status === 'exec_review') {
+      actionHtml = `<a href="/exec/${b.entity_code}" style="color:var(--blue);">Open Exec Review</a>`;
+    } else if (b.status === 'returned') {
+      actionHtml = `<button onclick="changeStatus('${b.entity_code}', '${b.return_to_status || 'fa_first_review'}')">Resume</button>`;
     }
 
     tr.innerHTML = `
@@ -1281,19 +1798,14 @@ async function changeStatus(entity, newStatus) {
   }
 }
 
-async function approveStatus(entity) {
-  if (!confirm('Approve this budget?')) return;
-  await changeStatus(entity, 'approved');
-}
-
-async function returnTopm(entity) {
-  const notes = prompt('Notes for returning to PM:');
+async function returnBudget(entity) {
+  const notes = prompt('Notes for returning:');
   if (notes === null) return;
   try {
     await fetch(`/api/budgets/${entity}/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'returned', fa_notes: notes })
+      body: JSON.stringify({ status: 'returned', notes: notes })
     });
     await loadBudgets();
   } catch (err) {
@@ -1727,6 +2239,8 @@ PM_EDIT_TEMPLATE = """
             <th class="number">Accrual Adj</th>
             <th class="number">Unpaid Bills</th>
             <th class="number">Proposed Budget</th>
+            <th>Reclass To GL</th>
+            <th class="number">Reclass Amt</th>
             <th>Notes</th>
           </tr>
         </thead>
@@ -1795,7 +2309,7 @@ function renderTable() {
         // Category header
         const headerRow = document.createElement('tr');
         headerRow.className = 'category-header';
-        headerRow.innerHTML = '<td colspan="10">' + catLabels[cat] + '</td>';
+        headerRow.innerHTML = '<td colspan="12">' + catLabels[cat] + '</td>';
         tbody.appendChild(headerRow);
 
         let catPrior = 0, catYtd = 0, catForecast = 0, catProposed = 0;
@@ -1832,6 +2346,17 @@ function renderTable() {
                 </td>
                 <td class="number" id="pb_${line.gl_code}">${fmt(proposed)}</td>
                 <td>
+                    <input type="text" value="${line.reclass_to_gl || ''}" style="width:90px"
+                           data-gl="${line.gl_code}" data-field="reclass_to_gl"
+                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}
+                           placeholder="GL code">
+                </td>
+                <td class="number">
+                    <input type="number" step="1" value="${Math.round(line.reclass_amount || 0)}"
+                           data-gl="${line.gl_code}" data-field="reclass_amount"
+                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
+                </td>
+                <td>
                     <input type="text" value="${line.notes || ''}"
                            data-gl="${line.gl_code}" data-field="notes"
                            onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
@@ -1850,7 +2375,7 @@ function renderTable() {
             <td class="number" id="subfc_${cat}">${fmt(catForecast)}</td>
             <td></td><td></td><td></td>
             <td class="number" id="subpb_${cat}">${fmt(catProposed)}</td>
-            <td></td>
+            <td></td><td></td><td></td>
         `;
         tbody.appendChild(subRow);
 
@@ -1870,7 +2395,7 @@ function renderTable() {
         <td class="number">${fmt(grandForecast)}</td>
         <td></td><td></td><td></td>
         <td class="number">${fmt(grandProposed)}</td>
-        <td></td>
+        <td></td><td></td><td></td>
     `;
     tbody.appendChild(grandRow);
 }
@@ -1887,6 +2412,10 @@ function onInput(el) {
         line.accrual_adj = parseFloat(el.value) || 0;
     } else if (field === 'unpaid_bills') {
         line.unpaid_bills = parseFloat(el.value) || 0;
+    } else if (field === 'reclass_to_gl') {
+        line.reclass_to_gl = el.value;
+    } else if (field === 'reclass_amount') {
+        line.reclass_amount = parseFloat(el.value) || 0;
     } else if (field === 'notes') {
         line.notes = el.value;
     }
@@ -1915,7 +2444,10 @@ async function saveAll() {
             increase_pct: l.increase_pct || 0,
             accrual_adj: l.accrual_adj || 0,
             unpaid_bills: l.unpaid_bills || 0,
-            notes: l.notes || ''
+            notes: l.notes || '',
+            reclass_to_gl: l.reclass_to_gl || '',
+            reclass_amount: l.reclass_amount || 0,
+            reclass_notes: l.reclass_notes || ''
         }));
         const resp = await fetch('/api/lines/' + ENTITY, {
             method: 'PUT',
@@ -1942,7 +2474,7 @@ async function submitForReview() {
     const resp = await fetch('/api/budgets/' + ENTITY + '/status', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({status: 'fa_review'})
+        body: JSON.stringify({status: 'fa_second_review'})
     });
     if (resp.ok) {
         alert('Submitted for FA review!');
@@ -1959,6 +2491,359 @@ if (!CAN_EDIT) {
     if (btn) btn.disabled = true;
 }
 
+renderTable();
+</script>
+</body>
+</html>
+"""
+
+
+EXEC_REVIEW_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Executive Review — {{ building_name }}</title>
+<style>
+  :root {
+    --blue: #1a56db; --blue-light: #e1effe;
+    --green: #057a55; --green-light: #def7ec;
+    --orange: #d97706; --orange-light: #fef3c7;
+    --red: #e02424; --purple: #7c3aed; --purple-light: #ede9fe;
+    --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
+    --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+  header { background: linear-gradient(135deg, #065f46 0%, #047857 100%); color: white; padding: 24px 20px; }
+  header h1 { font-size: 24px; margin-bottom: 4px; }
+  header p { opacity: 0.9; font-size: 14px; }
+  .nav { padding: 12px 20px; background: white; border-bottom: 1px solid var(--gray-200); }
+  .nav a { color: var(--blue); text-decoration: none; font-size: 14px; margin-right: 16px; }
+  .container { max-width: 1600px; margin: 0 auto; padding: 24px 20px; }
+
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .summary-card { background: white; border: 1px solid var(--gray-200); border-radius: 8px; padding: 16px; text-align: center; }
+  .summary-card .value { font-size: 22px; font-weight: 700; color: var(--blue); }
+  .summary-card .label { font-size: 11px; color: var(--gray-500); text-transform: uppercase; }
+
+  .controls { display: flex; justify-content: space-between; align-items: center; background: white; border-radius: 8px; padding: 14px 20px; margin-bottom: 20px; border: 1px solid var(--gray-200); flex-wrap: wrap; gap: 10px; }
+  .status-pill { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; background: var(--green-light); color: var(--green); }
+
+  .grid-wrapper { background: white; border-radius: 8px; border: 1px solid var(--gray-200); overflow: hidden; }
+  .grid-container { overflow-x: auto; max-height: 70vh; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead { background: var(--gray-100); position: sticky; top: 0; z-index: 10; }
+  th { padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--gray-300); white-space: nowrap; }
+  th.number { text-align: right; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--gray-200); }
+  td.number { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:hover { background: var(--blue-light); }
+
+  .sheet-header td { background: #1e3a5f; color: white; font-weight: 700; font-size: 14px; padding: 10px 12px; }
+  .subtotal-row td { background: var(--gray-100); font-weight: 700; border-top: 2px solid var(--gray-300); }
+  .grand-total td { background: #1e3a5f; color: white; font-weight: 700; font-size: 14px; }
+
+  input[type="number"] { width: 100px; padding: 4px 6px; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 13px; text-align: right; background: #fffff0; }
+  input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-light); }
+  input:disabled { background: var(--gray-100); color: var(--gray-500); }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px; }
+  .btn-green { background: var(--green); color: white; }
+  .btn-green:hover { background: #046c4e; }
+  .btn-blue { background: var(--blue); color: white; }
+  .btn-blue:hover { background: #1e429f; }
+  .btn-orange { background: var(--orange); color: white; }
+  .btn-orange:hover { background: #b45309; }
+  .btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+
+  .save-indicator { font-size: 13px; color: var(--gray-500); padding: 4px 8px; }
+  .save-indicator.saving { color: var(--orange); }
+  .save-indicator.saved { color: var(--green); }
+
+  .approval-form { background: white; border: 1px solid var(--gray-200); border-radius: 8px; padding: 20px; margin-top: 20px; display: none; }
+  .approval-form.show { display: block; }
+  .approval-form label { font-weight: 600; display: block; margin-bottom: 4px; font-size: 14px; }
+  .approval-form input, .approval-form textarea { width: 100%; padding: 8px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 14px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Executive Review</h1>
+  <p>{{ building_name }} ({{ entity_code }}) — 2027 Budget</p>
+</header>
+<div class="nav">
+  <a href="/">Home</a>
+  <a href="/dashboard">FA Dashboard</a>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/history/{{ entity_code }}">History</a>
+</div>
+
+<div class="container">
+  <div class="summary-cards" id="summaryCards"></div>
+
+  <div class="controls">
+    <div>
+      Status: <span class="status-pill">{{ status | replace('_', ' ') }}</span>
+      <span id="saveIndicator" class="save-indicator"></span>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button class="btn btn-green" onclick="showApproval()">Approve</button>
+      <button class="btn btn-blue" onclick="sendToPresentation()">Send to Presentation</button>
+      <button class="btn btn-orange" onclick="returnBudget()">Return</button>
+    </div>
+  </div>
+
+  <div class="grid-wrapper">
+    <div class="grid-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Sheet</th>
+            <th>GL Code</th>
+            <th>Description</th>
+            <th class="number">Prior Year</th>
+            <th class="number">YTD Actual</th>
+            <th class="number">Current Budget</th>
+            <th class="number">Proposed Budget</th>
+          </tr>
+        </thead>
+        <tbody id="linesBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="approval-form" id="approvalForm">
+    <h3 style="margin-bottom:16px; color:var(--green);">Approve Budget</h3>
+    <label>Increase Percentage (%)</label>
+    <input type="number" step="0.1" id="increasePct" placeholder="e.g. 3.5">
+    <label>Effective Date</label>
+    <input type="date" id="effectiveDate">
+    <label>Notes</label>
+    <textarea id="approvalNotes" rows="3" placeholder="Optional notes..."></textarea>
+    <button class="btn btn-green" onclick="confirmApproval()">Confirm Approval</button>
+  </div>
+</div>
+
+<script>
+const ENTITY = "{{ entity_code }}";
+const CAN_EDIT = {{ can_edit }};
+const LINES = {{ lines_json | safe }};
+const BUDGET = {{ budget_json | safe }};
+
+const indicator = document.getElementById('saveIndicator');
+let saveTimer = null;
+
+function fmt(n) {
+    if (n == null || isNaN(n)) return '$0';
+    return '$' + Math.round(n).toLocaleString();
+}
+
+function renderSummary() {
+    const cards = document.getElementById('summaryCards');
+    const sheets = {};
+    let totalPrior = 0, totalCurrent = 0, totalProposed = 0;
+
+    LINES.forEach(l => {
+        const sheet = l.sheet_name || 'Other';
+        if (!sheets[sheet]) sheets[sheet] = {prior: 0, current: 0, proposed: 0};
+        sheets[sheet].prior += (l.prior_year || 0);
+        sheets[sheet].current += (l.current_budget || 0);
+        sheets[sheet].proposed += (l.proposed_budget || l.current_budget || 0);
+        totalPrior += (l.prior_year || 0);
+        totalCurrent += (l.current_budget || 0);
+        totalProposed += (l.proposed_budget || l.current_budget || 0);
+    });
+
+    const changePct = totalCurrent > 0 ? ((totalProposed - totalCurrent) / totalCurrent * 100).toFixed(1) : '0.0';
+
+    cards.innerHTML = `
+        <div class="summary-card"><div class="value">${fmt(totalPrior)}</div><div class="label">Prior Year</div></div>
+        <div class="summary-card"><div class="value">${fmt(totalCurrent)}</div><div class="label">Current Budget</div></div>
+        <div class="summary-card"><div class="value">${fmt(totalProposed)}</div><div class="label">Proposed Budget</div></div>
+        <div class="summary-card"><div class="value">${changePct}%</div><div class="label">Change</div></div>
+        <div class="summary-card"><div class="value">${LINES.length}</div><div class="label">Line Items</div></div>
+    `;
+}
+
+function renderTable() {
+    const tbody = document.getElementById('linesBody');
+    tbody.innerHTML = '';
+
+    // Group by sheet
+    const bySheet = {};
+    LINES.forEach(l => {
+        const sheet = l.sheet_name || 'Other';
+        if (!bySheet[sheet]) bySheet[sheet] = [];
+        bySheet[sheet].push(l);
+    });
+
+    let grandPrior = 0, grandCurrent = 0, grandProposed = 0;
+
+    for (const [sheet, lines] of Object.entries(bySheet)) {
+        // Sheet header
+        const hdr = document.createElement('tr');
+        hdr.className = 'sheet-header';
+        hdr.innerHTML = `<td colspan="7">${sheet} (${lines.length} lines)</td>`;
+        tbody.appendChild(hdr);
+
+        let sheetPrior = 0, sheetCurrent = 0, sheetProposed = 0;
+
+        lines.forEach(line => {
+            const proposed = line.proposed_budget || line.current_budget || 0;
+            sheetPrior += (line.prior_year || 0);
+            sheetCurrent += (line.current_budget || 0);
+            sheetProposed += proposed;
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="font-size:11px;color:var(--gray-500)">${sheet}</td>
+                <td>${line.gl_code}</td>
+                <td>${line.description}</td>
+                <td class="number">${fmt(line.prior_year)}</td>
+                <td class="number">${fmt(line.ytd_actual)}</td>
+                <td class="number">${fmt(line.current_budget)}</td>
+                <td class="number">
+                    ${CAN_EDIT
+                        ? `<input type="number" step="1" value="${Math.round(proposed)}"
+                             data-id="${line.id}" data-gl="${line.gl_code}"
+                             onchange="onEdit(this)">`
+                        : fmt(proposed)}
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Sheet subtotal
+        const sub = document.createElement('tr');
+        sub.className = 'subtotal-row';
+        sub.innerHTML = `
+            <td></td><td colspan="2">Total ${sheet}</td>
+            <td class="number">${fmt(sheetPrior)}</td>
+            <td class="number"></td>
+            <td class="number">${fmt(sheetCurrent)}</td>
+            <td class="number">${fmt(sheetProposed)}</td>
+        `;
+        tbody.appendChild(sub);
+
+        grandPrior += sheetPrior;
+        grandCurrent += sheetCurrent;
+        grandProposed += sheetProposed;
+    }
+
+    // Grand total
+    const grand = document.createElement('tr');
+    grand.className = 'grand-total';
+    grand.innerHTML = `
+        <td></td><td colspan="2">GRAND TOTAL</td>
+        <td class="number">${fmt(grandPrior)}</td>
+        <td class="number"></td>
+        <td class="number">${fmt(grandCurrent)}</td>
+        <td class="number">${fmt(grandProposed)}</td>
+    `;
+    tbody.appendChild(grand);
+}
+
+function onEdit(el) {
+    const gl = el.dataset.gl;
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+    line.proposed_budget = parseFloat(el.value) || 0;
+
+    if (saveTimer) clearTimeout(saveTimer);
+    indicator.textContent = 'Unsaved...';
+    indicator.className = 'save-indicator saving';
+    saveTimer = setTimeout(saveAll, 800);
+    renderSummary();
+}
+
+async function saveAll() {
+    indicator.textContent = 'Saving...';
+    const payload = LINES.filter(l => l.proposed_budget > 0).map(l => ({
+        gl_code: l.gl_code,
+        proposed_budget: l.proposed_budget || 0,
+    }));
+    try {
+        const resp = await fetch('/api/lines/' + ENTITY, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({lines: payload})
+        });
+        if (resp.ok) {
+            indicator.textContent = 'Saved';
+            indicator.className = 'save-indicator saved';
+            setTimeout(() => indicator.textContent = '', 2000);
+        }
+    } catch(e) { indicator.textContent = 'Error!'; }
+}
+
+function showApproval() {
+    document.getElementById('approvalForm').classList.toggle('show');
+}
+
+async function confirmApproval() {
+    await saveAll();
+    const pct = parseFloat(document.getElementById('increasePct').value) || 0;
+    const date = document.getElementById('effectiveDate').value;
+    const notes = document.getElementById('approvalNotes').value;
+
+    if (!date) { alert('Please enter an effective date'); return; }
+
+    const resp = await fetch('/api/budgets/' + ENTITY + '/status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            status: 'approved',
+            increase_pct: pct,
+            effective_date: date,
+            notes: notes
+        })
+    });
+    if (resp.ok) {
+        alert('Budget approved!');
+        window.location.href = '/dashboard';
+    } else {
+        const err = await resp.json();
+        alert('Error: ' + (err.error || 'Unknown'));
+    }
+}
+
+async function sendToPresentation() {
+    await saveAll();
+    const resp = await fetch('/api/budgets/' + ENTITY + '/status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: 'presentation'})
+    });
+    if (resp.ok) {
+        alert('Budget sent to presentation mode!');
+        window.location.href = '/dashboard';
+    } else {
+        const err = await resp.json();
+        alert('Error: ' + (err.error || 'Unknown'));
+    }
+}
+
+async function returnBudget() {
+    const notes = prompt('Notes for returning:');
+    if (notes === null) return;
+    const resp = await fetch('/api/budgets/' + ENTITY + '/status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: 'returned', notes: notes})
+    });
+    if (resp.ok) {
+        alert('Budget returned.');
+        window.location.href = '/dashboard';
+    }
+}
+
+if (!CAN_EDIT) {
+    document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+}
+
+renderSummary();
 renderTable();
 </script>
 </body>

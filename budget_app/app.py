@@ -15,6 +15,7 @@ from pathlib import Path
 from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 
 # Detect cloud deployment (Railway sets PORT env var)
 IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
@@ -42,8 +43,9 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "century-budget-dev-key")
 
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 
-# Register workflow blueprint (PM review, admin, dashboard)
+# Register workflow blueprint (PM review, admin, dashboard, all core models)
 try:
     from workflow import create_workflow_blueprint
 except ImportError:
@@ -58,6 +60,25 @@ except ImportError:
     from budget_app.audited_financials import create_audited_financials_blueprint
 af_bp, af_models, af_helpers = create_audited_financials_blueprint(db)
 app.register_blueprint(af_bp)
+
+# Register audit trail blueprint
+try:
+    from audit_trail import create_audit_trail_blueprint
+except ImportError:
+    from budget_app.audit_trail import create_audit_trail_blueprint
+audit_trail_bp = create_audit_trail_blueprint(db, workflow_models)
+app.register_blueprint(audit_trail_bp)
+
+# Register AR handoff blueprint
+try:
+    from ar_handoff import create_ar_handoff_blueprint
+except ImportError:
+    from budget_app.ar_handoff import create_ar_handoff_blueprint
+ar_bp, ar_helpers = create_ar_handoff_blueprint(db, workflow_models, workflow_helpers)
+app.register_blueprint(ar_bp)
+
+# Wire AR auto-creation hook: when budget moves to ar_pending, auto-create handoff
+workflow_helpers["register_status_hook"]("ar_pending", ar_helpers["create_handoff_for_budget"])
 
 # Create all tables on startup
 with app.app_context():
@@ -79,7 +100,7 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
 # The Console JS script template — entities/email/period get injected
-CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text()
+CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -248,6 +269,33 @@ def merge_assumptions(entity_code):
     merged["insurance"] = building_data.get("insurance", [])
 
     return merged
+
+
+# ─── Register Presentation Blueprint ─────────────────────────────────────────
+try:
+    from presentation import create_presentation_blueprint
+except ImportError:
+    from budget_app.presentation import create_presentation_blueprint
+presentation_bp = create_presentation_blueprint(db, workflow_models, workflow_helpers)
+app.register_blueprint(presentation_bp)
+
+
+# ─── Register Pipeline Blueprint (after helper functions are defined) ─────────
+try:
+    from pipeline import create_pipeline_blueprint
+except ImportError:
+    from budget_app.pipeline import create_pipeline_blueprint
+
+pipeline_bp = create_pipeline_blueprint(db, workflow_models, workflow_helpers, {
+    "template_path": TEMPLATE_PATH,
+    "buildings_csv": BUILDINGS_CSV,
+    "budget_system": BUDGET_SYSTEM,
+    "load_buildings": load_buildings,
+    "merge_assumptions": merge_assumptions,
+    "af_helpers": af_helpers,
+    "app": app,
+})
+app.register_blueprint(pipeline_bp)
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -673,52 +721,70 @@ HOME_TEMPLATE = r"""
   </header>
   <div class="container">
     <div class="nav-grid">
-      <a href="/generate" class="nav-card">
-        <div class="icon">📊</div>
-        <h2>Budget Generator</h2>
-        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
-        <span class="arrow">→</span>
-      </a>
+      <!-- Step 1: Setup & Data Gathering -->
       <a href="/manage" class="nav-card">
         <div class="icon">🏢</div>
-        <h2>Manage Buildings</h2>
+        <h2>1. Manage Buildings</h2>
         <p>Add, edit, or remove buildings from the portfolio.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/assumptions" class="nav-card">
         <div class="icon">⚙️</div>
-        <h2>Portfolio Defaults</h2>
-        <p>Manage portfolio-wide default values for all buildings.</p>
+        <h2>2. Portfolio Defaults</h2>
+        <p>Set portfolio-wide default assumptions for all buildings.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/assumptions/buildings" class="nav-card">
         <div class="icon">📋</div>
-        <h2>Building Assumptions</h2>
-        <p>View and edit assumptions for individual buildings.</p>
+        <h2>3. Building Assumptions</h2>
+        <p>Override defaults with building-specific assumptions.</p>
         <span class="arrow">→</span>
       </a>
+      <a href="/audited-financials" class="nav-card">
+        <div class="icon">📑</div>
+        <h2>4. Audited Financials</h2>
+        <p>Upload and map audited financial data into budget categories.</p>
+        <span class="arrow">→</span>
+      </a>
+      <!-- Step 2: Pipeline & Generation -->
+      <a href="/pipeline" class="nav-card">
+        <div class="icon">🚀</div>
+        <h2>5. Budget Pipeline</h2>
+        <p>Initiate budgets, collect YSL data, and generate first drafts.</p>
+        <span class="arrow">→</span>
+      </a>
+      <!-- Step 3: Review Cycle -->
       <a href="/dashboard" class="nav-card">
         <div class="icon">📈</div>
-        <h2>FA Dashboard</h2>
-        <p>Review budget status, manage workflow, approve PM submissions.</p>
+        <h2>6. FA Dashboard</h2>
+        <p>Review budgets, send to PM, advance through the approval workflow.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/pm" class="nav-card">
         <div class="icon">🔧</div>
-        <h2>PM Budget Review</h2>
-        <p>Property managers: review and enter R&M budget projections.</p>
+        <h2>7. PM Budget Review</h2>
+        <p>Property managers review and enter R&M projections and reclasses.</p>
         <span class="arrow">→</span>
       </a>
+      <!-- Step 4: Approval & Presentation -->
+      <a href="/presentation/manage" class="nav-card">
+        <div class="icon">🎯</div>
+        <h2>8. Client Presentations</h2>
+        <p>Create shareable budget presentations with live editing for clients.</p>
+        <span class="arrow">→</span>
+      </a>
+      <!-- Step 5: AR Handoff -->
+      <a href="/ar" class="nav-card">
+        <div class="icon">📝</div>
+        <h2>9. AR Handoffs</h2>
+        <p>Approved increases sent to AR for entry into Yardi.</p>
+        <span class="arrow">→</span>
+      </a>
+      <!-- Admin -->
       <a href="/admin" class="nav-card">
         <div class="icon">👤</div>
-        <h2>User Management</h2>
+        <h2>Admin</h2>
         <p>Manage users and assign buildings to FAs and PMs.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/audited-financials" class="nav-card">
-        <div class="icon">📋</div>
-        <h2>Audited Financials</h2>
-        <p>Extract and map audited financial data into budget templates.</p>
         <span class="arrow">→</span>
       </a>
     </div>

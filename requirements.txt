@@ -1,5 +1,6 @@
 flask==3.1.2
 flask-sqlalchemy==3.1.1
+flask-migrate==4.0.7
 openpyxl==3.1.5
 psycopg2-binary==2.9.10
 gunicorn==23.0.0

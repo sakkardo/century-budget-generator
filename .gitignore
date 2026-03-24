@@ -6,3 +6,6 @@ budget_system/ysl_downloads/
 *.xlsx_
 ~$*
 .DS_Store
+instance/
+budget_app/data/
+.claude/
