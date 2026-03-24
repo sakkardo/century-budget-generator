@@ -36,7 +36,7 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///" + str(Path(__file__).parent / "data" / "budget.db")
-
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "connect_args": {"connect_timeout": 5} if "postgresql" in DATABASE_URL else {}}
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "century-budget-dev-key")
@@ -251,7 +251,9 @@ def merge_assumptions(entity_code):
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
-
+@app.route("/health")
+def health():
+    return "OK", 200
 @app.route("/")
 def index():
     """Unified home page."""
