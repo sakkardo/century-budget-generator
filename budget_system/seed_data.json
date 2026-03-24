@@ -1,0 +1,750 @@
+{
+  "148": {
+    "building_id": "148",
+    "building_name": "130 E. 18 Owners Corp.",
+    "file": "/sessions/youthful-fervent-einstein/mnt/Budgets/budget_system/budgets/148 - 130 E. 18 Owners Corp./148_130 E. 18 Owners Corp._2027_Budget.xlsx",
+    "setup": {
+      "building_name": "148",
+      "budget_year": "130 East 18 Owners Corp",
+      "scaling_factor": 2,
+      "multiplier": 10
+    },
+    "payroll": {
+      "tax_rates": {
+        "FICA": 0,
+        "SUI": 0,
+        "FUI": 0,
+        "MTA": 0,
+        "NYS_Disability": 0,
+        "PFL": 0
+      },
+      "positions": [
+        {
+          "name": "Resident Manager",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Handyman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter / Doorman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter (80%)",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 5",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 6",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 7",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 8",
+          "employee_count": 0,
+          "hourly_rate": 0
+        }
+      ],
+      "union_benefit_rates": {
+        "Welfare": 0,
+        "Pension": 0,
+        "Supp_Retirement": 0,
+        "Legal": 0,
+        "Training": 0,
+        "Profit_Sharing": 0
+      },
+      "workers_comp_pct": 0,
+      "wage_increase_pct": 0,
+      "increase_effective_week": "Wk 16",
+      "pre_increase_weeks": 0,
+      "post_increase_weeks": 0
+    },
+    "insurance_schedule": {
+      "expected_renewal_increase_pct": 0,
+      "renewal_effective_date": "Mar 2027",
+      "pre_renewal_months": 0,
+      "post_renewal_months": 0,
+      "policies": [
+        {
+          "name": "6105-0000",
+          "current_annual_premium": 117954.49,
+          "current_year_budget": 130648,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6110-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6115-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6125-0000",
+          "current_annual_premium": 15428,
+          "current_year_budget": 17742,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6126-0000",
+          "current_annual_premium": 1471,
+          "current_year_budget": 1692,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6135-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6195-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6120-0000",
+          "current_annual_premium": 74541.12,
+          "current_year_budget": 84918,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6180-0000",
+          "current_annual_premium": null,
+          "current_year_budget": null,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        }
+      ]
+    },
+    "income": {
+      "total_shares": 0,
+      "prior_year_per_share_per_month": 0,
+      "maintenance_increase_pct": 0,
+      "storage_units": [
+        {
+          "size": "A (28-32 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "B (36 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "C (48 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "D",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        }
+      ],
+      "bike_racks": {
+        "available": 0,
+        "occupied": "# Occupied",
+        "monthly_rate": 0
+      },
+      "laundry": {
+        "contract_description": "Monthly Amount",
+        "monthly_amount": 0
+      }
+    }
+  },
+  "204": {
+    "building_id": "204",
+    "building_name": "444 East 86th Street Owners Corp.",
+    "file": "/sessions/youthful-fervent-einstein/mnt/Budgets/budget_system/budgets/204 - 444 East 86th Street Owners Corp./204_444 East 86th Street Owners Corp._2027_Budget.xlsx",
+    "setup": {
+      "building_name": "204",
+      "budget_year": "444 East 86th Owners Corp",
+      "scaling_factor": 2,
+      "multiplier": 10
+    },
+    "payroll": {
+      "tax_rates": {
+        "FICA": 0,
+        "SUI": 0,
+        "FUI": 0,
+        "MTA": 0,
+        "NYS_Disability": 0,
+        "PFL": 0
+      },
+      "positions": [
+        {
+          "name": "Resident Manager",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Handyman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter / Doorman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter (80%)",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 5",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 6",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 7",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 8",
+          "employee_count": 0,
+          "hourly_rate": 0
+        }
+      ],
+      "union_benefit_rates": {
+        "Welfare": 0,
+        "Pension": 0,
+        "Supp_Retirement": 0,
+        "Legal": 0,
+        "Training": 0,
+        "Profit_Sharing": 0
+      },
+      "workers_comp_pct": 0,
+      "wage_increase_pct": 0,
+      "increase_effective_week": "Wk 16",
+      "pre_increase_weeks": 0,
+      "post_increase_weeks": 0
+    },
+    "insurance_schedule": {
+      "expected_renewal_increase_pct": 0,
+      "renewal_effective_date": "Mar 2027",
+      "pre_renewal_months": 0,
+      "post_renewal_months": 0,
+      "policies": [
+        {
+          "name": "6105-0000",
+          "current_annual_premium": 466099.93,
+          "current_year_budget": 536015,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6110-0000",
+          "current_annual_premium": 14362.32,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6115-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6125-0000",
+          "current_annual_premium": 12812,
+          "current_year_budget": 14734,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6126-0000",
+          "current_annual_premium": 1471,
+          "current_year_budget": 1691,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6135-0000",
+          "current_annual_premium": 39.32,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6195-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6120-0000",
+          "current_annual_premium": 63148.82,
+          "current_year_budget": 89138,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6180-0000",
+          "current_annual_premium": null,
+          "current_year_budget": null,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        }
+      ]
+    },
+    "income": {
+      "total_shares": 0,
+      "prior_year_per_share_per_month": 0,
+      "maintenance_increase_pct": 0,
+      "storage_units": [
+        {
+          "size": "A (28-32 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "B (36 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "C (48 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "D",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        }
+      ],
+      "bike_racks": {
+        "available": 0,
+        "occupied": "# Occupied",
+        "monthly_rate": 0
+      },
+      "laundry": {
+        "contract_description": "Monthly Amount",
+        "monthly_amount": 0
+      }
+    }
+  },
+  "206": {
+    "building_id": "206",
+    "building_name": "77 Bleecker Street Corp.",
+    "file": "/sessions/youthful-fervent-einstein/mnt/Budgets/budget_system/budgets/206 - 77 Bleecker Street Corp./206_77 Bleecker Street Corp._2027_Budget.xlsx",
+    "setup": {
+      "building_name": "206",
+      "budget_year": "77 Bleecker Street Corporation",
+      "scaling_factor": 2,
+      "multiplier": 10
+    },
+    "payroll": {
+      "tax_rates": {
+        "FICA": 0,
+        "SUI": 0,
+        "FUI": 0,
+        "MTA": 0,
+        "NYS_Disability": 0,
+        "PFL": 0
+      },
+      "positions": [
+        {
+          "name": "Resident Manager",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Handyman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter / Doorman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter (80%)",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 5",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 6",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 7",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 8",
+          "employee_count": 0,
+          "hourly_rate": 0
+        }
+      ],
+      "union_benefit_rates": {
+        "Welfare": 0,
+        "Pension": 0,
+        "Supp_Retirement": 0,
+        "Legal": 0,
+        "Training": 0,
+        "Profit_Sharing": 0
+      },
+      "workers_comp_pct": 0,
+      "wage_increase_pct": 0,
+      "increase_effective_week": "Wk 16",
+      "pre_increase_weeks": 0,
+      "post_increase_weeks": 0
+    },
+    "insurance_schedule": {
+      "expected_renewal_increase_pct": 0,
+      "renewal_effective_date": "Mar 2027",
+      "pre_renewal_months": 0,
+      "post_renewal_months": 0,
+      "policies": [
+        {
+          "name": "6105-0000",
+          "current_annual_premium": 387276.36,
+          "current_year_budget": 445368,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6110-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6115-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6125-0000",
+          "current_annual_premium": 12344,
+          "current_year_budget": 14196,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6126-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6135-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6195-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6120-0000",
+          "current_annual_premium": 73414,
+          "current_year_budget": 84426,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6180-0000",
+          "current_annual_premium": null,
+          "current_year_budget": null,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        }
+      ]
+    },
+    "income": {
+      "total_shares": 0,
+      "prior_year_per_share_per_month": 0,
+      "maintenance_increase_pct": 0,
+      "storage_units": [
+        {
+          "size": "A (28-32 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "B (36 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "C (48 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "D",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        }
+      ],
+      "bike_racks": {
+        "available": 0,
+        "occupied": "# Occupied",
+        "monthly_rate": 0
+      },
+      "laundry": {
+        "contract_description": "Monthly Amount",
+        "monthly_amount": 0
+      }
+    }
+  },
+  "805": {
+    "building_id": "805",
+    "building_name": "The Hopkins Condominium",
+    "file": "/sessions/youthful-fervent-einstein/mnt/Budgets/budget_system/budgets/805 - The Hopkins Condominium/805_The Hopkins Condominium_2027_Budget.xlsx",
+    "setup": {
+      "building_name": "805",
+      "budget_year": "The Hopkins Condominium",
+      "scaling_factor": 2,
+      "multiplier": 10
+    },
+    "payroll": {
+      "tax_rates": {
+        "FICA": 0,
+        "SUI": 0,
+        "FUI": 0,
+        "MTA": 0,
+        "NYS_Disability": 0,
+        "PFL": 0
+      },
+      "positions": [
+        {
+          "name": "Resident Manager",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Handyman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter / Doorman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter (80%)",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 5",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 6",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 7",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 8",
+          "employee_count": 0,
+          "hourly_rate": 0
+        }
+      ],
+      "union_benefit_rates": {
+        "Welfare": 0,
+        "Pension": 0,
+        "Supp_Retirement": 0,
+        "Legal": 0,
+        "Training": 0,
+        "Profit_Sharing": 0
+      },
+      "workers_comp_pct": 0,
+      "wage_increase_pct": 0,
+      "increase_effective_week": "Wk 16",
+      "pre_increase_weeks": 0,
+      "post_increase_weeks": 0
+    },
+    "insurance_schedule": {
+      "expected_renewal_increase_pct": 0,
+      "renewal_effective_date": "Mar 2027",
+      "pre_renewal_months": 0,
+      "post_renewal_months": 0,
+      "policies": [
+        {
+          "name": "6105-0000",
+          "current_annual_premium": 74614.79,
+          "current_year_budget": 85807,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6110-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6115-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 0,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6125-0000",
+          "current_annual_premium": 6577,
+          "current_year_budget": 7563,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6126-0000",
+          "current_annual_premium": 1471,
+          "current_year_budget": 1692,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6135-0000",
+          "current_annual_premium": 713,
+          "current_year_budget": 820,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6195-0000",
+          "current_annual_premium": 0,
+          "current_year_budget": 5000,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6120-0000",
+          "current_annual_premium": 19998,
+          "current_year_budget": 22998,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        },
+        {
+          "name": "6180-0000",
+          "current_annual_premium": null,
+          "current_year_budget": null,
+          "expiration_date": null,
+          "increase_pct": "=$C$6"
+        }
+      ]
+    },
+    "income": {
+      "total_shares": 0,
+      "prior_year_per_share_per_month": 0,
+      "maintenance_increase_pct": 0,
+      "storage_units": [
+        {
+          "size": "A (28-32 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "B (36 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "C (48 cf)",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        },
+        {
+          "size": "D",
+          "count": 0,
+          "occupied": 0,
+          "monthly_rate": 0
+        }
+      ],
+      "bike_racks": {
+        "available": 0,
+        "occupied": "# Occupied",
+        "monthly_rate": 0
+      },
+      "laundry": {
+        "contract_description": "Monthly Amount",
+        "monthly_amount": 0
+      }
+    }
+  }
+}
