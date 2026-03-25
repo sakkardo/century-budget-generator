@@ -67,12 +67,21 @@ ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflo
 app.register_blueprint(ed_bp)
 
 # Resolve all model relationships after ALL blueprints are registered
-db.configure_mappers()
+try:
+    db.configure_mappers()
+    logger.info("Model mappers configured successfully")
+except Exception as e:
+    logger.warning(f"configure_mappers() failed: {e} — will retry on first request")
 
 # Create all tables on startup
 with app.app_context():
     db.create_all()
     logger.info("Database tables initialized")
+
+# Health check for Railway
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
 
 # Paths
 TEMPLATE_PATH = BUDGET_SYSTEM / "Budget_Final_Template_v2.xlsx"
