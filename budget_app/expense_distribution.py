@@ -630,7 +630,7 @@ PM_EXPENSE_TEMPLATE = """
 <body>
 
 <header>
-  <div style="display:flex; gap:16px;"><a href="/" style="color:white; text-decoration:none; font-size:14px;">← Home</a><a href="/pm" style="color:rgba(255,255,255,0.8); text-decoration:none; font-size:14px;">← Back to buildings</a></div>
+  <a href="/pm" class="back-link">← Back to buildings</a>
   <h1>{{ building_name }}</h1>
   <p>Entity {{ entity_code }} — Expense Distribution Review</p>
 </header>
