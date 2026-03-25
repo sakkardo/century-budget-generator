@@ -1414,7 +1414,8 @@ Be precise with numbers. Include all line items found.
 
         try:
             upload.status = "confirmed"
-            upload.confirmed_by = request.get_json().get("confirmed_by", "system")
+            data = request.get_json(silent=True) or {}
+            upload.confirmed_by = data.get("confirmed_by", "system")
             upload.confirmed_at = datetime.utcnow()
             upload.updated_at = datetime.utcnow()
             db.session.commit()
