@@ -860,13 +860,14 @@ Be precise with numbers. Include all line items found.
             raw_extraction = {}
             mapped_data = {}
 
-        # Find unmapped items from mapping
+        # Find unmapped items and build existing rules lookup
         unmapped = []
-        if upload.status in ["mapped", "confirmed"]:
-            # Recompute to show unmapped
-            profile = upload.profile
-            if profile:
-                _, unmapped = apply_mapping_rules(upload.raw_extraction, profile.id)
+        existing_rules = {}
+        if upload.profile:
+            for rule in upload.profile.rules:
+                existing_rules[rule.auditor_line_item.lower().strip()] = rule.century_category
+            if upload.status in ["mapped", "confirmed"]:
+                _, unmapped = apply_mapping_rules(upload.raw_extraction, upload.profile.id)
 
         html = """
 <!DOCTYPE html>
@@ -876,7 +877,7 @@ Be precise with numbers. Include all line items found.
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .header { display: flex; justify-content: space-between; }
-        .columns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 20px; }
+        .columns { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; }
         .column { border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
         h4 { border-bottom: 2px solid #007bff; padding-bottom: 10px; }
         .item { padding: 8px; border-bottom: 1px solid #eee; }
@@ -903,22 +904,21 @@ Be precise with numbers. Include all line items found.
     <p>Building: <strong>{{ building_name }}</strong> | Entity: {{ entity_code }} | Year: {{ fiscal_year }}</p>
 
     <div class="columns">
-        <!-- Raw Extracted Data -->
+        <!-- Raw Extracted Data with inline mapping -->
         <div class="column">
-            <h4>Raw Extracted Data</h4>
+            <h4>Extracted Data — Map Each Item</h4>
             <div id="rawData"></div>
+            <div style="margin-top:15px; display:flex; gap:10px;">
+                <button onclick="saveAllRules()" class="success-btn" style="flex:1;">Save All Mappings</button>
+                <button onclick="remapUpload()" style="flex:1;">Re-Apply &amp; Refresh</button>
+            </div>
         </div>
 
-        <!-- Mapped Categories -->
+        <!-- Mapped Summary -->
         <div class="column">
-            <h4>Mapped to Century Categories</h4>
+            <h4>Century Budget Categories</h4>
             <div id="mappedData"></div>
-        </div>
-
-        <!-- Reconciliation -->
-        <div class="column">
-            <h4>Reconciliation</h4>
-            <div id="reconciliation"></div>
+            <div id="reconciliation" style="margin-top:15px;"></div>
         </div>
     </div>
 
@@ -933,9 +933,30 @@ Be precise with numbers. Include all line items found.
         const rawExtraction = {{ raw_json }};
         const mappedData = {{ mapped_json }};
         const unmappedItems = {{ unmapped_json }};
+        const centuryCategories = {{ century_categories_json }};
+        const existingRules = {{ existing_rules_json }};
+        const profileId = {{ profile_id }};
+        let itemIndex = 0;
 
         function formatAmount(n) {
-            return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+            if (n === null || n === undefined) return '—';
+            return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+        }
+
+        function makeDropdown(description) {
+            const id = 'map_' + itemIndex++;
+            const normalized = description.toLowerCase().trim();
+            const currentMapping = existingRules[normalized] || '';
+            const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
+
+            let html = '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
+            html += '<option value="">— unmapped —</option>';
+            for (let cat of centuryCategories) {
+                const sel = (cat === currentMapping) ? ' selected' : '';
+                html += '<option value="' + cat + '"' + sel + '>' + cat + '</option>';
+            }
+            html += '</select>';
+            return html;
         }
 
         function renderRawData() {
@@ -943,51 +964,50 @@ Be precise with numbers. Include all line items found.
             const years = rawExtraction.fiscal_years || [];
             let html = '';
 
-            // Show fiscal years header
             if (years.length > 0) {
                 html += '<div style="background:#e8f0fe; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-weight:bold;">Fiscal Years: ' + years.join(', ') + '</div>';
             }
 
             if (rawExtraction.revenue && rawExtraction.revenue.items) {
-                html += '<h5>Revenue</h5>';
-                html += '<table style="width:100%; font-size:13px;"><tr><th style="text-align:left;">Item</th>';
-                for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
-                html += '</tr>';
+                html += '<h5 style="margin:15px 0 5px;">Revenue</h5>';
+                html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
+                for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
+                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
                 for (let item of rawExtraction.revenue.items) {
-                    html += '<tr><td>' + item.description + '</td>';
-                    for (let a of item.amounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                    html += '</tr>';
+                    html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description + '</td>';
+                    for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                    html += '<td style="padding:4px;">' + makeDropdown(item.description) + '</td></tr>';
                 }
                 if (rawExtraction.revenue.total) {
-                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td>Total Revenue</td>';
-                    for (let a of rawExtraction.revenue.total) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                    html += '</tr>';
+                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
+                    for (let a of rawExtraction.revenue.total) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                    html += '<td></td></tr>';
                 }
                 html += '</table>';
             }
 
             if (rawExtraction.expenses && rawExtraction.expenses.categories) {
-                html += '<h5>Expenses</h5>';
-                html += '<table style="width:100%; font-size:13px;"><tr><th style="text-align:left;">Item</th>';
-                for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
-                html += '</tr>';
+                html += '<h5 style="margin:15px 0 5px;">Expenses</h5>';
+                html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
+                for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
+                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
                 for (let cat of rawExtraction.expenses.categories) {
-                    html += '<tr><td colspan="' + (years.length + 1) + '" style="font-weight:bold; background:#f5f5f5; padding-top:8px;">' + cat.name + '</td></tr>';
+                    html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of cat.items) {
-                        html += '<tr><td style="padding-left:15px;">' + item.description + '</td>';
-                        for (let a of item.amounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                        html += '</tr>';
+                        html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description + '</td>';
+                        for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                        html += '<td style="padding:4px;">' + makeDropdown(item.description) + '</td></tr>';
                     }
                     if (cat.total) {
-                        html += '<tr style="font-weight:bold;"><td style="padding-left:15px;">Subtotal</td>';
-                        for (let a of cat.total) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                        html += '</tr>';
+                        html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
+                        for (let a of cat.total) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                        html += '<td></td></tr>';
                     }
                 }
                 if (rawExtraction.expenses.total_expenses) {
-                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td>Total Expenses</td>';
-                    for (let a of rawExtraction.expenses.total_expenses) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                    html += '</tr>';
+                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Expenses</td>';
+                    for (let a of rawExtraction.expenses.total_expenses) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                    html += '<td></td></tr>';
                 }
                 html += '</table>';
             }
@@ -995,19 +1015,17 @@ Be precise with numbers. Include all line items found.
             container.innerHTML = html;
         }
 
-        const centuryCategories = {{ century_categories_json }};
-
         function renderMappedData() {
             const container = document.getElementById('mappedData');
             const years = rawExtraction.fiscal_years || [];
-            let html = '<table><tr><th>Century Category</th>';
+            let html = '<table style="font-size:13px;"><tr><th style="text-align:left;">Category</th>';
             for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
             html += '</tr>';
 
             let hasData = false;
             for (let cat in mappedData) {
                 const data = mappedData[cat];
-                const yearAmounts = data.year_totals || data.years || [];
+                const yearAmounts = data.year_totals || [];
                 const total = data.total || 0;
                 if (total !== 0) {
                     hasData = true;
@@ -1022,7 +1040,7 @@ Be precise with numbers. Include all line items found.
             }
 
             if (!hasData) {
-                html += '<tr><td colspan="' + (years.length + 1) + '" style="text-align:center; color:#999; padding:20px;">No mapping rules configured yet. Map unmapped items below.</td></tr>';
+                html += '<tr><td colspan="' + (years.length + 1) + '" style="text-align:center; color:#999; padding:20px;">Map items on the left, then click "Save All Mappings"</td></tr>';
             }
 
             html += '</table>';
@@ -1031,72 +1049,63 @@ Be precise with numbers. Include all line items found.
 
         function renderReconciliation() {
             const container = document.getElementById('reconciliation');
-            let html = '';
-
-            // Totals
-            html += '<div style="margin-bottom:15px;"><strong>Totals Check:</strong><br/>';
+            let html = '<div style="background:#f8f9fa; padding:12px; border-radius:5px; font-size:13px;">';
+            html += '<strong>Totals:</strong><br/>';
             if (rawExtraction.revenue && rawExtraction.revenue.total) {
-                html += 'Revenue: ' + formatAmount(rawExtraction.revenue.total[0]) + '<br/>';
+                html += 'Revenue: $' + formatAmount(rawExtraction.revenue.total[0]) + '<br/>';
             }
             if (rawExtraction.expenses && rawExtraction.expenses.total_expenses) {
-                html += 'Expenses: ' + formatAmount(rawExtraction.expenses.total_expenses[0]) + '<br/>';
+                html += 'Expenses: $' + formatAmount(rawExtraction.expenses.total_expenses[0]) + '<br/>';
+            }
+
+            // Count unmapped
+            const allSelects = document.querySelectorAll('select[id^="map_"]');
+            let unmappedCount = 0;
+            allSelects.forEach(s => { if (!s.value) unmappedCount++; });
+            if (unmappedCount > 0) {
+                html += '<div class="unmapped" style="margin-top:8px;">' + unmappedCount + ' items still unmapped</div>';
+            } else if (allSelects.length > 0) {
+                html += '<div class="success" style="margin-top:8px;">All items mapped!</div>';
             }
             html += '</div>';
-
-            if (unmappedItems.length > 0) {
-                html += '<div class="unmapped"><strong>' + unmappedItems.length + ' Unmapped Items:</strong></div>';
-                html += '<div style="max-height:400px; overflow-y:auto;">';
-                for (let i = 0; i < unmappedItems.length; i++) {
-                    const item = unmappedItems[i];
-                    html += '<div style="padding:8px; border:1px solid #eee; margin:4px 0; border-radius:4px; font-size:13px;">';
-                    html += '<div style="font-weight:bold;">' + item.description + '</div>';
-                    html += '<div style="color:#666; font-size:12px;">' + item.amounts.map(a => formatAmount(a)).join(' / ') + '</div>';
-                    html += '<select id="mapSelect_' + i + '" style="width:100%; margin-top:4px; padding:4px; font-size:12px;">';
-                    html += '<option value="">-- Map to Century Category --</option>';
-                    for (let cat of centuryCategories) {
-                        html += '<option value="' + cat + '">' + cat + '</option>';
-                    }
-                    html += '</select>';
-                    html += '<button onclick="saveRule(' + i + ', \'' + item.description.replace(/'/g, "\\'") + '\')" style="margin-top:4px; padding:4px 10px; font-size:12px;">Save Rule</button>';
-                    html += '</div>';
-                }
-                html += '</div>';
-            } else if (Object.keys(mappedData).length > 0) {
-                html += '<div class="success">All items mapped successfully!</div>';
-            }
-
-            // Re-map button
-            html += '<button onclick="remapUpload()" style="margin-top:15px; width:100%;">Re-Apply Mapping Rules</button>';
-
             container.innerHTML = html;
         }
 
-        function saveRule(index, description) {
-            const select = document.getElementById('mapSelect_' + index);
-            const category = select.value;
-            if (!category) { alert('Select a Century category'); return; }
+        function saveAllRules() {
+            if (!profileId) { alert('No auditor profile assigned'); return; }
 
-            const profileId = {{ profile_id }};
-            if (!profileId) { alert('No auditor profile assigned to this upload'); return; }
-
-            fetch('/api/af/profiles/' + profileId + '/rules', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    auditor_line_item: description,
-                    century_category: category,
-                    split_pct: 1.0
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    select.parentElement.style.background = '#d4edda';
-                    select.disabled = true;
-                } else {
-                    alert('Error: ' + data.error);
+            const selects = document.querySelectorAll('select[id^="map_"]');
+            const rules = [];
+            selects.forEach(s => {
+                if (s.value) {
+                    rules.push({
+                        auditor_line_item: s.dataset.desc,
+                        century_category: s.value,
+                        split_pct: 1.0
+                    });
                 }
             });
+
+            if (rules.length === 0) { alert('No mappings to save'); return; }
+
+            // Save rules one by one (non-destructive add)
+            let saved = 0;
+            let errors = 0;
+            for (let rule of rules) {
+                fetch('/api/af/profiles/' + profileId + '/rules', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(rule)
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) saved++;
+                    else errors++;
+                    if (saved + errors === rules.length) {
+                        alert(saved + ' rules saved. Click "Re-Apply & Refresh" to see updated mappings.');
+                    }
+                });
+            }
         }
 
         function remapUpload() {
@@ -1140,6 +1149,7 @@ Be precise with numbers. Include all line items found.
         html = html.replace("{{ mapped_json }}", json.dumps(mapped_data))
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
         html = html.replace("{{ century_categories_json }}", json.dumps(CENTURY_CATEGORIES))
+        html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
 
         return render_template_string(html)
