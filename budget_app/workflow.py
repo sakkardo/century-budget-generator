@@ -71,8 +71,35 @@ RM_GL_MAP = {
     "5809-0016": ("Sprinkler Maintenance", 66, "maintenance"),
 }
 
-BUDGET_STATUSES = ["draft", "pm_pending", "pm_in_progress", "fa_review", "approved", "returned"]
-USER_ROLES = ["fa", "pm", "admin"]
+# Maps budget_line category -> Century audit category
+BUDGET_CAT_TO_CENTURY = {
+    "supplies": "Supplies",
+    "repairs": "Repairs & Maintenance",
+    "maintenance": "Repairs & Maintenance",
+}
+
+BUDGET_STATUSES = [
+    "not_started", "data_collection", "data_ready", "draft",
+    "pm_pending", "pm_in_progress", "fa_review",
+    "exec_review", "presentation", "approved",
+    "ar_pending", "ar_complete", "returned"
+]
+USER_ROLES = ["fa", "pm", "admin", "cfo", "director", "ar"]
+
+VALID_TRANSITIONS = {
+    "not_started": ["data_collection"],
+    "data_collection": ["data_ready"],
+    "data_ready": ["draft"],
+    "draft": ["pm_pending"],
+    "pm_pending": ["pm_in_progress", "draft"],
+    "pm_in_progress": ["fa_review"],
+    "fa_review": ["approved", "returned", "exec_review"],
+    "exec_review": ["presentation", "approved", "returned"],
+    "presentation": ["approved", "returned"],
+    "approved": ["ar_pending"],
+    "ar_pending": ["ar_complete"],
+    "returned": ["draft"],
+}
 
 
 def create_workflow_blueprint(db):
@@ -143,13 +170,30 @@ def create_workflow_blueprint(db):
         entity_code = db.Column(db.String(50), nullable=False, index=True)
         building_name = db.Column(db.String(255), nullable=False)
         year = db.Column(db.Integer, default=2027)
-        status = db.Column(db.String(20), default="draft")  # draft, pm_pending, pm_in_progress, fa_review, approved, returned
+        status = db.Column(db.String(20), default="not_started")
         fa_notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+        # Pipeline tracking
+        initiated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        initiated_at = db.Column(db.DateTime, nullable=True)
+        return_to_status = db.Column(db.String(20), nullable=True)
+
+        # Presentation
+        presentation_token = db.Column(db.String(64), unique=True, nullable=True)
+
+        # Approval
+        approved_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        approved_at = db.Column(db.DateTime, nullable=True)
+        increase_pct = db.Column(db.Float, nullable=True)
+        effective_date = db.Column(db.String(20), nullable=True)
+        ar_notes = db.Column(db.Text, default="")
+
         # Relationships
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
+        data_sources = db.relationship("DataSource", back_populates="budget", cascade="all, delete-orphan")
+        revisions = db.relationship("BudgetRevision", back_populates="budget", cascade="all, delete-orphan")
 
         __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
 
@@ -161,21 +205,29 @@ def create_workflow_blueprint(db):
                 "year": self.year,
                 "status": self.status,
                 "fa_notes": self.fa_notes,
+                "initiated_by": self.initiated_by,
+                "initiated_at": self.initiated_at.isoformat() if self.initiated_at else None,
+                "presentation_token": self.presentation_token,
+                "approved_by": self.approved_by,
+                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+                "increase_pct": self.increase_pct,
+                "effective_date": self.effective_date,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
 
     class BudgetLine(db.Model):
-        """Individual R&M line item within a budget."""
+        """Individual budget line item (all GL codes, not just R&M)."""
         __tablename__ = "budget_lines"
 
         id = db.Column(db.Integer, primary_key=True)
         budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
         gl_code = db.Column(db.String(50), nullable=False)
         description = db.Column(db.String(255), nullable=False)
-        category = db.Column(db.String(50), nullable=False)  # supplies, repairs, maintenance
+        category = db.Column(db.String(50), nullable=False)  # supplies, repairs, maintenance, income, payroll, etc.
         row_num = db.Column(db.Integer, nullable=False)
+        sheet_name = db.Column(db.String(50), default="")  # Income, Payroll, Energy, Water & Sewer, Repairs & Supplies, Gen & Admin
 
         # YSL-sourced columns (from prior runs, don't overwrite PM inputs)
         prior_year = db.Column(db.Float, default=0.0)
@@ -188,6 +240,15 @@ def create_workflow_blueprint(db):
         unpaid_bills = db.Column(db.Float, default=0.0)
         increase_pct = db.Column(db.Float, default=0.0)
         notes = db.Column(db.Text, default="")
+        pm_editable = db.Column(db.Boolean, default=False)
+
+        # Reclassification (PM can propose moving expenses to different GL)
+        reclass_to_gl = db.Column(db.String(50), nullable=True)
+        reclass_amount = db.Column(db.Float, default=0.0)
+        reclass_notes = db.Column(db.Text, default="")
+
+        # Proposed budget (computed or manually entered)
+        proposed_budget = db.Column(db.Float, default=0.0)
 
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -202,6 +263,7 @@ def create_workflow_blueprint(db):
                 "description": self.description,
                 "category": self.category,
                 "row_num": self.row_num,
+                "sheet_name": self.sheet_name or "",
                 "prior_year": float(self.prior_year or 0),
                 "ytd_actual": float(self.ytd_actual or 0),
                 "ytd_budget": float(self.ytd_budget or 0),
@@ -210,7 +272,161 @@ def create_workflow_blueprint(db):
                 "unpaid_bills": float(self.unpaid_bills or 0),
                 "increase_pct": float(self.increase_pct or 0),
                 "notes": self.notes,
+                "pm_editable": self.pm_editable,
+                "reclass_to_gl": self.reclass_to_gl,
+                "reclass_amount": float(self.reclass_amount or 0),
+                "reclass_notes": self.reclass_notes or "",
+                "proposed_budget": float(self.proposed_budget or 0),
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
+            }
+
+
+    # ─── New Pipeline Tables ─────────────────────────────────────────────────
+
+    class DataSource(db.Model):
+        """Tracks collection status of each data source per building budget."""
+        __tablename__ = "data_sources"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        source_type = db.Column(db.String(50), nullable=False)  # ysl, audit, sharepoint_payroll, etc.
+        status = db.Column(db.String(20), default="pending")  # pending, collecting, collected, failed, not_required
+        file_path = db.Column(db.Text, nullable=True)
+        collected_at = db.Column(db.DateTime, nullable=True)
+        error_message = db.Column(db.Text, default="")
+        metadata_json = db.Column(db.Text, default="{}")
+
+        budget = db.relationship("Budget", back_populates="data_sources")
+
+        def to_dict(self):
+            return {
+                "id": self.id, "budget_id": self.budget_id,
+                "source_type": self.source_type, "status": self.status,
+                "file_path": self.file_path,
+                "collected_at": self.collected_at.isoformat() if self.collected_at else None,
+                "error_message": self.error_message
+            }
+
+
+    class BudgetRevision(db.Model):
+        """Audit trail for every change to a budget or its lines."""
+        __tablename__ = "budget_revisions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_lines.id"), nullable=True)
+        user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        action = db.Column(db.String(50), nullable=False)  # create, update, status_change, reclass, presentation_edit
+        field_name = db.Column(db.String(100), default="")
+        old_value = db.Column(db.Text, default="")
+        new_value = db.Column(db.Text, default="")
+        notes = db.Column(db.Text, default="")
+        source = db.Column(db.String(30), default="web")  # web, presentation, api, system
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget", back_populates="revisions")
+
+        def to_dict(self):
+            return {
+                "id": self.id, "budget_id": self.budget_id,
+                "budget_line_id": self.budget_line_id, "user_id": self.user_id,
+                "action": self.action, "field_name": self.field_name,
+                "old_value": self.old_value, "new_value": self.new_value,
+                "notes": self.notes, "source": self.source,
+                "created_at": self.created_at.isoformat() if self.created_at else None
+            }
+
+
+    class PresentationSession(db.Model):
+        """Tracks live presentation sessions for client budget review."""
+        __tablename__ = "presentation_sessions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
+        token = db.Column(db.String(64), unique=True, nullable=False)
+        created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+        is_active = db.Column(db.Boolean, default=True)
+        expires_at = db.Column(db.DateTime, nullable=True)
+        client_name = db.Column(db.String(255), default="")
+        notes = db.Column(db.Text, default="")
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget")
+        edits = db.relationship("PresentationEdit", back_populates="session", cascade="all, delete-orphan")
+
+        def to_dict(self):
+            return {
+                "id": self.id, "budget_id": self.budget_id,
+                "token": self.token, "is_active": self.is_active,
+                "client_name": self.client_name,
+                "created_at": self.created_at.isoformat() if self.created_at else None
+            }
+
+
+    class PresentationEdit(db.Model):
+        """Individual edits made during a client presentation."""
+        __tablename__ = "presentation_edits"
+
+        id = db.Column(db.Integer, primary_key=True)
+        session_id = db.Column(db.Integer, db.ForeignKey("presentation_sessions.id"), nullable=False)
+        budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_lines.id"), nullable=False)
+        field_name = db.Column(db.String(100), nullable=False)
+        old_value = db.Column(db.Text, default="")
+        new_value = db.Column(db.Text, default="")
+        edited_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        session = db.relationship("PresentationSession", back_populates="edits")
+
+        def to_dict(self):
+            return {
+                "id": self.id, "session_id": self.session_id,
+                "budget_line_id": self.budget_line_id,
+                "field_name": self.field_name,
+                "old_value": self.old_value, "new_value": self.new_value,
+                "edited_at": self.edited_at.isoformat() if self.edited_at else None
+            }
+
+
+    class ARHandoff(db.Model):
+        """AR department handoff record for approved budgets."""
+        __tablename__ = "ar_handoffs"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False, unique=True)
+        entity_code = db.Column(db.String(50), nullable=False)
+        building_name = db.Column(db.String(255), nullable=False)
+        approved_increase_pct = db.Column(db.Float, nullable=False)
+        effective_date = db.Column(db.String(20), nullable=False)
+        approved_by_name = db.Column(db.String(255), default="")
+        approved_at = db.Column(db.DateTime, nullable=True)
+        total_current_budget = db.Column(db.Float, default=0.0)
+        total_proposed_budget = db.Column(db.Float, default=0.0)
+        supporting_notes = db.Column(db.Text, default="")
+        ar_status = db.Column(db.String(20), default="pending")  # pending, acknowledged, entered, verified
+        ar_acknowledged_by = db.Column(db.String(255), default="")
+        ar_acknowledged_at = db.Column(db.DateTime, nullable=True)
+        ar_entered_at = db.Column(db.DateTime, nullable=True)
+        yardi_confirmation = db.Column(db.Text, default="")
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False))
+
+        def to_dict(self):
+            return {
+                "id": self.id, "budget_id": self.budget_id,
+                "entity_code": self.entity_code, "building_name": self.building_name,
+                "approved_increase_pct": self.approved_increase_pct,
+                "effective_date": self.effective_date,
+                "approved_by_name": self.approved_by_name,
+                "total_current_budget": float(self.total_current_budget or 0),
+                "total_proposed_budget": float(self.total_proposed_budget or 0),
+                "supporting_notes": self.supporting_notes,
+                "ar_status": self.ar_status,
+                "ar_acknowledged_by": self.ar_acknowledged_by,
+                "ar_acknowledged_at": self.ar_acknowledged_at.isoformat() if self.ar_acknowledged_at else None,
+                "ar_entered_at": self.ar_entered_at.isoformat() if self.ar_entered_at else None,
+                "yardi_confirmation": self.yardi_confirmation,
+                "created_at": self.created_at.isoformat() if self.created_at else None
             }
 
 
@@ -596,7 +812,7 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/budgets/<entity_code>/status", methods=["POST"])
     def change_budget_status(entity_code):
-        """Change budget status with validation."""
+        """Change budget status with validation using VALID_TRANSITIONS."""
         data = request.get_json()
         new_status = data.get("status")
 
@@ -607,18 +823,17 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        # Validation rules
-        if new_status == "pm_pending" and budget.status != "draft":
-            return jsonify({"error": "Can only move to pm_pending from draft"}), 400
-
-        if new_status == "approved" and budget.status != "fa_review":
-            return jsonify({"error": "Can only approve from fa_review"}), 400
-
-        if new_status == "returned" and budget.status != "fa_review":
-            return jsonify({"error": "Can only return from fa_review"}), 400
+        # Validate transition using VALID_TRANSITIONS
+        allowed = VALID_TRANSITIONS.get(budget.status, [])
+        if new_status not in allowed:
+            return jsonify({"error": f"Cannot move from '{budget.status}' to '{new_status}'. Allowed: {allowed}"}), 400
 
         if "notes" in data:
             budget.fa_notes = data["notes"]
+
+        if new_status == "approved":
+            budget.approved_by = data.get("approved_by", "system")
+            budget.approved_at = datetime.utcnow()
 
         budget.status = new_status
         db.session.commit()
@@ -662,21 +877,38 @@ def create_workflow_blueprint(db):
         except Exception:
             pass
 
-        # Check audit data
-        audit_data = {"exists": False}
+        # Check audit data — fetch ALL confirmed uploads for multi-year comparison
+        audit_data = {"exists": False, "years": {}}
         try:
-            audit_row = db.session.execute(
-                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY confirmed_at DESC LIMIT 1"),
+            import json as _json
+            audit_rows = db.session.execute(
+                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
                 {"ec": entity_code}
-            ).fetchone()
-            if audit_row and audit_row[0]:
-                import json
-                mapped = json.loads(audit_row[0])
-                audit_data = {
-                    "exists": True,
-                    "fiscal_year": audit_row[1],
-                    "categories": mapped
-                }
+            ).fetchall()
+            if audit_rows:
+                years_data = {}
+                for row in audit_rows:
+                    if not row[0]:
+                        continue
+                    mapped = _json.loads(row[0])
+                    fiscal_year = row[1] or "Unknown"
+                    # Extract year_totals[0] for each category (the primary year)
+                    year_cats = {}
+                    for cat, data in mapped.items():
+                        if isinstance(data, dict):
+                            totals = data.get("year_totals", data.get("years", []))
+                            if totals and len(totals) > 0:
+                                year_cats[cat] = totals[0]
+                            elif data.get("total"):
+                                year_cats[cat] = data["total"]
+                    if year_cats:
+                        years_data[fiscal_year] = year_cats
+                if years_data:
+                    audit_data = {
+                        "exists": True,
+                        "years": years_data,
+                        "category_mapping": BUDGET_CAT_TO_CENTURY
+                    }
         except Exception:
             pass
 
@@ -744,6 +976,9 @@ def create_workflow_blueprint(db):
 
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
+
+    # Ensure all model relationships are resolved before any queries run
+    db.configure_mappers()
 
     return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
             {"store_rm_lines": store_rm_lines, "get_pm_projections": get_pm_projections,
@@ -1544,6 +1779,15 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
+  <!-- Historical Actuals (from Audited Financials) -->
+  <div class="section" id="auditActualsSection" style="display:none;">
+    <h2>Historical Actuals <span style="font-size:13px; font-weight:400; color:var(--gray-500);">(from Audited Financials)</span></h2>
+    <table id="auditActualsTable">
+      <thead id="auditActualsHead"></thead>
+      <tbody id="auditActualsBody"></tbody>
+    </table>
+  </div>
+
   <!-- Budget Detail Table -->
   <div class="section">
     <h2>Budget Detail</h2>
@@ -1554,6 +1798,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
           <th>GL Code</th>
           <th>Description</th>
           <th style="text-align:right">Prior Year</th>
+          <th style="text-align:right; display:none;" id="auditColHeader">Audit Actual</th>
           <th style="text-align:right">Current Budget</th>
           <th style="text-align:right">PM Adjusted</th>
           <th style="text-align:right">Variance $</th>
@@ -1663,16 +1908,79 @@ function renderDetail(data) {
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
 
+  // Historical Actuals Panel (from audited financials)
+  const auditYears = data.audit.exists ? data.audit.years : {};
+  const auditYearKeys = Object.keys(auditYears).sort().reverse();
+  const catMapping = data.audit.category_mapping || {};
+
+  if (auditYearKeys.length > 0) {
+    document.getElementById('auditActualsSection').style.display = '';
+    const auditHead = document.getElementById('auditActualsHead');
+    const auditBody = document.getElementById('auditActualsBody');
+    auditHead.innerHTML = '<tr><th>Century Category</th>' + auditYearKeys.map(y => '<th style="text-align:right">' + y + ' Actual</th>').join('') + '</tr>';
+    auditBody.innerHTML = '';
+
+    // Collect all categories across all years
+    const allCats = new Set();
+    auditYearKeys.forEach(y => Object.keys(auditYears[y]).forEach(c => allCats.add(c)));
+    const sortedCats = Array.from(allCats).sort();
+
+    let auditGrandTotals = auditYearKeys.map(() => 0);
+    sortedCats.forEach(cat => {
+      const tr = document.createElement('tr');
+      let cells = '<td>' + cat + '</td>';
+      auditYearKeys.forEach((y, i) => {
+        const val = auditYears[y][cat] || 0;
+        auditGrandTotals[i] += val;
+        cells += '<td style="text-align:right">' + fmt(val) + '</td>';
+      });
+      tr.innerHTML = cells;
+      auditBody.appendChild(tr);
+    });
+
+    // Total row
+    const totalTr = document.createElement('tr');
+    totalTr.style.fontWeight = '700';
+    totalTr.style.background = 'var(--gray-100)';
+    totalTr.innerHTML = '<td>Total</td>' + auditGrandTotals.map(t => '<td style="text-align:right">' + fmt(t) + '</td>').join('');
+    auditBody.appendChild(totalTr);
+  }
+
   // Budget Detail Table
+  const hasAudit = auditYearKeys.length > 0;
+  const latestAuditYear = auditYearKeys[0] || null;
+  const latestAuditData = latestAuditYear ? auditYears[latestAuditYear] : {};
+  const colSpan = hasAudit ? 9 : 8;
+
+  // Show/hide audit column header
+  const auditColHeader = document.getElementById('auditColHeader');
+  if (hasAudit) {
+    auditColHeader.style.display = '';
+    auditColHeader.textContent = latestAuditYear + ' Audit';
+  } else {
+    auditColHeader.style.display = 'none';
+  }
+
   const tbody = document.querySelector('#detailTable tbody');
   tbody.innerHTML = '';
+
+  // Build reverse mapping: budget category -> century category
+  const budgetCatToCentury = catMapping;
 
   let currentCat = '';
   lines.forEach(l => {
     if (l.category !== currentCat) {
       currentCat = l.category;
+      // Look up audit total for this category group
+      const centuryCat = budgetCatToCentury[currentCat];
+      const auditVal = centuryCat ? (latestAuditData[centuryCat] || 0) : null;
       const catRow = document.createElement('tr');
-      catRow.innerHTML = '<td colspan="8" style="font-weight:700; background:var(--blue-light); color:var(--blue); padding:10px 12px;">' + (currentCat || 'Uncategorized') + '</td>';
+      let catCells = '<td colspan="' + (hasAudit ? 4 : 3) + '" style="font-weight:700; background:var(--blue-light); color:var(--blue); padding:10px 12px;">' + (currentCat || 'Uncategorized') + '</td>';
+      if (hasAudit) {
+        catCells += '<td style="text-align:right; background:var(--blue-light); color:var(--blue); font-weight:700;">' + (auditVal ? fmt(auditVal) : '') + '</td>';
+      }
+      catCells += '<td colspan="' + (hasAudit ? 4 : 5) + '" style="background:var(--blue-light);"></td>';
+      catRow.innerHTML = catCells;
       tbody.appendChild(catRow);
     }
 
@@ -1691,6 +1999,7 @@ function renderDetail(data) {
       '<td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td>' +
       '<td>' + l.description + '</td>' +
       '<td style="text-align:right">' + fmt(priorYear) + '</td>' +
+      (hasAudit ? '<td style="text-align:right; color:var(--gray-400);">\u2014</td>' : '') +
       '<td style="text-align:right">' + fmt(currentBudget) + '</td>' +
       '<td style="text-align:right">' + (pmAdjusted !== null ? fmt(pmAdjusted) : '\u2014') + '</td>' +
       '<td style="text-align:right; color:' + (variance >= 0 ? 'var(--red)' : 'var(--green)') + '">' + fmt(variance) + '</td>' +
@@ -1703,9 +2012,17 @@ function renderDetail(data) {
   totalRow.style.fontWeight = '700';
   totalRow.style.background = 'var(--gray-100)';
   const totalVar = totalBudget - totalPrior;
+  // Sum audit actuals for R&M categories only (what's in the budget detail table)
+  let totalAudit = 0;
+  if (hasAudit) {
+    Object.values(budgetCatToCentury).forEach(centuryCat => {
+      totalAudit += latestAuditData[centuryCat] || 0;
+    });
+  }
   totalRow.innerHTML =
     '<td colspan="3">Total</td>' +
     '<td style="text-align:right">' + fmt(totalPrior) + '</td>' +
+    (hasAudit ? '<td style="text-align:right">' + fmt(totalAudit) + '</td>' : '') +
     '<td style="text-align:right">' + fmt(totalBudget) + '</td>' +
     '<td style="text-align:right">' + fmt(totalPM) + '</td>' +
     '<td style="text-align:right">' + fmt(totalVar) + '</td>' +
@@ -1928,7 +2245,7 @@ function populatePMSelect() {
 
 function getBuildingName(entityCode) {
   const building = allBuildings.find(b => b.entity_code === entityCode);
-  return building ? building.name : entityCode;
+  return building ? (building.building_name || building.name || entityCode) : entityCode;
 }
 
 function renderBuildings(userId) {
@@ -2167,7 +2484,8 @@ PM_EDIT_TEMPLATE = """
       Status: <span class="status-pill status-{{ status }}">{{ status | replace('_', ' ') }}</span>
       <span id="saveIndicator" class="save-indicator"></span>
     </div>
-    <div>
+    <div style="display:flex; gap:12px; align-items:center;">
+      <a href="/pm/{{ entity_code }}/expenses" class="btn" style="background:var(--gray-500); text-decoration:none;">View Expense Report</a>
       <button class="btn btn-green" id="submitBtn" onclick="submitForReview()">Submit for FA Review</button>
     </div>
   </div>
@@ -2269,7 +2587,7 @@ function renderTable() {
 
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${line.gl_code}</td>
+                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a></td>
                 <td>${line.description}</td>
                 <td class="number">${fmt(line.prior_year)}</td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
@@ -2332,6 +2650,67 @@ function renderTable() {
         <td></td>
     `;
     tbody.appendChild(grandRow);
+}
+
+// Expense distribution drill-down
+let _expenseCache = null;
+
+async function fetchExpenseData() {
+    if (_expenseCache !== null) return _expenseCache;
+    try {
+        const res = await fetch('/api/expense-dist/' + ENTITY);
+        if (!res.ok) { _expenseCache = false; return null; }
+        _expenseCache = await res.json();
+        return _expenseCache;
+    } catch { _expenseCache = false; return null; }
+}
+
+async function toggleInvoices(glCode, linkEl) {
+    const row = linkEl.closest('tr');
+    const existingDetail = row.nextElementSibling;
+    if (existingDetail && existingDetail.classList.contains('invoice-detail-row')) {
+        existingDetail.remove();
+        return;
+    }
+
+    const data = await fetchExpenseData();
+    if (!data || !data.gl_groups) {
+        const noData = document.createElement('tr');
+        noData.className = 'invoice-detail-row';
+        noData.innerHTML = '<td colspan="10" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet.</td>';
+        row.after(noData);
+        return;
+    }
+
+    // Find invoices for this GL code — gl_groups is an array of {gl_code, gl_name, invoices, total}
+    const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
+    if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
+        const noInv = document.createElement('tr');
+        noInv.className = 'invoice-detail-row';
+        noInv.innerHTML = '<td colspan="10" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
+        row.after(noInv);
+        return;
+    }
+
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'invoice-detail-row';
+    let invoiceHtml = '<td colspan="10" style="padding:0;"><div style="padding:8px 24px; background:var(--gray-50); border-left:3px solid var(--blue);">' +
+        '<table style="width:100%; font-size:12px; border-collapse:collapse;">' +
+        '<tr style="color:var(--gray-500); font-weight:600;"><td style="padding:4px 8px;">Payee</td><td style="padding:4px 8px;">Invoice #</td><td style="padding:4px 8px;">Date</td><td style="padding:4px 8px; text-align:right;">Amount</td></tr>';
+
+    glGroup.invoices.forEach(inv => {
+        invoiceHtml += '<tr style="border-top:1px solid var(--gray-200);">' +
+            '<td style="padding:4px 8px;">' + (inv.payee_name || inv.payee_code || '') + '</td>' +
+            '<td style="padding:4px 8px;">' + (inv.invoice_num || '') + '</td>' +
+            '<td style="padding:4px 8px;">' + (inv.invoice_date || '') + '</td>' +
+            '<td style="padding:4px 8px; text-align:right;">' + fmt(inv.amount) + '</td></tr>';
+    });
+
+    invoiceHtml += '<tr style="border-top:2px solid var(--gray-300); font-weight:700;"><td colspan="3" style="padding:4px 8px;">Total (' + glGroup.invoices.length + ' invoices)</td>' +
+        '<td style="padding:4px 8px; text-align:right;">' + fmt(glGroup.total || 0) + '</td></tr>';
+    invoiceHtml += '</table></div></td>';
+    detailRow.innerHTML = invoiceHtml;
+    row.after(detailRow);
 }
 
 function onInput(el) {

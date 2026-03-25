@@ -424,8 +424,12 @@ Be precise with numbers. Include all line items found.
             # Return first year's totals (index 0)
             result = {}
             for cat, data in mapped.items():
-                if isinstance(data, dict) and "years" in data and len(data["years"]) > 0:
-                    result[cat] = data["years"][0]
+                if isinstance(data, dict):
+                    totals = data.get("year_totals", data.get("years", []))
+                    if totals and len(totals) > 0:
+                        result[cat] = totals[0]
+                    elif data.get("total"):
+                        result[cat] = data["total"]
             return result
         except:
             return {}

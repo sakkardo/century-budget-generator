@@ -87,8 +87,8 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
 # Console JS script templates — entities/email/period get injected
-CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text()
-EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text()
+CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
+EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
