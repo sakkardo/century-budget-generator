@@ -351,7 +351,7 @@ Be precise with numbers. Include all line items found.
 """
 
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
                 max_tokens=4096,
                 messages=[
                     {
@@ -388,8 +388,8 @@ Be precise with numbers. Include all line items found.
             return extracted
 
         except Exception as e:
-            logger.error(f"PDF extraction error: {e}")
-            return None
+            logger.error(f"PDF extraction error: {e}", exc_info=True)
+            raise  # Re-raise so caller can return the actual error message
 
 
     def get_confirmed_actuals(entity_code, year):
