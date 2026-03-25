@@ -26,7 +26,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 CENTURY_CATEGORIES = [
-    # Income
+    # Income (yrlycomp rows 10-19)
     "Maintenance",
     "Tax Benefit Credits",
     "Commercial",
@@ -37,7 +37,7 @@ CENTURY_CATEGORIES = [
     "Laundry",
     "Assessment - Operating",
     "Other Income",
-    # Expenses
+    # Expenses (yrlycomp rows 23-36)
     "Payroll",
     "Electric",
     "Gas Cooking / Heating",
@@ -52,13 +52,17 @@ CENTURY_CATEGORIES = [
     "Professional Fees",
     "Administrative & Other",
     "Financial Expenses",
-    # Non-Operating
+    # Non-Operating Income (yrlycomp rows 42-49)
     "Capital Assessment",
     "Special Assessment",
     "Interest Income",
     "Insurance Proceeds",
     "Real Estate Tax refund",
+    "ICON Settlement Proceeds",
+    "SBA - PPP Loan Proceeds",
+    # Non-Operating Expense (yrlycomp rows 53-54)
     "Capital Expenses",
+    "Cert Fee for Tax Reduction",
 ]
 
 
