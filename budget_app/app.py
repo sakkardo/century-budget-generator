@@ -530,21 +530,31 @@ def process_files():
                 _wb_check = _lwb(str(ysl_path), data_only=True)
                 _ws_check = _wb_check.active
                 _row1 = str(_ws_check.cell(row=1, column=1).value or "")
+                _row2 = str(_ws_check.cell(row=2, column=1).value or "")
                 _wb_check.close()
 
-                if "Expense Distribution" in _row1:
+                logger.info(f"File detection for {f.filename}: Row1='{_row1}', Row2='{_row2}'")
+
+                is_expense = "expense distribution" in _row1.lower() or "expense dist" in _row1.lower()
+
+                if is_expense:
                     # This is an Expense Distribution file — parse and store it
                     try:
                         from expense_distribution import parse_expense_distribution
                     except ImportError:
                         from budget_app.expense_distribution import parse_expense_distribution
-                    exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(ysl_path))
-                    if exp_entity and exp_invoices:
-                        ed_helpers["store_expense_report"](exp_entity, exp_from, exp_to, exp_invoices, f.filename)
-                        results["success"].append(f"Expense Distribution: {exp_entity} ({len(exp_invoices)} invoices)")
-                        logger.info(f"Expense distribution stored for entity {exp_entity}")
-                    else:
-                        results["warnings"].append(f"Expense file {f.filename}: no entity or invoices found")
+                    try:
+                        exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(ysl_path))
+                        logger.info(f"Expense parse result: entity={exp_entity}, invoices={len(exp_invoices) if exp_invoices else 0}")
+                        if exp_entity and exp_invoices:
+                            ed_helpers["store_expense_report"](exp_entity, exp_from, exp_to, exp_invoices, f.filename)
+                            results["success"].append(f"Expense Distribution: {exp_entity} ({len(exp_invoices)} invoices)")
+                            logger.info(f"Expense distribution stored for entity {exp_entity}")
+                        else:
+                            results["warnings"].append(f"Expense file {f.filename}: entity='{exp_entity}', invoices={len(exp_invoices) if exp_invoices else 0}")
+                    except Exception as exp_err:
+                        logger.error(f"Expense parse error for {f.filename}: {exp_err}")
+                        results["warnings"].append(f"Expense file {f.filename} parse error: {str(exp_err)}")
                     continue
 
                 # Parse YSL
