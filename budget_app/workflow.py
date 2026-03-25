@@ -977,9 +977,6 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    # Ensure all model relationships are resolved before any queries run
-    db.configure_mappers()
-
     return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
             {"store_rm_lines": store_rm_lines, "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})

@@ -67,6 +67,9 @@ except ImportError:
 ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflow_models)
 app.register_blueprint(ed_bp)
 
+# Resolve all model relationships after ALL blueprints are registered
+db.configure_mappers()
+
 # Create all tables on startup
 with app.app_context():
     db.create_all()
