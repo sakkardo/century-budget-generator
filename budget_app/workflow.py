@@ -711,7 +711,14 @@ def create_workflow_blueprint(db):
     def pm_portal():
         """PM Portal - select building and edit R&M lines."""
         import json as json_mod
+
+        # Ensure at least one PM user exists for demo
         pm_users = User.query.filter_by(role="pm").all()
+        if not pm_users:
+            demo_pm = User(name="Test PM", email="testpm@centuryny.com", role="pm")
+            db.session.add(demo_pm)
+            db.session.commit()
+            pm_users = [demo_pm]
 
         return render_template_string(
             PM_PORTAL_TEMPLATE,
@@ -1542,6 +1549,7 @@ DASHBOARD_TEMPLATE = r"""
 <style>
   :root {
     --blue: #1a56db;
+    --blue-dark: #1e429f;
     --blue-light: #e1effe;
     --green: #057a55;
     --green-light: #def7ec;
@@ -1566,20 +1574,70 @@ DASHBOARD_TEMPLATE = r"""
     color: var(--gray-900);
     line-height: 1.5;
   }
+
+  /* ── Global Nav ── */
+  .top-nav {
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    height: 48px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .top-nav .nav-brand {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--blue);
+    text-decoration: none;
+    margin-right: 32px;
+  }
+  .top-nav .nav-links { display: flex; gap: 4px; }
+  .top-nav .nav-link {
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--gray-500);
+    text-decoration: none;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .top-nav .nav-link:hover { background: var(--gray-100); color: var(--gray-900); }
+  .top-nav .nav-link.active { background: var(--blue-light); color: var(--blue); }
+
+  /* ── Toast notifications ── */
+  .toast-container { position: fixed; top: 60px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: slideIn 0.3s ease;
+    max-width: 360px;
+  }
+  .toast-success { background: var(--green); color: white; }
+  .toast-error { background: var(--red); color: white; }
+  .toast-info { background: var(--blue); color: white; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
     color: white;
     padding: 30px 20px;
   }
   header h1 {
     font-size: 28px;
     font-weight: 700;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
   }
+  header p { font-size: 14px; opacity: 0.85; }
   .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 40px 20px;
+    padding: 32px 20px;
   }
   .status-summary {
     display: grid;
@@ -1668,36 +1726,78 @@ DASHBOARD_TEMPLATE = r"""
     background: var(--red-light);
     color: var(--red);
   }
+  /* ── Loading spinner ── */
+  .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--gray-200); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-overlay { text-align: center; padding: 60px 20px; color: var(--gray-500); }
+
+  /* ── Action buttons ── */
+  .btn-action {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-action:hover { filter: brightness(0.9); }
+  .btn-blue { background: var(--blue); color: white; }
+  .btn-green { background: var(--green); color: white; }
+  .btn-orange { background: var(--yellow); color: white; }
 </style>
 </head>
 <body>
+
+<!-- Global Nav -->
+<nav class="top-nav">
+  <a href="/" class="nav-brand">Century Management</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Home</a>
+    <a href="/dashboard" class="nav-link active">FA Dashboard</a>
+    <a href="/pm" class="nav-link">PM Portal</a>
+    <a href="/generate" class="nav-link">Generator</a>
+    <a href="/audited-financials" class="nav-link">Audited Financials</a>
+  </div>
+</nav>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
 <header>
-  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>FA Dashboard</h1>
   <p>Review and manage building budgets</p>
 </header>
 <div class="container">
-  <div class="status-summary" id="status-summary"></div>
+  <!-- Loading state -->
+  <div class="loading-overlay" id="loadingState">
+    <div class="spinner" style="width:32px; height:32px; border-width:3px; margin:0 auto 12px;"></div>
+    <p>Loading budgets...</p>
+  </div>
 
-  <div class="section">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-      <h2 style="margin-bottom:0;">All Buildings</h2>
-      <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
-        style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
+  <div id="dashboardContent" style="display:none;">
+    <div class="status-summary" id="status-summary"></div>
+
+    <div class="section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="margin-bottom:0;">All Buildings</h2>
+        <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
+          style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
+      </div>
+      <table id="budgets-table">
+        <thead>
+          <tr>
+            <th>Building</th>
+            <th>Entity</th>
+            <th>Data</th>
+            <th>PM Review</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
-    <table id="budgets-table">
-      <thead>
-        <tr>
-          <th>Building</th>
-          <th>Entity</th>
-          <th>Data</th>
-          <th>PM Review</th>
-          <th>Status</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
   </div>
 </div>
 
@@ -1711,15 +1811,27 @@ const statusLabels = {
   'returned': 'Returned'
 };
 
+function showToast(msg, type='info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
 async function loadBudgets() {
   try {
     const res = await fetch('/api/budgets');
     const budgets = await res.json();
     renderBudgets(budgets);
     renderStatusSummary(budgets);
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('dashboardContent').style.display = '';
     return budgets;
   } catch (err) {
     console.error('Failed to load budgets:', err);
+    document.getElementById('loadingState').innerHTML = '<p style="color:var(--red);">Failed to load budgets. Please refresh.</p>';
     return [];
   }
 }
@@ -1783,11 +1895,11 @@ function renderBudgets(budgets) {
 
     let actionHtml = '';
     if (b.status === 'draft') {
-      actionHtml = `<button onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
+      actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
     } else if (b.status === 'fa_review') {
       actionHtml = `
-        <button onclick="approveStatus('${b.entity_code}')">Approve</button>
-        <button onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px; background: #f59e0b;">Return</button>
+        <button class="btn-action btn-green" onclick="approveStatus('${b.entity_code}')">Approve</button>
+        <button class="btn-action btn-orange" onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px;">Return</button>
       `;
     }
 
@@ -1820,9 +1932,10 @@ async function changeStatus(entity, newStatus) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus })
     });
+    showToast('Status updated to ' + statusLabels[newStatus], 'success');
     await loadBudgets();
   } catch (err) {
-    alert('Failed to update status');
+    showToast('Failed to update status', 'error');
     console.error(err);
   }
 }
@@ -1841,9 +1954,10 @@ async function returnTopm(entity) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'returned', fa_notes: notes })
     });
+    showToast('Budget returned to PM', 'success');
     await loadBudgets();
   } catch (err) {
-    alert('Failed to return budget');
+    showToast('Failed to return budget', 'error');
     console.error(err);
   }
 }
@@ -1867,6 +1981,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <style>
   :root {
     --blue: #1a56db;
+    --blue-dark: #1e429f;
     --blue-light: #e1effe;
     --green: #057a55;
     --green-light: #def7ec;
@@ -1891,14 +2006,41 @@ BUILDING_DETAIL_TEMPLATE = r"""
     color: var(--gray-900);
     line-height: 1.5;
   }
+
+  /* ── Global Nav ── */
+  .top-nav { background: white; border-bottom: 1px solid var(--gray-200); padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: var(--blue); text-decoration: none; margin-right: 32px; }
+  .top-nav .nav-links { display: flex; gap: 4px; }
+  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: var(--gray-500); text-decoration: none; border-radius: 6px; transition: all 0.15s; }
+  .top-nav .nav-link:hover { background: var(--gray-100); color: var(--gray-900); }
+  .top-nav .nav-link.active { background: var(--blue-light); color: var(--blue); }
+  .top-nav .breadcrumb { margin-left: auto; font-size: 13px; color: var(--gray-500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+  .top-nav .breadcrumb a { color: var(--gray-500); text-decoration: none; }
+  .top-nav .breadcrumb a:hover { color: var(--blue); }
+
+  /* ── Toast ── */
+  .toast-container { position: fixed; top: 60px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+  .toast { padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.15); animation: slideIn 0.3s ease; max-width: 360px; }
+  .toast-success { background: var(--green); color: white; }
+  .toast-error { background: var(--red); color: white; }
+  .toast-info { background: var(--blue); color: white; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── Status pipeline ── */
+  .status-pipeline { display: flex; align-items: center; gap: 0; background: white; border-radius: 10px; padding: 12px 20px; margin-bottom: 24px; border: 1px solid var(--gray-200); overflow-x: auto; }
+  .pipeline-step { display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 13px; font-weight: 600; white-space: nowrap; color: var(--gray-400); }
+  .pipeline-step.completed { color: var(--green); }
+  .pipeline-step.current { color: var(--blue); background: var(--blue-light); border-radius: 6px; }
+  .pipeline-arrow { color: var(--gray-300); font-size: 16px; margin: 0 4px; }
+
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
     color: white;
     padding: 24px 20px;
   }
   header h1 { font-size: 24px; font-weight: 700; }
   header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 32px 20px; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
   .summary-cards {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -1992,20 +2134,48 @@ BUILDING_DETAIL_TEMPLATE = r"""
     .summary-cards { grid-template-columns: repeat(2, 1fr); }
     .tracks { grid-template-columns: 1fr; }
   }
+  /* ── Loading spinner ── */
+  .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--gray-200); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-overlay { text-align: center; padding: 60px 20px; color: var(--gray-500); }
 </style>
 </head>
 <body>
-<header>
-  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-    <div>
-      <a href="/dashboard" style="color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px;">&#8592; Back to Dashboard</a>
-      <h1 id="buildingName">Loading...</h1>
-      <p id="buildingMeta"></p>
-    </div>
-    <a href="/" style="color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px;">&#8592; Home</a>
+
+<!-- Global Nav -->
+<nav class="top-nav">
+  <a href="/" class="nav-brand">Century Management</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Home</a>
+    <a href="/dashboard" class="nav-link active">FA Dashboard</a>
+    <a href="/pm" class="nav-link">PM Portal</a>
+    <a href="/generate" class="nav-link">Generator</a>
+    <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
+  <div class="breadcrumb">
+    <a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span>
+  </div>
+</nav>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<header>
+  <h1 id="buildingName">Loading...</h1>
+  <p id="buildingMeta"></p>
 </header>
 <div class="container">
+  <!-- Loading state -->
+  <div class="loading-overlay" id="loadingState">
+    <div class="spinner" style="width:32px; height:32px; border-width:3px; margin:0 auto 12px;"></div>
+    <p>Loading building data...</p>
+  </div>
+
+  <div id="detailContent" style="display:none;">
+
+  <!-- Status Pipeline -->
+  <div class="status-pipeline" id="statusPipeline"></div>
+
   <!-- Summary Cards -->
   <div class="summary-cards" id="summaryCards"></div>
 
@@ -2052,15 +2222,31 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <div id="sheetContent" style="overflow-x:auto;"></div>
     <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px;"></div>
   </div>
+
+  </div><!-- end detailContent -->
 </div>
 
 <script>
 const entityCode = '{{ entity_code }}';
 
+function showToast(msg, type='info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
 async function loadDetail() {
   const res = await fetch('/api/dashboard/' + entityCode);
-  if (!res.ok) { document.getElementById('buildingName').textContent = 'Error loading data'; return; }
+  if (!res.ok) {
+    document.getElementById('loadingState').innerHTML = '<p style="color:var(--red);">Error loading building data.</p>';
+    return;
+  }
   const data = await res.json();
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('detailContent').style.display = '';
   renderDetail(data);
 }
 
@@ -2069,16 +2255,41 @@ function fmt(n) {
   return '$' + Math.round(n).toLocaleString();
 }
 
+function renderStatusPipeline(status) {
+  const steps = [
+    { key: 'draft', label: 'Draft' },
+    { key: 'pm_pending', label: 'PM Review' },
+    { key: 'fa_review', label: 'FA Review' },
+    { key: 'approved', label: 'Approved' }
+  ];
+  const statusOrder = { draft: 0, pm_pending: 1, pm_in_progress: 1, fa_review: 2, exec_review: 2, approved: 3, returned: 1 };
+  const currentIdx = statusOrder[status] || 0;
+
+  const pipeline = document.getElementById('statusPipeline');
+  pipeline.innerHTML = steps.map((s, i) => {
+    let cls = '';
+    if (i < currentIdx) cls = 'completed';
+    else if (i === currentIdx) cls = 'current';
+    const icon = i < currentIdx ? '\u2713 ' : (i === currentIdx ? '\u25CF ' : '');
+    return (i > 0 ? '<span class="pipeline-arrow">\u203A</span>' : '') +
+      '<div class="pipeline-step ' + cls + '">' + icon + s.label + '</div>';
+  }).join('');
+}
+
 function renderDetail(data) {
   const b = data.budget;
 
-  // Header
+  // Header + breadcrumb
   document.getElementById('buildingName').textContent = b.building_name;
+  document.getElementById('breadcrumbName').textContent = b.building_name;
   document.title = b.building_name + ' - Century Management';
   let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
   if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;
   if (data.assignments.pm) meta += ' | PM: ' + data.assignments.pm;
   document.getElementById('buildingMeta').textContent = meta;
+
+  // Status Pipeline
+  renderStatusPipeline(b.status);
 
   // Summary cards
   const lines = data.lines;
@@ -2356,6 +2567,7 @@ async function sendToPM() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'pm_pending'})
   });
+  showToast('Sent to PM for review', 'success');
   loadDetail();
 }
 
@@ -2366,6 +2578,7 @@ async function approvePM() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'approved'})
   });
+  showToast('Budget approved!', 'success');
   loadDetail();
 }
 
@@ -2377,6 +2590,7 @@ async function returnPM() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'returned', notes: notes})
   });
+  showToast('Budget returned to PM', 'info');
   loadDetail();
 }
 
@@ -2396,6 +2610,7 @@ PM_PORTAL_TEMPLATE = r"""
 <style>
   :root {
     --blue: #1a56db;
+    --blue-dark: #1e429f;
     --blue-light: #e1effe;
     --gray-50: #f9fafb;
     --gray-100: #f3f4f6;
@@ -2412,8 +2627,16 @@ PM_PORTAL_TEMPLATE = r"""
     color: var(--gray-900);
     line-height: 1.5;
   }
+  /* ── Global Nav ── */
+  .top-nav { background: white; border-bottom: 1px solid var(--gray-200); padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: var(--blue); text-decoration: none; margin-right: 32px; }
+  .top-nav .nav-links { display: flex; gap: 4px; }
+  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: var(--gray-500); text-decoration: none; border-radius: 6px; transition: all 0.15s; }
+  .top-nav .nav-link:hover { background: var(--gray-100); color: var(--gray-900); }
+  .top-nav .nav-link.active { background: var(--blue-light); color: var(--blue); }
+
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
     color: white;
     padding: 30px 20px;
   }
@@ -2480,11 +2703,30 @@ PM_PORTAL_TEMPLATE = r"""
     color: var(--gray-500);
     margin-bottom: 4px;
   }
+  .status-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill-pm_pending { background: #fef3c7; color: #a16207; }
+  .pill-pm_in_progress { background: var(--blue-light); color: var(--blue); }
+  .pill-fa_review { background: #fed7aa; color: #f97316; }
+  .pill-approved { background: #def7ec; color: #057a55; }
+  .pill-returned { background: #fde8e8; color: #e02424; }
+  .pill-draft { background: var(--gray-100); color: var(--gray-500); }
 </style>
 </head>
 <body>
+
+<!-- Global Nav -->
+<nav class="top-nav">
+  <a href="/" class="nav-brand">Century Management</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Home</a>
+    <a href="/dashboard" class="nav-link">FA Dashboard</a>
+    <a href="/pm" class="nav-link active">PM Portal</a>
+    <a href="/generate" class="nav-link">Generator</a>
+    <a href="/audited-financials" class="nav-link">Audited Financials</a>
+  </div>
+</nav>
+
 <header>
-  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>PM Portal</h1>
   <p>Select your name and review assigned buildings</p>
 </header>
@@ -2557,41 +2799,48 @@ function renderBuildings(userId) {
   const grid = document.getElementById('buildings-grid');
   const userAssignments = allAssignments.filter(a => a.user_id === userId && a.role === 'pm');
 
-  if (userAssignments.length === 0) {
+  // If PM has assignments, show those buildings; otherwise show all budgets (demo mode)
+  let buildingList = [];
+  if (userAssignments.length > 0) {
+    buildingList = userAssignments.map(a => {
+      const budget = allBudgets.find(b => b.entity_code === a.entity_code);
+      return { entity_code: a.entity_code, budget };
+    });
+  } else {
+    // Demo mode: show all budgets
+    buildingList = allBudgets.map(b => ({ entity_code: b.entity_code, budget: b }));
+  }
+
+  if (buildingList.length === 0) {
     grid.style.display = 'none';
-    const msg = document.createElement('p');
-    msg.style.marginTop = '24px';
-    msg.style.color = 'var(--gray-500)';
-    msg.textContent = 'No buildings assigned to you.';
-    grid.parentElement.appendChild(msg);
     return;
   }
 
   grid.innerHTML = '';
   grid.style.display = 'grid';
 
-  userAssignments.forEach(a => {
-    const buildingName = getBuildingName(a.entity_code);
-    const budget = allBudgets.find(b => b.entity_code === a.entity_code);
-    const budgetStatus = budget ? budget.status : null;
+  buildingList.forEach(item => {
+    const buildingName = item.budget ? (item.budget.building_name || getBuildingName(item.entity_code)) : getBuildingName(item.entity_code);
+    const budgetStatus = item.budget ? item.budget.status : null;
     const isEditable = editableStatuses.includes(budgetStatus);
 
     const card = document.createElement('div');
     card.className = 'building-card';
     if (isEditable) {
       card.style.cursor = 'pointer';
-      card.onclick = () => window.location.href = `/pm/${a.entity_code}`;
+      card.onclick = () => window.location.href = `/pm/${item.entity_code}`;
     } else {
       card.style.opacity = '0.6';
       card.style.cursor = 'default';
     }
 
     const statusLabel = budgetStatus ? (statusLabels[budgetStatus] || budgetStatus) : 'No Budget';
+    const pillClass = budgetStatus ? 'pill-' + budgetStatus : 'pill-draft';
     card.innerHTML = `
       <h3>${buildingName}</h3>
-      <p><strong>Entity Code:</strong> ${a.entity_code}</p>
-      <p><strong>Status:</strong> <span style="color: var(--gray-700);">${statusLabel}</span></p>
-      ${!isEditable ? '<p style="color: var(--gray-500); font-size: 12px;">Read-only</p>' : ''}
+      <p style="margin-bottom:8px;"><span style="font-family:monospace; font-size:12px; color:var(--gray-500);">Entity ${item.entity_code}</span></p>
+      <span class="status-pill ${pillClass}">${statusLabel}</span>
+      ${isEditable ? '<p style="color: var(--blue); font-size: 12px; margin-top:8px; font-weight:600;">Click to edit &rarr;</p>' : ''}
     `;
     grid.appendChild(card);
   });
@@ -2623,6 +2872,7 @@ PM_EDIT_TEMPLATE = """
 <style>
   :root {
     --blue: #1a56db;
+    --blue-dark: #1e429f;
     --blue-light: #e1effe;
     --green: #057a55;
     --green-light: #def7ec;
@@ -2644,15 +2894,28 @@ PM_EDIT_TEMPLATE = """
     color: var(--gray-900);
     line-height: 1.5;
   }
+  /* ── Global Nav ── */
+  .top-nav { background: white; border-bottom: 1px solid var(--gray-200); padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: var(--blue); text-decoration: none; margin-right: 32px; }
+  .top-nav .nav-links { display: flex; gap: 4px; }
+  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: var(--gray-500); text-decoration: none; border-radius: 6px; transition: all 0.15s; }
+  .top-nav .nav-link:hover { background: var(--gray-100); color: var(--gray-900); }
+  .top-nav .nav-link.active { background: var(--blue-light); color: var(--blue); }
+  /* ── Toast ── */
+  .toast-container { position: fixed; top: 60px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+  .toast { padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.15); animation: slideIn 0.3s ease; max-width: 360px; }
+  .toast-success { background: var(--green); color: white; }
+  .toast-error { background: var(--red); color: white; }
+  .toast-info { background: var(--blue); color: white; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
     color: white;
     padding: 24px 20px;
   }
   header h1 { font-size: 24px; margin-bottom: 4px; }
   header p { opacity: 0.9; font-size: 14px; }
-  .back-link { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 14px; }
-  .back-link:hover { color: white; }
   .container { max-width: 1500px; margin: 0 auto; padding: 24px 20px; }
 
   .controls {
@@ -2772,8 +3035,23 @@ PM_EDIT_TEMPLATE = """
 </style>
 </head>
 <body>
+
+<!-- Global Nav -->
+<nav class="top-nav">
+  <a href="/" class="nav-brand">Century Management</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">Home</a>
+    <a href="/dashboard" class="nav-link">FA Dashboard</a>
+    <a href="/pm" class="nav-link active">PM Portal</a>
+    <a href="/generate" class="nav-link">Generator</a>
+    <a href="/audited-financials" class="nav-link">Audited Financials</a>
+  </div>
+</nav>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
 <header>
-  <a href="/pm" class="back-link">← Back to buildings</a>
   <h1>{{ building_name }}</h1>
   <p>Entity {{ entity_code }} — Repairs, Maintenance & Supplies Budget</p>
 </header>
@@ -2829,6 +3107,16 @@ const REMAINING_MONTHS = 10;
 
 let saveTimer = null;
 const indicator = document.getElementById('saveIndicator');
+
+function showToast(msg, type='info') {
+  const c = document.getElementById('toastContainer');
+  if (!c) return;
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3000);
+}
 
 function fmt(n) {
     if (n == null || isNaN(n)) return '$0';
@@ -3106,11 +3394,11 @@ async function submitForReview() {
         body: JSON.stringify({status: 'fa_review'})
     });
     if (resp.ok) {
-        alert('Submitted for FA review!');
-        window.location.href = '/pm';
+        showToast('Submitted for FA review!', 'success');
+        setTimeout(() => { window.location.href = '/pm'; }, 1000);
     } else {
         const err = await resp.json();
-        alert('Error: ' + (err.error || 'Unknown'));
+        showToast('Error: ' + (err.error || 'Unknown'), 'error');
     }
 }
 

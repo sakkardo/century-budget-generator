@@ -1009,9 +1009,27 @@ HOME_TEMPLATE = r"""
     font-size: 28px;
     margin-bottom: 8px;
   }
+  /* ── Global Nav ── */
+  .top-nav { background: white; border-bottom: 1px solid #e5e7eb; padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: #1a56db; text-decoration: none; margin-right: 32px; }
+  .top-nav .nav-links { display: flex; gap: 4px; }
+  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: #6b7280; text-decoration: none; border-radius: 6px; transition: all 0.15s; }
+  .top-nav .nav-link:hover { background: #f3f4f6; color: #111827; }
+  .top-nav .nav-link.active { background: #e1effe; color: #1a56db; }
 </style>
 </head>
 <body>
+<!-- Global Nav -->
+<nav class="top-nav">
+  <a href="/" class="nav-brand">Century Management</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link active">Home</a>
+    <a href="/dashboard" class="nav-link">FA Dashboard</a>
+    <a href="/pm" class="nav-link">PM Portal</a>
+    <a href="/generate" class="nav-link">Generator</a>
+    <a href="/audited-financials" class="nav-link">Audited Financials</a>
+  </div>
+</nav>
   <header>
     <h1>Century Management</h1>
     <p>Budget & Assumptions System</p>
