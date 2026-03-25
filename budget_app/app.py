@@ -1,7 +1,6 @@
 """
 Century Management Unified Budget & Assumptions System
-Run: python app.py
-Open: http://localhost:5000
+Run: python app.py  |  Open: http://localhost:5000
 """
 import os
 import sys
