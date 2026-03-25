@@ -73,10 +73,37 @@ try:
 except Exception as e:
     logger.warning(f"configure_mappers() failed: {e} — will retry on first request")
 
-# Create all tables on startup
+# Create all tables on startup + migrate missing columns
 with app.app_context():
     db.create_all()
     logger.info("Database tables initialized")
+
+    # Auto-migrate: add columns that exist in models but not in the DB
+    if IS_CLOUD:
+        _migrations = [
+            ("budgets", "initiated_by", "INTEGER"),
+            ("budgets", "initiated_at", "TIMESTAMP"),
+            ("budgets", "return_to_status", "VARCHAR(20)"),
+            ("budgets", "presentation_token", "VARCHAR(64)"),
+            ("budgets", "approved_by", "INTEGER"),
+            ("budgets", "approved_at", "TIMESTAMP"),
+            ("budgets", "increase_pct", "FLOAT"),
+            ("budgets", "effective_date", "VARCHAR(20)"),
+            ("budgets", "ar_notes", "TEXT DEFAULT ''"),
+            ("budget_lines", "sheet_name", "VARCHAR(50) DEFAULT ''"),
+            ("budget_lines", "pm_editable", "BOOLEAN DEFAULT FALSE"),
+            ("budget_lines", "reclass_to_gl", "VARCHAR(50)"),
+            ("budget_lines", "reclass_amount", "FLOAT DEFAULT 0"),
+            ("budget_lines", "reclass_notes", "TEXT DEFAULT ''"),
+            ("budget_lines", "proposed_budget", "FLOAT DEFAULT 0"),
+        ]
+        for table, col, col_type in _migrations:
+            try:
+                db.session.execute(db.text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                db.session.commit()
+                logger.info(f"Added column {table}.{col}")
+            except Exception:
+                db.session.rollback()  # Column already exists, skip
 
 # Health check for Railway
 @app.route("/healthz")
