@@ -472,6 +472,8 @@ Be precise with numbers. Include all line items found.
         .btn-green { background: var(--green); }
         .btn-green:hover { background: #046c4e; }
         .btn-small { padding: 6px 12px; font-size: 12px; }
+        .btn-delete { background: #e02424; margin-left: 6px; }
+        .btn-delete:hover { background: #d01f1f; }
         table { width: 100%; border-collapse: collapse; }
         th { background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
         td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 14px; }
@@ -605,6 +607,21 @@ Be precise with numbers. Include all line items found.
     function reviewUpload(uploadId) {
         window.location.href = '/audited-financials/review/' + uploadId;
     }
+
+    function deleteUpload(uploadId) {
+        if (!confirm('Delete this upload? This cannot be undone.')) return;
+        fetch('/api/af/uploads/' + uploadId, { method: 'DELETE' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const row = document.getElementById('upload-row-' + uploadId);
+                if (row) row.remove();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        })
+        .catch(err => alert('Error: ' + err.message));
+    }
 </script>
 </body>
 </html>
@@ -625,15 +642,17 @@ Be precise with numbers. Include all line items found.
         # Build uploads table
         rows = []
         for u in uploads:
+            delete_btn = f'<button class="btn-small btn-delete" onclick="deleteUpload({u.id})">Delete</button>' if u.status != "confirmed" else ""
             rows.append(f"""
-                <tr>
+                <tr id="upload-row-{u.id}">
                     <td style="font-weight:600;">{u.entity_code}</td>
                     <td>{u.building_name}</td>
                     <td>{u.profile.name if u.profile else "—"}</td>
                     <td>{u.fiscal_year_end}</td>
                     <td><span class="status-pill status-{u.status}">{u.status.title()}</span></td>
-                    <td>
+                    <td style="white-space:nowrap;">
                         <button class="btn-small" onclick="reviewUpload({u.id})">Review</button>
+                        {delete_btn}
                     </td>
                 </tr>
             """)
@@ -1520,6 +1539,29 @@ Be precise with numbers. Include all line items found.
             "success": True,
             "upload": data
         })
+
+    @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
+    def api_delete_upload(upload_id):
+        """Delete an upload that hasn't been confirmed."""
+        upload = AuditUpload.query.get(upload_id)
+        if not upload:
+            return jsonify({"success": False, "error": "Upload not found"}), 404
+
+        if upload.status == "confirmed":
+            return jsonify({"success": False, "error": "Cannot delete confirmed uploads"}), 400
+
+        # Delete the PDF file if it exists
+        if upload.file_path:
+            try:
+                import os
+                if os.path.exists(upload.file_path):
+                    os.remove(upload.file_path)
+            except Exception:
+                pass  # File cleanup is best-effort
+
+        db.session.delete(upload)
+        db.session.commit()
+        return jsonify({"success": True})
 
     # ─── Return Blueprint and Models ───────────────────────────────────────────
 
