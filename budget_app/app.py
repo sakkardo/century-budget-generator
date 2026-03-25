@@ -515,52 +515,48 @@ def process_files():
         tmp = Path(tmpdir)
         output_files = []
 
+        # Two-pass approach: separate YSL files from Expense Distribution files
+        # so we can determine entity codes from YSL first
+        saved_files = []  # (path, filename, file_type, row1, row2)
+        ysl_entities = set()  # entity codes found in YSL files
+        expense_files = []  # (path, filename) for expense files to process after YSL
+
+        # Pass 1: Save all files, classify them, process YSL files first
         for f in files:
             if not f.filename or not f.filename.endswith(".xlsx"):
                 results["warnings"].append(f"Skipped non-xlsx: {f.filename}")
                 continue
 
-            # Save upload to temp
-            ysl_path = tmp / f.filename
-            f.save(str(ysl_path))
+            file_path = tmp / f.filename
+            f.save(str(file_path))
 
             try:
-                # Detect file type: Expense Distribution vs YSL
                 from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(ysl_path), data_only=True)
+                _wb_check = _lwb(str(file_path), data_only=True)
                 _ws_check = _wb_check.active
                 _row1 = str(_ws_check.cell(row=1, column=1).value or "")
                 _row2 = str(_ws_check.cell(row=2, column=1).value or "")
                 _wb_check.close()
 
-                logger.info(f"File detection for {f.filename}: Row1='{_row1}', Row2='{_row2}'")
-
                 is_expense = "expense distribution" in _row1.lower() or "expense dist" in _row1.lower()
+                logger.info(f"File detection for {f.filename}: Row1='{_row1}', Row2='{_row2}', is_expense={is_expense}")
 
                 if is_expense:
-                    # This is an Expense Distribution file — parse and store it
-                    try:
-                        from expense_distribution import parse_expense_distribution
-                    except ImportError:
-                        from budget_app.expense_distribution import parse_expense_distribution
-                    try:
-                        exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(ysl_path))
-                        logger.info(f"Expense parse result: entity={exp_entity}, invoices={len(exp_invoices) if exp_invoices else 0}")
-                        if exp_entity and exp_invoices:
-                            ed_helpers["store_expense_report"](exp_entity, exp_from, exp_to, exp_invoices, f.filename)
-                            results["success"].append(f"Expense Distribution: {exp_entity} ({len(exp_invoices)} invoices)")
-                            logger.info(f"Expense distribution stored for entity {exp_entity}")
-                        else:
-                            results["warnings"].append(f"Expense file {f.filename}: entity='{exp_entity}', invoices={len(exp_invoices) if exp_invoices else 0}")
-                    except Exception as exp_err:
-                        logger.error(f"Expense parse error for {f.filename}: {exp_err}")
-                        results["warnings"].append(f"Expense file {f.filename} parse error: {str(exp_err)}")
+                    expense_files.append((file_path, f.filename))
                     continue
+            except Exception as detect_err:
+                logger.error(f"File detection error for {f.filename}: {detect_err}")
+                results["warnings"].append(f"Could not read {f.filename}: {str(detect_err)}")
+                continue
 
+            # Process YSL file immediately
+            ysl_path = file_path
+            try:
                 # Parse YSL
                 gl_data, property_info = parse_ysl_file(ysl_path)
                 entity = property_info.get("property_code", "unknown")
                 name = property_info.get("property_name", f"Entity_{entity}")
+                ysl_entities.add(str(entity))
 
                 # Build the building folder name (e.g., "148 - 130 E. 18 Owners Corp.")
                 building_folder_name = f"{entity} - {name}"
@@ -637,6 +633,53 @@ def process_files():
                     "file": f.filename,
                     "reason": str(e),
                 })
+
+        # Pass 2: Process Expense Distribution files
+        # Use entity code from filename (our script names them ExpenseDistribution_XXX.xlsx)
+        # If that doesn't match the file contents, use the filename entity (Yardi bug workaround)
+        for exp_path, exp_filename in expense_files:
+            try:
+                from expense_distribution import parse_expense_distribution
+            except ImportError:
+                from budget_app.expense_distribution import parse_expense_distribution
+            try:
+                exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(exp_path))
+                logger.info(f"Expense parse: file={exp_filename}, file_entity={exp_entity}, invoices={len(exp_invoices) if exp_invoices else 0}")
+
+                if not exp_invoices:
+                    results["warnings"].append(f"Expense file {exp_filename}: no invoices found")
+                    continue
+
+                # Determine correct entity code:
+                # 1. Try to extract from filename (ExpenseDistribution_204.xlsx → 204)
+                # 2. If filename entity matches a YSL entity we just processed, use it
+                # 3. Otherwise fall back to what's in the file
+                import re as _re
+                fname_match = _re.search(r'ExpenseDistribution[_-]?(\d+)', exp_filename)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = exp_entity  # default: trust the file
+                if fname_entity and fname_entity != exp_entity:
+                    # Filename says one entity, file contents say another — Yardi bug
+                    if fname_entity in ysl_entities:
+                        # The filename matches a YSL we just processed, so trust the filename
+                        target_entity = fname_entity
+                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Using {fname_entity} (matches YSL upload)")
+                        results["warnings"].append(f"Note: Yardi returned entity {exp_entity} data but file was requested for {fname_entity}. Stored under {fname_entity}.")
+                    elif not ysl_entities:
+                        # No YSL files uploaded — standalone expense upload, trust filename
+                        target_entity = fname_entity
+                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Using {fname_entity} (filename override)")
+                    else:
+                        # Filename doesn't match any YSL entity — log warning but store as-is
+                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Neither matches YSL entities {ysl_entities}. Using file entity {exp_entity}.")
+
+                ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
+                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices)")
+                logger.info(f"Expense distribution stored for entity {target_entity}")
+            except Exception as exp_err:
+                logger.error(f"Expense parse error for {exp_filename}: {exp_err}")
+                results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
 
         if not output_files:
             # If expense files were processed successfully, return 200
