@@ -166,3 +166,23 @@ def build_gl_mapping(template_path: Path) -> Dict[str, Tuple[str, int]]:
     """
     mapper = GLMapper(template_path)
     return mapper.build_mapping()
+
+
+def build_gl_mapping_with_descriptions(template_path: Path) -> Dict[str, Tuple[str, int, str]]:
+    """
+    Build GL mapping that includes descriptions from column B.
+
+    Returns:
+        Dict: {gl_code: (sheet_name, row_number, description)}
+    """
+    mapper = GLMapper(template_path)
+    base_mapping = mapper.build_mapping()
+
+    result = {}
+    for gl_code, (sheet_name, row_num) in base_mapping.items():
+        ws = mapper.get_sheet(sheet_name)
+        desc = ws[f"B{row_num}"].value or gl_code
+        result[gl_code] = (sheet_name, row_num, str(desc).strip())
+
+    mapper.close()
+    return result

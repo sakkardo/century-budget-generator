@@ -549,12 +549,12 @@ def process_files():
                 )
 
                 if success and output_path.exists():
-                    # Store R&M GL data in database for PM review workflow
+                    # Store ALL GL data in database for budget review workflow
                     try:
-                        workflow_helpers["store_rm_lines"](entity, name, gl_data)
-                        logger.info(f"R&M GL data stored for entity {entity}")
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH)
+                        logger.info(f"All GL data stored for entity {entity}")
                     except Exception as wfe:
-                        logger.warning(f"Could not store R&M data for {entity}: {wfe}")
+                        logger.warning(f"Could not store GL data for {entity}: {wfe}")
 
                     # Apply assumptions if available for this building
                     try:

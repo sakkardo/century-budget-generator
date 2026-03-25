@@ -510,6 +510,109 @@ def create_workflow_blueprint(db):
             return False
 
 
+    SHEET_TO_CATEGORY = {
+        "Income": "income",
+        "Payroll": "payroll",
+        "Energy": "energy",
+        "Water & Sewer": "water_sewer",
+        "Repairs & Supplies": "rm",
+        "Gen & Admin": "gen_admin",
+    }
+
+    def store_all_lines(entity_code, building_name, gl_data, template_path):
+        """
+        Store ALL GL codes from YSL data into budget_lines (not just R&M).
+        Uses GLMapper to get sheet/row/description for every GL code.
+        """
+        try:
+            from gl_mapper import build_gl_mapping_with_descriptions
+        except ImportError:
+            from budget_system.gl_mapper import build_gl_mapping_with_descriptions
+
+        try:
+            gl_mapping = build_gl_mapping_with_descriptions(template_path)
+        except Exception as e:
+            logger.error(f"Failed to build GL mapping: {e}")
+            gl_mapping = {}
+
+        try:
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            if not budget:
+                budget = Budget(
+                    entity_code=entity_code,
+                    building_name=building_name,
+                    year=2027,
+                    status="draft"
+                )
+                db.session.add(budget)
+                db.session.flush()
+
+            is_draft = budget.status == "draft"
+            stored = 0
+
+            for gl_code, gl_values in gl_data.items():
+                prior_year = float(gl_values.get("period_2", 0) or 0)
+                ytd_actual = float(gl_values.get("period_3", 0) or 0)
+                ytd_budget = float(gl_values.get("period_4", 0) or 0)
+                current_budget = float(gl_values.get("period_5", 0) or 0)
+
+                # Determine sheet, row, description, category
+                if gl_code in RM_GL_MAP:
+                    desc, row_num, category = RM_GL_MAP[gl_code]
+                    sheet_name = "Repairs & Supplies"
+                    pm_editable = True
+                elif gl_code in gl_mapping:
+                    sheet_name, row_num, desc = gl_mapping[gl_code]
+                    category = SHEET_TO_CATEGORY.get(sheet_name, "other")
+                    pm_editable = False
+                else:
+                    desc = gl_code
+                    sheet_name = "Unmapped"
+                    row_num = 0
+                    category = "other"
+                    pm_editable = False
+
+                line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
+                if line:
+                    line.prior_year = prior_year
+                    line.ytd_actual = ytd_actual
+                    line.ytd_budget = ytd_budget
+                    line.current_budget = current_budget
+                    line.sheet_name = sheet_name
+                    line.description = desc
+                    line.category = category
+                    line.pm_editable = pm_editable
+                    if is_draft:
+                        line.accrual_adj = 0.0
+                        line.unpaid_bills = 0.0
+                        line.increase_pct = 0.0
+                        line.notes = ""
+                else:
+                    line = BudgetLine(
+                        budget_id=budget.id,
+                        gl_code=gl_code,
+                        description=desc,
+                        category=category,
+                        row_num=row_num,
+                        sheet_name=sheet_name,
+                        pm_editable=pm_editable,
+                        prior_year=prior_year,
+                        ytd_actual=ytd_actual,
+                        ytd_budget=ytd_budget,
+                        current_budget=current_budget
+                    )
+                    db.session.add(line)
+                stored += 1
+
+            db.session.commit()
+            logger.info(f"Stored {stored} lines for {entity_code} (all GL codes)")
+            return True
+        except Exception as e:
+            logger.error(f"Error storing lines: {e}")
+            db.session.rollback()
+            return False
+
+
     def get_pm_projections(entity_code):
         """
         Get PM-entered projections for a building.
@@ -909,9 +1012,22 @@ def create_workflow_blueprint(db):
         except Exception:
             pass
 
+        # Group lines by sheet for tabbed view
+        sheets = {}
+        for l in lines:
+            sn = l.sheet_name or "Unmapped"
+            if sn not in sheets:
+                sheets[sn] = []
+            sheets[sn].append(l.to_dict())
+
+        # Ordered sheet tab names
+        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Unmapped"]
+
         return jsonify({
             "budget": budget.to_dict(),
             "lines": [l.to_dict() for l in lines],
+            "sheets": sheets,
+            "sheet_order": [s for s in sheet_order if s in sheets],
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data
@@ -966,16 +1082,125 @@ def create_workflow_blueprint(db):
             line.unpaid_bills = float(line_data.get("unpaid_bills", 0) or 0)
             line.increase_pct = float(line_data.get("increase_pct", 0) or 0)
             line.notes = line_data.get("notes", "")
+            if "category" in line_data and line_data["category"]:
+                line.category = line_data["category"]
 
         db.session.commit()
 
         return jsonify(budget.to_dict())
 
 
+    # ─── FA Line Edit & Reclass Endpoints ────────────────────────────────────
+
+    @bp.route("/api/fa-lines/<entity_code>", methods=["PUT"])
+    def update_fa_lines(entity_code):
+        """FA edits to any budget line (all sheets, not just R&M)."""
+        data = request.get_json()
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        for line_data in data.get("lines", []):
+            line = BudgetLine.query.filter_by(
+                budget_id=budget.id, gl_code=line_data.get("gl_code")
+            ).first()
+            if not line:
+                continue
+            if "increase_pct" in line_data:
+                line.increase_pct = float(line_data["increase_pct"] or 0)
+            if "notes" in line_data:
+                line.notes = line_data["notes"]
+            if "proposed_budget" in line_data:
+                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+
+        db.session.commit()
+        return jsonify({"status": "ok"})
+
+
+    @bp.route("/api/lines/<entity_code>/reclass", methods=["PUT"])
+    def update_reclass(entity_code):
+        """PM suggests reclassifying a GL line (FA acts on it)."""
+        data = request.get_json()
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        gl_code = data.get("gl_code")
+        line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
+        if not line:
+            return jsonify({"error": "Line not found"}), 404
+
+        line.reclass_to_gl = data.get("reclass_to_gl") or None
+        line.reclass_amount = float(data.get("reclass_amount", 0) or 0)
+        line.reclass_notes = data.get("reclass_notes", "")
+        db.session.commit()
+        return jsonify(line.to_dict())
+
+
+    @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
+    def download_budget(entity_code):
+        """Regenerate and download budget Excel from DB data."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        if not lines:
+            return jsonify({"error": "No budget lines found"}), 404
+
+        # Rebuild gl_data dict from budget_lines
+        gl_data = {}
+        for l in lines:
+            gl_data[l.gl_code] = {
+                "period_2": l.prior_year or 0,
+                "period_3": l.ytd_actual or 0,
+                "period_4": l.ytd_budget or 0,
+                "period_5": l.current_budget or 0,
+            }
+
+        try:
+            from template_populator import populate_template
+        except ImportError:
+            from budget_system.template_populator import populate_template
+
+        import tempfile
+        from pathlib import Path as _Path
+        from flask import send_file as _send_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = _Path(tmpdir) / f"{entity_code}_{budget.building_name}_2027_Budget.xlsx"
+            template_path = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
+
+            property_info = {
+                "property_code": entity_code,
+                "property_name": budget.building_name,
+            }
+
+            success = populate_template(
+                template_path=template_path,
+                gl_data=gl_data,
+                property_info=property_info,
+                output_path=output_path,
+                ytd_months=2,
+                remaining_months=10,
+            )
+
+            if not success or not output_path.exists():
+                return jsonify({"error": "Failed to generate Excel"}), 500
+
+            return _send_file(
+                output_path,
+                as_attachment=True,
+                download_name=output_path.name,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
     return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
-            {"store_rm_lines": store_rm_lines, "get_pm_projections": get_pm_projections,
+            {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
+             "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
 
 
@@ -1737,6 +1962,32 @@ BUILDING_DETAIL_TEMPLATE = r"""
     font-size: 13px;
     cursor: pointer;
   }
+  .sheet-tab {
+    padding: 10px 18px;
+    border: none;
+    background: var(--gray-100);
+    color: var(--gray-500);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px 8px 0 0;
+    transition: all 0.15s;
+  }
+  .sheet-tab:hover { background: var(--gray-200); }
+  .sheet-tab.active {
+    background: white;
+    color: var(--blue);
+    box-shadow: 0 -2px 0 var(--blue) inset;
+  }
+  .btn {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+  }
   @media (max-width: 768px) {
     .summary-cards { grid-template-columns: repeat(2, 1fr); }
     .tracks { grid-template-columns: 1fr; }
@@ -1782,25 +2033,24 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </table>
   </div>
 
-  <!-- Budget Detail Table -->
-  <div class="section">
-    <h2>Budget Detail</h2>
-    <table id="detailTable">
-      <thead>
-        <tr>
-          <th>Category</th>
-          <th>GL Code</th>
-          <th>Description</th>
-          <th style="text-align:right">Prior Year</th>
-          <th style="text-align:right; display:none;" id="auditColHeader">Audit Actual</th>
-          <th style="text-align:right">Current Budget</th>
-          <th style="text-align:right">PM Adjusted</th>
-          <th style="text-align:right">Variance $</th>
-          <th style="text-align:right">Variance %</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
+  <!-- Reclass Suggestions (shown if any exist) -->
+  <div class="section" id="reclassSuggestions" style="display:none;">
+    <h2>Pending Reclass Suggestions <span style="font-size:13px; font-weight:400; color:var(--gray-500);">(from PM)</span></h2>
+    <table id="reclassTable">
+      <thead><tr><th>From GL</th><th>To GL</th><th>Amount</th><th>PM Notes</th><th>Action</th></tr></thead>
+      <tbody id="reclassBody"></tbody>
     </table>
+  </div>
+
+  <!-- Budget Workbook (Tabbed) -->
+  <div class="section">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h2>Budget Workbook</h2>
+      <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
+    </div>
+    <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap;"></div>
+    <div id="sheetContent" style="overflow-x:auto;"></div>
+    <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px;"></div>
   </div>
 </div>
 
@@ -1940,88 +2190,136 @@ function renderDetail(data) {
     auditBody.appendChild(totalTr);
   }
 
-  // Budget Detail Table
-  const hasAudit = auditYearKeys.length > 0;
-  const latestAuditYear = auditYearKeys[0] || null;
-  const latestAuditData = latestAuditYear ? auditYears[latestAuditYear] : {};
-  const colSpan = hasAudit ? 9 : 8;
-
-  // Show/hide audit column header
-  const auditColHeader = document.getElementById('auditColHeader');
-  if (hasAudit) {
-    auditColHeader.style.display = '';
-    auditColHeader.textContent = latestAuditYear + ' Audit';
-  } else {
-    auditColHeader.style.display = 'none';
-  }
-
-  const tbody = document.querySelector('#detailTable tbody');
-  tbody.innerHTML = '';
-
-  // Build reverse mapping: budget category -> century category
-  const budgetCatToCentury = catMapping;
-
-  let currentCat = '';
-  lines.forEach(l => {
-    if (l.category !== currentCat) {
-      currentCat = l.category;
-      // Look up audit total for this category group
-      const centuryCat = budgetCatToCentury[currentCat];
-      const auditVal = centuryCat ? (latestAuditData[centuryCat] || 0) : null;
-      const catRow = document.createElement('tr');
-      let catCells = '<td colspan="' + (hasAudit ? 4 : 3) + '" style="font-weight:700; background:var(--blue-light); color:var(--blue); padding:10px 12px;">' + (currentCat || 'Uncategorized') + '</td>';
-      if (hasAudit) {
-        catCells += '<td style="text-align:right; background:var(--blue-light); color:var(--blue); font-weight:700;">' + (auditVal ? fmt(auditVal) : '') + '</td>';
-      }
-      catCells += '<td colspan="' + (hasAudit ? 4 : 5) + '" style="background:var(--blue-light);"></td>';
-      catRow.innerHTML = catCells;
-      tbody.appendChild(catRow);
-    }
-
-    const priorYear = l.prior_year || 0;
-    const currentBudget = l.current_budget || 0;
-    const forecast = computeForecast(l);
-    const proposed = forecast * (1 + (l.increase_pct || 0));
-    const pmAdjusted = (l.increase_pct || l.accrual_adj || l.unpaid_bills) ? proposed : null;
-
-    const variance = currentBudget - priorYear;
-    const variancePct = priorYear ? (variance / priorYear * 100) : 0;
-
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td></td>' +
-      '<td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td>' +
-      '<td>' + l.description + '</td>' +
-      '<td style="text-align:right">' + fmt(priorYear) + '</td>' +
-      (hasAudit ? '<td style="text-align:right; color:var(--gray-400);">\u2014</td>' : '') +
-      '<td style="text-align:right">' + fmt(currentBudget) + '</td>' +
-      '<td style="text-align:right">' + (pmAdjusted !== null ? fmt(pmAdjusted) : '\u2014') + '</td>' +
-      '<td style="text-align:right; color:' + (variance >= 0 ? 'var(--red)' : 'var(--green)') + '">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; color:' + (variance >= 0 ? 'var(--red)' : 'var(--green)') + '">' + variancePct.toFixed(1) + '%</td>';
-    tbody.appendChild(tr);
-  });
-
-  // Total row
-  const totalRow = document.createElement('tr');
-  totalRow.style.fontWeight = '700';
-  totalRow.style.background = 'var(--gray-100)';
-  const totalVar = totalBudget - totalPrior;
-  // Sum audit actuals for R&M categories only (what's in the budget detail table)
-  let totalAudit = 0;
-  if (hasAudit) {
-    Object.values(budgetCatToCentury).forEach(centuryCat => {
-      totalAudit += latestAuditData[centuryCat] || 0;
+  // Reclass Suggestions
+  const reclassLines = lines.filter(l => l.reclass_to_gl);
+  if (reclassLines.length > 0) {
+    document.getElementById('reclassSuggestions').style.display = '';
+    const reclassBody = document.getElementById('reclassBody');
+    reclassBody.innerHTML = '';
+    reclassLines.forEach(l => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td style="font-family:monospace;">' + l.gl_code + ' (' + l.description + ')</td>' +
+        '<td style="font-family:monospace;">' + l.reclass_to_gl + '</td>' +
+        '<td style="text-align:right">' + fmt(l.reclass_amount) + '</td>' +
+        '<td>' + (l.reclass_notes || '') + '</td>' +
+        '<td><button onclick="dismissReclass(\'' + l.gl_code + '\')" style="font-size:12px; padding:4px 8px; background:var(--gray-200); border:none; border-radius:4px; cursor:pointer;">Dismiss</button></td>';
+      reclassBody.appendChild(tr);
     });
   }
-  totalRow.innerHTML =
-    '<td colspan="3">Total</td>' +
-    '<td style="text-align:right">' + fmt(totalPrior) + '</td>' +
-    (hasAudit ? '<td style="text-align:right">' + fmt(totalAudit) + '</td>' : '') +
-    '<td style="text-align:right">' + fmt(totalBudget) + '</td>' +
-    '<td style="text-align:right">' + fmt(totalPM) + '</td>' +
-    '<td style="text-align:right">' + fmt(totalVar) + '</td>' +
-    '<td style="text-align:right">' + (totalPrior ? ((totalVar) / totalPrior * 100).toFixed(1) + '%' : '\u2014') + '</td>';
-  tbody.appendChild(totalRow);
+
+  // Download Excel button
+  document.getElementById('downloadExcelBtn').href = '/api/download-budget/' + entityCode;
+
+  // Budget Workbook Tabs
+  const sheets = data.sheets || {};
+  const sheetOrder = data.sheet_order || Object.keys(sheets);
+  const tabsDiv = document.getElementById('sheetTabs');
+  const contentDiv = document.getElementById('sheetContent');
+  tabsDiv.innerHTML = '';
+
+  if (sheetOrder.length === 0) {
+    contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No budget data yet. Generate a budget first.</p>';
+  } else {
+    sheetOrder.forEach((sheetName, i) => {
+      const tab = document.createElement('button');
+      tab.textContent = sheetName;
+      tab.className = 'sheet-tab' + (i === 0 ? ' active' : '');
+      tab.onclick = () => renderSheet(sheetName, sheets[sheetName], tab);
+      tabsDiv.appendChild(tab);
+    });
+    renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
+  }
+}
+
+let _faSaveTimer = null;
+function faAutoSave(gl, field, value) {
+  clearTimeout(_faSaveTimer);
+  _faSaveTimer = setTimeout(async () => {
+    const indicator = document.getElementById('faSaveIndicator');
+    indicator.textContent = 'Saving...';
+    const lineData = {gl_code: gl};
+    lineData[field] = value;
+    await fetch('/api/fa-lines/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: [lineData]})
+    });
+    indicator.textContent = 'Saved';
+    setTimeout(() => { indicator.textContent = ''; }, 2000);
+  }, 800);
+}
+
+async function dismissReclass(glCode) {
+  await fetch('/api/lines/' + entityCode + '/reclass', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({gl_code: glCode, reclass_to_gl: '', reclass_amount: 0, reclass_notes: ''})
+  });
+  loadDetail();
+}
+
+function renderSheet(sheetName, sheetLines, tabEl) {
+  // Update tab active state
+  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+
+  const contentDiv = document.getElementById('sheetContent');
+  if (!sheetLines || sheetLines.length === 0) {
+    contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No data for this sheet.</p>';
+    return;
+  }
+
+  let html = '<table style="width:100%; border-collapse:collapse; margin-top:0;">' +
+    '<thead><tr>' +
+    '<th style="text-align:left; padding:8px;">GL Code</th>' +
+    '<th style="text-align:left; padding:8px;">Description</th>' +
+    '<th style="text-align:right; padding:8px;">Prior Year</th>' +
+    '<th style="text-align:right; padding:8px;">YTD Actual</th>' +
+    '<th style="text-align:right; padding:8px;">Current Budget</th>' +
+    '<th style="text-align:right; padding:8px;">Increase %</th>' +
+    '<th style="text-align:right; padding:8px;">Proposed Budget</th>' +
+    '<th style="text-align:left; padding:8px;">Notes</th>' +
+    '</tr></thead><tbody>';
+
+  let totalPrior = 0, totalYtd = 0, totalBudget = 0, totalProposed = 0;
+
+  sheetLines.forEach(l => {
+    const prior = l.prior_year || 0;
+    const ytd = l.ytd_actual || 0;
+    const budget = l.current_budget || 0;
+    const proposed = l.proposed_budget || budget;
+    const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
+    totalPrior += prior;
+    totalYtd += ytd;
+    totalBudget += budget;
+    totalProposed += proposed;
+
+    const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
+
+    html += '<tr>' +
+      '<td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + reclassBadge + '</td>' +
+      '<td style="padding:6px 8px;">' + l.description + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
+      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:120px; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
+      '</tr>';
+  });
+
+  html += '<tr style="font-weight:700; background:var(--gray-100);">' +
+    '<td style="padding:8px;" colspan="2">Sheet Total</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalPrior) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalYtd) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalBudget) + '</td>' +
+    '<td></td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalProposed) + '</td>' +
+    '<td></td></tr>';
+
+  html += '</tbody></table>';
+  contentDiv.innerHTML = html;
 }
 
 function computeForecast(l) {
@@ -2491,6 +2789,7 @@ PM_EDIT_TEMPLATE = """
           <tr>
             <th>GL Code</th>
             <th>Description</th>
+            <th>Category</th>
             <th class="number">Prior Year</th>
             <th class="number">YTD Actual</th>
             <th class="number">12-Mo Forecast</th>
@@ -2499,6 +2798,7 @@ PM_EDIT_TEMPLATE = """
             <th class="number">Unpaid Bills</th>
             <th class="number">Proposed Budget</th>
             <th>Notes</th>
+            <th>Reclass</th>
           </tr>
         </thead>
         <tbody id="linesBody"></tbody>
@@ -2566,7 +2866,7 @@ function renderTable() {
         // Category header
         const headerRow = document.createElement('tr');
         headerRow.className = 'category-header';
-        headerRow.innerHTML = '<td colspan="10">' + catLabels[cat] + '</td>';
+        headerRow.innerHTML = '<td colspan="12">' + catLabels[cat] + '</td>';
         tbody.appendChild(headerRow);
 
         let catPrior = 0, catYtd = 0, catForecast = 0, catProposed = 0;
@@ -2579,10 +2879,20 @@ function renderTable() {
             catForecast += forecast;
             catProposed += proposed;
 
+            const reclassBadge = line.reclass_to_gl ? '<span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px; margin-left:4px;">→' + line.reclass_to_gl + '</span>' : '';
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a></td>
+                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
                 <td>${line.description}</td>
+                <td>
+                    <select data-gl="${line.gl_code}" data-field="category" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}
+                            style="font-size:12px; padding:2px 4px; border:1px solid var(--gray-200); border-radius:4px;">
+                        <option value="supplies" ${line.category === 'supplies' ? 'selected' : ''}>Supplies</option>
+                        <option value="repairs" ${line.category === 'repairs' ? 'selected' : ''}>Repairs</option>
+                        <option value="maintenance" ${line.category === 'maintenance' ? 'selected' : ''}>Maintenance</option>
+                    </select>
+                </td>
                 <td class="number">${fmt(line.prior_year)}</td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
                 <td class="number" id="fc_${line.gl_code}">${fmt(forecast)}</td>
@@ -2607,6 +2917,9 @@ function renderTable() {
                            data-gl="${line.gl_code}" data-field="notes"
                            onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
                 </td>
+                <td>
+                    ${CAN_EDIT ? '<button onclick="showReclass(\'' + line.gl_code + '\')" style="font-size:11px; padding:2px 8px; background:var(--gray-100); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer;">Reclass</button>' : ''}
+                </td>
             `;
             tbody.appendChild(tr);
         });
@@ -2615,13 +2928,13 @@ function renderTable() {
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
-            <td></td><td>Total ${catLabels[cat]}</td>
+            <td></td><td>Total ${catLabels[cat]}</td><td></td>
             <td class="number">${fmt(catPrior)}</td>
             <td class="number">${fmt(catYtd)}</td>
             <td class="number" id="subfc_${cat}">${fmt(catForecast)}</td>
             <td></td><td></td><td></td>
             <td class="number" id="subpb_${cat}">${fmt(catProposed)}</td>
-            <td></td>
+            <td></td><td></td>
         `;
         tbody.appendChild(subRow);
 
@@ -2635,13 +2948,13 @@ function renderTable() {
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
-        <td></td><td>GRAND TOTAL R&M</td>
+        <td></td><td>GRAND TOTAL R&M</td><td></td>
         <td class="number">${fmt(grandPrior)}</td>
         <td class="number">${fmt(grandYtd)}</td>
         <td class="number">${fmt(grandForecast)}</td>
         <td></td><td></td><td></td>
         <td class="number">${fmt(grandProposed)}</td>
-        <td></td>
+        <td></td><td></td>
     `;
     tbody.appendChild(grandRow);
 }
@@ -2721,6 +3034,8 @@ function onInput(el) {
         line.unpaid_bills = parseFloat(el.value) || 0;
     } else if (field === 'notes') {
         line.notes = el.value;
+    } else if (field === 'category') {
+        line.category = el.value;
     }
 
     // Update computed columns
@@ -2747,7 +3062,8 @@ async function saveAll() {
             increase_pct: l.increase_pct || 0,
             accrual_adj: l.accrual_adj || 0,
             unpaid_bills: l.unpaid_bills || 0,
-            notes: l.notes || ''
+            notes: l.notes || '',
+            category: l.category || ''
         }));
         const resp = await fetch('/api/lines/' + ENTITY, {
             method: 'PUT',
@@ -2782,6 +3098,73 @@ async function submitForReview() {
     } else {
         const err = await resp.json();
         alert('Error: ' + (err.error || 'Unknown'));
+    }
+}
+
+// Reclass suggestion modal
+function showReclass(glCode) {
+    const line = LINES.find(l => l.gl_code === glCode);
+    if (!line) return;
+
+    // Build GL options from RM_GL_MAP keys (all budget template GL codes)
+    const glOptions = LINES.filter(l => l.gl_code !== glCode)
+        .map(l => `<option value="${l.gl_code}">${l.gl_code} - ${l.description}</option>`)
+        .join('');
+
+    const row = document.querySelector(`[data-gl="${glCode}"]`).closest('tr');
+    // Remove existing reclass form if any
+    const existing = row.nextElementSibling;
+    if (existing && existing.classList.contains('reclass-form-row')) {
+        existing.remove();
+        return;
+    }
+
+    const formRow = document.createElement('tr');
+    formRow.className = 'reclass-form-row';
+    formRow.innerHTML = `
+        <td colspan="12" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
+                <select id="reclass_target_${glCode}" style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
+                    <option value="">-- Select target GL --</option>
+                    ${glOptions}
+                </select>
+                <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.current_budget || 0)}"
+                       style="width:100px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
+                <input type="text" id="reclass_notes_${glCode}" placeholder="Notes for FA" value="${line.reclass_notes || ''}"
+                       style="width:200px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
+                <button onclick="saveReclass('${glCode}')" style="font-size:12px; padding:4px 12px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Save</button>
+                <button onclick="this.closest('tr').remove()" style="font-size:12px; padding:4px 12px; background:var(--gray-200); border:none; border-radius:4px; cursor:pointer;">Cancel</button>
+            </div>
+        </td>
+    `;
+    row.after(formRow);
+}
+
+async function saveReclass(glCode) {
+    const target = document.getElementById('reclass_target_' + glCode).value;
+    const amount = document.getElementById('reclass_amount_' + glCode).value;
+    const notes = document.getElementById('reclass_notes_' + glCode).value;
+
+    if (!target) { alert('Select a target GL code'); return; }
+
+    const resp = await fetch('/api/lines/' + ENTITY + '/reclass', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({gl_code: glCode, reclass_to_gl: target, reclass_amount: parseFloat(amount) || 0, reclass_notes: notes})
+    });
+
+    if (resp.ok) {
+        // Update local data and re-render
+        const line = LINES.find(l => l.gl_code === glCode);
+        if (line) {
+            line.reclass_to_gl = target;
+            line.reclass_amount = parseFloat(amount) || 0;
+            line.reclass_notes = notes;
+        }
+        renderTable();
+    } else {
+        alert('Error saving reclass suggestion');
     }
 }
 
