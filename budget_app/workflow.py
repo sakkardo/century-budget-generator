@@ -190,10 +190,8 @@ def create_workflow_blueprint(db):
         effective_date = db.Column(db.String(20), nullable=True)
         ar_notes = db.Column(db.Text, default="")
 
-        # Relationships
+        # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
-        data_sources = db.relationship("DataSource", back_populates="budget", cascade="all, delete-orphan")
-        revisions = db.relationship("BudgetRevision", back_populates="budget", cascade="all, delete-orphan")
 
         __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
 
@@ -296,7 +294,7 @@ def create_workflow_blueprint(db):
         error_message = db.Column(db.Text, default="")
         metadata_json = db.Column(db.Text, default="{}")
 
-        budget = db.relationship("Budget", back_populates="data_sources")
+        budget = db.relationship("Budget", backref=db.backref("data_sources", cascade="all, delete-orphan"))
 
         def to_dict(self):
             return {
@@ -324,7 +322,7 @@ def create_workflow_blueprint(db):
         source = db.Column(db.String(30), default="web")  # web, presentation, api, system
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        budget = db.relationship("Budget", back_populates="revisions")
+        budget = db.relationship("Budget", backref=db.backref("revisions", cascade="all, delete-orphan"))
 
         def to_dict(self):
             return {
@@ -352,7 +350,6 @@ def create_workflow_blueprint(db):
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
         budget = db.relationship("Budget")
-        edits = db.relationship("PresentationEdit", back_populates="session", cascade="all, delete-orphan")
 
         def to_dict(self):
             return {
@@ -375,7 +372,7 @@ def create_workflow_blueprint(db):
         new_value = db.Column(db.Text, default="")
         edited_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        session = db.relationship("PresentationSession", back_populates="edits")
+        session = db.relationship("PresentationSession", backref=db.backref("edits", cascade="all, delete-orphan"))
 
         def to_dict(self):
             return {
