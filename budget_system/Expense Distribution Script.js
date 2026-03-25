@@ -57,12 +57,73 @@
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      // Step 2: POST with Excel event target
-      const post = {
+      // Step 2a: First POST to set the property filter (trigger lookup validation)
+      // Yardi's LookupCode controls require a postback to validate the value
+      const lookupPost = {
         ...hidden,
+        '__EVENTTARGET': 'PropertyLookup:LookupCode',
+        '__EVENTARGUMENT': '',
+        'PropertyLookup:LookupCode': String(entity),
+        'PropertyLookup:LookupDesc': '',
+        'APAccountLookup:LookupCode': '',
+        'PostCodeLookup:LookupCode': '',
+        'ControlNoFrom:TextBox': '',
+        'ControlNoTo:TextBox': '',
+        'BatchNoFrom:TextBox': '',
+        'BatchNoTo:TextBox': '',
+        'PeriodFrom:TextBox': PERIOD_FROM,
+        'PeriodTo:TextBox': PERIOD_TO,
+        'AgeAsOf:TextBox': '',
+        'DateFrom:TextBox': '',
+        'DateTo:TextBox': '',
+        'DueDateFromText:TextBox': '',
+        'DueDateText:TextBox': '',
+        'CheckNoFrom:TextBox': '',
+        'CheckNoTo:TextBox': '',
+        'CheckPeriodFrom:TextBox': '',
+        'CheckPeriodTo:TextBox': '',
+        'BankLookup:LookupCode': '',
+        'CompanyLookup:LookupCode': '',
+        'VendorLookup:LookupCode': '',
+        'AccountLookup:LookupCode': '',
+        'StateCountryText:TextBox': '',
+        'CityText:TextBox': '',
+        'ZipText:TextBox': '',
+        'WCExpDate:TextBox': '',
+        'LiabInsDate:TextBox': '',
+        'ReferenceText:TextBox': '',
+        'NotesText:TextBox': '',
+        'ShowDetail:CheckBox': 'on',
+        'ShowGrid:CheckBox': 'on',
+      };
+
+      const lookupBody = Object.entries(lookupPost).map(([k, v]) =>
+        encodeURIComponent(k) + '=' + encodeURIComponent(v)
+      ).join('&');
+
+      const lookupResp = await fetch(PAGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: lookupBody,
+      });
+
+      // Parse the response to get updated viewstate after lookup validation
+      const lookupHtml = await lookupResp.text();
+      const lookupDoc = new DOMParser().parseFromString(lookupHtml, 'text/html');
+      const hidden2 = {};
+      lookupDoc.querySelectorAll('input[type="hidden"]').forEach(el => {
+        if (el.name) hidden2[el.name] = el.value || '';
+      });
+
+      log(`  ${entity}: Property lookup validated, requesting Excel...`);
+
+      // Step 2b: Second POST to actually get the Excel export with validated property
+      const post = {
+        ...hidden2,
         '__EVENTTARGET': 'Excel',
         '__EVENTARGUMENT': '',
         'PropertyLookup:LookupCode': String(entity),
+        'PropertyLookup:LookupDesc': '',
         'APAccountLookup:LookupCode': '',
         'PostCodeLookup:LookupCode': '',
         'ControlNoFrom:TextBox': '',
