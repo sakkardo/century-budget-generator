@@ -28,7 +28,6 @@ entity_code,building_name,address,city,zip,type,units
 345,H & L Broadway Holding LLC,29-10 Broadway,Astoria,11106,Rental,64
 347,500 Waverly Condominium,500 Waverly Avenue,Brooklyn,11238,Condo,48
 348,Ariana Condominium,29 Tiffany Place,Brooklyn,11231,Condo,70
-351,The Nexus,520 Dean Street,Brooklyn,11217,Condo,78
 352,One Grand Army Plaza,1 Grand Army Plaza,Brooklyn,11238,Condo,96
 354,Ansonia Muse Condominium,444 12th Street,Brooklyn,11215,Condo,37
 355,Glassworks at 336 Himrod,336 Himrod street,Brooklyn,11237,Rental,63
@@ -71,7 +70,7 @@ entity_code,building_name,address,city,zip,type,units
 818,175 West 10th Street Condominium,130 Seventh Avenue South,New York,10014,Condo,5
 823,121 East 22nd Street Condominium,121 East 22nd St,New York,10010,Condo,140
 824,10 Provost Square Condominium,10 Provost St,Jersey City,07302,Condo,242
-826,147 Wavarly Place Condominium,147 Wavarly Place,New York,10014,Condo,18
+826,147 Waverly Place Condominium,147 Waverly Place,New York,10014,Condo,18
 829,41 Fifth Owners Corp,41 Fifth Avenue,New York,10003,Coop,88
 831,91 Leonard Street Condominium,91 Leonard St,New York,10013,Condo,111
 834,Turtle Bay Towers Corp.,310 East 46th St,New York,10017,Coop,338
@@ -87,24 +86,7 @@ entity_code,building_name,address,city,zip,type,units
 847,The Orion - 350 West 42nd Street,350 West 42nd St,New York,10036,Condo,551
 848,1045 Madison Condominium (The Benson),1045 Madison Avenue,New York,10075,Condo,15
 849,1435 Tenants Corp.,1435 Lexington Avenue,New York,10128,Coop,64
-850,LL 141 East 26th Street LLC,141 East 26th St,New York,10010,Rental,35
-851,LL 218 East 81st Street LLC,218 East 81st St,New York,10028,Rental,17
-852,LL 216 East 83rd Street LLC,216 East 83rd St,New York,10028,Rental,20
-853,LL 1324 Lexington Avenue LLC,1324 Lexington Avenue,New York,10128,Rental,25
-854,LL 1371 First Avenue LLC,1371 1st Avenue,New York,10021,Rental,15
-855,LL 204 East 84th Street LLC,204 East 84th St,New York,10028,Rental,39
-856,LL 505 East 88th Street LLC,505 East 88th St,New York,10128,Rental,38
-857,LL 410 East 78th Street LLC,410 East 78th St,New York,10075,Rental,17
-858,LL 1361 Lexington Avenue LLC,1361 Lexington Avenue,New York,10128,Rental,9
-859,LL 1592 Second Avenue LLC,1592 2nd Avenue,New York,10028,Rental,18
-860,LL 450 East 81st Street LLC,450 East 81st St,New York,10028,Rental,38
-861,LL 305 East 78th Street LLC,305 East 78th St,New York,10075,Rental,20
-862,LL 204 East 25th Street LLC,204 East 25th St,New York,10010,Rental,41
-863,LL 205-215 East 88th Street LLC,205-215 East 88th St,New York,10128,Rental,40
-864,LL 7 Jones Street LLC,7 Jones St,New York,10014,Rental,20
-865,Lemle Master (204 East 83rd),204 East 83rd St,New York,10028,Rental,0
 867,205215 Owners LTD,205 East 88th St / 207 East 88th St /  209 East 88th St / 211 East 88th St / 213 East 88th St / 215 East 88th St,New York,10128,Coop,120
-868,425 East 51st Street Condominium,425 East 51st St,New York,10022,Condo,81
 869,100 West 18th Street Condominium,100 West 18th St,New York,10011,Condo,47
 870,13193 Owners Corp.,131 East 93rd St,New York,10128,Coop,35
 871,The 456 West 19th Street Condominium,456 West 19th St,New York,10011,Condo,22
@@ -161,3 +143,20 @@ entity_code,building_name,address,city,zip,type,units
 941,325 West 86th Corp,325 West 86th Street,New York,10024,Coop,49
 942,The Kalahari Condominium,40 W 116th Street,New York,10026,Condo,249
 943,The Halcyon Condominium,305 E 51st Street,New York,10022,Condo,123
+944,525 6th Avenue Condominium,525 6th Avenue,New York,10011,Condo,
+850,LL 141 East 26th Street LLC,141 East 26th St,New York,10010,Rental,35
+851,LL 218 East 81st Street LLC,218 East 81st St,New York,10028,Rental,17
+852,LL 216 East 83rd Street LLC,216 East 83rd St,New York,10028,Rental,20
+853,LL 1324 Lexington Avenue LLC,1324 Lexington Avenue,New York,10128,Rental,25
+854,LL 1371 First Avenue LLC,1371 1st Avenue,New York,10021,Rental,15
+855,LL 204 East 84th Street LLC,204 East 84th St,New York,10028,Rental,39
+856,LL 505 East 88th Street LLC,505 East 88th St,New York,10128,Rental,38
+857,LL 410 East 78th Street LLC,410 East 78th St,New York,10075,Rental,17
+858,LL 1361 Lexington Avenue LLC,1361 Lexington Avenue,New York,10128,Rental,9
+859,LL 1592 Second Avenue LLC,1592 2nd Avenue,New York,10028,Rental,18
+860,LL 450 East 81st Street LLC,450 East 81st St,New York,10028,Rental,38
+861,LL 305 East 78th Street LLC,305 East 78th St,New York,10075,Rental,20
+862,LL 204 East 25th Street LLC,204 East 25th St,New York,10010,Rental,41
+863,LL 205-215 East 88th Street LLC,205-215 East 88th St,New York,10128,Rental,40
+864,LL 7 Jones Street LLC,7 Jones St,New York,10014,Rental,20
+865,Lemle Master (204 East 83rd),204 East 83rd St,New York,10028,Rental,0
