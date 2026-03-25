@@ -382,6 +382,15 @@ def create_workflow_blueprint(db):
         )
 
 
+    @bp.route("/dashboard/<entity_code>", methods=["GET"])
+    def building_detail(entity_code):
+        """FA Building Detail - combined view of budget, expenses, audit."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return "No budget found for this building", 404
+        return render_template_string(BUILDING_DETAIL_TEMPLATE, entity_code=entity_code)
+
+
     @bp.route("/pm", methods=["GET"])
     def pm_portal():
         """PM Portal - select building and edit R&M lines."""
@@ -558,9 +567,31 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/budgets", methods=["GET"])
     def list_budgets():
-        """List all budgets with status."""
+        """List all budgets with status and completeness data."""
         budgets = Budget.query.all()
-        return jsonify([b.to_dict() for b in budgets])
+        result = []
+        for b in budgets:
+            d = b.to_dict()
+            # Check expense report exists
+            try:
+                has_expenses = db.session.execute(
+                    db.text("SELECT 1 FROM expense_report WHERE entity_code = :ec LIMIT 1"),
+                    {"ec": b.entity_code}
+                ).fetchone() is not None
+            except Exception:
+                has_expenses = False
+            # Check confirmed audit exists
+            try:
+                has_audit = db.session.execute(
+                    db.text("SELECT 1 FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
+                    {"ec": b.entity_code}
+                ).fetchone() is not None
+            except Exception:
+                has_audit = False
+            d["has_expenses"] = has_expenses
+            d["has_audit"] = has_audit
+            result.append(d)
+        return jsonify(result)
 
 
     @bp.route("/api/budgets/<entity_code>/status", methods=["POST"])
@@ -593,6 +624,69 @@ def create_workflow_blueprint(db):
         db.session.commit()
 
         return jsonify(budget.to_dict())
+
+
+    @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
+    def api_building_detail(entity_code):
+        """Get combined budget data for building detail view."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(BudgetLine.row_num).all()
+
+        # Get assignments
+        assignments = BuildingAssignment.query.filter_by(entity_code=entity_code).all()
+        fa_name = next((a.user.name for a in assignments if a.role == "fa"), None)
+        pm_name = next((a.user.name for a in assignments if a.role == "pm"), None)
+
+        # Check expense report
+        expense_data = {"exists": False}
+        try:
+            row = db.session.execute(
+                db.text("SELECT id, period_from, period_to, total_amount FROM expense_report WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if row:
+                invoice_count = db.session.execute(
+                    db.text("SELECT COUNT(*) FROM expense_invoice WHERE report_id = :rid"),
+                    {"rid": row[0]}
+                ).fetchone()[0]
+                expense_data = {
+                    "exists": True,
+                    "period_from": row[1],
+                    "period_to": row[2],
+                    "total_amount": float(row[3]) if row[3] else 0,
+                    "invoice_count": invoice_count
+                }
+        except Exception:
+            pass
+
+        # Check audit data
+        audit_data = {"exists": False}
+        try:
+            audit_row = db.session.execute(
+                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY confirmed_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if audit_row and audit_row[0]:
+                import json
+                mapped = json.loads(audit_row[0])
+                audit_data = {
+                    "exists": True,
+                    "fiscal_year": audit_row[1],
+                    "categories": mapped
+                }
+        except Exception:
+            pass
+
+        return jsonify({
+            "budget": budget.to_dict(),
+            "lines": [l.to_dict() for l in lines],
+            "assignments": {"fa": fa_name, "pm": pm_name},
+            "expenses": expense_data,
+            "audit": audit_data
+        })
 
 
     # ─── API Routes: Lines ───────────────────────────────────────────────────
@@ -1132,15 +1226,19 @@ DASHBOARD_TEMPLATE = r"""
   <div class="status-summary" id="status-summary"></div>
 
   <div class="section">
-    <h2>All Buildings</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h2 style="margin-bottom:0;">All Buildings</h2>
+      <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
+        style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
+    </div>
     <table id="budgets-table">
       <thead>
         <tr>
-          <th>Building Name</th>
-          <th>Entity Code</th>
-          <th>Year</th>
+          <th>Building</th>
+          <th>Entity</th>
+          <th>Data</th>
+          <th>PM Review</th>
           <th>Status</th>
-          <th>Updated</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -1208,7 +1306,26 @@ function renderBudgets(budgets) {
     const tr = document.createElement('tr');
     const statusLabel = statusLabels[b.status] || b.status;
     const statusClass = `pill-${b.status}`;
-    const updated = new Date(b.updated_at).toLocaleDateString();
+
+    // Data completeness indicators
+    const budgetIcon = '<span style="color:var(--green);" title="Budget">&#10003; Budget</span>';
+    const expenseIcon = b.has_expenses
+      ? '<span style="color:var(--green);" title="Expenses uploaded">&#10003; Expenses</span>'
+      : '<span style="color:var(--gray-300);" title="No expenses">&#10007; Expenses</span>';
+    const auditIcon = b.has_audit
+      ? '<span style="color:var(--green);" title="Audit confirmed">&#10003; Audit</span>'
+      : '<span style="color:var(--gray-300);" title="No audit">&#10007; Audit</span>';
+
+    // PM review status pill
+    const pmStatusMap = {
+      'draft': 'Not Sent',
+      'pm_pending': 'Sent to PM',
+      'pm_in_progress': 'PM Working',
+      'fa_review': 'Submitted',
+      'approved': 'Approved',
+      'returned': 'Returned'
+    };
+    const pmLabel = pmStatusMap[b.status] || b.status;
 
     let actionHtml = '';
     if (b.status === 'draft') {
@@ -1221,14 +1338,23 @@ function renderBudgets(budgets) {
     }
 
     tr.innerHTML = `
-      <td><a href="/pm/${b.entity_code}" style="color: var(--blue); text-decoration: none;">${b.building_name}</a></td>
-      <td>${b.entity_code}</td>
-      <td>${b.year}</td>
+      <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
+      <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
+      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
+      <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
-      <td>${updated}</td>
       <td>${actionHtml}</td>
     `;
     tbody.appendChild(tr);
+  });
+}
+
+function filterBudgetTable() {
+  const query = document.getElementById('budgetSearch').value.toLowerCase();
+  const rows = document.querySelectorAll('#budgets-table tbody tr');
+  rows.forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(query) ? '' : 'none';
   });
 }
 
@@ -1272,6 +1398,367 @@ async function returnTopm(entity) {
 (async () => {
   await loadBudgets();
 })();
+</script>
+</body>
+</html>
+"""
+
+BUILDING_DETAIL_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Building Detail - Century Management</title>
+<style>
+  :root {
+    --blue: #1a56db;
+    --blue-light: #e1effe;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --red: #e02424;
+    --red-light: #fde8e8;
+    --yellow: #f59e0b;
+    --yellow-light: #fef3c7;
+    --orange: #f97316;
+    --orange-light: #fed7aa;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+    --gray-900: #111827;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--gray-50);
+    color: var(--gray-900);
+    line-height: 1.5;
+  }
+  header {
+    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    color: white;
+    padding: 24px 20px;
+  }
+  header h1 { font-size: 24px; font-weight: 700; }
+  header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 32px 20px; }
+  .summary-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .summary-card {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    border: 1px solid var(--gray-200);
+    text-align: center;
+  }
+  .card-value { font-size: 26px; font-weight: 700; color: var(--blue); }
+  .card-label { font-size: 12px; color: var(--gray-500); text-transform: uppercase; font-weight: 600; margin-top: 4px; }
+  .tracks {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 28px;
+  }
+  .section {
+    background: white;
+    border-radius: 12px;
+    padding: 28px;
+    border: 1px solid var(--gray-200);
+    margin-bottom: 28px;
+  }
+  .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: var(--gray-100);
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    border-bottom: 1px solid var(--gray-200);
+    text-transform: uppercase;
+    color: var(--gray-500);
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 14px; }
+  tr:hover { background: var(--gray-50); }
+  .pill {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pill-draft { background: var(--gray-100); color: var(--gray-700); }
+  .pill-pm_pending { background: var(--yellow-light); color: #a16207; }
+  .pill-pm_in_progress { background: var(--blue-light); color: var(--blue); }
+  .pill-fa_review { background: var(--orange-light); color: var(--orange); }
+  .pill-approved { background: var(--green-light); color: var(--green); }
+  .pill-returned { background: var(--red-light); color: var(--red); }
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  @media (max-width: 768px) {
+    .summary-cards { grid-template-columns: repeat(2, 1fr); }
+    .tracks { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+    <div>
+      <a href="/dashboard" style="color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px;">&#8592; Back to Dashboard</a>
+      <h1 id="buildingName">Loading...</h1>
+      <p id="buildingMeta"></p>
+    </div>
+    <a href="/" style="color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px;">&#8592; Home</a>
+  </div>
+</header>
+<div class="container">
+  <!-- Summary Cards -->
+  <div class="summary-cards" id="summaryCards"></div>
+
+  <!-- Two Track Cards -->
+  <div class="tracks">
+    <!-- Track 1: PM Expense Review -->
+    <div class="section" style="margin-bottom:0;">
+      <h2>PM Expense Review</h2>
+      <div id="pmTrackContent"></div>
+    </div>
+
+    <!-- Track 2: Budget Assembly -->
+    <div class="section" style="margin-bottom:0;">
+      <h2>Budget Assembly</h2>
+      <div id="assemblyContent"></div>
+    </div>
+  </div>
+
+  <!-- Budget Detail Table -->
+  <div class="section">
+    <h2>Budget Detail</h2>
+    <table id="detailTable">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>GL Code</th>
+          <th>Description</th>
+          <th style="text-align:right">Prior Year</th>
+          <th style="text-align:right">Current Budget</th>
+          <th style="text-align:right">PM Adjusted</th>
+          <th style="text-align:right">Variance $</th>
+          <th style="text-align:right">Variance %</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const entityCode = '{{ entity_code }}';
+
+async function loadDetail() {
+  const res = await fetch('/api/dashboard/' + entityCode);
+  if (!res.ok) { document.getElementById('buildingName').textContent = 'Error loading data'; return; }
+  const data = await res.json();
+  renderDetail(data);
+}
+
+function fmt(n) {
+  if (n === null || n === undefined) return '\u2014';
+  return '$' + Math.round(n).toLocaleString();
+}
+
+function renderDetail(data) {
+  const b = data.budget;
+
+  // Header
+  document.getElementById('buildingName').textContent = b.building_name;
+  document.title = b.building_name + ' - Century Management';
+  let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
+  if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;
+  if (data.assignments.pm) meta += ' | PM: ' + data.assignments.pm;
+  document.getElementById('buildingMeta').textContent = meta;
+
+  // Summary cards
+  const lines = data.lines;
+  let totalPrior = 0, totalBudget = 0, totalPM = 0;
+  lines.forEach(l => {
+    totalPrior += l.prior_year || 0;
+    totalBudget += l.current_budget || 0;
+    const forecast = computeForecast(l);
+    const proposed = forecast * (1 + (l.increase_pct || 0));
+    totalPM += proposed;
+  });
+
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalPrior)}</div>
+      <div class="card-label">Prior Year</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalBudget)}</div>
+      <div class="card-label">Current Budget</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalBudget - totalPrior)}</div>
+      <div class="card-label">Variance</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${totalPrior ? ((totalBudget - totalPrior) / totalPrior * 100).toFixed(1) + '%' : '\u2014'}</div>
+      <div class="card-label">% Change</div>
+    </div>
+  `;
+
+  // PM Track
+  const statusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
+  const pmStatus = statusLabels[b.status] || b.status;
+  let pmActions = '';
+  if (b.status === 'draft') {
+    pmActions = '<button onclick="sendToPM()" style="background:var(--blue); color:white;">Send to PM for Review</button>';
+  } else if (b.status === 'fa_review') {
+    pmActions = '<button onclick="approvePM()" style="background:var(--green); color:white; margin-right:8px;">Approve PM Review</button>' +
+      '<button onclick="returnPM()" style="background:var(--yellow); color:white;">Return to PM</button>';
+  }
+  if (b.fa_notes) {
+    pmActions += '<div style="margin-top:12px; padding:10px; background:#fef3c7; border-radius:6px; font-size:13px;"><strong>FA Notes:</strong> ' + b.fa_notes + '</div>';
+  }
+
+  document.getElementById('pmTrackContent').innerHTML =
+    '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">' +
+      '<span class="pill pill-' + b.status + '">' + pmStatus + '</span>' +
+      (data.assignments.pm ? '<span style="font-size:13px; color:var(--gray-500);">Assigned to: ' + data.assignments.pm + '</span>' : '') +
+    '</div>' + pmActions;
+
+  // Assembly Track
+  const checks = [
+    { label: 'Budget Generated', done: true },
+    { label: 'Expense Distribution Uploaded', done: data.expenses.exists },
+    { label: 'Audit Data Confirmed', done: data.audit.exists }
+  ];
+  let assemblyHtml = '<div style="display:flex; flex-direction:column; gap:8px;">';
+  checks.forEach(c => {
+    const icon = c.done ? '\u2713' : '\u2717';
+    const color = c.done ? 'var(--green)' : 'var(--gray-300)';
+    assemblyHtml += '<div style="display:flex; align-items:center; gap:8px;"><span style="color:' + color + '; font-weight:bold; font-size:18px;">' + icon + '</span> ' + c.label + '</div>';
+  });
+  assemblyHtml += '</div>';
+
+  if (data.expenses.exists) {
+    assemblyHtml += '<div style="margin-top:12px; font-size:13px; color:var(--gray-500);">' +
+      data.expenses.invoice_count + ' invoices | ' + data.expenses.period_from + ' to ' + data.expenses.period_to +
+      ' | Total: ' + fmt(data.expenses.total_amount) + '</div>';
+  }
+
+  document.getElementById('assemblyContent').innerHTML = assemblyHtml;
+
+  // Budget Detail Table
+  const tbody = document.querySelector('#detailTable tbody');
+  tbody.innerHTML = '';
+
+  let currentCat = '';
+  lines.forEach(l => {
+    if (l.category !== currentCat) {
+      currentCat = l.category;
+      const catRow = document.createElement('tr');
+      catRow.innerHTML = '<td colspan="8" style="font-weight:700; background:var(--blue-light); color:var(--blue); padding:10px 12px;">' + (currentCat || 'Uncategorized') + '</td>';
+      tbody.appendChild(catRow);
+    }
+
+    const priorYear = l.prior_year || 0;
+    const currentBudget = l.current_budget || 0;
+    const forecast = computeForecast(l);
+    const proposed = forecast * (1 + (l.increase_pct || 0));
+    const pmAdjusted = (l.increase_pct || l.accrual_adj || l.unpaid_bills) ? proposed : null;
+
+    const variance = currentBudget - priorYear;
+    const variancePct = priorYear ? (variance / priorYear * 100) : 0;
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td></td>' +
+      '<td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td>' +
+      '<td>' + l.description + '</td>' +
+      '<td style="text-align:right">' + fmt(priorYear) + '</td>' +
+      '<td style="text-align:right">' + fmt(currentBudget) + '</td>' +
+      '<td style="text-align:right">' + (pmAdjusted !== null ? fmt(pmAdjusted) : '\u2014') + '</td>' +
+      '<td style="text-align:right; color:' + (variance >= 0 ? 'var(--red)' : 'var(--green)') + '">' + fmt(variance) + '</td>' +
+      '<td style="text-align:right; color:' + (variance >= 0 ? 'var(--red)' : 'var(--green)') + '">' + variancePct.toFixed(1) + '%</td>';
+    tbody.appendChild(tr);
+  });
+
+  // Total row
+  const totalRow = document.createElement('tr');
+  totalRow.style.fontWeight = '700';
+  totalRow.style.background = 'var(--gray-100)';
+  const totalVar = totalBudget - totalPrior;
+  totalRow.innerHTML =
+    '<td colspan="3">Total</td>' +
+    '<td style="text-align:right">' + fmt(totalPrior) + '</td>' +
+    '<td style="text-align:right">' + fmt(totalBudget) + '</td>' +
+    '<td style="text-align:right">' + fmt(totalPM) + '</td>' +
+    '<td style="text-align:right">' + fmt(totalVar) + '</td>' +
+    '<td style="text-align:right">' + (totalPrior ? ((totalVar) / totalPrior * 100).toFixed(1) + '%' : '\u2014') + '</td>';
+  tbody.appendChild(totalRow);
+}
+
+function computeForecast(l) {
+  const ytdActual = l.ytd_actual || 0;
+  const accrualAdj = l.accrual_adj || 0;
+  const unpaidBills = l.unpaid_bills || 0;
+  const priorYear = l.prior_year || 0;
+  const ytdTotal = ytdActual + accrualAdj + unpaidBills;
+
+  if (ytdTotal >= priorYear) {
+    return ytdTotal + (ytdTotal / 2) * 10;
+  } else {
+    return ytdTotal + (priorYear - ytdTotal);
+  }
+}
+
+async function sendToPM() {
+  if (!confirm('Send to PM for expense review?')) return;
+  await fetch('/api/budgets/' + entityCode + '/status', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: 'pm_pending'})
+  });
+  loadDetail();
+}
+
+async function approvePM() {
+  if (!confirm('Approve PM review?')) return;
+  await fetch('/api/budgets/' + entityCode + '/status', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: 'approved'})
+  });
+  loadDetail();
+}
+
+async function returnPM() {
+  const notes = prompt('Notes for PM:');
+  if (notes === null) return;
+  await fetch('/api/budgets/' + entityCode + '/status', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: 'returned', notes: notes})
+  });
+  loadDetail();
+}
+
+loadDetail();
 </script>
 </body>
 </html>
