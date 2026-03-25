@@ -525,6 +525,28 @@ def process_files():
             f.save(str(ysl_path))
 
             try:
+                # Detect file type: Expense Distribution vs YSL
+                from openpyxl import load_workbook as _lwb
+                _wb_check = _lwb(str(ysl_path), data_only=True)
+                _ws_check = _wb_check.active
+                _row1 = str(_ws_check.cell(row=1, column=1).value or "")
+                _wb_check.close()
+
+                if "Expense Distribution" in _row1:
+                    # This is an Expense Distribution file — parse and store it
+                    try:
+                        from expense_distribution import parse_expense_distribution
+                    except ImportError:
+                        from budget_app.expense_distribution import parse_expense_distribution
+                    exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(ysl_path))
+                    if exp_entity and exp_invoices:
+                        ed_helpers["store_expense_report"](exp_entity, exp_from, exp_to, exp_invoices, f.filename)
+                        results["success"].append(f"Expense Distribution: {exp_entity} ({len(exp_invoices)} invoices)")
+                        logger.info(f"Expense distribution stored for entity {exp_entity}")
+                    else:
+                        results["warnings"].append(f"Expense file {f.filename}: no entity or invoices found")
+                    continue
+
                 # Parse YSL
                 gl_data, property_info = parse_ysl_file(ysl_path)
                 entity = property_info.get("property_code", "unknown")
@@ -607,6 +629,9 @@ def process_files():
                 })
 
         if not output_files:
+            # If expense files were processed successfully, return 200
+            if results["success"]:
+                return jsonify({"message": "Files processed", **results}), 200
             return jsonify({"error": "No budgets generated", **results}), 400
 
         # Always return results as JSON now (files are saved to disk)
