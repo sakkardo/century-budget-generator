@@ -785,6 +785,7 @@ ADMIN_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>Admin Dashboard</h1>
   <p>Manage users and building assignments</p>
 </header>
@@ -870,6 +871,7 @@ ADMIN_TEMPLATE = r"""
 
   <div class="section">
     <h2>Building Assignments</h2>
+    <input type="text" id="assignmentSearch" placeholder="Search by address, entity, or person..." style="width:100%; padding:10px 14px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; margin-bottom:12px; box-sizing:border-box;" oninput="filterAssignments()">
     <table id="assignments-table">
       <thead>
         <tr>
@@ -1077,6 +1079,15 @@ document.getElementById('assignment-form').addEventListener('submit', async (e) 
   }
 });
 
+function filterAssignments() {
+  const query = document.getElementById('assignmentSearch').value.toLowerCase();
+  const rows = document.querySelectorAll('#assignments-table tbody tr');
+  rows.forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(query) ? '' : 'none';
+  });
+}
+
 // Initialize on page load
 (async () => {
   await loadUsers();
@@ -1227,6 +1238,7 @@ DASHBOARD_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>FA Dashboard</h1>
   <p>Review and manage building budgets</p>
 </header>
@@ -1477,6 +1489,7 @@ PM_PORTAL_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>PM Portal</h1>
   <p>Select your name and review assigned buildings</p>
 </header>

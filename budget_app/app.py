@@ -944,10 +944,10 @@ HOME_TEMPLATE = r"""
   </header>
   <div class="container">
     <div class="nav-grid">
-      <a href="/generate" class="nav-card">
-        <div class="icon">📊</div>
-        <h2>Budget Generator</h2>
-        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
+      <a href="/admin" class="nav-card">
+        <div class="icon">👤</div>
+        <h2>User Management</h2>
+        <p>Sync buildings, FAs, and PMs from Monday.com.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/assumptions" class="nav-card">
@@ -962,10 +962,10 @@ HOME_TEMPLATE = r"""
         <p>View and edit assumptions for individual buildings.</p>
         <span class="arrow">→</span>
       </a>
-      <a href="/dashboard" class="nav-card">
-        <div class="icon">📈</div>
-        <h2>FA Dashboard</h2>
-        <p>Review budget status, manage workflow, approve PM submissions.</p>
+      <a href="/generate" class="nav-card">
+        <div class="icon">📊</div>
+        <h2>Budget Generator</h2>
+        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/pm" class="nav-card">
@@ -974,10 +974,10 @@ HOME_TEMPLATE = r"""
         <p>Property managers: review and enter R&M budget projections.</p>
         <span class="arrow">→</span>
       </a>
-      <a href="/admin" class="nav-card">
-        <div class="icon">👤</div>
-        <h2>User Management</h2>
-        <p>Manage users and assign buildings to FAs and PMs.</p>
+      <a href="/dashboard" class="nav-card">
+        <div class="icon">📈</div>
+        <h2>FA Dashboard</h2>
+        <p>Review budget status, manage workflow, approve PM submissions.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/audited-financials" class="nav-card">
