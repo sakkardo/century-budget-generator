@@ -1891,18 +1891,21 @@ const statusLabels = {
 let allUsers = [];
 let allAssignments = [];
 let allBuildings = [];
+let allBudgets = [];
 
 async function loadInitialData() {
   try {
-    const [usersRes, assignmentsRes, buildingsRes] = await Promise.all([
+    const [usersRes, assignmentsRes, buildingsRes, budgetsRes] = await Promise.all([
       fetch('/api/users'),
       fetch('/api/assignments'),
-      fetch('/api/buildings')
+      fetch('/api/buildings'),
+      fetch('/api/budgets')
     ]);
 
     allUsers = await usersRes.json();
     allAssignments = await assignmentsRes.json();
     allBuildings = await buildingsRes.json();
+    allBudgets = await budgetsRes.json();
 
     populatePMSelect();
   } catch (err) {
@@ -1947,7 +1950,9 @@ function renderBuildings(userId) {
 
   userAssignments.forEach(a => {
     const buildingName = getBuildingName(a.entity_code);
-    const isEditable = editableStatuses.includes(a.status);
+    const budget = allBudgets.find(b => b.entity_code === a.entity_code);
+    const budgetStatus = budget ? budget.status : null;
+    const isEditable = editableStatuses.includes(budgetStatus);
 
     const card = document.createElement('div');
     card.className = 'building-card';
@@ -1959,7 +1964,7 @@ function renderBuildings(userId) {
       card.style.cursor = 'default';
     }
 
-    const statusLabel = statusLabels[a.status] || a.status;
+    const statusLabel = budgetStatus ? (statusLabels[budgetStatus] || budgetStatus) : 'No Budget';
     card.innerHTML = `
       <h3>${buildingName}</h3>
       <p><strong>Entity Code:</strong> ${a.entity_code}</p>
