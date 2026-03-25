@@ -898,7 +898,7 @@ def create_workflow_blueprint(db):
             # Check expense report exists
             try:
                 has_expenses = db.session.execute(
-                    db.text("SELECT 1 FROM expense_report WHERE entity_code = :ec LIMIT 1"),
+                    db.text("SELECT 1 FROM expense_reports WHERE entity_code = :ec LIMIT 1"),
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
@@ -966,12 +966,12 @@ def create_workflow_blueprint(db):
         expense_data = {"exists": False}
         try:
             row = db.session.execute(
-                db.text("SELECT id, period_from, period_to, total_amount FROM expense_report WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                db.text("SELECT id, period_from, period_to, total_amount FROM expense_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
                 {"ec": entity_code}
             ).fetchone()
             if row:
                 invoice_count = db.session.execute(
-                    db.text("SELECT COUNT(*) FROM expense_invoice WHERE report_id = :rid"),
+                    db.text("SELECT COUNT(*) FROM expense_invoices WHERE report_id = :rid"),
                     {"rid": row[0]}
                 ).fetchone()[0]
                 expense_data = {
