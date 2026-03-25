@@ -228,8 +228,15 @@ def create_audited_financials_blueprint(db):
 
         rules = profile.rules
 
-        # Initialize mapped categories
-        mapped = {cat: {"total": 0, "years": []} for cat in CENTURY_CATEGORIES}
+        # Initialize mapped categories with per-year tracking
+        fiscal_years = []
+        try:
+            extracted_parsed = json.loads(extracted_data) if isinstance(extracted_data, str) else extracted_data
+            fiscal_years = extracted_parsed.get("fiscal_years", [])
+        except:
+            pass
+        num_years = len(fiscal_years) if fiscal_years else 2
+        mapped = {cat: {"total": 0, "years": [], "year_totals": [0] * num_years} for cat in CENTURY_CATEGORIES}
 
         try:
             extracted = json.loads(extracted_data) if isinstance(extracted_data, str) else extracted_data
@@ -248,10 +255,11 @@ def create_audited_financials_blueprint(db):
                 if rule and confidence > 0.5:
                     cat = rule.century_category
                     pct = rule.split_pct
-                    for amount in amounts:
+                    for i, amount in enumerate(amounts):
                         if isinstance(amount, (int, float)):
                             mapped[cat]["total"] += amount * pct
-                            mapped[cat]["years"].append(amount * pct)
+                            if i < len(mapped[cat]["year_totals"]):
+                                mapped[cat]["year_totals"][i] += amount * pct
                 else:
                     unmapped.append({
                         "type": "revenue",
@@ -270,10 +278,11 @@ def create_audited_financials_blueprint(db):
                     if rule and confidence > 0.5:
                         cat = rule.century_category
                         pct = rule.split_pct
-                        for amount in amounts:
+                        for i, amount in enumerate(amounts):
                             if isinstance(amount, (int, float)):
                                 mapped[cat]["total"] += amount * pct
-                                mapped[cat]["years"].append(amount * pct)
+                                if i < len(mapped[cat]["year_totals"]):
+                                    mapped[cat]["year_totals"][i] += amount * pct
                     else:
                         unmapped.append({
                             "type": "expense",
@@ -931,44 +940,89 @@ Be precise with numbers. Include all line items found.
 
         function renderRawData() {
             const container = document.getElementById('rawData');
+            const years = rawExtraction.fiscal_years || [];
             let html = '';
+
+            // Show fiscal years header
+            if (years.length > 0) {
+                html += '<div style="background:#e8f0fe; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-weight:bold;">Fiscal Years: ' + years.join(', ') + '</div>';
+            }
 
             if (rawExtraction.revenue && rawExtraction.revenue.items) {
                 html += '<h5>Revenue</h5>';
+                html += '<table style="width:100%; font-size:13px;"><tr><th style="text-align:left;">Item</th>';
+                for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
+                html += '</tr>';
                 for (let item of rawExtraction.revenue.items) {
-                    html += `<div class="item">
-                        <div>${item.description}</div>
-                        <div class="amount">${item.amounts.map(a => formatAmount(a)).join(' / ')}</div>
-                    </div>`;
+                    html += '<tr><td>' + item.description + '</td>';
+                    for (let a of item.amounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                    html += '</tr>';
                 }
+                if (rawExtraction.revenue.total) {
+                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td>Total Revenue</td>';
+                    for (let a of rawExtraction.revenue.total) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                    html += '</tr>';
+                }
+                html += '</table>';
             }
 
             if (rawExtraction.expenses && rawExtraction.expenses.categories) {
                 html += '<h5>Expenses</h5>';
+                html += '<table style="width:100%; font-size:13px;"><tr><th style="text-align:left;">Item</th>';
+                for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
+                html += '</tr>';
                 for (let cat of rawExtraction.expenses.categories) {
-                    html += `<div style="font-weight: bold; margin-top: 10px;">${cat.name}</div>`;
+                    html += '<tr><td colspan="' + (years.length + 1) + '" style="font-weight:bold; background:#f5f5f5; padding-top:8px;">' + cat.name + '</td></tr>';
                     for (let item of cat.items) {
-                        html += `<div class="item" style="margin-left: 10px;">
-                            <div>${item.description}</div>
-                            <div class="amount">${item.amounts.map(a => formatAmount(a)).join(' / ')}</div>
-                        </div>`;
+                        html += '<tr><td style="padding-left:15px;">' + item.description + '</td>';
+                        for (let a of item.amounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                        html += '</tr>';
+                    }
+                    if (cat.total) {
+                        html += '<tr style="font-weight:bold;"><td style="padding-left:15px;">Subtotal</td>';
+                        for (let a of cat.total) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                        html += '</tr>';
                     }
                 }
+                if (rawExtraction.expenses.total_expenses) {
+                    html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td>Total Expenses</td>';
+                    for (let a of rawExtraction.expenses.total_expenses) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                    html += '</tr>';
+                }
+                html += '</table>';
             }
 
             container.innerHTML = html;
         }
 
+        const centuryCategories = {{ century_categories_json }};
+
         function renderMappedData() {
             const container = document.getElementById('mappedData');
-            let html = '<table><tr><th>Century Category</th><th>Amount</th></tr>';
+            const years = rawExtraction.fiscal_years || [];
+            let html = '<table><tr><th>Century Category</th>';
+            for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
+            html += '</tr>';
 
+            let hasData = false;
             for (let cat in mappedData) {
                 const data = mappedData[cat];
-                const amount = data.total || 0;
-                if (amount !== 0) {
-                    html += `<tr><td>${cat}</td><td class="amount">${formatAmount(amount)}</td></tr>`;
+                const yearAmounts = data.year_totals || data.years || [];
+                const total = data.total || 0;
+                if (total !== 0) {
+                    hasData = true;
+                    html += '<tr><td>' + cat + '</td>';
+                    if (yearAmounts.length > 0) {
+                        for (let a of yearAmounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
+                    } else {
+                        html += '<td style="text-align:right;">' + formatAmount(total) + '</td>';
+                    }
+                    html += '</tr>';
                 }
+            }
+
+            if (!hasData) {
+                html += '<tr><td colspan="' + (years.length + 1) + '" style="text-align:center; color:#999; padding:20px;">No mapping rules configured yet. Map unmapped items below.</td></tr>';
             }
 
             html += '</table>';
@@ -979,26 +1033,82 @@ Be precise with numbers. Include all line items found.
             const container = document.getElementById('reconciliation');
             let html = '';
 
-            if (unmappedItems.length > 0) {
-                html += '<div class="unmapped"><strong>Unmapped Items Found:</strong><br/>';
-                for (let item of unmappedItems) {
-                    html += `<div style="margin: 5px 0; font-size: 12px;">• ${item.description}</div>`;
-                }
-                html += '</div>';
-            } else {
-                html += '<div class="success">All items mapped successfully</div>';
-            }
-
-            html += '<p style="margin-top: 20px;"><strong>Total Extracted:</strong><br/>';
+            // Totals
+            html += '<div style="margin-bottom:15px;"><strong>Totals Check:</strong><br/>';
             if (rawExtraction.revenue && rawExtraction.revenue.total) {
-                html += `Revenue: ${formatAmount(rawExtraction.revenue.total[0])}<br/>`;
+                html += 'Revenue: ' + formatAmount(rawExtraction.revenue.total[0]) + '<br/>';
             }
             if (rawExtraction.expenses && rawExtraction.expenses.total_expenses) {
-                html += `Expenses: ${formatAmount(rawExtraction.expenses.total_expenses[0])}<br/>`;
+                html += 'Expenses: ' + formatAmount(rawExtraction.expenses.total_expenses[0]) + '<br/>';
             }
-            html += '</p>';
+            html += '</div>';
+
+            if (unmappedItems.length > 0) {
+                html += '<div class="unmapped"><strong>' + unmappedItems.length + ' Unmapped Items:</strong></div>';
+                html += '<div style="max-height:400px; overflow-y:auto;">';
+                for (let i = 0; i < unmappedItems.length; i++) {
+                    const item = unmappedItems[i];
+                    html += '<div style="padding:8px; border:1px solid #eee; margin:4px 0; border-radius:4px; font-size:13px;">';
+                    html += '<div style="font-weight:bold;">' + item.description + '</div>';
+                    html += '<div style="color:#666; font-size:12px;">' + item.amounts.map(a => formatAmount(a)).join(' / ') + '</div>';
+                    html += '<select id="mapSelect_' + i + '" style="width:100%; margin-top:4px; padding:4px; font-size:12px;">';
+                    html += '<option value="">-- Map to Century Category --</option>';
+                    for (let cat of centuryCategories) {
+                        html += '<option value="' + cat + '">' + cat + '</option>';
+                    }
+                    html += '</select>';
+                    html += '<button onclick="saveRule(' + i + ', \'' + item.description.replace(/'/g, "\\'") + '\')" style="margin-top:4px; padding:4px 10px; font-size:12px;">Save Rule</button>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            } else if (Object.keys(mappedData).length > 0) {
+                html += '<div class="success">All items mapped successfully!</div>';
+            }
+
+            // Re-map button
+            html += '<button onclick="remapUpload()" style="margin-top:15px; width:100%;">Re-Apply Mapping Rules</button>';
 
             container.innerHTML = html;
+        }
+
+        function saveRule(index, description) {
+            const select = document.getElementById('mapSelect_' + index);
+            const category = select.value;
+            if (!category) { alert('Select a Century category'); return; }
+
+            const profileId = {{ profile_id }};
+            if (!profileId) { alert('No auditor profile assigned to this upload'); return; }
+
+            fetch('/api/af/profiles/' + profileId + '/rules', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    auditor_line_item: description,
+                    century_category: category,
+                    split_pct: 1.0
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    select.parentElement.style.background = '#d4edda';
+                    select.disabled = true;
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+
+        function remapUpload() {
+            fetch('/api/af/map/{{ upload_id }}', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Mapping error: ' + data.error);
+                }
+            });
         }
 
         function confirmExtraction(uploadId) {
@@ -1024,11 +1134,13 @@ Be precise with numbers. Include all line items found.
 
         html = html.replace("{{ building_name }}", upload.building_name)
         html = html.replace("{{ entity_code }}", upload.entity_code)
-        html = html.replace("{{ fiscal_year }}", upload.fiscal_year_end)
+        html = html.replace("{{ fiscal_year }}", upload.fiscal_year_end or "")
         html = html.replace("{{ upload_id }}", str(upload_id))
         html = html.replace("{{ raw_json }}", json.dumps(raw_extraction))
         html = html.replace("{{ mapped_json }}", json.dumps(mapped_data))
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
+        html = html.replace("{{ century_categories_json }}", json.dumps(CENTURY_CATEGORIES))
+        html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
 
         return render_template_string(html)
 
@@ -1114,18 +1226,32 @@ Be precise with numbers. Include all line items found.
 
     @bp.route("/api/af/profiles/<int:profile_id>/rules", methods=["POST"])
     def api_save_rules(profile_id):
-        """Save/update mapping rules for a profile."""
+        """Save/update mapping rules for a profile. Supports single rule add or bulk replace."""
         profile = AuditorProfile.query.get(profile_id)
         if not profile:
             return jsonify({"success": False, "error": "Profile not found"}), 404
 
         data = request.get_json()
+
+        # Single rule add (from review page)
+        if "auditor_line_item" in data:
+            rule = MappingRule(
+                profile_id=profile_id,
+                auditor_line_item=data.get("auditor_line_item"),
+                auditor_category=data.get("auditor_category", ""),
+                century_category=data.get("century_category"),
+                split_pct=float(data.get("split_pct", 1.0)),
+                notes=data.get("notes", "")
+            )
+            db.session.add(rule)
+            db.session.commit()
+            return jsonify({"success": True, "rule": rule.to_dict()})
+
+        # Bulk replace (from profiles page)
         rules_data = data.get("rules", [])
 
         # Delete existing rules not in the new list
-        existing_ids = {r.id for r in profile.rules}
         new_ids = {r.get("id") for r in rules_data if r.get("id")}
-
         for rule in profile.rules:
             if rule.id not in new_ids:
                 db.session.delete(rule)
