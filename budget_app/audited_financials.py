@@ -646,7 +646,7 @@ Be precise with numbers. Include all line items found.
         # Build uploads table
         rows = []
         for u in uploads:
-            delete_btn = f'<button class="btn-small btn-delete" onclick="deleteUpload({u.id})">Delete</button>' if u.status != "confirmed" else ""
+            delete_btn = f'<button class="btn-small btn-delete" onclick="deleteUpload({u.id})">Delete</button>'
             rows.append(f"""
                 <tr id="upload-row-{u.id}">
                     <td style="font-weight:600;">{u.entity_code}</td>
@@ -1550,9 +1550,6 @@ Be precise with numbers. Include all line items found.
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
-
-        if upload.status == "confirmed":
-            return jsonify({"success": False, "error": "Cannot delete confirmed uploads"}), 400
 
         # Delete the PDF file if it exists
         if upload.file_path:
