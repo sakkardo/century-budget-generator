@@ -664,7 +664,7 @@ ADMIN_TEMPLATE = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Admin - Century Management Workflow</title>
+<title>User Management - Century Management</title>
 <style>
   :root {
     --blue: #1a56db;
@@ -672,9 +672,6 @@ ADMIN_TEMPLATE = r"""
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
-    --red-light: #fde8e8;
-    --yellow: #f59e0b;
-    --yellow-light: #fef3c7;
     --gray-50: #f9fafb;
     --gray-100: #f3f4f6;
     --gray-200: #e5e7eb;
@@ -695,49 +692,43 @@ ADMIN_TEMPLATE = r"""
     color: white;
     padding: 30px 20px;
   }
-  header h1 {
-    font-size: 28px;
-    font-weight: 700;
-  }
+  header a { color: white; text-decoration: none; font-size: 14px; }
+  header a:hover { text-decoration: underline; }
+  header h1 { font-size: 28px; font-weight: 700; }
+  header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
   .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 40px 20px;
+    padding: 32px 20px;
   }
   .section {
     background: white;
     border-radius: 12px;
-    padding: 32px;
-    margin-bottom: 32px;
+    padding: 28px;
+    margin-bottom: 24px;
     border: 1px solid var(--gray-200);
   }
-  .section h2 {
-    font-size: 20px;
+  .sync-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .sync-bar h2 {
+    font-size: 18px;
     font-weight: 600;
-    margin-bottom: 24px;
     color: var(--blue);
+    margin: 0;
   }
-  .form-group {
-    margin-bottom: 16px;
+  .sync-bar .meta {
+    font-size: 13px;
+    color: var(--gray-500);
   }
-  label {
-    display: block;
-    font-size: 14px;
-    font-weight: 500;
-    margin-bottom: 6px;
-    color: var(--gray-700);
-  }
-  input, select, textarea {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--gray-300);
-    border-radius: 6px;
-    font-size: 14px;
-  }
-  input:focus, select:focus, textarea:focus {
-    outline: none;
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px var(--blue-light);
+  .sync-right {
+    display: flex;
+    gap: 10px;
+    align-items: center;
   }
   button {
     background: var(--blue);
@@ -750,144 +741,131 @@ ADMIN_TEMPLATE = r"""
     cursor: pointer;
     transition: all 0.15s;
   }
-  button:hover {
-    background: #1542b8;
+  button:hover { background: #1542b8; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-sync { background: #6366f1; }
+  .btn-sync:hover { background: #4f46e5; }
+  .search-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--gray-300);
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .search-input:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-light);
   }
   table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 16px;
   }
   th {
     background: var(--gray-100);
-    padding: 12px;
+    padding: 10px 12px;
     text-align: left;
     font-weight: 600;
-    font-size: 13px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--gray-500);
     border-bottom: 1px solid var(--gray-200);
   }
   td {
-    padding: 12px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--gray-200);
+    font-size: 14px;
   }
-  tr:hover {
-    background: var(--gray-50);
-  }
-  .btn-delete {
-    background: var(--red);
-    padding: 6px 12px;
+  tr:hover { background: var(--gray-50); }
+  .role-pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
     font-size: 12px;
+    font-weight: 600;
   }
-  .btn-delete:hover {
-    background: #d01f1f;
+  .role-fa { background: #e0e7ff; color: #3730a3; }
+  .role-pm { background: #fef3c7; color: #92400e; }
+  .count-badge {
+    display: inline-block;
+    background: var(--gray-100);
+    color: var(--gray-700);
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--gray-500);
+  }
+  .empty-state p { margin-bottom: 12px; }
+  #syncResults {
+    display: none;
+    background: var(--gray-50);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 13px;
+    margin-top: 16px;
   }
 </style>
 </head>
 <body>
 <header>
-  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
-  <h1>Admin Dashboard</h1>
-  <p>Manage users and building assignments</p>
+  <a href="/">← Home</a>
+  <h1>User Management</h1>
+  <p>Buildings, FAs, and PMs synced from Monday.com</p>
 </header>
 <div class="container">
+
   <div class="section" style="border-left: 4px solid #6366f1;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <div class="sync-bar">
       <div>
-        <h2 style="margin-bottom:4px;">Monday.com Sync</h2>
-        <p style="font-size:13px; color:var(--gray-500);">Pull PM and FA assignments from the Building Master List</p>
+        <h2>Monday.com Sync</h2>
+        <div class="meta">Pull building assignments from the Building Master List</div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
+      <div class="sync-right">
         <span id="syncStatus" style="font-size:13px; color:var(--gray-500);"></span>
-        <button onclick="syncMonday()" id="syncBtn" style="background:#6366f1;">
-          Sync from Monday.com
-        </button>
+        <button onclick="syncMonday()" id="syncBtn" class="btn-sync">Sync Now</button>
       </div>
     </div>
-    <div id="syncResults" style="display:none; background:var(--gray-50); border-radius:8px; padding:16px; font-size:13px;">
-    </div>
+    <div id="syncResults"></div>
   </div>
 
   <div class="section">
-    <h2>Add User</h2>
-    <form id="user-form">
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" name="name" required>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <div style="display:flex; align-items:center;">
+        <h2 style="font-size:18px; font-weight:600; color:var(--blue); margin:0;">Buildings</h2>
+        <span class="count-badge" id="buildingCount">0</span>
       </div>
-      <div class="form-group">
-        <label>Email</label>
-        <input type="email" name="email" required>
-      </div>
-      <div class="form-group">
-        <label>Role</label>
-        <select name="role" required>
-          <option value="">Select a role</option>
-          <option value="fa">Financial Analyst (FA)</option>
-          <option value="pm">Property Manager (PM)</option>
-          <option value="admin">Admin</option>
-        </select>
-      </div>
-      <button type="submit">Create User</button>
-    </form>
-  </div>
-
-  <div class="section">
-    <h2>Users</h2>
-    <table id="users-table">
+    </div>
+    <input type="text" class="search-input" id="buildingSearch" placeholder="Search by entity code, address, FA, or PM..." oninput="filterBuildings()">
+    <table id="buildings-table">
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Email</th>
-          <th>Role</th>
-          <th>Action</th>
+          <th>Entity</th>
+          <th>Building Name</th>
+          <th>Financial Analyst</th>
+          <th>Property Manager</th>
         </tr>
       </thead>
       <tbody></tbody>
     </table>
+    <div id="emptyState" class="empty-state" style="display:none;">
+      <p>No buildings synced yet.</p>
+      <button onclick="syncMonday()" class="btn-sync">Sync from Monday.com</button>
+    </div>
   </div>
 
-  <div class="section">
-    <h2>Add Building Assignment</h2>
-    <form id="assignment-form">
-      <div class="form-group">
-        <label>Entity Code</label>
-        <input type="text" name="entity_code" required placeholder="e.g., 01234">
-      </div>
-      <div class="form-group">
-        <label>User</label>
-        <select name="user_id" required id="user-select"></select>
-      </div>
-      <div class="form-group">
-        <label>Role</label>
-        <select name="role" required>
-          <option value="">Select a role</option>
-          <option value="fa">FA</option>
-          <option value="pm">PM</option>
-        </select>
-      </div>
-      <button type="submit">Create Assignment</button>
-    </form>
-  </div>
-
-  <div class="section">
-    <h2>Building Assignments</h2>
-    <input type="text" id="assignmentSearch" placeholder="Search by address, entity, or person..." style="width:100%; padding:10px 14px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; margin-bottom:12px; box-sizing:border-box;" oninput="filterAssignments()">
-    <table id="assignments-table">
-      <thead>
-        <tr>
-          <th>Entity Code</th>
-          <th>User Name</th>
-          <th>Role</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
 </div>
 
 <script>
-// ── Monday.com Sync ─────────────────────────────────────────────────────
+const ROLE_LABELS = { fa: 'Financial Analyst', pm: 'Property Manager', admin: 'Admin' };
+
 async function syncMonday() {
   const btn = document.getElementById('syncBtn');
   const status = document.getElementById('syncStatus');
@@ -898,14 +876,12 @@ async function syncMonday() {
   status.textContent = 'Fetching from Monday.com...';
 
   try {
-    // Fetch building data from the app's Monday.com proxy endpoint
     const resp = await fetch('/api/sync-monday-fetch');
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Fetch failed');
 
     status.textContent = `Syncing ${data.buildings.length} buildings...`;
 
-    // Send to sync endpoint
     const syncResp = await fetch('/api/sync-monday', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -918,16 +894,12 @@ async function syncMonday() {
     results.style.display = 'block';
     results.innerHTML = `
       <strong style="color:#057a55;">Sync complete</strong><br>
-      Buildings synced: <strong>${s.buildings_synced}</strong> &nbsp;|&nbsp;
+      Buildings: <strong>${s.buildings_synced}</strong> &nbsp;|&nbsp;
       Users created: <strong>${s.users_created}</strong> &nbsp;|&nbsp;
-      Assignments created: <strong>${s.assignments_created}</strong> &nbsp;|&nbsp;
-      Assignments removed: <strong>${s.assignments_removed}</strong>
+      Assignments updated: <strong>${s.assignments_created}</strong>
     `;
     status.textContent = '';
-
-    // Reload tables
-    loadUsers();
-    loadAssignments();
+    loadBuildingView();
   } catch(e) {
     status.textContent = '';
     results.style.display = 'block';
@@ -935,164 +907,78 @@ async function syncMonday() {
   }
 
   btn.disabled = false;
-  btn.textContent = 'Sync from Monday.com';
+  btn.textContent = 'Sync Now';
 }
 
-async function loadUsers() {
+async function loadBuildingView() {
   try {
-    const res = await fetch('/api/users');
-    const users = await res.json();
-    renderUsers(users);
-    populateUserSelect(users);
-    return users;
+    const [buildingsRes, assignmentsRes] = await Promise.all([
+      fetch('/api/buildings'),
+      fetch('/api/assignments')
+    ]);
+    const buildings = await buildingsRes.json();
+    const assignments = await assignmentsRes.json();
+    renderBuildingTable(buildings, assignments);
   } catch (err) {
-    console.error('Failed to load users:', err);
-    return [];
+    console.error('Failed to load data:', err);
   }
 }
 
-async function loadAssignments() {
-  try {
-    const res = await fetch('/api/assignments');
-    const assignments = await res.json();
-    renderAssignments(assignments);
-    return assignments;
-  } catch (err) {
-    console.error('Failed to load assignments:', err);
-    return [];
-  }
-}
-
-async function loadBuildings() {
-  try {
-    const res = await fetch('/api/buildings');
-    const buildings = await res.json();
-    return buildings;
-  } catch (err) {
-    console.error('Failed to load buildings:', err);
-    return [];
-  }
-}
-
-function populateUserSelect(users) {
-  const select = document.getElementById('user-select');
-  select.innerHTML = '<option value="">Select a user</option>';
-  users.forEach(user => {
-    const opt = document.createElement('option');
-    opt.value = user.id;
-    opt.textContent = user.name;
-    select.appendChild(opt);
-  });
-}
-
-function renderUsers(users) {
-  const tbody = document.querySelector('#users-table tbody');
+function renderBuildingTable(buildings, assignments) {
+  const tbody = document.querySelector('#buildings-table tbody');
+  const emptyState = document.getElementById('emptyState');
+  const countBadge = document.getElementById('buildingCount');
   tbody.innerHTML = '';
-  users.forEach(user => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${user.name}</td>
-      <td>${user.email}</td>
-      <td>${user.role}</td>
-      <td><button class="btn-delete" onclick="deleteUser(${user.id})">Delete</button></td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
 
-function renderAssignments(assignments) {
-  const tbody = document.querySelector('#assignments-table tbody');
-  tbody.innerHTML = '';
+  // Build a lookup: entity_code -> { fa: name, pm: name }
+  const assignMap = {};
   assignments.forEach(a => {
+    if (!assignMap[a.entity_code]) assignMap[a.entity_code] = {};
+    assignMap[a.entity_code][a.role] = a.user_name || '—';
+  });
+
+  if (buildings.length === 0) {
+    emptyState.style.display = 'block';
+    document.getElementById('buildings-table').style.display = 'none';
+    countBadge.textContent = '0';
+    return;
+  }
+
+  emptyState.style.display = 'none';
+  document.getElementById('buildings-table').style.display = 'table';
+  countBadge.textContent = buildings.length;
+
+  buildings.sort((a, b) => (a.entity_code || '').localeCompare(b.entity_code || ''));
+
+  buildings.forEach(b => {
+    const ec = b.entity_code;
+    const roles = assignMap[ec] || {};
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${a.entity_code}</td>
-      <td>${a.user_name || 'N/A'}</td>
-      <td>${a.role}</td>
-      <td><button class="btn-delete" onclick="deleteAssignment(${a.id})">Delete</button></td>
+      <td style="font-weight:600; white-space:nowrap;">${ec}</td>
+      <td>${b.building_name || '—'}</td>
+      <td>${roles.fa ? '<span class="role-pill role-fa">' + roles.fa + '</span>' : '<span style="color:var(--gray-300);">—</span>'}</td>
+      <td>${roles.pm ? '<span class="role-pill role-pm">' + roles.pm + '</span>' : '<span style="color:var(--gray-300);">—</span>'}</td>
     `;
     tbody.appendChild(tr);
   });
 }
 
-async function deleteUser(userId) {
-  if (!confirm('Delete this user?')) return;
-  try {
-    await fetch(`/api/users/${userId}`, { method: 'DELETE' });
-    await loadUsers();
-  } catch (err) {
-    alert('Failed to delete user');
-    console.error(err);
-  }
-}
-
-async function deleteAssignment(assignmentId) {
-  if (!confirm('Delete this assignment?')) return;
-  try {
-    await fetch(`/api/assignments/${assignmentId}`, { method: 'DELETE' });
-    await loadAssignments();
-  } catch (err) {
-    alert('Failed to delete assignment');
-    console.error(err);
-  }
-}
-
-document.getElementById('user-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const formData = new FormData(e.target);
-  try {
-    await fetch('/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: formData.get('name'),
-        email: formData.get('email'),
-        role: formData.get('role')
-      })
-    });
-    e.target.reset();
-    await loadUsers();
-  } catch (err) {
-    alert('Failed to create user');
-    console.error(err);
-  }
-});
-
-document.getElementById('assignment-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const formData = new FormData(e.target);
-  try {
-    await fetch('/api/assignments', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        entity_code: formData.get('entity_code'),
-        user_id: parseInt(formData.get('user_id')),
-        role: formData.get('role')
-      })
-    });
-    e.target.reset();
-    await loadAssignments();
-  } catch (err) {
-    alert('Failed to create assignment');
-    console.error(err);
-  }
-});
-
-function filterAssignments() {
-  const query = document.getElementById('assignmentSearch').value.toLowerCase();
-  const rows = document.querySelectorAll('#assignments-table tbody tr');
+function filterBuildings() {
+  const query = document.getElementById('buildingSearch').value.toLowerCase();
+  const rows = document.querySelectorAll('#buildings-table tbody tr');
+  let visible = 0;
   rows.forEach(row => {
     const text = row.textContent.toLowerCase();
-    row.style.display = text.includes(query) ? '' : 'none';
+    const show = text.includes(query);
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
   });
+  document.getElementById('buildingCount').textContent = visible;
 }
 
-// Initialize on page load
-(async () => {
-  await loadUsers();
-  await loadAssignments();
-})();
+// Initialize
+loadBuildingView();
 </script>
 </body>
 </html>

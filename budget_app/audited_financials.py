@@ -445,140 +445,167 @@ Be precise with numbers. Include all line items found.
 
         html = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Audited Financials</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Audited Financials - Century Management</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; }
-        .upload-section { background: #f9f9f9; padding: 20px; margin: 20px 0; border-radius: 5px; }
-        .form-group { margin: 10px 0; }
-        label { display: block; font-weight: bold; margin-bottom: 5px; }
-        input, select { padding: 8px; margin-right: 10px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #f2f2f2; }
-        .status-uploaded { color: #ff9800; }
-        .status-extracted { color: #2196f3; }
-        .status-mapped { color: #4caf50; }
-        .status-confirmed { color: #009688; }
-        .actions { white-space: nowrap; }
-        .btn-small { padding: 5px 10px; font-size: 12px; margin-right: 5px; }
-        .link { color: #007bff; cursor: pointer; text-decoration: underline; }
-        .alert { padding: 10px; background: #fff3cd; color: #856404; margin: 10px 0; border-radius: 3px; }
+        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
+        header a { color: white; text-decoration: none; font-size: 14px; }
+        header a:hover { text-decoration: underline; }
+        header h1 { font-size: 28px; font-weight: 700; }
+        header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+        .section { background: white; border-radius: 12px; padding: 28px; margin-bottom: 24px; border: 1px solid var(--gray-200); }
+        .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--gray-700); }
+        input, select { width: 100%; padding: 10px 12px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 14px; }
+        input:focus, select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-light); }
+        button { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+        button:hover { background: #1542b8; }
+        .btn-green { background: var(--green); }
+        .btn-green:hover { background: #046c4e; }
+        .btn-small { padding: 6px 12px; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+        td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 14px; }
+        tr:hover { background: var(--gray-50); }
+        .status-pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .status-uploaded { background: #fef3c7; color: #92400e; }
+        .status-extracted { background: #dbeafe; color: #1e40af; }
+        .status-mapped { background: #d1fae5; color: #065f46; }
+        .status-confirmed { background: #c7d2fe; color: #3730a3; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
+        .alert-info { background: #fef3c7; color: #92400e; }
+        .alert-success { background: var(--green-light); color: #065f46; }
+        .alert-error { background: #fde8e8; color: #9b1c1c; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .header-row h2 { margin-bottom: 0; }
+        .profiles-link { color: var(--blue); text-decoration: none; font-size: 14px; font-weight: 600; }
+        .profiles-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
-    <div class="header">
-        <h1>Audited Financials</h1>
-        <a href="/audited-financials/profiles" style="color: #007bff;">Manage Profiles & Rules</a>
-    </div>
-
-    <div class="upload-section">
-        <h3>Upload New Audit PDF</h3>
-        <div class="form-group">
-            <label>Building:</label>
-            <select id="entityCode">
-                <option value="">-- Select Building --</option>
-                {{ buildings_options }}
-            </select>
+<header>
+    <a href="/">← Home</a>
+    <h1>Audited Financials</h1>
+    <p>Upload and extract audited financial statements</p>
+</header>
+<div class="container">
+    <div class="section">
+        <div class="header-row">
+            <h2>Upload Audit PDF</h2>
+            <a href="/audited-financials/profiles" class="profiles-link">Manage Profiles & Rules →</a>
         </div>
-        <div class="form-group">
-            <label>Auditor Profile:</label>
-            <select id="profileId">
-                <option value="">-- Select Auditor --</option>
-                {{ profiles_options }}
-            </select>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Building</label>
+                <select id="entityCode">
+                    <option value="">Select building...</option>
+                    {{ buildings_options }}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Auditor Profile</label>
+                <select id="profileId">
+                    <option value="">Select auditor...</option>
+                    {{ profiles_options }}
+                </select>
+            </div>
         </div>
-        <div class="form-group">
-            <label>Fiscal Year End:</label>
-            <input type="text" id="fiscalYearEnd" placeholder="2024" />
+        <div class="form-row">
+            <div class="form-group">
+                <label>Fiscal Year End</label>
+                <input type="text" id="fiscalYearEnd" placeholder="2024" />
+            </div>
+            <div class="form-group">
+                <label>PDF File</label>
+                <input type="file" id="pdfFile" accept=".pdf" />
+            </div>
         </div>
-        <div class="form-group">
-            <label>PDF File:</label>
-            <input type="file" id="pdfFile" accept=".pdf" />
-        </div>
-        <button onclick="uploadPDF()">Upload & Extract</button>
+        <button class="btn-green" onclick="uploadPDF()">Upload & Extract</button>
         <div id="uploadStatus"></div>
     </div>
 
-    <h3>All Uploads</h3>
-    <div id="uploadsTable">
-        {{ uploads_table }}
+    <div class="section">
+        <h2>All Uploads</h2>
+        <div id="uploadsTable">
+            {{ uploads_table }}
+        </div>
     </div>
+</div>
 
-    <script>
-        function uploadPDF() {
-            const entityCode = document.getElementById('entityCode').value;
-            const profileId = document.getElementById('profileId').value;
-            const fiscalYearEnd = document.getElementById('fiscalYearEnd').value;
-            const pdfFile = document.getElementById('pdfFile').files[0];
+<script>
+    function uploadPDF() {
+        const entityCode = document.getElementById('entityCode').value;
+        const profileId = document.getElementById('profileId').value;
+        const fiscalYearEnd = document.getElementById('fiscalYearEnd').value;
+        const pdfFile = document.getElementById('pdfFile').files[0];
 
-            if (!entityCode || !pdfFile) {
-                document.getElementById('uploadStatus').innerHTML = '<div class="alert">Select building and PDF file</div>';
-                return;
+        if (!entityCode || !pdfFile) {
+            document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-error">Select building and PDF file</div>';
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('entity_code', entityCode);
+        formData.append('profile_id', profileId || '');
+        formData.append('fiscal_year_end', fiscalYearEnd);
+        formData.append('pdf', pdfFile);
+
+        document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-info">Uploading...</div>';
+
+        fetch('/api/af/upload', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-success">Upload successful. Extracting...</div>';
+                extractUpload(data.upload_id);
+            } else {
+                document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-error">Error: ' + data.error + '</div>';
             }
+        })
+        .catch(err => {
+            document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-error">Error: ' + err.message + '</div>';
+        });
+    }
 
-            const formData = new FormData();
-            formData.append('entity_code', entityCode);
-            formData.append('profile_id', profileId || '');
-            formData.append('fiscal_year_end', fiscalYearEnd);
-            formData.append('pdf', pdfFile);
+    function extractUpload(uploadId) {
+        fetch('/api/af/extract/' + uploadId, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-success">Extraction complete. Applying mapping rules...</div>';
+                mapUpload(uploadId);
+            } else {
+                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-error">Extraction error: ' + data.error + '</div>';
+            }
+        });
+    }
 
-            document.getElementById('uploadStatus').innerHTML = '<div class="alert">Uploading...</div>';
+    function mapUpload(uploadId) {
+        fetch('/api/af/map/' + uploadId, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-success">Mapping complete. Reloading...</div>';
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-error">Mapping error: ' + data.error + '</div>';
+            }
+        });
+    }
 
-            fetch('/api/af/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    document.getElementById('uploadStatus').innerHTML = '<div class="alert" style="background: #d4edda; color: #155724;">Upload successful. Extracting...</div>';
-                    // Auto-extract
-                    extractUpload(data.upload_id);
-                } else {
-                    document.getElementById('uploadStatus').innerHTML = '<div class="alert">Error: ' + data.error + '</div>';
-                }
-            })
-            .catch(err => {
-                document.getElementById('uploadStatus').innerHTML = '<div class="alert">Error: ' + err.message + '</div>';
-            });
-        }
-
-        function extractUpload(uploadId) {
-            fetch('/api/af/extract/' + uploadId, { method: 'POST' })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    document.getElementById('uploadStatus').innerHTML += '<div class="alert" style="background: #d4edda; color: #155724;">Extraction complete. Applying mapping rules...</div>';
-                    mapUpload(uploadId);
-                } else {
-                    document.getElementById('uploadStatus').innerHTML += '<div class="alert">Extraction error: ' + data.error + '</div>';
-                }
-            });
-        }
-
-        function mapUpload(uploadId) {
-            fetch('/api/af/map/' + uploadId, { method: 'POST' })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    document.getElementById('uploadStatus').innerHTML += '<div class="alert" style="background: #d4edda; color: #155724;">Mapping complete. Reload page to see updates.</div>';
-                    setTimeout(() => location.reload(), 2000);
-                } else {
-                    document.getElementById('uploadStatus').innerHTML += '<div class="alert">Mapping error: ' + data.error + '</div>';
-                }
-            });
-        }
-
-        function reviewUpload(uploadId) {
-            window.location.href = '/audited-financials/review/' + uploadId;
-        }
-    </script>
+    function reviewUpload(uploadId) {
+        window.location.href = '/audited-financials/review/' + uploadId;
+    }
+</script>
 </body>
 </html>
         """
@@ -600,27 +627,31 @@ Be precise with numbers. Include all line items found.
         for u in uploads:
             rows.append(f"""
                 <tr>
-                    <td>{u.entity_code}</td>
+                    <td style="font-weight:600;">{u.entity_code}</td>
                     <td>{u.building_name}</td>
                     <td>{u.profile.name if u.profile else "—"}</td>
                     <td>{u.fiscal_year_end}</td>
-                    <td><span class="status-{u.status}">{u.status}</span></td>
-                    <td class="actions">
+                    <td><span class="status-pill status-{u.status}">{u.status.title()}</span></td>
+                    <td>
                         <button class="btn-small" onclick="reviewUpload({u.id})">Review</button>
                     </td>
                 </tr>
             """)
         uploads_table = f"""
             <table>
+                <thead>
                 <tr>
-                    <th>Entity Code</th>
+                    <th>Entity</th>
                     <th>Building</th>
                     <th>Auditor</th>
                     <th>Year</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
-                {"".join(rows) if rows else "<tr><td colspan='6' style='text-align: center;'>No uploads yet</td></tr>"}
+                </thead>
+                <tbody>
+                {"".join(rows) if rows else "<tr><td colspan='6' style='text-align: center; padding: 30px; color: var(--gray-500);'>No uploads yet</td></tr>"}
+                </tbody>
             </table>
         """
 
@@ -638,58 +669,79 @@ Be precise with numbers. Include all line items found.
 
         html = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Auditor Profiles</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Auditor Profiles - Century Management</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; }
-        .section { background: #f9f9f9; padding: 20px; margin: 20px 0; border-radius: 5px; }
-        .form-group { margin: 10px 0; }
-        label { display: block; font-weight: bold; margin-bottom: 5px; }
-        input, select, textarea { padding: 8px; width: 100%; max-width: 400px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        button.danger { background: #dc3545; }
-        button.danger:hover { background: #c82333; }
-        .profile-card { border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px; background: white; }
-        .profile-header { display: flex; justify-content: space-between; align-items: center; }
-        .profile-actions { display: flex; gap: 10px; }
-        .rules-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        .rules-table th, .rules-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-        .rules-table th { background-color: #f2f2f2; }
-        .rules-table input { width: 100%; padding: 4px; }
-        .add-rule-btn { margin-top: 10px; }
-        textarea { height: 60px; }
-        .alert { padding: 10px; background: #d4edda; color: #155724; margin: 10px 0; border-radius: 3px; }
+        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
+        header a { color: white; text-decoration: none; font-size: 14px; }
+        header a:hover { text-decoration: underline; }
+        header h1 { font-size: 28px; font-weight: 700; }
+        header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+        .section { background: white; border-radius: 12px; padding: 28px; margin-bottom: 24px; border: 1px solid var(--gray-200); }
+        .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--gray-700); }
+        input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 14px; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-light); }
+        textarea { height: 60px; resize: vertical; }
+        button { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+        button:hover { background: #1542b8; }
+        .btn-green { background: var(--green); }
+        .btn-green:hover { background: #046c4e; }
+        .btn-danger { background: var(--red); }
+        .btn-danger:hover { background: #d01f1f; }
+        .btn-small { padding: 6px 12px; font-size: 12px; }
+        .profile-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+        .profile-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+        .profile-header h3 { font-size: 16px; font-weight: 600; color: var(--gray-900); }
+        .profile-meta { font-size: 13px; color: var(--gray-500); margin-top: 2px; }
+        .rules-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        .rules-table th { background: var(--gray-100); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+        .rules-table td { padding: 6px 10px; border-bottom: 1px solid var(--gray-200); }
+        .rules-table input, .rules-table select { padding: 6px 8px; font-size: 13px; }
+        .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
+        .alert-success { background: var(--green-light); color: #065f46; }
+        .alert-error { background: #fde8e8; color: #9b1c1c; }
+        .back-link { color: var(--blue); text-decoration: none; font-size: 14px; font-weight: 600; }
+        .back-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
-    <div class="header">
-        <h1>Auditor Profiles & Mapping Rules</h1>
-        <a href="/audited-financials" style="color: #007bff;">Back to Uploads</a>
-    </div>
+<header>
+    <a href="/">← Home</a>
+    <h1>Auditor Profiles & Mapping Rules</h1>
+    <p>Configure how audited financial line items map to Century budget categories</p>
+</header>
+<div class="container">
+    <div style="margin-bottom:20px;"><a href="/audited-financials" class="back-link">← Back to Uploads</a></div>
 
     <div class="section">
-        <h3>Create New Auditor Profile</h3>
+        <h2>Create New Profile</h2>
         <div class="form-group">
-            <label>Display Name:</label>
-            <input type="text" id="newProfileName" />
+            <label>Display Name</label>
+            <input type="text" id="newProfileName" placeholder="e.g., Prager Metis" />
         </div>
         <div class="form-group">
-            <label>Firm Name (e.g., "Marks Paneth LLP"):</label>
-            <input type="text" id="newFirmName" />
+            <label>Firm Name</label>
+            <input type="text" id="newFirmName" placeholder="e.g., Prager Metis CPAs LLC" />
         </div>
         <div class="form-group">
-            <label>Notes:</label>
-            <textarea id="newProfileNotes"></textarea>
+            <label>Notes</label>
+            <textarea id="newProfileNotes" placeholder="Optional notes..."></textarea>
         </div>
         <button onclick="createProfile()">Create Profile</button>
         <div id="createStatus"></div>
     </div>
 
-    <h3>Existing Profiles</h3>
+    <div style="margin-bottom:16px;"><h2 style="font-size:18px; font-weight:600; color:var(--blue);">Existing Profiles</h2></div>
     <div id="profilesList">
         {{ profiles_list }}
     </div>
@@ -815,23 +867,21 @@ Be precise with numbers. Include all line items found.
                     </tr>
                     {"".join(rules_rows)}
                 </table>
-                <button class="add-rule-btn" onclick="addRuleRow({p.id})">+ Add Rule</button>
-                <button style="background: #28a745;" onclick="saveRules({p.id})">Save All Rules</button>
+                <div class="btn-row">
+                    <button class="btn-small" onclick="addRuleRow({p.id})">+ Add Rule</button>
+                    <button class="btn-green btn-small" onclick="saveRules({p.id})">Save All Rules</button>
+                </div>
             """
 
             profile_card = f"""
                 <div class="profile-card">
                     <div class="profile-header">
                         <div>
-                            <h4>{p.name}</h4>
-                            <p style="margin: 0; color: #666;">Firm: {p.firm_name}</p>
-                            <p style="margin: 0; color: #666;">Notes: {p.notes}</p>
+                            <h3>{p.name}</h3>
+                            <div class="profile-meta">Firm: {p.firm_name}{(' | ' + p.notes) if p.notes else ''}</div>
                         </div>
-                        <div class="profile-actions">
-                            <button class="danger" onclick="deleteProfile({p.id})">Delete</button>
-                        </div>
+                        <button class="btn-danger btn-small" onclick="deleteProfile({p.id})">Delete</button>
                     </div>
-                    <h5>Mapping Rules</h5>
                     <div id="rules-{p.id}">
                         {rules_table}
                     </div>
@@ -875,63 +925,73 @@ Be precise with numbers. Include all line items found.
 
         html = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Review Extraction - {{ building_name }}</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Review - {{ building_name }} - Century Management</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .header { display: flex; justify-content: space-between; }
-        .columns { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; }
-        .column { border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
-        h4 { border-bottom: 2px solid #007bff; padding-bottom: 10px; }
-        .item { padding: 8px; border-bottom: 1px solid #eee; }
-        .amount { text-align: right; font-weight: bold; }
-        .unmapped { background: #ffebee; color: #c62828; padding: 10px; margin: 10px 0; border-radius: 3px; }
-        .success { background: #d4edda; color: #155724; padding: 10px; margin: 10px 0; border-radius: 3px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; margin: 10px 5px 10px 0; }
-        button:hover { background: #0056b3; }
-        button.success-btn { background: #28a745; }
-        button.success-btn:hover { background: #218838; }
-        .back-link { color: #007bff; text-decoration: none; }
-        .reconciliation { background: #f9f9f9; padding: 15px; margin-top: 20px; border-radius: 5px; }
+        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
+        header a { color: white; text-decoration: none; font-size: 14px; }
+        header a:hover { text-decoration: underline; }
+        header h1 { font-size: 24px; font-weight: 700; }
+        header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+        .columns { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+        .column { background: white; border-radius: 12px; padding: 24px; border: 1px solid var(--gray-200); }
+        .column h3 { font-size: 16px; font-weight: 600; color: var(--blue); margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid var(--blue-light); }
+        button { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+        button:hover { background: #1542b8; }
+        .btn-green { background: var(--green); }
+        .btn-green:hover { background: #046c4e; }
+        .unmapped { background: #fde8e8; color: #9b1c1c; padding: 10px; margin: 10px 0; border-radius: 6px; font-size: 13px; }
+        .success { background: var(--green-light); color: #065f46; padding: 10px; margin: 10px 0; border-radius: 6px; font-size: 13px; }
         table { width: 100%; border-collapse: collapse; }
-        table th, table td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-        table th { background-color: #f2f2f2; }
+        table th { background: var(--gray-100); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+        table td { padding: 8px 10px; border-bottom: 1px solid var(--gray-200); font-size: 13px; }
+        .confirm-section { background: white; border-radius: 12px; padding: 24px; border: 1px solid var(--gray-200); margin-top: 24px; }
+        .confirm-section h3 { font-size: 16px; font-weight: 600; color: var(--gray-900); margin-bottom: 8px; }
+        .confirm-section p { font-size: 13px; color: var(--gray-500); margin-bottom: 16px; }
+        .back-link { color: var(--blue); text-decoration: none; font-size: 14px; font-weight: 600; }
+        .back-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
-    <div class="header">
-        <h1>Review Extraction</h1>
-        <a href="/audited-financials" class="back-link">Back to Uploads</a>
-    </div>
-    <p>Building: <strong>{{ building_name }}</strong> | Entity: {{ entity_code }} | Year: {{ fiscal_year }}</p>
+<header>
+    <a href="/">← Home</a>
+    <h1>Review Extraction</h1>
+    <p>{{ building_name }} ({{ entity_code }}) — Fiscal Year {{ fiscal_year }}</p>
+</header>
+<div class="container">
+    <div style="margin-bottom:16px;"><a href="/audited-financials" class="back-link">← Back to Uploads</a></div>
 
     <div class="columns">
-        <!-- Raw Extracted Data with inline mapping -->
         <div class="column">
-            <h4>Extracted Data — Map Each Item</h4>
+            <h3>Extracted Data — Map Each Item</h3>
             <div id="rawData"></div>
-            <div style="margin-top:15px; display:flex; gap:10px;">
-                <button onclick="saveAllRules()" class="success-btn" style="flex:1;">Save All Mappings</button>
+            <div style="margin-top:16px; display:flex; gap:10px;">
+                <button onclick="saveAllRules()" class="btn-green" style="flex:1;">Save All Mappings</button>
                 <button onclick="remapUpload()" style="flex:1;">Re-Apply &amp; Refresh</button>
             </div>
         </div>
 
-        <!-- Mapped Summary -->
         <div class="column">
-            <h4>Century Budget Categories</h4>
+            <h3>Century Budget Categories</h3>
             <div id="mappedData"></div>
-            <div id="reconciliation" style="margin-top:15px;"></div>
+            <div id="reconciliation" style="margin-top:16px;"></div>
         </div>
     </div>
 
-    <div style="margin-top: 30px;">
+    <div class="confirm-section">
         <h3>Confirm Extraction</h3>
-        <p>Review the data above. Click Confirm to save this extraction as the official actuals for this building/year.</p>
-        <button class="success-btn" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
+        <p>Review the data above and confirm to save as official actuals for this building/year.</p>
+        <button class="btn-green" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
         <div id="confirmStatus"></div>
     </div>
+</div>
 
     <script>
         const rawExtraction = {{ raw_json }};

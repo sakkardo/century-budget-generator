@@ -888,16 +888,27 @@ HOME_TEMPLATE = r"""
   header h1 { font-size: 36px; font-weight: 700; margin-bottom: 8px; }
   header p { font-size: 16px; opacity: 0.95; }
   .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #9ca3af;
+    margin-bottom: 12px;
+    padding-left: 4px;
+  }
+  .section-group {
+    margin-bottom: 40px;
+  }
   .nav-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 24px;
-    margin-top: 24px;
+    gap: 20px;
   }
   .nav-card {
     background: white;
     border-radius: 12px;
-    padding: 32px 24px;
+    padding: 28px 24px;
     border: 1px solid #e5e7eb;
     text-decoration: none;
     color: #111827;
@@ -912,17 +923,17 @@ HOME_TEMPLATE = r"""
     transform: translateY(-4px);
   }
   .nav-card h2 {
-    font-size: 20px;
+    font-size: 18px;
     color: #1a56db;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     font-weight: 600;
   }
   .nav-card p {
-    font-size: 14px;
+    font-size: 13px;
     color: #6b7280;
-    line-height: 1.6;
+    line-height: 1.5;
     flex-grow: 1;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
   .nav-card .arrow {
     display: inline-block;
@@ -932,8 +943,8 @@ HOME_TEMPLATE = r"""
   }
   .nav-card:hover .arrow { transform: translateX(4px); transition: all 0.2s; }
   .icon {
-    font-size: 32px;
-    margin-bottom: 12px;
+    font-size: 28px;
+    margin-bottom: 8px;
   }
 </style>
 </head>
@@ -943,49 +954,70 @@ HOME_TEMPLATE = r"""
     <p>Budget & Assumptions System</p>
   </header>
   <div class="container">
-    <div class="nav-grid">
-      <a href="/admin" class="nav-card">
-        <div class="icon">👤</div>
-        <h2>User Management</h2>
-        <p>Sync buildings, FAs, and PMs from Monday.com.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/assumptions" class="nav-card">
-        <div class="icon">⚙️</div>
-        <h2>Portfolio Defaults</h2>
-        <p>Manage portfolio-wide default values for all buildings.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/assumptions/buildings" class="nav-card">
-        <div class="icon">📋</div>
-        <h2>Building Assumptions</h2>
-        <p>View and edit assumptions for individual buildings.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/generate" class="nav-card">
-        <div class="icon">📊</div>
-        <h2>Budget Generator</h2>
-        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/pm" class="nav-card">
-        <div class="icon">🔧</div>
-        <h2>PM Budget Review</h2>
-        <p>Property managers: review and enter R&M budget projections.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/dashboard" class="nav-card">
-        <div class="icon">📈</div>
-        <h2>FA Dashboard</h2>
-        <p>Review budget status, manage workflow, approve PM submissions.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/audited-financials" class="nav-card">
-        <div class="icon">📋</div>
-        <h2>Audited Financials</h2>
-        <p>Extract and map audited financial data into budget templates.</p>
-        <span class="arrow">→</span>
-      </a>
+    <div class="section-group">
+      <div class="section-label">Setup</div>
+      <div class="nav-grid">
+        <a href="/admin" class="nav-card">
+          <div class="icon">👤</div>
+          <h2>User Management</h2>
+          <p>Sync buildings, FAs, and PMs from Monday.com.</p>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="section-group">
+      <div class="section-label">Configuration</div>
+      <div class="nav-grid">
+        <a href="/assumptions" class="nav-card">
+          <div class="icon">⚙️</div>
+          <h2>Portfolio Defaults</h2>
+          <p>Manage portfolio-wide default values for all buildings.</p>
+          <span class="arrow">→</span>
+        </a>
+        <a href="/assumptions/buildings" class="nav-card">
+          <div class="icon">📋</div>
+          <h2>Building Assumptions</h2>
+          <p>View and edit assumptions for individual buildings.</p>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="section-group">
+      <div class="section-label">Budget Process</div>
+      <div class="nav-grid">
+        <a href="/generate" class="nav-card">
+          <div class="icon">📊</div>
+          <h2>Budget Generator</h2>
+          <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
+          <span class="arrow">→</span>
+        </a>
+        <a href="/pm" class="nav-card">
+          <div class="icon">🔧</div>
+          <h2>PM Budget Review</h2>
+          <p>Property managers: review and enter R&M budget projections.</p>
+          <span class="arrow">→</span>
+        </a>
+        <a href="/dashboard" class="nav-card">
+          <div class="icon">📈</div>
+          <h2>FA Dashboard</h2>
+          <p>Review budget status, manage workflow, approve PM submissions.</p>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="section-group">
+      <div class="section-label">Data Sources</div>
+      <div class="nav-grid">
+        <a href="/audited-financials" class="nav-card">
+          <div class="icon">📋</div>
+          <h2>Audited Financials</h2>
+          <p>Extract and map audited financial data into budget templates.</p>
+          <span class="arrow">→</span>
+        </a>
+      </div>
     </div>
   </div>
 </body>
@@ -1253,16 +1285,25 @@ GENERATE_TEMPLATE = r"""
     border-radius: 12px;
     font-weight: 600;
   }
+  .page-header {
+    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    color: white;
+    padding: 30px 20px;
+    margin-bottom: 0;
+  }
+  .page-header a { color: white; text-decoration: none; font-size: 14px; }
+  .page-header a:hover { text-decoration: underline; }
+  .page-header h1 { font-size: 28px; font-weight: 700; }
+  .page-header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
 </style>
 </head>
 <body>
+<div class="page-header">
+  <a href="/">← Home</a>
+  <h1>Budget Generator</h1>
+  <p>Download YSL reports from Yardi, then generate 2027 budgets in one click.</p>
+</div>
 <div class="container">
-  <a href="/" class="back-link">← Back to Home</a>
-
-  <div>
-    <h1>Budget Generator</h1>
-    <p class="subtitle">Download YSL reports from Yardi, then generate 2027 budgets in one click.</p>
-  </div>
 
   <!-- STEP 1 -->
   <div class="step">
