@@ -785,10 +785,28 @@ ADMIN_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>Admin Dashboard</h1>
   <p>Manage users and building assignments</p>
 </header>
 <div class="container">
+  <div class="section" style="border-left: 4px solid #6366f1;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <div>
+        <h2 style="margin-bottom:4px;">Monday.com Sync</h2>
+        <p style="font-size:13px; color:var(--gray-500);">Pull PM and FA assignments from the Building Master List</p>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="syncStatus" style="font-size:13px; color:var(--gray-500);"></span>
+        <button onclick="syncMonday()" id="syncBtn" style="background:#6366f1;">
+          Sync from Monday.com
+        </button>
+      </div>
+    </div>
+    <div id="syncResults" style="display:none; background:var(--gray-50); border-radius:8px; padding:16px; font-size:13px;">
+    </div>
+  </div>
+
   <div class="section">
     <h2>Add User</h2>
     <form id="user-form">
@@ -853,6 +871,7 @@ ADMIN_TEMPLATE = r"""
 
   <div class="section">
     <h2>Building Assignments</h2>
+    <input type="text" id="assignmentSearch" placeholder="Search by address, entity, or person..." style="width:100%; padding:10px 14px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; margin-bottom:12px; box-sizing:border-box;" oninput="filterAssignments()">
     <table id="assignments-table">
       <thead>
         <tr>
@@ -868,6 +887,57 @@ ADMIN_TEMPLATE = r"""
 </div>
 
 <script>
+// ── Monday.com Sync ─────────────────────────────────────────────────────
+async function syncMonday() {
+  const btn = document.getElementById('syncBtn');
+  const status = document.getElementById('syncStatus');
+  const results = document.getElementById('syncResults');
+
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  status.textContent = 'Fetching from Monday.com...';
+
+  try {
+    // Fetch building data from the app's Monday.com proxy endpoint
+    const resp = await fetch('/api/sync-monday-fetch');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Fetch failed');
+
+    status.textContent = `Syncing ${data.buildings.length} buildings...`;
+
+    // Send to sync endpoint
+    const syncResp = await fetch('/api/sync-monday', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data.buildings)
+    });
+    const syncData = await syncResp.json();
+    if (!syncResp.ok) throw new Error(syncData.error || 'Sync failed');
+
+    const s = syncData.stats;
+    results.style.display = 'block';
+    results.innerHTML = `
+      <strong style="color:#057a55;">Sync complete</strong><br>
+      Buildings synced: <strong>${s.buildings_synced}</strong> &nbsp;|&nbsp;
+      Users created: <strong>${s.users_created}</strong> &nbsp;|&nbsp;
+      Assignments created: <strong>${s.assignments_created}</strong> &nbsp;|&nbsp;
+      Assignments removed: <strong>${s.assignments_removed}</strong>
+    `;
+    status.textContent = '';
+
+    // Reload tables
+    loadUsers();
+    loadAssignments();
+  } catch(e) {
+    status.textContent = '';
+    results.style.display = 'block';
+    results.innerHTML = '<strong style="color:#e02424;">Error:</strong> ' + e.message;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Sync from Monday.com';
+}
+
 async function loadUsers() {
   try {
     const res = await fetch('/api/users');
@@ -1008,6 +1078,15 @@ document.getElementById('assignment-form').addEventListener('submit', async (e) 
     console.error(err);
   }
 });
+
+function filterAssignments() {
+  const query = document.getElementById('assignmentSearch').value.toLowerCase();
+  const rows = document.querySelectorAll('#assignments-table tbody tr');
+  rows.forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(query) ? '' : 'none';
+  });
+}
 
 // Initialize on page load
 (async () => {
@@ -1159,6 +1238,7 @@ DASHBOARD_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>FA Dashboard</h1>
   <p>Review and manage building budgets</p>
 </header>
@@ -1409,6 +1489,7 @@ PM_PORTAL_TEMPLATE = r"""
 </head>
 <body>
 <header>
+  <a href="/" class="back-link" style="color:white; text-decoration:none; font-size:14px;">← Home</a>
   <h1>PM Portal</h1>
   <p>Select your name and review assigned buildings</p>
 </header>

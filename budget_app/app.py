@@ -59,6 +59,14 @@ except ImportError:
 af_bp, af_models, af_helpers = create_audited_financials_blueprint(db)
 app.register_blueprint(af_bp)
 
+# Register expense distribution blueprint
+try:
+    from expense_distribution import create_expense_distribution_blueprint
+except ImportError:
+    from budget_app.expense_distribution import create_expense_distribution_blueprint
+ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflow_models)
+app.register_blueprint(ed_bp)
+
 # Create all tables on startup
 with app.app_context():
     db.create_all()
@@ -78,8 +86,9 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 # Default save location
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
-# The Console JS script template — entities/email/period get injected
+# Console JS script templates — entities/email/period get injected
 CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text()
+EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text()
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -269,12 +278,6 @@ def generate():
     )
 
 
-@app.route("/manage")
-def manage():
-    """Building management page."""
-    return render_template_string(MANAGE_TEMPLATE)
-
-
 @app.route("/assumptions")
 def assumptions():
     """Portfolio defaults page."""
@@ -370,7 +373,11 @@ def manage_building(entity_code):
 
 @app.route("/api/generate-script", methods=["POST"])
 def generate_script():
-    """Generate a customized Console script for selected buildings."""
+    """Generate a customized Console script for selected buildings.
+
+    Combines both the YSL Annual Budget and Expense Distribution scripts
+    into a single script that downloads both reports for each entity.
+    """
     data = request.json
     entities = data.get("entities", [])
     email = data.get("email", "")
@@ -379,22 +386,69 @@ def generate_script():
     if not entities:
         return jsonify({"error": "No buildings selected"}), 400
 
-    # Replace the configurable lines in the script
-    script = CONSOLE_SCRIPT
-    script = script.replace(
+    entities_js = ', '.join(str(e) for e in entities)
+
+    # Build YSL script with user settings
+    ysl_script = CONSOLE_SCRIPT
+    ysl_script = ysl_script.replace(
         "const AS_OF_PERIOD = '02/2026';",
         f"const AS_OF_PERIOD = '{period}';"
     )
-    script = script.replace(
+    ysl_script = ysl_script.replace(
         "const ENTITIES = [148, 204, 206, 805];",
-        f"const ENTITIES = [{', '.join(str(e) for e in entities)}];"
+        f"const ENTITIES = [{entities_js}];"
     )
-    script = script.replace(
+    ysl_script = ysl_script.replace(
         "const EMAIL = 'JSirotkin@Centuryny.com';",
         f"const EMAIL = '{email}';"
     )
 
-    return jsonify({"script": script})
+    # Build Expense Distribution script with user settings
+    exp_script = EXPENSE_DIST_SCRIPT
+    exp_script = exp_script.replace(
+        "const ENTITIES = [148, 204, 206, 805];",
+        f"const ENTITIES = [{entities_js}];"
+    )
+    exp_script = exp_script.replace(
+        "const PERIOD_FROM = '01/2026';",
+        f"const PERIOD_FROM = '{period}';"
+    )
+    exp_script = exp_script.replace(
+        "const PERIOD_TO   = '03/2026';",
+        f"const PERIOD_TO   = '{period}';"
+    )
+
+    # Combine into one script that runs both sequentially
+    combined = f"""/**
+ * Century Budget — Combined Yardi Download Script
+ * Downloads YSL Annual Budget + Expense Distribution for all selected entities.
+ * Generated for: {email}
+ * Entities: {entities_js}
+ * Period: {period}
+ */
+(async function() {{
+  'use strict';
+  console.log('='.repeat(60));
+  console.log('Century Budget — Combined Download');
+  console.log('Part 1: YSL Annual Budget reports');
+  console.log('Part 2: Expense Distribution reports');
+  console.log('='.repeat(60));
+
+  // ── Part 1: YSL Annual Budget ──
+  console.log('\\n>>> Starting Part 1: YSL Annual Budget <<<\\n');
+  await {ysl_script}
+
+  console.log('\\n>>> Starting Part 2: Expense Distribution <<<\\n');
+  // ── Part 2: Expense Distribution ──
+  await {exp_script}
+
+  console.log('\\n' + '='.repeat(60));
+  console.log('ALL DONE — Both YSL and Expense Distribution downloads complete.');
+  console.log('Drag all downloaded .xlsx files into the budget generator to process.');
+  console.log('='.repeat(60));
+}})();"""
+
+    return jsonify({"script": combined})
 
 
 @app.route("/api/process", methods=["POST"])
@@ -586,6 +640,223 @@ def bulk_export():
     return jsonify(buildings)
 
 
+# ─── Monday.com Sync ─────────────────────────────────────────────────────────
+
+MONDAY_API_TOKEN = os.environ.get("MONDAY_API_TOKEN", "")
+MONDAY_BOARD_ID = "3473581362"  # Building Master List
+
+
+@app.route("/api/sync-monday-fetch", methods=["GET"])
+def sync_monday_fetch():
+    """Fetch buildings, PM/FA assignments from Monday.com Building Master List."""
+    if not MONDAY_API_TOKEN:
+        return jsonify({"error": "MONDAY_API_TOKEN not configured"}), 500
+
+    import urllib.request
+    import ssl
+
+    # Pull entity#, address, city, zip, type, units, PM, FA for all active buildings
+    query = """{
+      boards(ids: %s) {
+        items_page(limit: 500, query_params: {rules: [{column_id: "color", compare_value: [0], operator: any_of}]}) {
+          items {
+            name
+            column_values(ids: ["numeric", "numbers9", "pm8", "people", "text8", "text7", "text03", "status1"]) {
+              id
+              text
+            }
+          }
+        }
+      }
+    }""" % MONDAY_BOARD_ID
+
+    req = urllib.request.Request(
+        "https://api.monday.com/v2",
+        data=json.dumps({"query": query}).encode("utf-8"),
+        headers={
+            "Authorization": MONDAY_API_TOKEN,
+            "Content-Type": "application/json",
+            "API-Version": "2024-10",
+        },
+    )
+
+    # Use default SSL context, fallback to unverified for local dev (macOS)
+    ctx = None
+    try:
+        ctx = ssl.create_default_context()
+    except Exception:
+        ctx = ssl.create_default_context()
+    if not IS_CLOUD:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        logger.error(f"Monday.com API error: {e}")
+        return jsonify({"error": f"Monday.com API error: {str(e)}"}), 500
+
+    items = result.get("data", {}).get("boards", [{}])[0].get("items_page", {}).get("items", [])
+
+    buildings = []
+    for item in items:
+        cols = {c["id"]: c["text"] for c in item.get("column_values", [])}
+        entity = cols.get("numeric", "").replace(" ", "").split(".")[0]
+        if not entity:
+            continue
+        units = cols.get("numbers9", "").replace(" ", "").split(".")[0]
+        buildings.append({
+            "entity_code": entity,
+            "building_name": item["name"],
+            "address": cols.get("text8") or "",
+            "city": cols.get("text7") or "",
+            "zip": cols.get("text03") or "",
+            "type": cols.get("status1") or "",
+            "units": units,
+            "pm": cols.get("pm8") or None,
+            "fa": cols.get("people") or None,
+        })
+
+    return jsonify({"buildings": buildings, "count": len(buildings)})
+
+
+@app.route("/api/sync-monday", methods=["POST"])
+def sync_monday():
+    """
+    Sync users and building assignments from Monday.com Building Master List.
+
+    Expects JSON array of buildings:
+    [{"entity_code": "204", "building_name": "...", "pm": "Name", "fa": "Name"}, ...]
+
+    Creates/updates User records and BuildingAssignment records.
+    """
+    User = workflow_models["User"]
+    BuildingAssignment = workflow_models["BuildingAssignment"]
+
+    data = request.get_json()
+    if not data or not isinstance(data, list):
+        return jsonify({"error": "Expected JSON array of buildings"}), 400
+
+    stats = {"users_created": 0, "users_updated": 0, "assignments_created": 0,
+             "assignments_removed": 0, "buildings_synced": 0}
+
+    # Collect all unique people names from the data
+    people = {}  # name -> set of roles
+    for bldg in data:
+        pm = (bldg.get("pm") or "").strip()
+        fa = (bldg.get("fa") or "").strip()
+        if pm:
+            people.setdefault(pm, set()).add("pm")
+        if fa:
+            people.setdefault(fa, set()).add("fa")
+
+    # Ensure all people exist as users
+    for name, roles in people.items():
+        # A person can be both PM and FA — use their primary role
+        primary_role = "pm" if "pm" in roles else "fa"
+
+        user = User.query.filter_by(name=name).first()
+        if not user:
+            # Generate email from name: "Jacob Sirotkin" → "jsirotkin@centuryny.com"
+            parts = name.lower().split()
+            email_slug = parts[0][0] + parts[-1] if len(parts) > 1 else parts[0]
+            email = f"{email_slug}@centuryny.com"
+
+            # Handle duplicates
+            existing = User.query.filter_by(email=email).first()
+            if existing:
+                # If same name, reuse; otherwise make unique
+                if existing.name == name:
+                    user = existing
+                else:
+                    email = f"{parts[0]}.{parts[-1]}@centuryny.com" if len(parts) > 1 else f"{parts[0]}2@centuryny.com"
+                    user = User(name=name, email=email, role=primary_role)
+                    db.session.add(user)
+                    stats["users_created"] += 1
+            else:
+                user = User(name=name, email=email, role=primary_role)
+                db.session.add(user)
+                stats["users_created"] += 1
+
+        db.session.flush()
+
+    # Sync building assignments
+    for bldg in data:
+        entity_code = str(bldg.get("entity_code", "")).strip()
+        if not entity_code:
+            continue
+
+        pm_name = (bldg.get("pm") or "").strip()
+        fa_name = (bldg.get("fa") or "").strip()
+
+        # Remove stale assignments for this entity
+        existing_assignments = BuildingAssignment.query.filter_by(entity_code=entity_code).all()
+        for a in existing_assignments:
+            should_keep = False
+            if a.role == "pm" and a.user and a.user.name == pm_name:
+                should_keep = True
+            if a.role == "fa" and a.user and a.user.name == fa_name:
+                should_keep = True
+            if not should_keep:
+                db.session.delete(a)
+                stats["assignments_removed"] += 1
+
+        db.session.flush()
+
+        # Create PM assignment
+        if pm_name:
+            pm_user = User.query.filter_by(name=pm_name).first()
+            if pm_user:
+                existing = BuildingAssignment.query.filter_by(
+                    entity_code=entity_code, user_id=pm_user.id, role="pm"
+                ).first()
+                if not existing:
+                    db.session.add(BuildingAssignment(
+                        entity_code=entity_code, user_id=pm_user.id, role="pm"
+                    ))
+                    stats["assignments_created"] += 1
+
+        # Create FA assignment
+        if fa_name:
+            fa_user = User.query.filter_by(name=fa_name).first()
+            if fa_user:
+                existing = BuildingAssignment.query.filter_by(
+                    entity_code=entity_code, user_id=fa_user.id, role="fa"
+                ).first()
+                if not existing:
+                    db.session.add(BuildingAssignment(
+                        entity_code=entity_code, user_id=fa_user.id, role="fa"
+                    ))
+                    stats["assignments_created"] += 1
+
+        stats["buildings_synced"] += 1
+
+    db.session.commit()
+
+    # Also sync buildings.csv from the same data
+    csv_buildings = []
+    for bldg in data:
+        entity_code = str(bldg.get("entity_code", "")).strip()
+        if not entity_code:
+            continue
+        csv_buildings.append({
+            "entity_code": entity_code,
+            "building_name": bldg.get("building_name", ""),
+            "address": bldg.get("address", ""),
+            "city": bldg.get("city", ""),
+            "zip": bldg.get("zip", ""),
+            "type": bldg.get("type", ""),
+            "units": bldg.get("units", ""),
+        })
+    if csv_buildings:
+        save_buildings(csv_buildings)
+        stats["buildings_csv_updated"] = len(csv_buildings)
+
+    logger.info(f"Monday.com sync complete: {stats}")
+    return jsonify({"status": "ok", "stats": stats})
+
+
 # Cache the template GL list
 _template_gls_cache = None
 def _get_template_gls():
@@ -673,16 +944,10 @@ HOME_TEMPLATE = r"""
   </header>
   <div class="container">
     <div class="nav-grid">
-      <a href="/generate" class="nav-card">
-        <div class="icon">📊</div>
-        <h2>Budget Generator</h2>
-        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
-        <span class="arrow">→</span>
-      </a>
-      <a href="/manage" class="nav-card">
-        <div class="icon">🏢</div>
-        <h2>Manage Buildings</h2>
-        <p>Add, edit, or remove buildings from the portfolio.</p>
+      <a href="/admin" class="nav-card">
+        <div class="icon">👤</div>
+        <h2>User Management</h2>
+        <p>Sync buildings, FAs, and PMs from Monday.com.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/assumptions" class="nav-card">
@@ -697,10 +962,10 @@ HOME_TEMPLATE = r"""
         <p>View and edit assumptions for individual buildings.</p>
         <span class="arrow">→</span>
       </a>
-      <a href="/dashboard" class="nav-card">
-        <div class="icon">📈</div>
-        <h2>FA Dashboard</h2>
-        <p>Review budget status, manage workflow, approve PM submissions.</p>
+      <a href="/generate" class="nav-card">
+        <div class="icon">📊</div>
+        <h2>Budget Generator</h2>
+        <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/pm" class="nav-card">
@@ -709,10 +974,10 @@ HOME_TEMPLATE = r"""
         <p>Property managers: review and enter R&M budget projections.</p>
         <span class="arrow">→</span>
       </a>
-      <a href="/admin" class="nav-card">
-        <div class="icon">👤</div>
-        <h2>User Management</h2>
-        <p>Manage users and assign buildings to FAs and PMs.</p>
+      <a href="/dashboard" class="nav-card">
+        <div class="icon">📈</div>
+        <h2>FA Dashboard</h2>
+        <p>Review budget status, manage workflow, approve PM submissions.</p>
         <span class="arrow">→</span>
       </a>
       <a href="/audited-financials" class="nav-card">
@@ -1288,7 +1553,9 @@ async function processFiles() {
 </html>
 """
 
-MANAGE_TEMPLATE = r"""
+# MANAGE_TEMPLATE removed — buildings now sync from Monday.com
+
+_MANAGE_REMOVED = """
 <!DOCTYPE html>
 <html lang="en">
 <head>

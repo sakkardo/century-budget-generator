@@ -458,6 +458,7 @@ Be precise with numbers. Include all line items found.
     </style>
 </head>
 <body>
+    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
     <div class="header">
         <h1>Audited Financials</h1>
         <a href="/audited-financials/profiles" style="color: #007bff;">Manage Profiles & Rules</a>
@@ -651,6 +652,7 @@ Be precise with numbers. Include all line items found.
     </style>
 </head>
 <body>
+    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
     <div class="header">
         <h1>Auditor Profiles & Mapping Rules</h1>
         <a href="/audited-financials" style="color: #007bff;">Back to Uploads</a>
@@ -884,6 +886,7 @@ Be precise with numbers. Include all line items found.
     </style>
 </head>
 <body>
+    <div style="padding:8px 20px;"><a href="/" style="color:#1a56db; text-decoration:none; font-size:14px;">← Home</a></div>
     <div class="header">
         <h1>Review Extraction</h1>
         <a href="/audited-financials" class="back-link">Back to Uploads</a>
