@@ -2270,50 +2270,63 @@ function renderSheet(sheetName, sheetLines, tabEl) {
     return;
   }
 
-  let html = '<table style="width:100%; border-collapse:collapse; margin-top:0;">' +
-    '<thead><tr>' +
-    '<th style="text-align:left; padding:8px;">GL Code</th>' +
+  // YSL-matching column layout:
+  // GL Code | Description | Prior Year Actual | YTD Actual | YTD Budget | Approved Budget | Variance | Increase % | Proposed Budget | Notes
+  let html = '<table style="width:100%; border-collapse:collapse; margin-top:0; font-size:13px;">' +
+    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+    '<th style="text-align:left; padding:8px; white-space:nowrap;">GL Code</th>' +
     '<th style="text-align:left; padding:8px;">Description</th>' +
-    '<th style="text-align:right; padding:8px;">Prior Year</th>' +
-    '<th style="text-align:right; padding:8px;">YTD Actual</th>' +
-    '<th style="text-align:right; padding:8px;">Current Budget</th>' +
-    '<th style="text-align:right; padding:8px;">Increase %</th>' +
-    '<th style="text-align:right; padding:8px;">Proposed Budget</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">Prior Year<br>Actual</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">YTD<br>Actual</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">YTD<br>Budget</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">Approved<br>Budget</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">Variance<br>$</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">Increase<br>%</th>' +
+    '<th style="text-align:right; padding:8px; white-space:nowrap;">Proposed<br>Budget</th>' +
     '<th style="text-align:left; padding:8px;">Notes</th>' +
     '</tr></thead><tbody>';
 
-  let totalPrior = 0, totalYtd = 0, totalBudget = 0, totalProposed = 0;
+  let totalPrior = 0, totalYtd = 0, totalYtdBudget = 0, totalBudget = 0, totalProposed = 0;
 
   sheetLines.forEach(l => {
     const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
+    const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
     const proposed = l.proposed_budget || budget;
+    const variance = budget - prior;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     totalPrior += prior;
     totalYtd += ytd;
+    totalYtdBudget += ytdBudget;
     totalBudget += budget;
     totalProposed += proposed;
 
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
+    const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
 
-    html += '<tr>' +
-      '<td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + reclassBadge + '</td>' +
+    html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
+      '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + l.gl_code + reclassBadge + '</td>' +
       '<td style="padding:6px 8px;">' + l.description + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
-      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:120px; border:1px solid var(--gray-200); border-radius:4px; padding:4px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
+      '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
+      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:120px; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
       '</tr>';
   });
 
+  const totalVar = totalBudget - totalPrior;
   html += '<tr style="font-weight:700; background:var(--gray-100);">' +
     '<td style="padding:8px;" colspan="2">Sheet Total</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalPrior) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalYtd) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalYtdBudget) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalBudget) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td>' +
     '<td></td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalProposed) + '</td>' +
     '<td></td></tr>';
