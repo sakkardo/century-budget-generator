@@ -3177,10 +3177,11 @@ function faLineChanged(gl, field, value) {
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
   if (!row) return;
 
-  const prior = getRaw('pr_' + gl);
+  const prior = parseFloat(row.dataset.prior) || 0;
   const ytd = getRaw('ytd_' + gl);
   const accrual = getRaw('acc_' + gl);
   const unpaid = getRaw('unp_' + gl);
+  const budget = getRaw('bud_' + gl);
   const incRaw = parseFloat(document.getElementById('inc_' + gl)?.dataset.raw) || 0;
   const incPct = incRaw / 100;
 
@@ -3228,11 +3229,11 @@ function faLineChanged(gl, field, value) {
 
   faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
-  const variance = proposed - prior;
+  const variance = proposed - budget;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
+  if (pctEl) pctEl.textContent = (budget ? ((proposed / budget - 1) * 100).toFixed(1) : '0.0') + '%';
 
   // Recalculate sheet totals from live cell values
   faUpdateSheetTotals();
@@ -3778,7 +3779,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
-    return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
+    const priorYear = l.prior_year || 0;
+    return '<tr data-gl="' + gl + '" data-prior="' + priorYear + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
