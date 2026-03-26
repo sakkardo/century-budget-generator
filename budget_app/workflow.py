@@ -3701,10 +3701,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const style = document.createElement('style');
     style.id = 'faSheetStyle';
     style.textContent = `
-      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:visible; position:relative; }
-      .fa-grid-scroll { overflow-x:auto; overflow-y:visible; }
-      .fa-sticky-scroll { position:sticky; bottom:0; overflow-x:auto; overflow-y:hidden; z-index:20; background:rgba(255,255,255,0.9); border-top:1px solid var(--gray-200); }
-      .fa-sticky-scroll div { height:1px; }
+      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; position:relative; }
+      .fa-grid-scroll { overflow:auto; max-height:calc(100vh - 280px); }
       .fa-grid table { width:100%; border-collapse:collapse; font-size:13px; }
       .fa-grid thead { background:var(--gray-100); position:sticky; top:0; z-index:10; }
       .fa-grid th { padding:10px 12px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); }
@@ -3884,24 +3882,12 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
   html += '</tbody></table></div>';
-  html += '<div class="fa-sticky-scroll" id="faStickyScroll"><div id="faStickyScrollInner"></div></div>';
   html += '</div>';
   contentDiv.innerHTML = html;
 
   // Recalculate totals from rounded cell values so they match exactly
   setTimeout(() => {
     faUpdateSheetTotals();
-
-    // Sync sticky scrollbar width and scroll position with table
-    const gridScroll = document.querySelector('.fa-grid-scroll');
-    const stickyScroll = document.getElementById('faStickyScroll');
-    const stickyInner = document.getElementById('faStickyScrollInner');
-    if (!gridScroll || !stickyScroll || !stickyInner) return;
-    const table = gridScroll.querySelector('table');
-    if (table) stickyInner.style.width = table.scrollWidth + 'px';
-    let syncing = false;
-    gridScroll.addEventListener('scroll', () => { if (!syncing) { syncing = true; stickyScroll.scrollLeft = gridScroll.scrollLeft; syncing = false; } });
-    stickyScroll.addEventListener('scroll', () => { if (!syncing) { syncing = true; gridScroll.scrollLeft = stickyScroll.scrollLeft; syncing = false; } });
   }, 100);
 }
 
