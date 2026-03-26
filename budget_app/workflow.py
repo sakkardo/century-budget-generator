@@ -3239,45 +3239,61 @@ function faLineChanged(gl, field, value) {
 }
 
 function faUpdateSheetTotals() {
-  const totalRow = document.getElementById('faSheetTotal');
-  if (!totalRow) return;
-  const prefixes = ['pr_','ytd_','acc_','unp_','ytdb_','est_','fcst_','bud_'];
-  const propPrefix = 'prop_';
-  const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
-  // Get all visible data rows
-  document.querySelectorAll('tr[data-gl]').forEach(row => {
-    if (row.style.display === 'none') return;
-    const gl = row.dataset.gl;
-    const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
-    t.prior += raw('pr_' + gl);
-    t.ytd += raw('ytd_' + gl);
-    t.accrual += raw('acc_' + gl);
-    t.unpaid += raw('unp_' + gl);
-    t.ytdBudget += raw('ytdb_' + gl);
-    t.estimate += raw('est_' + gl);
-    t.forecast += raw('fcst_' + gl);
-    t.budget += raw('bud_' + gl);
-    t.proposed += raw('prop_' + gl);
-  });
-  const v = t.proposed - t.prior;
-  const p = t.prior ? (t.proposed / t.prior - 1) : 0;
-  const cells = totalRow.querySelectorAll('td');
-  // cells[0] = label (colspan=3: GL+Desc+Notes), cells[1..12] = data columns
-  if (cells.length >= 13) {
-    cells[1].textContent = fmt(t.prior);
-    cells[2].textContent = fmt(t.ytd);
-    cells[3].textContent = fmt(t.accrual);
-    cells[4].textContent = fmt(t.unpaid);
-    cells[5].textContent = fmt(t.ytdBudget);
-    cells[6].textContent = fmt(t.estimate);
-    cells[7].textContent = fmt(t.forecast);
-    cells[8].textContent = fmt(t.budget);
-    cells[9].textContent = '';
-    cells[10].textContent = fmt(t.proposed);
-    cells[11].textContent = fmt(v);
-    cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-    cells[12].textContent = (p * 100).toFixed(1) + '%';
+  const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
+
+  function sumGLs(glCodes) {
+    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    glCodes.forEach(gl => {
+      const row = document.querySelector('tr[data-gl="' + gl + '"]');
+      if (row && row.style.display === 'none') return;
+      t.prior += raw('pr_' + gl);
+      t.ytd += raw('ytd_' + gl);
+      t.accrual += raw('acc_' + gl);
+      t.unpaid += raw('unp_' + gl);
+      t.ytdBudget += raw('ytdb_' + gl);
+      t.estimate += raw('est_' + gl);
+      t.forecast += raw('fcst_' + gl);
+      t.budget += raw('bud_' + gl);
+      t.proposed += raw('prop_' + gl);
+    });
+    return t;
   }
+
+  function updateTotalRow(rowEl, t) {
+    if (!rowEl) return;
+    const v = t.proposed - t.prior;
+    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
+    const cells = rowEl.querySelectorAll('td');
+    if (cells.length >= 13) {
+      cells[1].textContent = fmt(t.prior);
+      cells[2].textContent = fmt(t.ytd);
+      cells[3].textContent = fmt(t.accrual);
+      cells[4].textContent = fmt(t.unpaid);
+      cells[5].textContent = fmt(t.ytdBudget);
+      cells[6].textContent = fmt(t.estimate);
+      cells[7].textContent = fmt(t.forecast);
+      cells[8].textContent = fmt(t.budget);
+      cells[9].textContent = '';
+      cells[10].textContent = fmt(t.proposed);
+      cells[11].textContent = fmt(v);
+      cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+      cells[12].textContent = (p * 100).toFixed(1) + '%';
+    }
+  }
+
+  // Update category subtotal rows
+  const groups = window._catGroupGLs || {};
+  Object.keys(groups).forEach(key => {
+    const subRow = document.getElementById('subtotal_' + key);
+    if (subRow) updateTotalRow(subRow, sumGLs(groups[key]));
+  });
+
+  // Update sheet total row (all visible GL rows)
+  const allGLs = [];
+  document.querySelectorAll('tr[data-gl]').forEach(row => {
+    if (row.style.display !== 'none') allGLs.push(row.dataset.gl);
+  });
+  updateTotalRow(document.getElementById('faSheetTotal'), sumGLs(allGLs));
 }
 
 let _faSaveTimer = null;
@@ -3673,6 +3689,7 @@ function faToggleZeroRows() {
     row.style.display = _faShowZeroRows ? '' : 'none';
   });
   faUpdateZeroToggle();
+  faUpdateSheetTotals();
 }
 
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
@@ -3838,24 +3855,32 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + (p*100).toFixed(1) + '%</td></tr>';
   }
 
+  // Track category group -> GL codes for dynamic subtotal updates
+  const _catGroupGLs = {};
+
   if (catConfig) {
     catConfig.groups.forEach(grp => {
       const gl = sheetLines.filter(grp.match);
       if (gl.length === 0) return;
+      _catGroupGLs[grp.key] = gl.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '">' + grp.label + '</td></tr>';
       gl.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total ' + grp.label, sumLines(gl));
+      html += subtotalRow('Total ' + grp.label, sumLines(gl), 'sub-row', 'subtotal_' + grp.key);
     });
     const allGrouped = catConfig.groups.flatMap(g => sheetLines.filter(g.match));
     const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
     if (ungrouped.length > 0) {
+      _catGroupGLs['_other'] = ungrouped.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td></tr>';
       ungrouped.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total Other', sumLines(ungrouped));
+      html += subtotalRow('Total Other', sumLines(ungrouped), 'sub-row', 'subtotal__other');
     }
   } else {
     sheetLines.forEach(l => { html += buildLineRow(l); });
   }
+
+  // Store group mapping globally so faUpdateSheetTotals can use it
+  window._catGroupGLs = _catGroupGLs;
 
   html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
   html += '</tbody></table></div>';
