@@ -2495,7 +2495,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <div class="status-pipeline" id="statusPipeline"></div>
 
   <!-- Summary Cards -->
-  <div class="summary-cards" id="summaryCards"></div>
+  <!-- summary cards removed -->
 
   <!-- Two Track Cards -->
   <div class="tracks">
@@ -2625,35 +2625,7 @@ function renderDetail(data) {
   // Status Pipeline
   renderStatusPipeline(b.status);
 
-  // Summary cards
   const lines = data.lines;
-  let totalPrior = 0, totalBudget = 0, totalPM = 0;
-  lines.forEach(l => {
-    totalPrior += l.prior_year || 0;
-    totalBudget += l.current_budget || 0;
-    const forecast = computeForecast(l);
-    const proposed = forecast * (1 + (l.increase_pct || 0));
-    totalPM += proposed;
-  });
-
-  document.getElementById('summaryCards').innerHTML = `
-    <div class="summary-card">
-      <div class="card-value">${fmt(totalPrior)}</div>
-      <div class="card-label">Prior Year</div>
-    </div>
-    <div class="summary-card">
-      <div class="card-value">${fmt(totalBudget)}</div>
-      <div class="card-label">Current Budget</div>
-    </div>
-    <div class="summary-card">
-      <div class="card-value">${fmt(totalBudget - totalPrior)}</div>
-      <div class="card-label">Variance</div>
-    </div>
-    <div class="summary-card">
-      <div class="card-value">${totalPrior ? ((totalBudget - totalPrior) / totalPrior * 100).toFixed(1) + '%' : '\u2014'}</div>
-      <div class="card-label">% Change</div>
-    </div>
-  `;
 
   // PM Track
   const statusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
@@ -2669,11 +2641,34 @@ function renderDetail(data) {
     pmActions += '<div style="margin-top:12px; padding:10px; background:#fef3c7; border-radius:6px; font-size:13px;"><strong>FA Notes:</strong> ' + b.fa_notes + '</div>';
   }
 
+  // Gather PM notes and reclasses from budget lines
+  const pmNoteLines = lines.filter(l => l.notes && l.notes.trim());
+  const reclassedLines = lines.filter(l => l.reclass_to_gl);
+  let pmExtra = '';
+  if (pmNoteLines.length > 0) {
+    pmExtra += '<div style="margin-top:16px;"><h4 style="font-size:13px; font-weight:600; color:var(--gray-700); margin-bottom:8px;">PM Notes (' + pmNoteLines.length + ')</h4>';
+    pmExtra += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--gray-200); border-radius:8px; background:white;">';
+    pmExtra += '<table style="width:100%; font-size:12px; border-collapse:collapse;">';
+    pmNoteLines.forEach(l => {
+      pmExtra += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="padding:6px 10px; font-family:monospace; white-space:nowrap; color:var(--blue); width:90px;">' + l.gl_code + '</td><td style="padding:6px 10px; color:var(--gray-500);">' + (l.description || '') + '</td><td style="padding:6px 10px;">' + l.notes + '</td></tr>';
+    });
+    pmExtra += '</table></div></div>';
+  }
+  if (reclassedLines.length > 0) {
+    pmExtra += '<div style="margin-top:16px;"><h4 style="font-size:13px; font-weight:600; color:var(--orange); margin-bottom:8px;">Reclass Suggestions (' + reclassedLines.length + ')</h4>';
+    pmExtra += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--gray-200); border-radius:8px; background:white;">';
+    pmExtra += '<table style="width:100%; font-size:12px; border-collapse:collapse;">';
+    reclassedLines.forEach(l => {
+      pmExtra += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="padding:6px 10px; font-family:monospace; white-space:nowrap; width:90px;">' + l.gl_code + '</td><td style="padding:6px 10px;">→</td><td style="padding:6px 10px; font-family:monospace;">' + l.reclass_to_gl + '</td><td style="padding:6px 10px; text-align:right;">' + fmt(l.reclass_amount) + '</td><td style="padding:6px 10px; color:var(--gray-500);">' + (l.reclass_notes || '') + '</td></tr>';
+    });
+    pmExtra += '</table></div></div>';
+  }
+
   document.getElementById('pmTrackContent').innerHTML =
     '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">' +
       '<span class="pill pill-' + b.status + '">' + pmStatus + '</span>' +
       (data.assignments.pm ? '<span style="font-size:13px; color:var(--gray-500);">Assigned to: ' + data.assignments.pm + '</span>' : '') +
-    '</div>' + pmActions;
+    '</div>' + pmActions + pmExtra;
 
   // FA Completion Checklist — guided workflow
   const assumptions = data.assumptions || {};
@@ -3488,11 +3483,10 @@ async function faToggleInvoices(glCode, el) {
     return;
   }
 
-  // Build all GL codes for reclass dropdown from current sheet
-  const currentSheet = document.querySelector('.sheet-tab.active');
-  const sheetName = currentSheet ? currentSheet.dataset.sheet : '';
-  const sheetLines = allSheets[sheetName] || [];
-  const allGLs = sheetLines.map(l => l.gl_code).filter(g => g !== glCode);
+  // Build all GL codes for reclass dropdown — sorted alphabetically, across all sheets
+  const allGLSet = new Set();
+  Object.values(allSheets).forEach(sheetArr => sheetArr.forEach(l => { if (l.gl_code !== glCode) allGLSet.add(l.gl_code); }));
+  const allGLs = Array.from(allGLSet).sort();
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
@@ -3518,10 +3512,10 @@ async function faToggleInvoices(glCode, el) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
     } else {
-      html += '<select id="fa_reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
-      html += '<option value="">Reclass to…</option>';
-      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
-      html += '</select> ';
+      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:110px;">';
+      html += '<datalist id="fa_reclass_list_' + inv.id + '">';
+      allGLs.forEach(g => { html += '<option value="' + g + '">'; });
+      html += '</datalist> ';
       html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
     }
     html += '</td></tr>';
@@ -4610,8 +4604,8 @@ async function toggleInvoices(glCode, linkEl) {
         return;
     }
 
-    // Build all GL codes for reclass dropdown
-    const allGLs = LINES.map(l => l.gl_code).filter(g => g !== glCode);
+    // Build all GL codes for reclass dropdown — sorted alphabetically
+    const allGLs = LINES.map(l => l.gl_code).filter(g => g !== glCode).sort();
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
@@ -4638,10 +4632,10 @@ async function toggleInvoices(glCode, linkEl) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
-            html += '<select id="reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
-            html += '<option value="">Reclass to…</option>';
-            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
-            html += '</select> ';
+            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:110px;">';
+            html += '<datalist id="reclass_list_' + inv.id + '">';
+            allGLs.forEach(g => { html += '<option value="' + g + '">'; });
+            html += '</datalist> ';
             html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
         }
         html += '</td></tr>';
@@ -4785,6 +4779,7 @@ function showReclass(glCode) {
 
     // Build GL options from RM_GL_MAP keys (all budget template GL codes)
     const glOptions = LINES.filter(l => l.gl_code !== glCode)
+        .sort((a, b) => a.gl_code.localeCompare(b.gl_code))
         .map(l => `<option value="${l.gl_code}">${l.gl_code} - ${l.description}</option>`)
         .join('');
 
@@ -4802,10 +4797,10 @@ function showReclass(glCode) {
         <td colspan="12" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
-                <select id="reclass_target_${glCode}" style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
-                    <option value="">-- Select target GL --</option>
+                <input id="reclass_target_${glCode}" list="reclass_target_list_${glCode}" placeholder="Search GL code..." style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px; width:180px;">
+                <datalist id="reclass_target_list_${glCode}">
                     ${glOptions}
-                </select>
+                </datalist>
                 <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.current_budget || 0)}"
                        style="width:100px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
                 <input type="text" id="reclass_notes_${glCode}" placeholder="Notes for FA" value="${line.reclass_notes || ''}"
