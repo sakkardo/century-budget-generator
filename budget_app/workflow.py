@@ -1458,6 +1458,68 @@ def create_workflow_blueprint(db):
             )
 
 
+    # ─── Presentation Routes ───────────────────────────────────────────────
+
+    @bp.route("/api/presentation/generate/<entity_code>", methods=["POST"])
+    def generate_presentation_link(entity_code):
+        """Generate a shareable presentation token for a budget."""
+        import secrets
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        # Generate or reuse token
+        if not budget.presentation_token:
+            budget.presentation_token = secrets.token_urlsafe(32)
+            db.session.commit()
+
+        url = request.host_url.rstrip("/") + "/presentation/" + budget.presentation_token
+        return jsonify({"token": budget.presentation_token, "url": url})
+
+
+    @bp.route("/presentation/<token>", methods=["GET"])
+    def presentation_view(token):
+        """Client-facing read-only budget presentation."""
+        import json as _json
+        budget = Budget.query.filter_by(presentation_token=token).first()
+        if not budget:
+            return "<h1>Presentation not found</h1><p>This link may have expired or is invalid.</p>", 404
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(BudgetLine.sheet_name, BudgetLine.row_num).all()
+
+        # Group by sheet
+        sheets = {}
+        for l in lines:
+            sn = l.sheet_name or "Other"
+            if sn not in sheets:
+                sheets[sn] = []
+            sheets[sn].append(l.to_dict())
+
+        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin"]
+        ordered = [s for s in sheet_order if s in sheets]
+
+        # Parse assumptions for YTD months
+        ytd_months = 2
+        try:
+            assumptions = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+            bp_val = assumptions.get("budget_period", "")
+            if "/" in str(bp_val):
+                ytd_months = int(str(bp_val).split("/")[0])
+        except Exception:
+            pass
+
+        return render_template_string(
+            PRESENTATION_TEMPLATE,
+            building_name=budget.building_name,
+            entity_code=budget.entity_code,
+            year=budget.year,
+            sheets_json=_json.dumps(sheets),
+            sheet_order_json=_json.dumps(ordered),
+            ytd_months=ytd_months,
+            remaining_months=12 - ytd_months,
+        )
+
+
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
     return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
@@ -2471,7 +2533,10 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <div class="section">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
       <h2>Budget Workbook</h2>
-      <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
+      <div style="display:flex; gap:8px;">
+        <button onclick="generatePresentationLink()" id="presLinkBtn" class="btn" style="background:var(--primary); color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer;">Board Presentation</button>
+        <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
+      </div>
     </div>
     <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap;"></div>
     <div id="sheetContent" style="overflow-x:auto;"></div>
@@ -2775,6 +2840,34 @@ function renderDetail(data) {
 }
 
 // ── Checklist Action Helpers ──
+async function generatePresentationLink() {
+  const btn = document.getElementById('presLinkBtn');
+  btn.textContent = 'Generating...';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/presentation/generate/' + entityCode, {method:'POST'});
+    const data = await resp.json();
+    if (data.url) {
+      // Show a modal with the link
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
+      modal.innerHTML = '<div style="background:white;border-radius:12px;padding:32px;max-width:500px;width:90%;">' +
+        '<h3 style="margin-bottom:12px;">Board Presentation Link</h3>' +
+        '<p style="font-size:13px;color:#64748b;margin-bottom:16px;">Share this link with board members. It provides a read-only view of the budget.</p>' +
+        '<input type="text" value="' + data.url + '" readonly style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;margin-bottom:12px;" onclick="this.select()">' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+        '<button onclick="navigator.clipboard.writeText(\'' + data.url + '\');this.textContent=\'Copied!\'" style="padding:8px 16px;background:var(--primary);color:white;border:none;border-radius:6px;cursor:pointer;">Copy Link</button>' +
+        '<button onclick="window.open(\'' + data.url + '\',\'_blank\')" style="padding:8px 16px;background:var(--green);color:white;border:none;border-radius:6px;cursor:pointer;">Open</button>' +
+        '<button onclick="this.closest(\'div\').parentElement.remove()" style="padding:8px 16px;background:var(--gray-200);border:none;border-radius:6px;cursor:pointer;">Close</button>' +
+        '</div></div>';
+      document.body.appendChild(modal);
+      modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    }
+  } catch(err) { showToast('Error generating link: ' + err.message, 'error'); }
+  btn.textContent = 'Board Presentation';
+  btn.disabled = false;
+}
+
 function openAssumptions() {
   const tabs = document.querySelectorAll('.sheet-tab');
   const assumTab = Array.from(tabs).find(t => t.textContent.includes('Assumptions'));
@@ -4311,6 +4404,279 @@ if (!CAN_EDIT) {
 }
 
 renderTable();
+</script>
+</body>
+</html>
+"""
+
+
+PRESENTATION_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ building_name }} - {{ year }} Budget Presentation</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Inter',sans-serif; background:#0f172a; color:#e2e8f0; }
+  .header { background:linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding:40px 60px; border-bottom:1px solid #334155; }
+  .header h1 { font-size:32px; font-weight:300; color:#f8fafc; letter-spacing:-0.5px; }
+  .header .subtitle { font-size:14px; color:#94a3b8; margin-top:8px; letter-spacing:1px; text-transform:uppercase; }
+  .header .logo { font-size:13px; color:#64748b; margin-top:4px; }
+  .nav { display:flex; gap:4px; padding:0 60px; background:#1e293b; border-bottom:1px solid #334155; overflow-x:auto; }
+  .nav button { padding:12px 20px; background:transparent; border:none; color:#94a3b8; font-size:13px; font-weight:500; cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
+  .nav button:hover { color:#e2e8f0; }
+  .nav button.active { color:#38bdf8; border-bottom-color:#38bdf8; }
+  .content { padding:30px 60px; max-width:1400px; }
+  .summary-cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:30px; }
+  .card { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:20px; }
+  .card .label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#64748b; margin-bottom:8px; }
+  .card .value { font-size:24px; font-weight:600; color:#f8fafc; }
+  .card .delta { font-size:13px; margin-top:4px; }
+  .delta-up { color:#f87171; }
+  .delta-down { color:#4ade80; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; padding:10px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; border-bottom:1px solid #334155; }
+  thead th.num { text-align:right; }
+  tbody td { padding:8px 12px; border-bottom:1px solid #1e293b; font-size:13px; }
+  tbody td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tbody tr:hover { background:#1e293b; }
+  .subtotal td { font-weight:600; background:#1e293b; border-top:1px solid #334155; border-bottom:1px solid #334155; color:#f8fafc; }
+  .sheet-total td { font-weight:700; background:#0f172a; border-top:2px solid #38bdf8; color:#38bdf8; font-size:14px; }
+  .cat-header td { padding:14px 12px 6px; font-weight:600; color:#38bdf8; font-size:14px; border-bottom:2px solid #1e3a5f; }
+  .variance-neg { color:#4ade80; }
+  .variance-pos { color:#f87171; }
+  .footer { padding:30px 60px; font-size:11px; color:#475569; border-top:1px solid #1e293b; margin-top:40px; }
+  @media print {
+    body { background:white; color:#1e293b; }
+    .header { background:white; border-bottom:2px solid #1e293b; }
+    .header h1 { color:#0f172a; }
+    .nav { display:none; }
+    .card { border:1px solid #e2e8f0; }
+    .card .value { color:#0f172a; }
+    thead th { color:#64748b; border-bottom:2px solid #e2e8f0; }
+    tbody td { border-bottom:1px solid #f1f5f9; }
+    .subtotal td { background:#f8fafc; }
+    .sheet-total td { border-top:2px solid #0f172a; color:#0f172a; }
+    .cat-header td { color:#0f172a; border-bottom:2px solid #e2e8f0; }
+    .variance-neg { color:#16a34a; }
+    .variance-pos { color:#dc2626; }
+    @page { margin:0.5in; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>{{ building_name }}</h1>
+  <div class="subtitle">{{ year }} Operating Budget</div>
+  <div class="logo">Century Management</div>
+</div>
+
+<div class="nav" id="tabNav"></div>
+<div class="content" id="mainContent"></div>
+
+<div class="footer">
+  Prepared by Century Management &middot; Confidential &middot; <span id="printDate"></span>
+</div>
+
+<script>
+const SHEETS = {{ sheets_json | safe }};
+const SHEET_ORDER = {{ sheet_order_json | safe }};
+const YTD_MONTHS = {{ ytd_months }};
+const REMAINING_MONTHS = {{ remaining_months }};
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+document.getElementById('printDate').textContent = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+
+function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
+
+function computeEstimate(l) {
+  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0, prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return Math.max(prior - base, 0);
+}
+
+function computeForecast(l) {
+  return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + computeEstimate(l);
+}
+
+const CATEGORIES = {
+  'Repairs & Supplies': [
+    {label:'Supplies', match: l => l.category === 'supplies'},
+    {label:'Repairs', match: l => l.category === 'repairs'},
+    {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}
+  ],
+  'Gen & Admin': [
+    {label:'Professional Fees', match: l => l.row_num >= 8 && l.row_num <= 16},
+    {label:'Administrative & Other', match: l => l.row_num >= 20 && l.row_num <= 49},
+    {label:'Insurance', match: l => l.row_num >= 53 && l.row_num <= 64},
+    {label:'Taxes', match: l => l.row_num >= 68 && l.row_num <= 78},
+    {label:'Financial Expenses', match: l => l.row_num >= 82 && l.row_num <= 90}
+  ]
+};
+
+function sumLines(lines) {
+  const t = {prior:0, forecast:0, proposed:0, budget:0};
+  lines.forEach(l => {
+    t.prior += l.prior_year || 0;
+    t.forecast += computeForecast(l);
+    t.budget += l.current_budget || 0;
+    t.proposed += l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
+  });
+  return t;
+}
+
+function renderSummary() {
+  const content = document.getElementById('mainContent');
+  let allLines = [];
+  SHEET_ORDER.forEach(s => { allLines = allLines.concat(SHEETS[s] || []); });
+  const incomeLines = SHEETS['Income'] || [];
+  const expenseLines = allLines.filter(l => l.sheet_name !== 'Income');
+
+  const inc = sumLines(incomeLines);
+  const exp = sumLines(expenseLines);
+  const noiProposed = inc.proposed - exp.proposed;
+  const noiPrior = inc.prior - exp.prior;
+
+  let html = '<div class="summary-cards">' +
+    '<div class="card"><div class="label">Total Income</div><div class="value">' + fmt(inc.proposed) + '</div>' +
+    '<div class="delta ' + (inc.proposed >= inc.prior ? 'delta-down' : 'delta-up') + '">' + (inc.prior ? ((inc.proposed/inc.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
+    '<div class="card"><div class="label">Total Expenses</div><div class="value">' + fmt(exp.proposed) + '</div>' +
+    '<div class="delta ' + (exp.proposed <= exp.prior ? 'delta-down' : 'delta-up') + '">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
+    '<div class="card"><div class="label">Net Operating Income</div><div class="value">' + fmt(noiProposed) + '</div>' +
+    '<div class="delta ' + (noiProposed >= noiPrior ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiPrior) + ' vs prior</div></div>' +
+    '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '—') + '</div>' +
+    '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
+
+  // Summary table by sheet
+  html += '<table><thead><tr><th>Category</th><th class="num">Prior Year</th><th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+  SHEET_ORDER.forEach(s => {
+    const cats = CATEGORIES[s];
+    if (cats) {
+      const sheetLines = SHEETS[s] || [];
+      cats.forEach(cat => {
+        const gl = sheetLines.filter(cat.match);
+        if (gl.length === 0) return;
+        const t = sumLines(gl);
+        const v = t.proposed - t.prior;
+        const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
+        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
+          '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+          '<td class="num">' + p.toFixed(1) + '%</td></tr>';
+      });
+      const st = sumLines(SHEETS[s] || []);
+      const sv = st.proposed - st.prior;
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.prior) + '</td><td class="num">' + fmt(st.proposed) + '</td>' +
+        '<td class="num ' + (sv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(sv) + '</td>' +
+        '<td class="num">' + (st.prior ? ((st.proposed/st.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    } else {
+      const t = sumLines(SHEETS[s] || []);
+      const v = t.proposed - t.prior;
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
+        '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+        '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    }
+  });
+  // Total row
+  const totalV = exp.proposed - exp.prior;
+  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.prior) + '</td><td class="num">' + fmt(exp.proposed) + '</td>' +
+    '<td class="num ' + (totalV >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(totalV) + '</td>' +
+    '<td class="num">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  // NOI
+  const noiV = noiProposed - noiPrior;
+  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiPrior) + '</td><td class="num">' + fmt(noiProposed) + '</td>' +
+    '<td class="num ' + (noiV >= 0 ? 'variance-neg' : 'variance-pos') + '">' + fmt(noiV) + '</td>' +
+    '<td class="num">' + (noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '</tbody></table>';
+  content.innerHTML = html;
+}
+
+function renderSheet(sheetName) {
+  const content = document.getElementById('mainContent');
+  const lines = SHEETS[sheetName] || [];
+  const estLabel = MONTH_ABBR[YTD_MONTHS] + '-Dec';
+
+  let html = '<table><thead><tr>' +
+    '<th>GL Code</th><th>Description</th>' +
+    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
+    '<th class="num">' + estLabel + ' Est</th><th class="num">12 Mo Forecast</th>' +
+    '<th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
+    '</tr></thead><tbody>';
+
+  const cats = CATEGORIES[sheetName];
+
+  function buildRow(l) {
+    const prior = l.prior_year || 0;
+    const forecast = computeForecast(l);
+    const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    const v = proposed - prior;
+    const p = prior ? (proposed/prior-1)*100 : 0;
+    return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
+      '<td class="num">' + fmt(prior) + '</td><td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
+      '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
+      '<td class="num" style="font-weight:600;">' + fmt(proposed) + '</td>' +
+      '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+      '<td class="num">' + p.toFixed(1) + '%</td></tr>';
+  }
+
+  function buildSubtotal(label, ls) {
+    const t = sumLines(ls);
+    const v = t.proposed - t.prior;
+    return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
+      '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+      '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+      '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  }
+
+  if (cats) {
+    cats.forEach(cat => {
+      const gl = lines.filter(cat.match);
+      if (gl.length === 0) return;
+      html += '<tr class="cat-header"><td colspan="9">' + cat.label + '</td></tr>';
+      gl.forEach(l => { html += buildRow(l); });
+      html += buildSubtotal('Total ' + cat.label, gl);
+    });
+  } else {
+    lines.forEach(l => { html += buildRow(l); });
+  }
+
+  // Sheet total
+  const t = sumLines(lines);
+  const tv = t.proposed - t.prior;
+  html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
+    '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+    '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
+    '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '</tbody></table>';
+  content.innerHTML = html;
+}
+
+function switchTab(name, el) {
+  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  if (name === 'Summary') renderSummary();
+  else renderSheet(name);
+}
+
+// Build tabs
+const nav = document.getElementById('tabNav');
+const summaryBtn = document.createElement('button');
+summaryBtn.textContent = 'Summary';
+summaryBtn.className = 'active';
+summaryBtn.onclick = function() { switchTab('Summary', this); };
+nav.appendChild(summaryBtn);
+
+SHEET_ORDER.forEach(s => {
+  const btn = document.createElement('button');
+  btn.textContent = s;
+  btn.onclick = function() { switchTab(s, this); };
+  nav.appendChild(btn);
+});
+
+renderSummary();
 </script>
 </body>
 </html>
