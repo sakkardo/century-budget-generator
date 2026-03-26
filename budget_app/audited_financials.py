@@ -1551,14 +1551,14 @@ Be precise with numbers. Include all line items found.
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
 
-        # Delete the PDF file if it exists
-        if upload.file_path:
-            try:
-                import os
-                if os.path.exists(upload.file_path):
-                    os.remove(upload.file_path)
-            except Exception:
-                pass  # File cleanup is best-effort
+        # Delete the PDF file if it exists on disk
+        try:
+            import os
+            pdf_path = getattr(upload, 'pdf_filename', None)
+            if pdf_path and os.path.exists(pdf_path):
+                os.remove(pdf_path)
+        except Exception:
+            pass  # File cleanup is best-effort
 
         db.session.delete(upload)
         db.session.commit()
