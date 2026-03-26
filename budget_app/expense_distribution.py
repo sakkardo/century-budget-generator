@@ -278,6 +278,106 @@ def create_expense_distribution_blueprint(db, workflow_models):
         logger.info(f"Stored {len(invoices)} invoices for entity {entity_code} ({period_from}-{period_to})")
         return report
 
+    # ─── Helper: Compute and apply accrual adjustments ──────────────────────
+
+    def compute_accrual_adjustments(report_id, period_from):
+        """
+        Identify prior-year invoices and compute accrual adjustments per GL.
+
+        Any invoice whose invoice_date is BEFORE the report's period_from start
+        is considered a prior-year accrual. These amounts are summed per GL code
+        and returned as NEGATIVE values (they inflate YTD and must be backed out).
+
+        Args:
+            report_id: The expense report ID
+            period_from: String like "01/2026" — the start of the reporting period
+
+        Returns:
+            dict: {gl_code: {"accrual_amount": float (negative), "invoices": [list of invoice dicts]}}
+        """
+        from datetime import datetime
+
+        # Parse the period_from into a cutoff date (first day of that month)
+        try:
+            cutoff = datetime.strptime(period_from, "%m/%Y")
+        except (ValueError, TypeError):
+            logger.warning(f"Could not parse period_from '{period_from}', skipping accrual calc")
+            return {}
+
+        invoices = ExpenseInvoice.query.filter_by(report_id=report_id).all()
+        accruals = {}  # {gl_code: {"amount": float, "invoices": [...]}}
+
+        for inv in invoices:
+            # Parse invoice_date — could be "2025-12-15", "12/15/2025", etc.
+            inv_date = None
+            for date_fmt in ["%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S", "%m/%d/%y"]:
+                try:
+                    inv_date = datetime.strptime(str(inv.invoice_date or "").strip()[:10], date_fmt)
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+            if inv_date is None:
+                continue  # Can't parse date, skip
+
+            # Check if invoice is prior-year (before the report period start)
+            if inv_date < cutoff:
+                gl = inv.reclass_to_gl or inv.gl_code  # Use reclassed GL if applicable
+                if gl not in accruals:
+                    accruals[gl] = {"amount": 0, "invoices": []}
+                accruals[gl]["amount"] += inv.amount
+                accruals[gl]["invoices"].append(inv.to_dict())
+
+        # Make amounts negative (prior-year expenses that need to be backed out of YTD)
+        for gl in accruals:
+            accruals[gl]["amount"] = -abs(accruals[gl]["amount"])
+
+        return accruals
+
+    def apply_accrual_adjustments(entity_code, report_id, period_from):
+        """
+        Compute accrual adjustments from prior-year invoices and apply them
+        to matching BudgetLine records.
+
+        Returns:
+            dict: {"applied": int, "accruals": {gl: amount}}
+        """
+        accruals = compute_accrual_adjustments(report_id, period_from)
+        if not accruals:
+            return {"applied": 0, "accruals": {}}
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            logger.warning(f"No budget found for entity {entity_code}, cannot apply accruals")
+            return {"applied": 0, "accruals": {}}
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        gl_to_line = {line.gl_code: line for line in lines}
+
+        applied = 0
+        accrual_summary = {}
+        for gl, data in accruals.items():
+            if gl in gl_to_line:
+                line = gl_to_line[gl]
+                old_val = float(line.accrual_adj or 0)
+                line.accrual_adj = round(data["amount"], 2)
+                accrual_summary[gl] = round(data["amount"], 2)
+
+                # Log the change
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id, action="update",
+                    field_name="accrual_adj",
+                    old_value=str(old_val),
+                    new_value=str(round(data["amount"], 2)),
+                    notes=f"GL {gl}: auto-accrual from {len(data['invoices'])} prior-year invoices",
+                    source="accrual_auto"
+                ))
+                applied += 1
+
+        db.session.commit()
+        logger.info(f"Applied accrual adjustments to {applied} GL lines for entity {entity_code}")
+        return {"applied": applied, "accruals": accrual_summary}
+
     # ─── Helper: Get adjusted GL totals (after reclass) ───────────────────────
 
     def get_adjusted_gl_totals(entity_code):
@@ -350,17 +450,52 @@ def create_expense_distribution_blueprint(db, workflow_models):
                 entity_code, period_from, period_to, invoices, file.filename
             )
 
+            # Auto-compute and apply accrual adjustments from prior-year invoices
+            accrual_result = {"applied": 0, "accruals": {}}
+            if period_from:
+                try:
+                    accrual_result = apply_accrual_adjustments(entity_code, report.id, period_from)
+                    if accrual_result["applied"] > 0:
+                        logger.info(f"Auto-applied accrual adjustments to {accrual_result['applied']} GL lines")
+                except Exception as e:
+                    logger.error(f"Failed to apply accrual adjustments: {e}")
+
             return jsonify({
                 "status": "ok",
                 "report": report.to_dict(),
                 "gl_codes_found": len(set(inv["gl_code"] for inv in invoices)),
                 "invoices_parsed": len(invoices),
+                "accruals_applied": accrual_result["applied"],
+                "accrual_details": accrual_result.get("accruals", {}),
             })
         except Exception as e:
             logger.error(f"Failed to parse expense distribution: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             os.unlink(tmp.name)
+
+    @bp.route("/api/accrual-invoices/<entity_code>/<gl_code>", methods=["GET"])
+    def get_accrual_invoices(entity_code, gl_code):
+        """Get prior-year invoices that contribute to accrual adjustment for a GL code."""
+        report = ExpenseReport.query.filter_by(entity_code=entity_code)\
+            .order_by(ExpenseReport.uploaded_at.desc()).first()
+        if not report:
+            return jsonify({"invoices": [], "total": 0, "cutoff": None})
+
+        period_from = report.period_from
+        if not period_from:
+            return jsonify({"invoices": [], "total": 0, "cutoff": None})
+
+        accruals = compute_accrual_adjustments(report.id, period_from)
+        gl_data = accruals.get(gl_code, {"amount": 0, "invoices": []})
+
+        return jsonify({
+            "gl_code": gl_code,
+            "invoices": gl_data.get("invoices", []),
+            "total": gl_data.get("amount", 0),
+            "cutoff": period_from,
+            "invoice_count": len(gl_data.get("invoices", [])),
+        })
 
     @bp.route("/api/expense-dist/<entity_code>", methods=["GET"])
     def get_expense_dist(entity_code):

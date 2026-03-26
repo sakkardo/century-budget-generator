@@ -3744,6 +3744,56 @@ async function faFetchExpenseData() {
   } catch(e) { _faExpenseCache = false; return null; }
 }
 
+async function faToggleAccrualDrill(glCode, el) {
+  const row = el.closest('tr');
+  // Check if drill-down already open
+  const existingDrill = row.nextElementSibling;
+  if (existingDrill && existingDrill.classList.contains('fa-accrual-detail')) {
+    existingDrill.remove();
+    el.textContent = '▼';
+    return;
+  }
+  el.textContent = '▲';
+
+  // Fetch prior-year invoices
+  try {
+    const resp = await fetch('/api/accrual-invoices/' + entityCode + '/' + glCode);
+    const data = await resp.json();
+
+    if (!data.invoices || data.invoices.length === 0) {
+      showToast('No prior-year invoices found for ' + glCode, 'info');
+      el.textContent = '▼';
+      return;
+    }
+
+    const drillRow = document.createElement('tr');
+    drillRow.className = 'fa-accrual-detail';
+    const nc = row.querySelectorAll('td').length;
+    let html = '<td colspan="' + nc + '" style="padding:0; background:#fef3c7;">' +
+      '<div style="padding:12px 16px;">' +
+      '<div style="font-size:12px; font-weight:600; color:#92400e; margin-bottom:8px;">Prior-Year Invoices (before ' + (data.cutoff || '?') + ') — ' + data.invoices.length + ' invoice(s), Total: ' + fmt(data.total) + '</div>' +
+      '<table style="width:100%; font-size:12px; border-collapse:collapse;">' +
+      '<tr style="background:#fde68a; font-size:10px; text-transform:uppercase;"><th style="text-align:left; padding:4px 8px;">Payee</th><th style="padding:4px 8px;">Invoice #</th><th style="padding:4px 8px;">Invoice Date</th><th style="text-align:right; padding:4px 8px;">Amount</th></tr>';
+
+    data.invoices.forEach(inv => {
+      html += '<tr style="border-bottom:1px solid #fde68a;">' +
+        '<td style="padding:4px 8px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>' +
+        '<td style="padding:4px 8px;">' + (inv.invoice_num || '—') + '</td>' +
+        '<td style="padding:4px 8px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
+        '<td style="text-align:right; padding:4px 8px;">' + fmt(inv.amount) + '</td></tr>';
+    });
+
+    html += '<tr style="font-weight:700; background:#fde68a;"><td colspan="3" style="padding:4px 8px;">Accrual Adjustment (negative)</td>' +
+      '<td style="text-align:right; padding:4px 8px; color:var(--red);">' + fmt(data.total) + '</td></tr>';
+    html += '</table></div></td>';
+    drillRow.innerHTML = html;
+    row.after(drillRow);
+  } catch(e) {
+    showToast('Error loading accrual invoices: ' + e.message, 'error');
+    el.textContent = '▼';
+  }
+}
+
 async function faToggleInvoices(glCode, el) {
   const row = el.closest('tr');
   const next = row.nextElementSibling;
@@ -3981,7 +4031,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
-      '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
+      '<td class="num" style="position:relative;">' + $cell('acc_'+gl, 'accrual_adj', accrual) +
+        (accrual !== 0 ? '<span onclick="faToggleAccrualDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); cursor:pointer; background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);" title="View prior-year invoices">▼</span>' : '') + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
@@ -4712,7 +4763,7 @@ function renderTable() {
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
-                <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.accrual_adj || 0) !== 0 ? '<span onclick="pmToggleAccrualDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #fde68a;" title="View prior-year invoices">▼</span>' : ''}</td>
                 <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
                 <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
@@ -4851,6 +4902,41 @@ async function fetchExpenseData() {
         _expenseCache = await res.json();
         return _expenseCache;
     } catch(e) { _expenseCache = false; return null; }
+}
+
+async function pmToggleAccrualDrill(glCode, el) {
+  const row = el.closest('tr');
+  const existingDrill = row.nextElementSibling;
+  if (existingDrill && existingDrill.classList.contains('pm-accrual-detail')) {
+    existingDrill.remove();
+    el.textContent = '▼';
+    return;
+  }
+  el.textContent = '▲';
+  try {
+    const resp = await fetch('/api/accrual-invoices/' + ENTITY + '/' + glCode);
+    const data = await resp.json();
+    if (!data.invoices || data.invoices.length === 0) {
+      el.textContent = '▼';
+      return;
+    }
+    const drillRow = document.createElement('tr');
+    drillRow.className = 'pm-accrual-detail';
+    const nc = row.querySelectorAll('td').length;
+    let html = '<td colspan="' + nc + '" style="padding:0; background:#fef3c7;"><div style="padding:10px 14px;">' +
+      '<div style="font-size:11px; font-weight:600; color:#92400e; margin-bottom:6px;">Prior-Year Invoices (before ' + (data.cutoff || '?') + ') — Total: ' + fmt(data.total) + '</div>' +
+      '<table style="width:100%; font-size:11px; border-collapse:collapse;">' +
+      '<tr style="background:#fde68a; font-size:10px;"><th style="text-align:left; padding:3px 6px;">Payee</th><th style="padding:3px 6px;">Invoice #</th><th style="padding:3px 6px;">Date</th><th style="text-align:right; padding:3px 6px;">Amount</th></tr>';
+    data.invoices.forEach(inv => {
+      html += '<tr style="border-bottom:1px solid #fde68a;"><td style="padding:3px 6px;">' + (inv.payee_name || '—') + '</td>' +
+        '<td style="padding:3px 6px;">' + (inv.invoice_num || '—') + '</td>' +
+        '<td style="padding:3px 6px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
+        '<td style="text-align:right; padding:3px 6px;">' + fmt(inv.amount) + '</td></tr>';
+    });
+    html += '</table></div></td>';
+    drillRow.innerHTML = html;
+    row.after(drillRow);
+  } catch(e) { el.textContent = '▼'; }
 }
 
 async function toggleInvoices(glCode, linkEl) {
