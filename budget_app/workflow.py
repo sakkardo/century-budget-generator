@@ -737,7 +737,8 @@ def create_workflow_blueprint(db):
         # Check if PM can edit this budget
         can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned"]
 
-        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(BudgetLine.row_num).all()
+        # PM only sees Repairs & Supplies lines (pm_editable=True)
+        lines = BudgetLine.query.filter_by(budget_id=budget.id, pm_editable=True).order_by(BudgetLine.row_num).all()
         import json as json_mod
 
         lines_data = [l.to_dict() for l in lines]
@@ -2470,8 +2471,24 @@ async function dismissReclass(glCode) {
   loadDetail();
 }
 
+const YTD_MONTHS = 2;
+const REMAINING_MONTHS = 10;
+
+function faComputeEstimate(l) {
+  const ytd = l.ytd_actual || 0;
+  const accrual = l.accrual_adj || 0;
+  const unpaid = l.unpaid_bills || 0;
+  const prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  if (base >= prior && prior > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return Math.max(prior - base, 0);
+}
+
+function faComputeForecast(l) {
+  return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
+}
+
 function renderSheet(sheetName, sheetLines, tabEl) {
-  // Update tab active state
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   tabEl.classList.add('active');
 
@@ -2481,67 +2498,133 @@ function renderSheet(sheetName, sheetLines, tabEl) {
     return;
   }
 
-  // YSL-matching column layout:
-  // GL Code | Description | Prior Year Actual | YTD Actual | YTD Budget | Approved Budget | Variance | Increase % | Proposed Budget | Notes
-  let html = '<table style="width:100%; border-collapse:collapse; margin-top:0; font-size:13px;">' +
+  const editableSheets = ['Repairs & Supplies', 'Gen & Admin'];
+  if (editableSheets.includes(sheetName)) {
+    renderEditableSheet(sheetName, sheetLines, contentDiv);
+  } else {
+    renderReadOnlySheet(sheetName, sheetLines, contentDiv);
+  }
+}
+
+function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
+  const thStyle = 'text-align:right; padding:8px; white-space:nowrap;';
+  let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
     '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-    '<th style="text-align:left; padding:8px; white-space:nowrap;">GL Code</th>' +
+    '<th style="text-align:left; padding:8px;">GL Code</th>' +
     '<th style="text-align:left; padding:8px;">Description</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">Prior Year<br>Actual</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">YTD<br>Actual</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">YTD<br>Budget</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">Approved<br>Budget</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">Variance<br>$</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">Increase<br>%</th>' +
-    '<th style="text-align:right; padding:8px; white-space:nowrap;">Proposed<br>Budget</th>' +
-    '<th style="text-align:left; padding:8px;">Notes</th>' +
+    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
+    '<th style="' + thStyle + '">YTD<br>Actual</th>' +
+    '<th style="' + thStyle + '">YTD<br>Budget</th>' +
+    '<th style="' + thStyle + '">Approved<br>Budget</th>' +
+    '<th style="' + thStyle + '">Variance</th>' +
     '</tr></thead><tbody>';
 
-  let totalPrior = 0, totalYtd = 0, totalYtdBudget = 0, totalBudget = 0, totalProposed = 0;
+  let totals = {prior:0, ytd:0, ytdBudget:0, budget:0};
+  sheetLines.forEach(l => {
+    const prior = l.prior_year || 0;
+    const ytd = l.ytd_actual || 0;
+    const ytdBudget = l.ytd_budget || 0;
+    const budget = l.current_budget || 0;
+    const variance = budget - prior;
+    totals.prior += prior; totals.ytd += ytd; totals.ytdBudget += ytdBudget; totals.budget += budget;
+    const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
+
+    html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
+      '<td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + '</td>' +
+      '<td style="padding:6px 8px;">' + l.description + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td></tr>';
+  });
+
+  const totalVar = totals.budget - totals.prior;
+  html += '<tr style="font-weight:700; background:var(--gray-100);"><td style="padding:8px;" colspan="2">Sheet Total</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytdBudget) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.budget) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td></tr>';
+  html += '</tbody></table>';
+  contentDiv.innerHTML = html;
+}
+
+function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+  const thStyle = 'text-align:right; padding:8px; white-space:nowrap;';
+  const inputStyle = 'text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;';
+
+  let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+    '<th style="text-align:left; padding:8px;">GL Code</th>' +
+    '<th style="text-align:left; padding:8px;">Description</th>' +
+    '<th style="text-align:left; padding:8px;">Notes</th>' +
+    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
+    '<th style="' + thStyle + '">YTD<br>Actual</th>' +
+    '<th style="' + thStyle + '">Accrual<br>Adj</th>' +
+    '<th style="' + thStyle + '">Unpaid<br>Bills</th>' +
+    '<th style="' + thStyle + '">YTD<br>Budget</th>' +
+    '<th style="' + thStyle + '">Sep-Dec<br>Estimate</th>' +
+    '<th style="' + thStyle + '">12 Month<br>Forecast</th>' +
+    '<th style="' + thStyle + '">Current<br>Budget</th>' +
+    '<th style="' + thStyle + '">Increase<br>%</th>' +
+    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
+    '<th style="' + thStyle + '">$<br>Variance</th>' +
+    '<th style="' + thStyle + '">%<br>Change</th>' +
+    '</tr></thead><tbody>';
+
+  let totals = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
 
   sheetLines.forEach(l => {
     const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
     const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
-    const proposed = l.proposed_budget || budget;
-    const variance = budget - prior;
+    const estimate = faComputeEstimate(l);
+    const forecast = faComputeForecast(l);
+    const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    const variance = proposed - prior;
+    const pctChange = prior ? (proposed / prior - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
-    totalPrior += prior;
-    totalYtd += ytd;
-    totalYtdBudget += ytdBudget;
-    totalBudget += budget;
-    totalProposed += proposed;
 
-    const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
+    totals.prior += prior; totals.ytd += ytd; totals.ytdBudget += ytdBudget;
+    totals.estimate += estimate; totals.forecast += forecast; totals.budget += budget; totals.proposed += proposed;
+
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
+    const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
 
     html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
       '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + l.gl_code + reclassBadge + '</td>' +
       '<td style="padding:6px 8px;">' + l.description + '</td>' +
+      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:100px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(l.accrual_adj || 0) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(l.unpaid_bills || 0) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(estimate) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(forecast) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
       '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
-      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:120px; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
-      '</tr>';
+      '<td style="text-align:right; padding:6px 8px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
   });
 
-  const totalVar = totalBudget - totalPrior;
-  html += '<tr style="font-weight:700; background:var(--gray-100);">' +
-    '<td style="padding:8px;" colspan="2">Sheet Total</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalPrior) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalYtd) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalYtdBudget) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalBudget) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td>' +
+  const totalVar = totals.proposed - totals.prior;
+  const totalPct = totals.prior ? (totals.proposed / totals.prior - 1) : 0;
+  html += '<tr style="font-weight:700; background:var(--gray-100);"><td style="padding:8px;" colspan="2">Sheet Total</td><td></td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
+    '<td></td><td></td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytdBudget) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.estimate) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.forecast) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.budget) + '</td>' +
     '<td></td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalProposed) + '</td>' +
-    '<td></td></tr>';
-
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.proposed) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + (totalPct * 100).toFixed(1) + '%</td></tr>';
   html += '</tbody></table>';
   contentDiv.innerHTML = html;
 }
@@ -3053,7 +3136,7 @@ PM_EDIT_TEMPLATE = """
 
 <header>
   <h1>{{ building_name }}</h1>
-  <p>Entity {{ entity_code }} — Repairs, Maintenance & Supplies Budget</p>
+  <p>Entity {{ entity_code }} — Repairs & Supplies Budget Review</p>
 </header>
 <div class="container">
   {% if fa_notes %}
@@ -3080,16 +3163,19 @@ PM_EDIT_TEMPLATE = """
           <tr>
             <th>GL Code</th>
             <th>Description</th>
-            <th>Category</th>
-            <th class="number">Prior Year</th>
-            <th class="number">YTD Actual</th>
-            <th class="number">12-Mo Forecast</th>
-            <th class="number">Increase %</th>
-            <th class="number">Accrual Adj</th>
-            <th class="number">Unpaid Bills</th>
-            <th class="number">Proposed Budget</th>
             <th>Notes</th>
-            <th>Reclass</th>
+            <th class="number">Prior Year<br>Actual</th>
+            <th class="number">YTD<br>Actual</th>
+            <th class="number">Accrual<br>Adj</th>
+            <th class="number">Unpaid<br>Bills</th>
+            <th class="number">YTD<br>Budget</th>
+            <th class="number">Sep-Dec<br>Estimate</th>
+            <th class="number">12 Month<br>Forecast</th>
+            <th class="number">Current<br>Budget</th>
+            <th class="number">Increase<br>%</th>
+            <th class="number">Proposed<br>Budget</th>
+            <th class="number">$<br>Variance</th>
+            <th class="number">%<br>Change</th>
           </tr>
         </thead>
         <tbody id="linesBody"></tbody>
@@ -3128,19 +3214,24 @@ function pctFmt(n) {
     return (n * 100).toFixed(1) + '%';
 }
 
-function computeForecast(line) {
-    const e = line.ytd_actual || 0;
-    const f = line.accrual_adj || 0;
-    const g = line.unpaid_bills || 0;
-    const d = line.prior_year || 0;
-    const base = e + f + g;
-    let estimate;
-    if (base >= d && d > 0) {
-        estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+function computeEstimate(line) {
+    const ytd = line.ytd_actual || 0;
+    const accrual = line.accrual_adj || 0;
+    const unpaid = line.unpaid_bills || 0;
+    const prior = line.prior_year || 0;
+    const base = ytd + accrual + unpaid;
+    if (base >= prior && prior > 0) {
+        return (base / YTD_MONTHS) * REMAINING_MONTHS;
     } else {
-        estimate = Math.max(d - base, 0);
+        return Math.max(prior - base, 0);
     }
-    return base + estimate;
+}
+
+function computeForecast(line) {
+    const ytd = line.ytd_actual || 0;
+    const accrual = line.accrual_adj || 0;
+    const unpaid = line.unpaid_bills || 0;
+    return ytd + accrual + unpaid + computeEstimate(line);
 }
 
 function computeProposed(line) {
@@ -3152,110 +3243,105 @@ function renderTable() {
     const tbody = document.getElementById('linesBody');
     tbody.innerHTML = '';
 
-    // Group by category
+    // Group by category: Supplies, Repairs, Maintenance
     const categories = {supplies: [], repairs: [], maintenance: []};
-    const catLabels = {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance'};
+    const catLabels = {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance Contracts'};
     LINES.forEach(l => {
         if (categories[l.category]) categories[l.category].push(l);
     });
 
-    let grandPrior = 0, grandYtd = 0, grandForecast = 0, grandProposed = 0;
+    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const NC = 15;
 
     for (const [cat, catLines] of Object.entries(categories)) {
         if (catLines.length === 0) continue;
 
-        // Category header
         const headerRow = document.createElement('tr');
         headerRow.className = 'category-header';
-        headerRow.innerHTML = '<td colspan="12">' + catLabels[cat] + '</td>';
+        headerRow.innerHTML = '<td colspan="' + NC + '">' + catLabels[cat] + '</td>';
         tbody.appendChild(headerRow);
 
-        let catPrior = 0, catYtd = 0, catForecast = 0, catProposed = 0;
+        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
 
         catLines.forEach(line => {
+            const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            catPrior += (line.prior_year || 0);
-            catYtd += (line.ytd_actual || 0);
-            catForecast += forecast;
-            catProposed += proposed;
+            const variance = proposed - (line.prior_year || 0);
+            const pctChange = (line.prior_year || 0) ? (proposed / (line.prior_year) - 1) : 0;
 
-            const reclassBadge = line.reclass_to_gl ? '<span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px; margin-left:4px;">→' + line.reclass_to_gl + '</span>' : '';
+            catTotals.prior += (line.prior_year || 0);
+            catTotals.ytd += (line.ytd_actual || 0);
+            catTotals.ytdBudget += (line.ytd_budget || 0);
+            catTotals.estimate += estimate;
+            catTotals.forecast += forecast;
+            catTotals.budget += (line.current_budget || 0);
+            catTotals.proposed += proposed;
+
+            const reclassBadge = line.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">Reclass</span>' : '';
 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
                 <td>${line.description}</td>
-                <td>
-                    <select data-gl="${line.gl_code}" data-field="category" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}
-                            style="font-size:12px; padding:2px 4px; border:1px solid var(--gray-200); border-radius:4px;">
-                        <option value="supplies" ${line.category === 'supplies' ? 'selected' : ''}>Supplies</option>
-                        <option value="repairs" ${line.category === 'repairs' ? 'selected' : ''}>Repairs</option>
-                        <option value="maintenance" ${line.category === 'maintenance' ? 'selected' : ''}>Maintenance</option>
-                    </select>
-                </td>
+                <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
                 <td class="number">${fmt(line.prior_year)}</td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
+                <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number">${fmt(line.ytd_budget)}</td>
+                <td class="number" id="est_${line.gl_code}">${fmt(estimate)}</td>
                 <td class="number" id="fc_${line.gl_code}">${fmt(forecast)}</td>
-                <td class="number">
-                    <input type="number" step="0.01" value="${((line.increase_pct || 0) * 100).toFixed(1)}"
-                           data-gl="${line.gl_code}" data-field="increase_pct"
-                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
-                </td>
-                <td class="number">
-                    <input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}"
-                           data-gl="${line.gl_code}" data-field="accrual_adj"
-                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
-                </td>
-                <td class="number">
-                    <input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}"
-                           data-gl="${line.gl_code}" data-field="unpaid_bills"
-                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
-                </td>
+                <td class="number">${fmt(line.current_budget)}</td>
+                <td class="number"><input type="number" step="0.1" value="${((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${line.gl_code}" data-field="increase_pct" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="width:70px;"></td>
                 <td class="number" id="pb_${line.gl_code}">${fmt(proposed)}</td>
-                <td>
-                    <input type="text" value="${line.notes || ''}"
-                           data-gl="${line.gl_code}" data-field="notes"
-                           onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>
-                </td>
-                <td>
-                    ${CAN_EDIT ? '<button onclick="showReclass(\'' + line.gl_code + '\')" style="font-size:11px; padding:2px 8px; background:var(--gray-100); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer;">Reclass</button>' : ''}
-                </td>
+                <td class="number" id="var_${line.gl_code}" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(variance)}</td>
+                <td class="number" id="pct_${line.gl_code}">${(pctChange * 100).toFixed(1)}%</td>
             `;
             tbody.appendChild(tr);
         });
 
-        // Subtotal row
+        // Subtotal
+        const catVar = catTotals.proposed - catTotals.prior;
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
             <td></td><td>Total ${catLabels[cat]}</td><td></td>
-            <td class="number">${fmt(catPrior)}</td>
-            <td class="number">${fmt(catYtd)}</td>
-            <td class="number" id="subfc_${cat}">${fmt(catForecast)}</td>
-            <td></td><td></td><td></td>
-            <td class="number" id="subpb_${cat}">${fmt(catProposed)}</td>
+            <td class="number">${fmt(catTotals.prior)}</td>
+            <td class="number">${fmt(catTotals.ytd)}</td>
             <td></td><td></td>
+            <td class="number">${fmt(catTotals.ytdBudget)}</td>
+            <td class="number">${fmt(catTotals.estimate)}</td>
+            <td class="number">${fmt(catTotals.forecast)}</td>
+            <td class="number">${fmt(catTotals.budget)}</td>
+            <td></td>
+            <td class="number">${fmt(catTotals.proposed)}</td>
+            <td class="number">${fmt(catVar)}</td>
+            <td></td>
         `;
         tbody.appendChild(subRow);
 
-        grandPrior += catPrior;
-        grandYtd += catYtd;
-        grandForecast += catForecast;
-        grandProposed += catProposed;
+        Object.keys(grandTotals).forEach(k => grandTotals[k] += catTotals[k]);
     }
 
     // Grand total
+    const grandVar = grandTotals.proposed - grandTotals.prior;
+    const grandPct = grandTotals.prior ? (grandTotals.proposed / grandTotals.prior - 1) : 0;
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
         <td></td><td>GRAND TOTAL R&M</td><td></td>
-        <td class="number">${fmt(grandPrior)}</td>
-        <td class="number">${fmt(grandYtd)}</td>
-        <td class="number">${fmt(grandForecast)}</td>
-        <td></td><td></td><td></td>
-        <td class="number">${fmt(grandProposed)}</td>
+        <td class="number">${fmt(grandTotals.prior)}</td>
+        <td class="number">${fmt(grandTotals.ytd)}</td>
         <td></td><td></td>
+        <td class="number">${fmt(grandTotals.ytdBudget)}</td>
+        <td class="number">${fmt(grandTotals.estimate)}</td>
+        <td class="number">${fmt(grandTotals.forecast)}</td>
+        <td class="number">${fmt(grandTotals.budget)}</td>
+        <td></td>
+        <td class="number">${fmt(grandTotals.proposed)}</td>
+        <td class="number">${fmt(grandVar)}</td>
+        <td class="number">${(grandPct * 100).toFixed(1)}%</td>
     `;
     tbody.appendChild(grandRow);
 }
@@ -3340,12 +3426,22 @@ function onInput(el) {
     }
 
     // Update computed columns
+    const est = computeEstimate(line);
     const fc = computeForecast(line);
     const pb = computeProposed(line);
+    const variance = pb - (line.prior_year || 0);
+    const pctChange = (line.prior_year || 0) ? (pb / line.prior_year - 1) : 0;
+
+    const estEl = document.getElementById('est_' + gl);
     const fcEl = document.getElementById('fc_' + gl);
     const pbEl = document.getElementById('pb_' + gl);
+    const varEl = document.getElementById('var_' + gl);
+    const pctEl = document.getElementById('pct_' + gl);
+    if (estEl) estEl.textContent = fmt(est);
     if (fcEl) fcEl.textContent = fmt(fc);
     if (pbEl) pbEl.textContent = fmt(pb);
+    if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
+    if (pctEl) pctEl.textContent = (pctChange * 100).toFixed(1) + '%';
 
     // Debounced auto-save
     if (saveTimer) clearTimeout(saveTimer);
