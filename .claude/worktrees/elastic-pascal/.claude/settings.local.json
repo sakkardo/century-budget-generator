@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/sakkardo/Library/CloudStorage/GoogleDrive-jake.sirotkin@gmail.com/My Drive/Claude/Claude Work /Projects/Budgets/**)",
+      "Bash(.gitignore:*)",
+      "Bash(pip install:*)",
+      "Bash(python3 -m pip install flask flask-sqlalchemy openpyxl)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python3 -c \"import ssl; print\\(ssl.get_default_verify_paths\\(\\)\\)\")",
+      "Bash(python3 -c \"import certifi; print\\(certifi.where\\(\\)\\)\")",
+      "Bash(gh pr:*)",
+      "Bash(python -c \"import anthropic; print\\(''anthropic installed:'', anthropic.__version__\\)\")",
+      "Bash(python3 -c \"import anthropic; print\\(''anthropic installed:'', anthropic.__version__\\)\")",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -c \"import anthropic; print\\(''OK:'', anthropic.__version__\\)\")",
+      "Bash(python3 -c \"import os; print\\(''ANTHROPIC_API_KEY set:'', bool\\(os.environ.get\\(''ANTHROPIC_API_KEY''\\)\\)\\)\")",
+      "Read(//Users/sakkardo/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/6d452d46-78f0-4d30-a817-39e64eb31cdb/b504eda9-0a68-41ce-8e94-9d564d1fa5cb/skills/xlsx/**)",
+      "Bash(python3 -c \":*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''budget_app/workflow.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''budget_app/workflow.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
+    ]
+  }
+}

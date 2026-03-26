@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "budget-app",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["budget_app/app.py"],
+      "port": 5000,
+      "autoPort": true,
+      "env": {
+        "MONDAY_API_TOKEN": "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjI3NTY5MzkxLCJhYWkiOjExLCJ1aWQiOjg2NzY3MCwiaWFkIjoiMjAxOS0xMS0yN1QxMzoxMDo1NC4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzQ4MTQ4LCJyZ24iOiJ1c2UxIn0.R6M9pBBvyWuJJa0MvtF9CEMfbhEOStV7ZHvIr0gJ5Hk",
+        "SSL_CERT_FILE": "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/certifi/cacert.pem"
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 """
 Century Management Unified Budget & Assumptions System
-Run: python app.py  |  Open: http://localhost:5000
+Run: python app.py
+Open: http://localhost:5000
 """
 import os
 import sys
@@ -66,50 +67,10 @@ except ImportError:
 ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflow_models)
 app.register_blueprint(ed_bp)
 
-# Resolve all model relationships after ALL blueprints are registered
-try:
-    db.configure_mappers()
-    logger.info("Model mappers configured successfully")
-except Exception as e:
-    logger.warning(f"configure_mappers() failed: {e} — will retry on first request")
-
-# Create all tables on startup + migrate missing columns
+# Create all tables on startup
 with app.app_context():
     db.create_all()
     logger.info("Database tables initialized")
-
-    # Auto-migrate: add columns that exist in models but not in the DB
-    if IS_CLOUD:
-        _migrations = [
-            ("budgets", "initiated_by", "INTEGER"),
-            ("budgets", "initiated_at", "TIMESTAMP"),
-            ("budgets", "return_to_status", "VARCHAR(20)"),
-            ("budgets", "presentation_token", "VARCHAR(64)"),
-            ("budgets", "approved_by", "INTEGER"),
-            ("budgets", "approved_at", "TIMESTAMP"),
-            ("budgets", "increase_pct", "FLOAT"),
-            ("budgets", "effective_date", "VARCHAR(20)"),
-            ("budgets", "ar_notes", "TEXT DEFAULT ''"),
-            ("budget_lines", "sheet_name", "VARCHAR(50) DEFAULT ''"),
-            ("budget_lines", "pm_editable", "BOOLEAN DEFAULT FALSE"),
-            ("budget_lines", "reclass_to_gl", "VARCHAR(50)"),
-            ("budget_lines", "reclass_amount", "FLOAT DEFAULT 0"),
-            ("budget_lines", "reclass_notes", "TEXT DEFAULT ''"),
-            ("budget_lines", "proposed_budget", "FLOAT DEFAULT 0"),
-            ("budgets", "assumptions_json", "TEXT DEFAULT '{}'"),
-        ]
-        for table, col, col_type in _migrations:
-            try:
-                db.session.execute(db.text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
-                db.session.commit()
-                logger.info(f"Added column {table}.{col}")
-            except Exception:
-                db.session.rollback()  # Column already exists, skip
-
-# Health check for Railway
-@app.route("/healthz")
-def healthz():
-    return "ok", 200
 
 # Paths
 TEMPLATE_PATH = BUDGET_SYSTEM / "Budget_Final_Template_v2.xlsx"
@@ -126,8 +87,8 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
 # Console JS script templates — entities/email/period get injected
-CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
-EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
+CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text()
+EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text()
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -516,48 +477,20 @@ def process_files():
         tmp = Path(tmpdir)
         output_files = []
 
-        # Two-pass approach: separate YSL files from Expense Distribution files
-        # so we can determine entity codes from YSL first
-        saved_files = []  # (path, filename, file_type, row1, row2)
-        ysl_entities = set()  # entity codes found in YSL files
-        expense_files = []  # (path, filename) for expense files to process after YSL
-
-        # Pass 1: Save all files, classify them, process YSL files first
         for f in files:
             if not f.filename or not f.filename.endswith(".xlsx"):
                 results["warnings"].append(f"Skipped non-xlsx: {f.filename}")
                 continue
 
-            file_path = tmp / f.filename
-            f.save(str(file_path))
+            # Save upload to temp
+            ysl_path = tmp / f.filename
+            f.save(str(ysl_path))
 
-            try:
-                from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(file_path), data_only=True)
-                _ws_check = _wb_check.active
-                _row1 = str(_ws_check.cell(row=1, column=1).value or "")
-                _row2 = str(_ws_check.cell(row=2, column=1).value or "")
-                _wb_check.close()
-
-                is_expense = "expense distribution" in _row1.lower() or "expense dist" in _row1.lower()
-                logger.info(f"File detection for {f.filename}: Row1='{_row1}', Row2='{_row2}', is_expense={is_expense}")
-
-                if is_expense:
-                    expense_files.append((file_path, f.filename))
-                    continue
-            except Exception as detect_err:
-                logger.error(f"File detection error for {f.filename}: {detect_err}")
-                results["warnings"].append(f"Could not read {f.filename}: {str(detect_err)}")
-                continue
-
-            # Process YSL file immediately
-            ysl_path = file_path
             try:
                 # Parse YSL
                 gl_data, property_info = parse_ysl_file(ysl_path)
                 entity = property_info.get("property_code", "unknown")
                 name = property_info.get("property_name", f"Entity_{entity}")
-                ysl_entities.add(str(entity))
 
                 # Build the building folder name (e.g., "148 - 130 E. 18 Owners Corp.")
                 building_folder_name = f"{entity} - {name}"
@@ -568,39 +501,26 @@ def process_files():
                 output_name = f"{entity}_{name}_2027_Budget.xlsx"
                 output_path = building_dir / output_name
 
-                # Derive YTD months from period (e.g., "02/2026" → 2)
-                _gen_ytd = 2
-                try:
-                    _gen_ytd = int(period.split("/")[0])
-                except Exception:
-                    pass
-
                 success = populate_template(
                     template_path=TEMPLATE_PATH,
                     gl_data=gl_data,
                     property_info=property_info,
                     output_path=output_path,
-                    ytd_months=_gen_ytd,
-                    remaining_months=12 - _gen_ytd,
+                    ytd_months=2,
+                    remaining_months=10,
                 )
 
                 if success and output_path.exists():
-                    # Merge assumptions for this building
-                    merged = None
+                    # Store R&M GL data in database for PM review workflow
+                    try:
+                        workflow_helpers["store_rm_lines"](entity, name, gl_data)
+                        logger.info(f"R&M GL data stored for entity {entity}")
+                    except Exception as wfe:
+                        logger.warning(f"Could not store R&M data for {entity}: {wfe}")
+
+                    # Apply assumptions if available for this building
                     try:
                         merged = merge_assumptions(entity)
-                    except Exception:
-                        pass
-
-                    # Store ALL GL data in database for budget review workflow
-                    try:
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged)
-                        logger.info(f"All GL data stored for entity {entity}")
-                    except Exception as wfe:
-                        logger.warning(f"Could not store GL data for {entity}: {wfe}")
-
-                    # Apply assumptions to Excel file
-                    try:
                         if merged:
                             apply_assumptions(output_path, merged)
                             logger.info(f"Assumptions applied for entity {entity}")
@@ -648,57 +568,7 @@ def process_files():
                     "reason": str(e),
                 })
 
-        # Pass 2: Process Expense Distribution files
-        # Use entity code from filename (our script names them ExpenseDistribution_XXX.xlsx)
-        # If that doesn't match the file contents, use the filename entity (Yardi bug workaround)
-        for exp_path, exp_filename in expense_files:
-            try:
-                from expense_distribution import parse_expense_distribution
-            except ImportError:
-                from budget_app.expense_distribution import parse_expense_distribution
-            try:
-                exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(exp_path))
-                logger.info(f"Expense parse: file={exp_filename}, file_entity={exp_entity}, invoices={len(exp_invoices) if exp_invoices else 0}")
-
-                if not exp_invoices:
-                    results["warnings"].append(f"Expense file {exp_filename}: no invoices found")
-                    continue
-
-                # Determine correct entity code:
-                # 1. Try to extract from filename (ExpenseDistribution_204.xlsx → 204)
-                # 2. If filename entity matches a YSL entity we just processed, use it
-                # 3. Otherwise fall back to what's in the file
-                import re as _re
-                fname_match = _re.search(r'ExpenseDistribution[_-]?(\d+)', exp_filename)
-                fname_entity = fname_match.group(1) if fname_match else None
-
-                target_entity = exp_entity  # default: trust the file
-                if fname_entity and fname_entity != exp_entity:
-                    # Filename says one entity, file contents say another — Yardi bug
-                    if fname_entity in ysl_entities:
-                        # The filename matches a YSL we just processed, so trust the filename
-                        target_entity = fname_entity
-                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Using {fname_entity} (matches YSL upload)")
-                        results["warnings"].append(f"Note: Yardi returned entity {exp_entity} data but file was requested for {fname_entity}. Stored under {fname_entity}.")
-                    elif not ysl_entities:
-                        # No YSL files uploaded — standalone expense upload, trust filename
-                        target_entity = fname_entity
-                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Using {fname_entity} (filename override)")
-                    else:
-                        # Filename doesn't match any YSL entity — log warning but store as-is
-                        logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Neither matches YSL entities {ysl_entities}. Using file entity {exp_entity}.")
-
-                ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
-                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices)")
-                logger.info(f"Expense distribution stored for entity {target_entity}")
-            except Exception as exp_err:
-                logger.error(f"Expense parse error for {exp_filename}: {exp_err}")
-                results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
-
         if not output_files:
-            # If expense files were processed successfully, return 200
-            if results["success"]:
-                return jsonify({"message": "Files processed", **results}), 200
             return jsonify({"error": "No budgets generated", **results}), 400
 
         # Always return results as JSON now (files are saved to disk)
@@ -1076,27 +946,9 @@ HOME_TEMPLATE = r"""
     font-size: 28px;
     margin-bottom: 8px;
   }
-  /* ── Global Nav ── */
-  .top-nav { background: white; border-bottom: 1px solid #e5e7eb; padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
-  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: #1a56db; text-decoration: none; margin-right: 32px; }
-  .top-nav .nav-links { display: flex; gap: 4px; }
-  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: #6b7280; text-decoration: none; border-radius: 6px; transition: all 0.15s; }
-  .top-nav .nav-link:hover { background: #f3f4f6; color: #111827; }
-  .top-nav .nav-link.active { background: #e1effe; color: #1a56db; }
 </style>
 </head>
 <body>
-<!-- Global Nav -->
-<nav class="top-nav">
-  <a href="/" class="nav-brand">Century Management</a>
-  <div class="nav-links">
-    <a href="/" class="nav-link active">Home</a>
-    <a href="/dashboard" class="nav-link">FA Dashboard</a>
-    <a href="/pm" class="nav-link">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
-    <a href="/audited-financials" class="nav-link">Audited Financials</a>
-  </div>
-</nav>
   <header>
     <h1>Century Management</h1>
     <p>Budget & Assumptions System</p>

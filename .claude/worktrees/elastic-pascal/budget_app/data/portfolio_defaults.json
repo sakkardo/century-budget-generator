@@ -1,0 +1,45 @@
+{
+    "payroll_tax": {
+        "FICA": 0.0765,
+        "SUI": 0.0525,
+        "FUI": 0.006,
+        "MTA": 0.0034,
+        "NYS_Disability": 0.005,
+        "PFL": 0.00455
+    },
+    "union_benefits": {
+        "welfare_monthly": 1072.55,
+        "pension_weekly": 82.75,
+        "supp_retirement_weekly": 10.00,
+        "legal_monthly": 16.63,
+        "training_monthly": 14.13,
+        "profit_sharing_quarterly": 130.00
+    },
+    "workers_comp": {
+        "percent": 0.15
+    },
+    "wage_increase": {
+        "percent": 0.03,
+        "effective_week": "Wk 16",
+        "pre_increase_weeks": 15,
+        "post_increase_weeks": 37
+    },
+    "insurance_renewal": {
+        "increase_percent": 0.15,
+        "effective_date": "Mar 2027",
+        "pre_renewal_months": 3,
+        "post_renewal_months": 9
+    },
+    "energy": {
+        "gas_esco_rate": 0,
+        "electric_esco_rate": 0,
+        "oil_price_per_gallon": 0,
+        "gas_rate_increase": 0.05,
+        "electric_rate_increase": 0.05,
+        "oil_rate_increase": 0.05,
+        "consumption_basis": "2-Year Average"
+    },
+    "water_sewer": {
+        "rate_increase": 0.05
+    }
+}

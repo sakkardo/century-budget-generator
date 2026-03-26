@@ -645,24 +645,32 @@ def create_workflow_blueprint(db):
         return result
 
 
-    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year):
+    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year, ytd_months=2):
         """
         Compute 12-month forecast.
 
         Formula: ytd_actual + accrual_adj + unpaid_bills + estimate
-        where estimate = IF(ytd_actual+accrual+unpaid >= prior_year,
-                            (ytd_actual+accrual+unpaid)/2*10,
-                            prior_year - (ytd_actual+accrual+unpaid))
-        (2 YTD months, 10 remaining months)
+        where estimate = IF(ytd_total >= prior_year,
+                            annualize: (ytd_total / ytd_months) * remaining_months,
+                            prior_year_adj: prior_year - ytd_total)
         """
         ytd_total = ytd_actual + accrual_adj + unpaid_bills
+        remaining = 12 - ytd_months
 
-        if ytd_total >= prior_year:
-            estimate = (ytd_total / 2) * 10
+        if ytd_total >= prior_year and prior_year > 0 and ytd_months > 0:
+            estimate = (ytd_total / ytd_months) * remaining
         else:
-            estimate = prior_year - ytd_total
+            estimate = max(prior_year - ytd_total, 0)
 
         return ytd_total + estimate
+
+
+    def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year):
+        """Return the forecast method label for display purposes."""
+        ytd_total = ytd_actual + accrual_adj + unpaid_bills
+        if ytd_total >= prior_year and prior_year > 0:
+            return 'Annualized'
+        return 'Prior Year Adjusted'
 
 
     def compute_proposed_budget(forecast, increase_pct):
@@ -753,6 +761,17 @@ def create_workflow_blueprint(db):
 
         lines_data = [l.to_dict() for l in lines]
 
+        # Derive dynamic YTD months from assumptions
+        _ytd_months = 2
+        try:
+            assumptions = json_mod.loads(budget.assumptions_json) if budget.assumptions_json else {}
+            bp = assumptions.get("budget_period", "")
+            if "/" in str(bp):
+                _ytd_months = int(str(bp).split("/")[0])
+        except Exception:
+            pass
+        _remaining_months = 12 - _ytd_months
+
         return render_template_string(
             PM_EDIT_TEMPLATE,
             entity_code=entity_code,
@@ -761,6 +780,8 @@ def create_workflow_blueprint(db):
             can_edit="true" if can_edit else "false",
             fa_notes=budget.fa_notes or "",
             lines_json=json_mod.dumps(lines_data),
+            ytd_months=_ytd_months,
+            remaining_months=_remaining_months,
         )
 
 
@@ -1048,6 +1069,16 @@ def create_workflow_blueprint(db):
         except Exception:
             assumptions = {}
 
+        # Derive YTD months from assumptions or default to 2
+        ytd_months = 2
+        try:
+            bp = assumptions.get("budget_period", "")
+            if bp and "/" in bp:
+                ytd_months = int(bp.split("/")[0])
+        except Exception:
+            pass
+        remaining_months = 12 - ytd_months
+
         return jsonify({
             "budget": budget.to_dict(),
             "lines": [l.to_dict() for l in lines],
@@ -1056,7 +1087,9 @@ def create_workflow_blueprint(db):
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data,
-            "assumptions": assumptions
+            "assumptions": assumptions,
+            "ytd_months": ytd_months,
+            "remaining_months": remaining_months
         })
 
 
@@ -1161,6 +1194,16 @@ def create_workflow_blueprint(db):
                         line.increase_pct = wage_inc
                         recalc_count += 1
 
+        # Derive YTD months from budget period assumption
+        _ytd_months = 2
+        try:
+            bp = current.get("budget_period", "")
+            if bp and "/" in bp:
+                _ytd_months = int(bp.split("/")[0])
+        except Exception:
+            pass
+        _remaining = 12 - _ytd_months
+
         # Recompute proposed_budget for all affected lines
         for line in lines:
             if line.increase_pct:
@@ -1170,7 +1213,7 @@ def create_workflow_blueprint(db):
                 unpaid = float(line.unpaid_bills or 0)
                 base = ytd + accrual + unpaid
                 if base >= prior and prior > 0:
-                    estimate = (base / 2) * 10  # YTD_MONTHS=2, REMAINING=10
+                    estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
                 else:
                     estimate = max(prior - base, 0)
                 forecast = base + estimate
@@ -1324,13 +1367,24 @@ def create_workflow_blueprint(db):
                 "property_name": budget.building_name,
             }
 
+            # Dynamic YTD months for Excel export
+            import json as _json_mod
+            _exp_ytd = 2
+            try:
+                _exp_assumptions = _json_mod.loads(budget.assumptions_json) if budget.assumptions_json else {}
+                _exp_bp = _exp_assumptions.get("budget_period", "")
+                if "/" in str(_exp_bp):
+                    _exp_ytd = int(str(_exp_bp).split("/")[0])
+            except Exception:
+                pass
+
             success = populate_template(
                 template_path=template_path,
                 gl_data=gl_data,
                 property_info=property_info,
                 output_path=output_path,
-                ytd_months=2,
-                remaining_months=10,
+                ytd_months=_exp_ytd,
+                remaining_months=12 - _exp_ytd,
             )
 
             if not success or not output_path.exists():
@@ -2370,6 +2424,8 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <script>
 const entityCode = '{{ entity_code }}';
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
+let YTD_MONTHS = 2;  // updated from API response
+let REMAINING_MONTHS = 10;  // updated from API response
 
 function showToast(msg, type='info') {
   const c = document.getElementById('toastContainer');
@@ -2420,6 +2476,10 @@ function renderStatusPipeline(status) {
 
 function renderDetail(data) {
   const b = data.budget;
+
+  // Set dynamic YTD months from API
+  YTD_MONTHS = data.ytd_months || 2;
+  REMAINING_MONTHS = data.remaining_months || 10;
 
   // Header + breadcrumb
   document.getElementById('buildingName').textContent = b.building_name;
@@ -2755,9 +2815,6 @@ async function dismissReclass(glCode) {
   });
   loadDetail();
 }
-
-const YTD_MONTHS = 2;
-const REMAINING_MONTHS = 10;
 
 // Category grouping definitions per sheet
 const SHEET_CATEGORIES = {
@@ -3696,8 +3753,8 @@ PM_EDIT_TEMPLATE = """
 const ENTITY = "{{ entity_code }}";
 const CAN_EDIT = {{ can_edit }};
 const LINES = {{ lines_json | safe }};
-const YTD_MONTHS = 2;
-const REMAINING_MONTHS = 10;
+const YTD_MONTHS = {{ ytd_months }};
+const REMAINING_MONTHS = {{ remaining_months }};
 
 let saveTimer = null;
 const indicator = document.getElementById('saveIndicator');

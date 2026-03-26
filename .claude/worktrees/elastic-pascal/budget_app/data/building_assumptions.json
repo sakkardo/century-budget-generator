@@ -1,0 +1,164 @@
+{
+  "204": {
+    "income": {
+      "maintenance": {
+        "total_shares": 2500000,
+        "per_share_monthly": 3,
+        "increase_percent": 0
+      },
+      "storage": [
+        {
+          "size_label": "Small",
+          "units": 100,
+          "occupied": 100,
+          "monthly": 300
+        },
+        {
+          "size_label": "Medium",
+          "units": 0,
+          "occupied": 0,
+          "monthly": 0
+        },
+        {
+          "size_label": "Large",
+          "units": 0,
+          "occupied": 0,
+          "monthly": 0
+        },
+        {
+          "size_label": "XL",
+          "units": 0,
+          "occupied": 0,
+          "monthly": 0
+        }
+      ],
+      "bike_storage": {
+        "racks": 100,
+        "occupied": 100,
+        "monthly": 400
+      },
+      "laundry_vending": {
+        "description": "",
+        "monthly": 9000
+      }
+    },
+    "payroll": {
+      "positions": [
+        {
+          "name": "Resident Manager",
+          "employee_count": 1,
+          "hourly_rate": 900
+        },
+        {
+          "name": "Handyman",
+          "employee_count": 2,
+          "hourly_rate": 300
+        },
+        {
+          "name": "Porter/Doorman",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Porter 80%",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 5",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 6",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 7",
+          "employee_count": 0,
+          "hourly_rate": 0
+        },
+        {
+          "name": "Employee 8",
+          "employee_count": 0,
+          "hourly_rate": 0
+        }
+      ]
+    },
+    "insurance": [
+      {
+        "gl_code": "6105-0000",
+        "name": "Package",
+        "current_premium": 6000000,
+        "current_budget": 600000,
+        "expiration_date": "12/31/2026",
+        "override_increase": 60
+      },
+      {
+        "gl_code": "6110-0000",
+        "name": "Gen Liability",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6115-0000",
+        "name": "Umbrella Excess",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6120-0000",
+        "name": "Umbrella Primary",
+        "current_premium": 50000,
+        "current_budget": 50000,
+        "expiration_date": "12/31/2026",
+        "override_increase": 15
+      },
+      {
+        "gl_code": "6125-0000",
+        "name": "D&O",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6126-0000",
+        "name": "Cyber",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6135-0000",
+        "name": "Crime",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6180-0000",
+        "name": "D&O Excess",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      },
+      {
+        "gl_code": "6195-0000",
+        "name": "Other",
+        "current_premium": 0,
+        "current_budget": 0,
+        "expiration_date": "",
+        "override_increase": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/Users/jsirotkin/\"My Drive/Claude/Claude Work/Projects/Budgets\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python budget_app/app.py)",
+      "Bash(python -c \":*)",
+      "Bash(railway logs:*)",
+      "Bash(railway version:*)",
+      "Bash(gh api:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://century-budget-generator-production.up.railway.app/)",
+      "Bash(python -m py_compile budget_app/workflow.py)",
+      "Bash(python -m py_compile budget_app/app.py)",
+      "Bash(python -m py_compile budget_app/audited_financials.py)",
+      "Bash(rm -f test_clean2.db)",
+      "Bash(DATABASE_URL=sqlite:///test_clean2.db python -c \":*)",
+      "Bash(pip show:*)",
+      "Bash(curl -s https://century-budget-generator-production.up.railway.app/)",
+      "Bash(rm -f test_final.db)",
+      "Bash(DATABASE_URL=sqlite:///test_final.db python -c \":*)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" https://century-budget-generator-production.up.railway.app/healthz)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" https://century-budget-generator-production.up.railway.app/)",
+      "Bash(curl -sv https://century-budget-generator-production.up.railway.app/healthz)",
+      "Bash(curl -sv https://century-budget-generator-production.up.railway.app/dashboard)",
+      "Bash(DATABASE_URL=postgresql://user:pass@localhost:5432/nonexistent python -c \":*)",
+      "Bash(pip install:*)",
+      "Bash(DATABASE_URL=postgresql://user:pass@localhost:5432/nonexistent timeout 15 python -c \":*)",
+      "Bash(rm -f test_backref.db)",
+      "Bash(DATABASE_URL=sqlite:///test_backref.db python -c \":*)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\" https://century-budget-generator-production.up.railway.app/dashboard)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\" https://century-budget-generator-production.up.railway.app/)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\" https://century-budget-generator-production.up.railway.app/api/budgets)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\" https://century-budget-generator-production.up.railway.app/api/buildings)",
+      "Bash(python -m py_compile budget_system/gl_mapper.py)",
+      "Bash(rm -f test_sprint25.db)",
+      "Bash(DATABASE_URL=sqlite:///test_sprint25.db python -c \":*)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\" https://century-budget-generator-production.up.railway.app/audited-financials)",
+      "Bash(python -c \"from wsgi import app; print\\(''Import OK''\\)\")"
+    ]
+  }
+}
