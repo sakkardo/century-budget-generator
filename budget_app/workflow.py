@@ -249,6 +249,10 @@ def create_workflow_blueprint(db):
         reclass_amount = db.Column(db.Float, default=0.0)
         reclass_notes = db.Column(db.Text, default="")
 
+        # FA override fields (when FA manually overrides a formula cell)
+        estimate_override = db.Column(db.Float, nullable=True)
+        forecast_override = db.Column(db.Float, nullable=True)
+
         # Proposed budget (computed or manually entered)
         proposed_budget = db.Column(db.Float, default=0.0)
 
@@ -279,6 +283,8 @@ def create_workflow_blueprint(db):
                 "reclass_amount": float(self.reclass_amount or 0),
                 "reclass_notes": self.reclass_notes or "",
                 "proposed_budget": float(self.proposed_budget or 0),
+                "estimate_override": self.estimate_override,
+                "forecast_override": self.forecast_override,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
@@ -1319,14 +1325,21 @@ def create_workflow_blueprint(db):
             changes = []
             editable_float_fields = [
                 "increase_pct", "proposed_budget", "accrual_adj", "unpaid_bills",
-                "prior_year", "ytd_actual", "ytd_budget", "current_budget"
+                "prior_year", "ytd_actual", "ytd_budget", "current_budget",
+                "estimate_override", "forecast_override"
             ]
+            nullable_fields = {"estimate_override", "forecast_override"}
             for fname in editable_float_fields:
                 if fname in line_data:
-                    new_val = float(line_data[fname] or 0)
-                    old_val = getattr(line, fname, None) or 0
-                    if old_val != new_val:
-                        changes.append((fname, str(old_val), str(new_val)))
+                    raw = line_data[fname]
+                    if fname in nullable_fields and raw is None:
+                        new_val = None
+                    else:
+                        new_val = float(raw or 0)
+                    old_val = getattr(line, fname, None)
+                    old_cmp = old_val if old_val is None else float(old_val or 0)
+                    if old_cmp != new_val:
+                        changes.append((fname, str(old_cmp), str(new_val)))
                     setattr(line, fname, new_val)
             if "notes" in line_data:
                 new_val = line_data["notes"]
@@ -3078,10 +3091,15 @@ function fxCellFocus(el) {
   const label = document.getElementById('faFormulaLabel');
   if (!bar || !label) return;
   label.textContent = el.dataset.gl + ' / ' + el.dataset.field.replace('_override','').replace('_',' ');
-  bar.value = el.dataset.formula || '';
+  // Show override value if one exists, otherwise show formula
+  if (el.dataset.override === 'true') {
+    bar.value = el.dataset.raw;
+  } else {
+    bar.value = el.dataset.formula || '';
+  }
   bar.style.display = 'block';
   label.style.display = 'inline';
-  bar.focus();
+  bar.focus({ preventScroll: true });
 }
 
 // fxCellBlur: just restore dollar display (formula bar handles edits)
@@ -3101,13 +3119,23 @@ function formulaBarBlur() {
   const numericVal = parseDollar(typed);
   const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
   if (isNumber) {
+    // User typed a number — apply as override
     el.dataset.raw = Math.round(numericVal);
+    el.dataset.override = 'true';
     el.value = fmt(numericVal);
     faLineChanged(gl, field, numericVal);
-  } else {
-    el.value = fmt(parseFloat(el.dataset.raw) || 0);
+    // Save the override to DB
+    faAutoSave(gl, field, Math.round(numericVal));
+  } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
+    // User cleared the field — revert to formula calculation
+    el.dataset.override = 'false';
     faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
                        field === 'forecast_override' ? '__recalc_forecast' : field, null);
+    // Clear override in DB (save 0 or null to signal auto-calc)
+    faAutoSave(gl, field, null);
+  } else {
+    // User left formula text unchanged — just restore display
+    el.value = fmt(parseFloat(el.dataset.raw) || 0);
   }
 }
 
@@ -3138,9 +3166,10 @@ function faLineChanged(gl, field, value) {
 
   if (field === 'increase_pct') {
     faAutoSave(gl, 'increase_pct', (parseFloat(value) || 0) / 100);
-  } else if (field === 'estimate_override' || field === 'forecast_override' ||
-             field === '__recalc_estimate' || field === '__recalc_forecast') {
-    // Formula cells: overrides get saved via proposed; recalcs skip save
+  } else if (field === '__recalc_estimate' || field === '__recalc_forecast') {
+    // Recalc triggers — no save needed, just recalculate below
+  } else if (field === 'estimate_override' || field === 'forecast_override') {
+    // Override saved by formulaBarBlur; just recalculate downstream here
   } else if (field && value !== null && value !== undefined) {
     faAutoSave(gl, field, Math.round(parseDollar(value)));
   }
@@ -3174,13 +3203,28 @@ function faLineChanged(gl, field, value) {
 
   const proposed = forecast * (1 + incPct);
 
-  const updateCell = (id, val) => {
+  const updateCell = (id, val, newFormula) => {
     const el = document.getElementById(id);
-    if (el) { el.dataset.raw = Math.round(val); el.value = fmt(val); }
+    if (el) {
+      el.dataset.raw = Math.round(val);
+      el.value = fmt(val);
+      if (newFormula && el.dataset.override !== 'true') el.dataset.formula = newFormula;
+    }
   };
-  if (field !== 'estimate_override') updateCell('est_' + gl, estimate);
-  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast);
-  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed);
+  // Build updated formula strings
+  const base = ytd + accrual + unpaid;
+  let estFormula;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+    estFormula = 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' x ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
+  } else {
+    estFormula = 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
+  }
+  const fcstFormula = fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
+  const propFormula = fmt(forecast) + ' x (1 + ' + (incRaw).toFixed(1) + '%) = ' + fmt(proposed);
+
+  if (field !== 'estimate_override') updateCell('est_' + gl, estimate, estFormula);
+  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, fcstFormula);
+  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed, propFormula);
 
   faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
@@ -3253,6 +3297,8 @@ const SUMMARY_ROWS = [
 ];
 
 function faComputeEstimate(l) {
+  // Use override if FA set one
+  if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
@@ -3263,6 +3309,8 @@ function faComputeEstimate(l) {
 }
 
 function faComputeForecast(l) {
+  // Use override if FA set one
+  if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
 
@@ -3675,12 +3723,16 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onblur="cellBlur(this)">';
     }
     // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
-    function fxCell(id, field, val, formula) {
-      return '<td class="num" style="position:relative;"><span class="fa-fx" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">fx</span>' +
+    function fxCell(id, field, val, formula, isOverride) {
+      const overrideAttr = isOverride ? 'true' : 'false';
+      const badge = isOverride ? '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">✎</span>'
+        : '<span class="fa-fx" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">fx</span>';
+      return '<td class="num" style="position:relative;">' + badge +
         '<input id="' + id + '" class="cell cell-fx" type="text"' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
+        ' data-override="' + overrideAttr + '"' +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
         ' onfocus="fxCellFocus(this)"' +
         ' onblur="fxCellBlur(this)"></td>';
@@ -3695,11 +3747,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
       '<td class="num">' + $cell('ytdb_'+gl, 'ytd_budget', ytdBudget) + '</td>' +
-      fxCell('est_'+gl, 'estimate_override', estimate, estFormula) +
-      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula) +
+      fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
-      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula) +
+      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false) +
       '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
       '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }

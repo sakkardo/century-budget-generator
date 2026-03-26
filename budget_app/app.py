@@ -97,6 +97,8 @@ with app.app_context():
             ("budget_lines", "reclass_notes", "TEXT DEFAULT ''"),
             ("budget_lines", "proposed_budget", "FLOAT DEFAULT 0"),
             ("budgets", "assumptions_json", "TEXT DEFAULT '{}'"),
+            ("budget_lines", "estimate_override", "FLOAT"),
+            ("budget_lines", "forecast_override", "FLOAT"),
         ]
         for table, col, col_type in _migrations:
             try:
