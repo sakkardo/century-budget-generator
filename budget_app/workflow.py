@@ -3073,12 +3073,35 @@ function cellBlur(el) {
   faLineChanged(gl, field, raw);
 }
 
-// fxCellBlur: user finished editing a formula cell
-// If the value looks like a number (user typed an override), use that number.
-// If it still matches the formula text, keep the calculated value.
+// Track the currently selected formula cell
+let _activeFxCell = null;
+
+// fxCellFocus: populate the formula bar when clicking a formula cell
+function fxCellFocus(el) {
+  _activeFxCell = el;
+  const bar = document.getElementById('faFormulaBar');
+  const label = document.getElementById('faFormulaLabel');
+  if (!bar || !label) return;
+  label.textContent = el.dataset.gl + ' / ' + el.dataset.field.replace('_override','').replace('_',' ');
+  bar.value = el.dataset.formula || '';
+  bar.style.display = 'block';
+  label.style.display = 'inline';
+  bar.focus();
+}
+
+// fxCellBlur: just restore dollar display (formula bar handles edits)
 function fxCellBlur(el) {
+  // Don't clear formula bar here — user may be clicking into the bar
+  el.value = fmt(parseFloat(el.dataset.raw) || 0);
+}
+
+// formulaBarBlur: user finished editing in the formula bar
+function formulaBarBlur() {
+  const bar = document.getElementById('faFormulaBar');
+  if (!bar || !_activeFxCell) return;
+  const typed = bar.value.trim();
+  const el = _activeFxCell;
   const gl = el.dataset.gl, field = el.dataset.field;
-  const typed = el.value.trim();
   const formula = el.dataset.formula || '';
   const numericVal = parseDollar(typed);
   const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
@@ -3090,6 +3113,15 @@ function fxCellBlur(el) {
     el.value = fmt(parseFloat(el.dataset.raw) || 0);
     faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
                        field === 'forecast_override' ? '__recalc_forecast' : field, null);
+  }
+}
+
+// formulaBarKeydown: Enter applies the edit
+function formulaBarKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    formulaBarBlur();
+    document.getElementById('faFormulaBar').blur();
   }
 }
 
@@ -3598,6 +3630,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated (click to see formula)</span>' +
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
+  // Formula bar — Excel-style, same row as controls
+  html += '<div style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
+    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
+    '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" onblur="formulaBarBlur()" onkeydown="formulaBarKeydown(event)">' +
+    '</div>';
+
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
     '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
@@ -3641,15 +3680,15 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onfocus="this.value=this.dataset.raw"' +
         ' onblur="cellBlur(this)">';
     }
-    // Formula cell: shows $1,234 normally, shows formula on focus, editable
+    // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
     function fxCell(id, field, val, formula) {
-      return '<td class="num" style="position:relative;"><span class="fa-fx">fx</span>' +
+      return '<td class="num" style="position:relative;"><span class="fa-fx" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">fx</span>' +
         '<input id="' + id + '" class="cell cell-fx" type="text"' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
-        ' onfocus="this.value=this.dataset.formula; this.select();"' +
+        ' onfocus="fxCellFocus(this)"' +
         ' onblur="fxCellBlur(this)"></td>';
     }
 
