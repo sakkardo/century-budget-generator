@@ -1077,7 +1077,7 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/budget-assumptions/<entity_code>", methods=["PUT"])
     def update_budget_assumptions(entity_code):
-        """Update assumptions for a budget and optionally recalculate."""
+        """Update assumptions for a budget and recalculate affected lines."""
         import json as _json
         budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
@@ -1101,9 +1101,85 @@ def create_workflow_blueprint(db):
                 current[key] = value
 
         budget.assumptions_json = _json.dumps(current)
-        db.session.commit()
 
-        return jsonify({"status": "saved", "assumptions": current})
+        # Recalculate affected BudgetLine increase_pct based on assumption changes
+        changed_sections = list(data.keys())
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        recalc_count = 0
+
+        # Map assumption sections to sheet names
+        section_to_sheet = {
+            "energy": "Energy",
+            "water_sewer": "Water & Sewer",
+            "insurance_renewal": "Insurance",  # Insurance lines are typically in Gen & Admin
+        }
+
+        for section in changed_sections:
+            if section == "energy":
+                # Apply energy rate increases to Energy sheet lines
+                gas_inc = float(current.get("energy", {}).get("gas_rate_increase", 0) or 0)
+                elec_inc = float(current.get("energy", {}).get("electric_rate_increase", 0) or 0)
+                oil_inc = float(current.get("energy", {}).get("oil_rate_increase", 0) or 0)
+                # Use the average of non-zero rates as default, or gas rate
+                default_rate = gas_inc or elec_inc or oil_inc
+                for line in lines:
+                    if line.sheet_name == "Energy":
+                        gl = line.gl_code or ""
+                        # Gas GLs typically start with 5105, Electric with 5110, Oil with 5115
+                        if "5105" in gl or "gas" in (line.description or "").lower():
+                            line.increase_pct = gas_inc
+                        elif "5110" in gl or "electric" in (line.description or "").lower():
+                            line.increase_pct = elec_inc
+                        elif "5115" in gl or "oil" in (line.description or "").lower() or "fuel" in (line.description or "").lower():
+                            line.increase_pct = oil_inc
+                        else:
+                            line.increase_pct = default_rate
+                        recalc_count += 1
+
+            elif section == "water_sewer":
+                # Apply water rate increase to Water & Sewer sheet lines
+                water_inc = float(current.get("water_sewer", {}).get("rate_increase", 0) or 0)
+                for line in lines:
+                    if line.sheet_name == "Water & Sewer":
+                        line.increase_pct = water_inc
+                        recalc_count += 1
+
+            elif section == "insurance_renewal":
+                # Apply insurance renewal increase to insurance GL codes (6105-6195)
+                ins_inc = float(current.get("insurance_renewal", {}).get("increase_percent", 0) or 0)
+                for line in lines:
+                    gl = line.gl_code or ""
+                    if gl.startswith("61") and gl < "6200-0000":
+                        line.increase_pct = ins_inc
+                        recalc_count += 1
+
+            elif section == "wage_increase":
+                # Apply wage increase to all payroll lines
+                wage_inc = float(current.get("wage_increase", {}).get("percent", 0) or 0)
+                for line in lines:
+                    if line.sheet_name == "Payroll":
+                        line.increase_pct = wage_inc
+                        recalc_count += 1
+
+        # Recompute proposed_budget for all affected lines
+        for line in lines:
+            if line.increase_pct:
+                prior = float(line.prior_year or 0)
+                ytd = float(line.ytd_actual or 0)
+                accrual = float(line.accrual_adj or 0)
+                unpaid = float(line.unpaid_bills or 0)
+                base = ytd + accrual + unpaid
+                if base >= prior and prior > 0:
+                    estimate = (base / 2) * 10  # YTD_MONTHS=2, REMAINING=10
+                else:
+                    estimate = max(prior - base, 0)
+                forecast = base + estimate
+                line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
+
+        db.session.commit()
+        logger.info(f"Assumptions updated for {entity_code}, recalculated {recalc_count} lines")
+
+        return jsonify({"status": "saved", "assumptions": current, "recalculated": recalc_count})
 
 
     # ─── API Routes: Lines ───────────────────────────────────────────────────
@@ -2533,13 +2609,21 @@ function assumAutoSave(section, field, value) {
     const payload = {};
     payload[section] = {};
     payload[section][field] = value;
-    await fetch('/api/budget-assumptions/' + entityCode, {
+    const resp = await fetch('/api/budget-assumptions/' + entityCode, {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    indicator.textContent = 'Assumptions saved';
-    setTimeout(() => { indicator.textContent = ''; }, 2000);
+    const result = await resp.json();
+    if (result.recalculated > 0) {
+      indicator.textContent = 'Saved — ' + result.recalculated + ' lines recalculated';
+      showToast(result.recalculated + ' budget lines recalculated', 'success');
+      // Reload data so GL tabs show updated numbers
+      setTimeout(() => loadDetail(), 500);
+    } else {
+      indicator.textContent = 'Assumptions saved';
+    }
+    setTimeout(() => { indicator.textContent = ''; }, 3000);
   }, 800);
 }
 
