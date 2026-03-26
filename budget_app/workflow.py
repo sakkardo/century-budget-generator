@@ -3233,6 +3233,51 @@ function faLineChanged(gl, field, value) {
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
   if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
+
+  // Recalculate sheet totals from live cell values
+  faUpdateSheetTotals();
+}
+
+function faUpdateSheetTotals() {
+  const totalRow = document.getElementById('faSheetTotal');
+  if (!totalRow) return;
+  const prefixes = ['pr_','ytd_','acc_','unp_','ytdb_','est_','fcst_','bud_'];
+  const propPrefix = 'prop_';
+  const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+  // Get all visible data rows
+  document.querySelectorAll('tr[data-gl]').forEach(row => {
+    if (row.style.display === 'none') return;
+    const gl = row.dataset.gl;
+    const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
+    t.prior += raw('pr_' + gl);
+    t.ytd += raw('ytd_' + gl);
+    t.accrual += raw('acc_' + gl);
+    t.unpaid += raw('unp_' + gl);
+    t.ytdBudget += raw('ytdb_' + gl);
+    t.estimate += raw('est_' + gl);
+    t.forecast += raw('fcst_' + gl);
+    t.budget += raw('bud_' + gl);
+    t.proposed += raw('prop_' + gl);
+  });
+  const v = t.proposed - t.prior;
+  const p = t.prior ? (t.proposed / t.prior - 1) : 0;
+  const cells = totalRow.querySelectorAll('td');
+  // cells[0] = label (Sheet Total), cells[1..14] = data columns
+  if (cells.length >= 14) {
+    cells[1].textContent = fmt(t.prior);
+    cells[2].textContent = fmt(t.ytd);
+    cells[3].textContent = fmt(t.accrual);
+    cells[4].textContent = fmt(t.unpaid);
+    cells[5].textContent = fmt(t.ytdBudget);
+    cells[6].textContent = fmt(t.estimate);
+    cells[7].textContent = fmt(t.forecast);
+    cells[8].textContent = fmt(t.budget);
+    cells[9].textContent = '';
+    cells[10].textContent = fmt(t.proposed);
+    cells[11].textContent = fmt(v);
+    cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+    cells[12].textContent = (p * 100).toFixed(1) + '%';
+  }
 }
 
 let _faSaveTimer = null;
@@ -3531,10 +3576,10 @@ async function faToggleInvoices(glCode, el) {
     return;
   }
 
-  // Build all GL codes for reclass dropdown — sorted alphabetically, across all sheets
-  const allGLSet = new Set();
-  Object.values(allSheets).forEach(sheetArr => sheetArr.forEach(l => { if (l.gl_code !== glCode) allGLSet.add(l.gl_code); }));
-  const allGLs = Array.from(allGLSet).sort();
+  // Build all GL codes for reclass dropdown — sorted alphabetically, across all sheets, with descriptions
+  const allGLMap = {};
+  Object.values(allSheets).forEach(sheetArr => sheetArr.forEach(l => { if (l.gl_code !== glCode) allGLMap[l.gl_code] = l.description || ''; }));
+  const allGLs = Object.keys(allGLMap).sort();
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
@@ -3560,9 +3605,9 @@ async function faToggleInvoices(glCode, el) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
     } else {
-      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:110px;">';
+      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
       html += '<datalist id="fa_reclass_list_' + inv.id + '">';
-      allGLs.forEach(g => { html += '<option value="' + g + '">'; });
+      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
       html += '</datalist> ';
       html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
     }
@@ -3639,8 +3684,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const style = document.createElement('style');
     style.id = 'faSheetStyle';
     style.textContent = `
-      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
-      .fa-grid-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }
+      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:visible; position:relative; }
+      .fa-grid-scroll { overflow-x:auto; overflow-y:visible; }
+      .fa-sticky-scroll { position:sticky; bottom:0; overflow-x:auto; overflow-y:hidden; z-index:20; background:rgba(255,255,255,0.9); border-top:1px solid var(--gray-200); }
+      .fa-sticky-scroll div { height:1px; }
       .fa-grid table { width:100%; border-collapse:collapse; font-size:13px; }
       .fa-grid thead { background:var(--gray-100); position:sticky; top:0; z-index:10; }
       .fa-grid th { padding:10px 12px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); }
@@ -3756,10 +3803,12 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function sumLines(lines) {
-    const t = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
     lines.forEach(l => {
       t.prior += l.prior_year || 0;
       t.ytd += l.ytd_actual || 0;
+      t.accrual += l.accrual_adj || 0;
+      t.unpaid += l.unpaid_bills || 0;
       t.ytdBudget += l.ytd_budget || 0;
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
@@ -3769,14 +3818,16 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     return t;
   }
 
-  function subtotalRow(label, t, cls) {
+  function subtotalRow(label, t, cls, rowId) {
     const v = t.proposed - t.prior;
     const p = t.prior ? (t.proposed/t.prior-1) : 0;
-    return '<tr class="' + (cls||'sub-row') + '">' +
+    const rid = rowId ? ' id="' + rowId + '"' : '';
+    return '<tr class="' + (cls||'sub-row') + '"' + rid + '>' +
       '<td colspan="3">' + label + '</td>' +
       '<td class="num">' + fmt(t.prior) + '</td>' +
       '<td class="num">' + fmt(t.ytd) + '</td>' +
-      '<td class="num"></td><td class="num"></td>' +
+      '<td class="num">' + fmt(t.accrual || 0) + '</td>' +
+      '<td class="num">' + fmt(t.unpaid || 0) + '</td>' +
       '<td class="num">' + fmt(t.ytdBudget) + '</td>' +
       '<td class="num">' + fmt(t.estimate) + '</td>' +
       '<td class="num">' + fmt(t.forecast) + '</td>' +
@@ -3806,9 +3857,24 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     sheetLines.forEach(l => { html += buildLineRow(l); });
   }
 
-  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row');
-  html += '</tbody></table></div></div>';
+  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
+  html += '</tbody></table></div>';
+  html += '<div class="fa-sticky-scroll" id="faStickyScroll"><div id="faStickyScrollInner"></div></div>';
+  html += '</div>';
   contentDiv.innerHTML = html;
+
+  // Sync sticky scrollbar width and scroll position with table
+  setTimeout(() => {
+    const gridScroll = document.querySelector('.fa-grid-scroll');
+    const stickyScroll = document.getElementById('faStickyScroll');
+    const stickyInner = document.getElementById('faStickyScrollInner');
+    if (!gridScroll || !stickyScroll || !stickyInner) return;
+    const table = gridScroll.querySelector('table');
+    if (table) stickyInner.style.width = table.scrollWidth + 'px';
+    let syncing = false;
+    gridScroll.addEventListener('scroll', () => { if (!syncing) { syncing = true; stickyScroll.scrollLeft = gridScroll.scrollLeft; syncing = false; } });
+    stickyScroll.addEventListener('scroll', () => { if (!syncing) { syncing = true; gridScroll.scrollLeft = stickyScroll.scrollLeft; syncing = false; } });
+  }, 100);
 }
 
 function computeForecast(l) {
@@ -4655,8 +4721,10 @@ async function toggleInvoices(glCode, linkEl) {
         return;
     }
 
-    // Build all GL codes for reclass dropdown — sorted alphabetically
-    const allGLs = LINES.map(l => l.gl_code).filter(g => g !== glCode).sort();
+    // Build all GL codes for reclass dropdown — sorted alphabetically, with descriptions
+    const allGLMap = {};
+    LINES.forEach(l => { if (l.gl_code !== glCode) allGLMap[l.gl_code] = l.description || ''; });
+    const allGLs = Object.keys(allGLMap).sort();
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
@@ -4683,9 +4751,9 @@ async function toggleInvoices(glCode, linkEl) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
-            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:110px;">';
+            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
             html += '<datalist id="reclass_list_' + inv.id + '">';
-            allGLs.forEach(g => { html += '<option value="' + g + '">'; });
+            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
             html += '</datalist> ';
             html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
         }
