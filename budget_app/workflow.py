@@ -3057,21 +3057,33 @@ async function renderHistoryTab(contentDiv) {
   }
 }
 
-// Toggle formula visibility on computed cells
+// Toggle formula popover on computed cells
 function toggleFormula(el) {
+  // Close any other open popovers first
+  document.querySelectorAll('.fa-popover.visible').forEach(p => {
+    if (!el.closest('td').contains(p)) p.classList.remove('visible');
+  });
   const cell = el.closest('td');
-  const ftxt = cell.querySelector('.fa-formula');
-  if (ftxt) ftxt.classList.toggle('visible');
+  const pop = cell.querySelector('.fa-popover');
+  if (pop) pop.classList.toggle('visible');
 }
 
-// Show all formulas at once (toggle)
+// Show all formula popovers
 let _formulasVisible = false;
 function toggleAllFormulas() {
   _formulasVisible = !_formulasVisible;
-  document.querySelectorAll('.fa-formula').forEach(el => {
+  document.querySelectorAll('.fa-popover').forEach(el => {
     el.classList.toggle('visible', _formulasVisible);
   });
 }
+
+// Close popovers when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.fa-fx') && !e.target.closest('.fa-popover')) {
+    document.querySelectorAll('.fa-popover.visible').forEach(p => p.classList.remove('visible'));
+    _formulasVisible = false;
+  }
+});
 
 // When an input field changes, recalculate computed cells in that row and save
 function faLineChanged(gl, field, value) {
@@ -3422,8 +3434,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid input[type="number"] { text-align:right; width:90px; }
       .fa-grid input[type="text"] { min-width:100px; }
       .fa-grid input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
-      .fa-formula { display:none; font-size:10px; color:var(--gray-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px; margin-top:1px; }
-      .fa-formula.visible { display:block; }
+      .fa-popover { display:none; position:absolute; bottom:100%; left:0; right:0; background:white; border:1px solid var(--blue); border-radius:6px; padding:6px 10px; font-size:11px; color:var(--gray-700); box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:50; white-space:nowrap; min-width:200px; }
+      .fa-popover.visible { display:block; }
+      .fa-popover input { width:100%; margin-top:4px; padding:4px 6px; border:1px solid var(--gray-300); border-radius:3px; font-size:12px; text-align:right; }
       .fa-fx { cursor:pointer; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; margin-right:4px; vertical-align:middle; user-select:none; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
@@ -3476,9 +3489,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       return '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + ';" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">';
     }
     function fxCell(id, field, val, formula, w) {
-      return '<td class="num"><span class="fa-fx" onclick="toggleFormula(this)" title="' + formula.replace(/"/g, '&quot;') + '">fx</span>' +
+      return '<td class="num" style="position:relative;"><span class="fa-fx" onclick="toggleFormula(this)">fx</span>' +
         '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + '; background:#f0fdf4;" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">' +
-        '<div class="fa-formula">' + formula + '</div></td>';
+        '<div class="fa-popover">' + formula + '</div></td>';
     }
 
     return '<tr data-gl="' + gl + '">' +
@@ -3494,9 +3507,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, '90px') +
       '<td class="num">' + numInput('bud_'+gl, 'current_budget', budget, '85px') + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" type="number" step="0.1" value="'+incPct+'" style="width:65px;" onchange="faLineChanged(\''+gl+'\',\'increase_pct\',this.value)"></td>' +
-      '<td class="num"><span class="fa-fx" onclick="toggleFormula(this)" title="' + propFormula.replace(/"/g,'&quot;') + '">fx</span>' +
+      '<td class="num" style="position:relative;"><span class="fa-fx" onclick="toggleFormula(this)">fx</span>' +
         numInput('prop_'+gl, 'proposed_budget', proposed, '90px') +
-        '<div class="fa-formula">' + propFormula + '</div></td>' +
+        '<div class="fa-popover">' + propFormula + '</div></td>' +
       '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
       '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }
