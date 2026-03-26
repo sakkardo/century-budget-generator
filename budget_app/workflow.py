@@ -852,7 +852,7 @@ def create_workflow_blueprint(db):
         return jsonify(user.to_dict())
 
 
-    @bp.route("/api/users/<int:user_id>", methods=["DELETE"])
+    @bp.route("/api/users/<int:user_id>/delete", methods=["POST"])
     def delete_user(user_id):
         """Delete a user."""
         user = User.query.get(user_id)
@@ -862,7 +862,7 @@ def create_workflow_blueprint(db):
         db.session.delete(user)
         db.session.commit()
 
-        return jsonify({"status": "deleted"}), 204
+        return jsonify({"status": "deleted"})
 
 
     # ─── API Routes: Assignments ─────────────────────────────────────────────
@@ -912,7 +912,7 @@ def create_workflow_blueprint(db):
         return jsonify(assignment.to_dict()), 201
 
 
-    @bp.route("/api/assignments/<int:assignment_id>", methods=["DELETE"])
+    @bp.route("/api/assignments/<int:assignment_id>/delete", methods=["POST"])
     def delete_assignment(assignment_id):
         """Delete an assignment."""
         assignment = BuildingAssignment.query.get(assignment_id)
@@ -922,7 +922,7 @@ def create_workflow_blueprint(db):
         db.session.delete(assignment)
         db.session.commit()
 
-        return jsonify({"status": "deleted"}), 204
+        return jsonify({"status": "deleted"})
 
 
     # ─── API Routes: Budgets ─────────────────────────────────────────────────

@@ -614,7 +614,7 @@ Be precise with numbers. Include all line items found.
 
     function deleteUpload(uploadId) {
         if (!confirm('Delete this upload? This cannot be undone.')) return;
-        fetch('/api/af/uploads/' + uploadId, { method: 'DELETE' })
+        fetch('/api/af/uploads/' + uploadId + '/delete', { method: 'POST' })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
@@ -797,7 +797,7 @@ Be precise with numbers. Include all line items found.
 
         function deleteProfile(profileId) {
             if (!confirm('Delete this profile and all its rules?')) return;
-            fetch('/api/af/profiles/' + profileId, { method: 'DELETE' })
+            fetch('/api/af/profiles/' + profileId + '/delete', { method: 'POST' })
             .then(r => r.json())
             .then(data => {
                 if (data.success) location.reload();
@@ -1296,7 +1296,7 @@ Be precise with numbers. Include all line items found.
         })
 
 
-    @bp.route("/api/af/profiles/<int:profile_id>", methods=["DELETE"])
+    @bp.route("/api/af/profiles/<int:profile_id>/delete", methods=["POST"])
     def api_delete_profile(profile_id):
         """Delete auditor profile."""
         profile = AuditorProfile.query.get(profile_id)
@@ -1544,9 +1544,9 @@ Be precise with numbers. Include all line items found.
             "upload": data
         })
 
-    @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
+    @bp.route("/api/af/uploads/<int:upload_id>/delete", methods=["POST"])
     def api_delete_upload(upload_id):
-        """Delete an upload that hasn't been confirmed."""
+        """Delete an upload."""
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404

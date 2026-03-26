@@ -386,30 +386,38 @@ def buildings_api():
     return jsonify(new_building), 201
 
 
-@app.route("/api/buildings/<entity_code>", methods=["PUT", "DELETE"])
+@app.route("/api/buildings/<entity_code>", methods=["PUT"])
 def manage_building(entity_code):
-    """Edit or delete a building."""
+    """Edit a building."""
     buildings = load_buildings()
     building_idx = next((i for i, b in enumerate(buildings) if b["entity_code"] == entity_code), None)
 
     if building_idx is None:
         return jsonify({"error": "Building not found"}), 404
 
-    if request.method == "DELETE":
-        buildings.pop(building_idx)
-        save_buildings(buildings)
-        return jsonify({"message": "Building deleted"}), 200
+    data = request.json
+    building = buildings[building_idx]
+    # Update allowed fields
+    for field in ["building_name", "address", "city", "zip", "type", "units"]:
+        if field in data:
+            building[field] = data[field]
+    buildings[building_idx] = building
+    save_buildings(buildings)
+    return jsonify(building), 200
 
-    if request.method == "PUT":
-        data = request.json
-        building = buildings[building_idx]
-        # Update allowed fields
-        for field in ["building_name", "address", "city", "zip", "type", "units"]:
-            if field in data:
-                building[field] = data[field]
-        buildings[building_idx] = building
-        save_buildings(buildings)
-        return jsonify(building), 200
+
+@app.route("/api/buildings/<entity_code>/delete", methods=["POST"])
+def delete_building(entity_code):
+    """Delete a building."""
+    buildings = load_buildings()
+    building_idx = next((i for i, b in enumerate(buildings) if b["entity_code"] == entity_code), None)
+
+    if building_idx is None:
+        return jsonify({"error": "Building not found"}), 404
+
+    buildings.pop(building_idx)
+    save_buildings(buildings)
+    return jsonify({"message": "Building deleted"}), 200
 
 
 @app.route("/api/generate-script", methods=["POST"])
@@ -2239,7 +2247,7 @@ async function deleteBuilding(code) {
   const building = buildings.find(b => b.entity_code === code);
   if (!confirm(`Are you sure you want to delete "${building.building_name}"?`)) return;
 
-  const resp = await fetch(`/api/buildings/${code}`, { method: 'DELETE' });
+  const resp = await fetch(`/api/buildings/${code}/delete`, { method: 'POST' });
 
   if (resp.ok) {
     await loadBuildings();
