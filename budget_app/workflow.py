@@ -975,7 +975,15 @@ def create_workflow_blueprint(db):
             budget.approved_by = data.get("approved_by", "system")
             budget.approved_at = datetime.utcnow()
 
+        old_status = budget.status
         budget.status = new_status
+
+        # Log status change
+        db.session.add(BudgetRevision(
+            budget_id=budget.id, action="status_change",
+            field_name="status", old_value=old_status, new_value=new_status,
+            notes=data.get("notes", ""), source="web"
+        ))
         db.session.commit()
 
         return jsonify(budget.to_dict())
@@ -1135,6 +1143,15 @@ def create_workflow_blueprint(db):
                 current[key] = value
 
         budget.assumptions_json = _json.dumps(current)
+
+        # Log assumption changes
+        for key, value in data.items():
+            db.session.add(BudgetRevision(
+                budget_id=budget.id, action="update",
+                field_name="assumptions." + key,
+                old_value="", new_value=_json.dumps(value) if isinstance(value, dict) else str(value),
+                source="web"
+            ))
 
         # Recalculate affected BudgetLine increase_pct based on assumption changes
         changed_sections = list(data.keys())
@@ -1298,12 +1315,30 @@ def create_workflow_blueprint(db):
             ).first()
             if not line:
                 continue
+            # Track changes for audit trail
+            changes = []
             if "increase_pct" in line_data:
-                line.increase_pct = float(line_data["increase_pct"] or 0)
+                new_val = float(line_data["increase_pct"] or 0)
+                if line.increase_pct != new_val:
+                    changes.append(("increase_pct", str(line.increase_pct or 0), str(new_val)))
+                line.increase_pct = new_val
             if "notes" in line_data:
-                line.notes = line_data["notes"]
+                new_val = line_data["notes"]
+                if (line.notes or "") != new_val:
+                    changes.append(("notes", line.notes or "", new_val))
+                line.notes = new_val
             if "proposed_budget" in line_data:
-                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+                new_val = float(line_data["proposed_budget"] or 0)
+                if line.proposed_budget != new_val:
+                    changes.append(("proposed_budget", str(line.proposed_budget or 0), str(new_val)))
+                line.proposed_budget = new_val
+
+            for field, old_v, new_v in changes:
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id, budget_line_id=line.id,
+                    action="update", field_name=field,
+                    old_value=old_v, new_value=new_v, source="web"
+                ))
 
         db.session.commit()
         return jsonify({"status": "ok"})
@@ -1327,6 +1362,30 @@ def create_workflow_blueprint(db):
         line.reclass_notes = data.get("reclass_notes", "")
         db.session.commit()
         return jsonify(line.to_dict())
+
+
+    @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
+    def get_budget_history(entity_code):
+        """Get change history (revisions) for a budget."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        revisions = BudgetRevision.query.filter_by(budget_id=budget.id)\
+            .order_by(BudgetRevision.created_at.desc()).limit(200).all()
+
+        # Enrich with GL code info where applicable
+        result = []
+        for r in revisions:
+            entry = r.to_dict()
+            if r.budget_line_id:
+                line = BudgetLine.query.get(r.budget_line_id)
+                if line:
+                    entry["gl_code"] = line.gl_code
+                    entry["description"] = line.description
+            result.append(entry)
+
+        return jsonify({"revisions": result})
 
 
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
@@ -2698,6 +2757,19 @@ function renderDetail(data) {
     };
     tabsDiv.appendChild(assumTab);
 
+    // Add History tab
+    const histTab = document.createElement('button');
+    histTab.textContent = '\ud83d\udcdd History';
+    histTab.className = 'sheet-tab';
+    histTab.style.background = '#fef3c7';
+    histTab.style.color = '#92400e';
+    histTab.onclick = () => {
+      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      histTab.classList.add('active');
+      renderHistoryTab(contentDiv);
+    };
+    tabsDiv.appendChild(histTab);
+
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
   }
 }
@@ -2826,6 +2898,69 @@ function renderAssumptionsTab(assumptions, contentDiv) {
 
   html += '</div>';
   contentDiv.innerHTML = html;
+}
+
+// ── History Tab ──
+async function renderHistoryTab(contentDiv) {
+  contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">Loading change history...</p>';
+  try {
+    const resp = await fetch('/api/budget-history/' + entityCode);
+    const data = await resp.json();
+    const revs = data.revisions || [];
+
+    if (revs.length === 0) {
+      contentDiv.innerHTML = '<div style="padding:24px; text-align:center; color:var(--gray-400);">' +
+        '<div style="font-size:32px; margin-bottom:8px;">\ud83d\udcdd</div>' +
+        '<p>No changes recorded yet.</p>' +
+        '<p style="font-size:12px;">Changes will appear here as you edit budget lines, update assumptions, and change statuses.</p></div>';
+      return;
+    }
+
+    const actionLabels = {
+      'update': 'Edited', 'status_change': 'Status Changed',
+      'create': 'Created', 'reclass': 'Reclassified', 'presentation_edit': 'Presentation Edit'
+    };
+    const fieldLabels = {
+      'increase_pct': 'Increase %', 'proposed_budget': 'Proposed Budget',
+      'notes': 'Notes', 'status': 'Status', 'accrual_adj': 'Accrual Adj',
+      'unpaid_bills': 'Unpaid Bills'
+    };
+
+    let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+      '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+      '<th style="text-align:left; padding:8px;">When</th>' +
+      '<th style="text-align:left; padding:8px;">Action</th>' +
+      '<th style="text-align:left; padding:8px;">GL / Item</th>' +
+      '<th style="text-align:left; padding:8px;">Field</th>' +
+      '<th style="text-align:right; padding:8px;">Old Value</th>' +
+      '<th style="text-align:right; padding:8px;">New Value</th>' +
+      '<th style="text-align:left; padding:8px;">Source</th>' +
+      '</tr></thead><tbody>';
+
+    revs.forEach(r => {
+      const when = r.created_at ? new Date(r.created_at).toLocaleString() : '';
+      const action = actionLabels[r.action] || r.action;
+      const gl = r.gl_code ? r.gl_code + ' — ' + (r.description || '') : (r.action === 'status_change' ? 'Budget' : '—');
+      const field = fieldLabels[r.field_name] || r.field_name || '';
+      const oldVal = r.field_name === 'proposed_budget' ? fmt(parseFloat(r.old_value) || 0) : r.old_value || '';
+      const newVal = r.field_name === 'proposed_budget' ? fmt(parseFloat(r.new_value) || 0) : r.new_value || '';
+      const actionColor = r.action === 'status_change' ? 'var(--blue)' : 'var(--gray-600)';
+
+      html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
+        '<td style="padding:6px 8px; color:var(--gray-400); font-size:12px; white-space:nowrap;">' + when + '</td>' +
+        '<td style="padding:6px 8px; color:' + actionColor + '; font-weight:500;">' + action + '</td>' +
+        '<td style="padding:6px 8px; font-family:monospace; font-size:12px;">' + gl + '</td>' +
+        '<td style="padding:6px 8px;">' + field + '</td>' +
+        '<td style="text-align:right; padding:6px 8px; color:var(--red); text-decoration:line-through; font-size:12px;">' + oldVal + '</td>' +
+        '<td style="text-align:right; padding:6px 8px; color:var(--green); font-weight:500;">' + newVal + '</td>' +
+        '<td style="padding:6px 8px; font-size:11px; color:var(--gray-400);">' + (r.source || '') + '</td></tr>';
+    });
+
+    html += '</tbody></table>';
+    contentDiv.innerHTML = html;
+  } catch (err) {
+    contentDiv.innerHTML = '<p style="padding:24px; color:var(--red);">Error loading history: ' + err.message + '</p>';
+  }
 }
 
 let _faSaveTimer = null;
