@@ -3058,73 +3058,81 @@ async function renderHistoryTab(contentDiv) {
   }
 }
 
-// Toggle formula popover on computed cells
-function toggleFormula(el) {
-  // Close any other open popovers first
-  document.querySelectorAll('.fa-popover.visible').forEach(p => {
-    if (!el.closest('td').contains(p)) p.classList.remove('visible');
-  });
-  const cell = el.closest('td');
-  const pop = cell.querySelector('.fa-popover');
-  if (pop) pop.classList.toggle('visible');
+// Parse a displayed dollar value like "$1,234" or "-$500" back to a number
+function parseDollar(s) {
+  if (typeof s !== 'string') return parseFloat(s) || 0;
+  return parseFloat(s.replace(/[$,\s]/g, '')) || 0;
 }
 
-// Show all formula popovers
-let _formulasVisible = false;
-function toggleAllFormulas() {
-  _formulasVisible = !_formulasVisible;
-  document.querySelectorAll('.fa-popover').forEach(el => {
-    el.classList.toggle('visible', _formulasVisible);
-  });
+// cellBlur: user finished editing a regular dollar cell — reformat and save
+function cellBlur(el) {
+  const raw = parseDollar(el.value);
+  el.dataset.raw = Math.round(raw);
+  el.value = fmt(raw);
+  const gl = el.dataset.gl, field = el.dataset.field;
+  faLineChanged(gl, field, raw);
 }
 
-// Close popovers when clicking outside
-document.addEventListener('click', function(e) {
-  if (!e.target.closest('.fa-fx') && !e.target.closest('.fa-popover')) {
-    document.querySelectorAll('.fa-popover.visible').forEach(p => p.classList.remove('visible'));
-    _formulasVisible = false;
+// fxCellBlur: user finished editing a formula cell
+// If the value looks like a number (user typed an override), use that number.
+// If it still matches the formula text, keep the calculated value.
+function fxCellBlur(el) {
+  const gl = el.dataset.gl, field = el.dataset.field;
+  const typed = el.value.trim();
+  const formula = el.dataset.formula || '';
+  const numericVal = parseDollar(typed);
+  const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
+  if (isNumber) {
+    el.dataset.raw = Math.round(numericVal);
+    el.value = fmt(numericVal);
+    faLineChanged(gl, field, numericVal);
+  } else {
+    el.value = fmt(parseFloat(el.dataset.raw) || 0);
+    faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
+                       field === 'forecast_override' ? '__recalc_forecast' : field, null);
   }
-});
+}
+
+// pctCellBlur: user finished editing a percentage cell — reformat and save
+function pctCellBlur(el) {
+  const raw = parseFloat(el.value) || 0;
+  el.dataset.raw = raw.toFixed(1);
+  el.value = raw.toFixed(1) + '%';
+  const gl = el.dataset.gl;
+  faLineChanged(gl, 'increase_pct', raw);
+}
 
 // When an input field changes, recalculate computed cells in that row and save
 function faLineChanged(gl, field, value) {
-  // Map field names for saving — estimate_override/forecast_override don't exist on the model,
-  // so if user edits estimate or forecast directly, save as proposed_budget override
-  let saveField = field;
-  if (field === 'estimate_override' || field === 'forecast_override') {
-    // User manually typed in a computed cell — don't save these fields directly,
-    // they're just local overrides. Only recalculate and save proposed.
-    saveField = null;
-  } else if (field === 'increase_pct') {
-    // increase_pct input is in % form (e.g., 3.5), need to save as decimal (0.035)
-    faAutoSave(gl, 'increase_pct', parseFloat(value) / 100);
-    saveField = null;
+  const getRaw = (id) => {
+    const el = document.getElementById(id);
+    return el ? parseFloat(el.dataset.raw) || 0 : 0;
+  };
+
+  if (field === 'increase_pct') {
+    faAutoSave(gl, 'increase_pct', (parseFloat(value) || 0) / 100);
+  } else if (field === 'estimate_override' || field === 'forecast_override' ||
+             field === '__recalc_estimate' || field === '__recalc_forecast') {
+    // Formula cells: overrides get saved via proposed; recalcs skip save
+  } else if (field && value !== null && value !== undefined) {
+    faAutoSave(gl, field, Math.round(parseDollar(value)));
   }
 
-  if (saveField) faAutoSave(gl, saveField, value);
-
-  // Find the row and read current input values
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
   if (!row) return;
 
-  const getVal = (id) => {
-    const el = document.getElementById(id);
-    return el ? parseFloat(el.value) || 0 : 0;
-  };
+  const prior = getRaw('pr_' + gl);
+  const ytd = getRaw('ytd_' + gl);
+  const accrual = getRaw('acc_' + gl);
+  const unpaid = getRaw('unp_' + gl);
+  const incRaw = parseFloat(document.getElementById('inc_' + gl)?.dataset.raw) || 0;
+  const incPct = incRaw / 100;
 
-  const prior = getVal('pr_' + gl);
-  const ytd = getVal('ytd_' + gl);
-  const accrual = getVal('acc_' + gl);
-  const unpaid = getVal('unp_' + gl);
-  const incInput = getVal('inc_' + gl);
-  const incPct = incInput / 100;
-
-  // If user directly edited estimate or forecast, use their value; otherwise recalculate
   let estimate, forecast;
-  if (field === 'estimate_override') {
+  if (field === 'estimate_override' && value !== null) {
     estimate = parseFloat(value) || 0;
     forecast = ytd + accrual + unpaid + estimate;
-  } else if (field === 'forecast_override') {
+  } else if (field === 'forecast_override' && value !== null) {
     forecast = parseFloat(value) || 0;
     estimate = forecast - (ytd + accrual + unpaid);
   } else {
@@ -3139,20 +3147,16 @@ function faLineChanged(gl, field, value) {
 
   const proposed = forecast * (1 + incPct);
 
-  // Update estimate and forecast inputs (they're now <input> not <span>)
-  const estEl = document.getElementById('est_' + gl);
-  if (estEl && field !== 'estimate_override') estEl.value = Math.round(estimate);
-  const fcstEl = document.getElementById('fcst_' + gl);
-  if (fcstEl && field !== 'forecast_override') fcstEl.value = Math.round(forecast);
+  const updateCell = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) { el.dataset.raw = Math.round(val); el.value = fmt(val); }
+  };
+  if (field !== 'estimate_override') updateCell('est_' + gl, estimate);
+  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast);
+  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed);
 
-  // Update proposed input
-  const propEl = document.getElementById('prop_' + gl);
-  if (propEl && field !== 'proposed_budget') propEl.value = Math.round(proposed);
-
-  // Always save the final proposed value
   faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
-  // Update variance and % change
   const variance = proposed - prior;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
@@ -3573,16 +3577,14 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cat-hdr td { background:var(--blue-light, #e1effe); font-weight:700; color:var(--blue, #1a56db); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #1a56db); }
       .fa-grid .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }
       .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
-      .fa-grid input[type="number"], .fa-grid input[type="text"] { width:100%; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; background:#fffff0; }
-      .fa-grid input[type="number"] { text-align:right; width:90px; }
-      .fa-grid input[type="text"] { min-width:100px; }
-      .fa-grid input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
-      .fa-popover { display:none; position:absolute; bottom:100%; left:0; right:0; background:white; border:1px solid var(--blue); border-radius:6px; padding:6px 10px; font-size:11px; color:var(--gray-700); box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:50; white-space:nowrap; min-width:200px; }
-      .fa-popover.visible { display:block; }
+      .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; }
+      .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
+      .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
+      .fa-grid .cell-fx:focus { background:#ecfdf5; }
+      .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
+      .fa-grid .cell-pct { width:60px; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
-      .fa-popover input { width:100%; margin-top:4px; padding:4px 6px; border:1px solid var(--gray-300); border-radius:3px; font-size:12px; text-align:right; }
-      .fa-fx { cursor:pointer; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; margin-right:4px; vertical-align:middle; user-select:none; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
@@ -3592,9 +3594,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   let html = '<div class="fa-controls"><div class="fa-legend">' +
     '<span><span class="fa-legend-dot" style="background:#fffff0;"></span>Editable</span>' +
-    '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated</span>' +
-    '<span>Click <span class="fa-fx">fx</span> to see formula</span>' +
-    '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button><button onclick="toggleAllFormulas()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">Show All Formulas</button></div></div>';
+    '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated (click to see formula)</span>' +
+    '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
@@ -3630,32 +3631,40 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const fcstFormula = faGetFormulaTooltip(l, 'forecast');
     const propFormula = faGetFormulaTooltip(l, 'proposed');
 
-    // Each number cell is an input. Estimate/Forecast have formula indicators + editable override.
-    function numInput(id, field, val, w) {
-      return '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + ';" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">';
+    // Dollar cell: shows $1,234 normally, raw number on focus for editing
+    function $cell(id, field, val) {
+      return '<input id="' + id + '" class="cell" type="text"' +
+        ' value="' + fmt(val) + '"' +
+        ' data-raw="' + Math.round(val) + '"' +
+        ' data-gl="' + gl + '" data-field="' + field + '"' +
+        ' onfocus="this.value=this.dataset.raw"' +
+        ' onblur="cellBlur(this)">';
     }
-    function fxCell(id, field, val, formula, w) {
-      return '<td class="num" style="position:relative;"><span class="fa-fx" onclick="toggleFormula(this)">fx</span>' +
-        '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + '; background:#f0fdf4;" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">' +
-        '<div class="fa-popover">' + formula + '</div></td>';
+    // Formula cell: shows $1,234 normally, shows formula on focus, editable
+    function fxCell(id, field, val, formula) {
+      return '<td class="num"><input id="' + id + '" class="cell cell-fx" type="text"' +
+        ' value="' + fmt(val) + '"' +
+        ' data-raw="' + Math.round(val) + '"' +
+        ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
+        ' data-gl="' + gl + '" data-field="' + field + '"' +
+        ' onfocus="this.value=this.dataset.formula; this.select();"' +
+        ' onblur="fxCellBlur(this)"></td>';
     }
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
-      '<td><input type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
-      '<td class="num">' + numInput('pr_'+gl, 'prior_year', prior, '85px') + '</td>' +
-      '<td class="num">' + numInput('ytd_'+gl, 'ytd_actual', ytd, '85px') + '</td>' +
-      '<td class="num">' + numInput('acc_'+gl, 'accrual_adj', accrual, '80px') + '</td>' +
-      '<td class="num">' + numInput('unp_'+gl, 'unpaid_bills', unpaid, '80px') + '</td>' +
-      '<td class="num">' + numInput('ytdb_'+gl, 'ytd_budget', ytdBudget, '85px') + '</td>' +
-      fxCell('est_'+gl, 'estimate_override', estimate, estFormula, '90px') +
-      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, '90px') +
-      '<td class="num">' + numInput('bud_'+gl, 'current_budget', budget, '85px') + '</td>' +
-      '<td class="num"><input id="inc_'+gl+'" type="number" step="0.1" value="'+incPct+'" style="width:65px;" onchange="faLineChanged(\''+gl+'\',\'increase_pct\',this.value)"></td>' +
-      '<td class="num" style="position:relative;"><span class="fa-fx" onclick="toggleFormula(this)">fx</span>' +
-        numInput('prop_'+gl, 'proposed_budget', proposed, '90px') +
-        '<div class="fa-popover">' + propFormula + '</div></td>' +
+      '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+      '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
+      '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
+      '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
+      '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
+      '<td class="num">' + $cell('ytdb_'+gl, 'ytd_budget', ytdBudget) + '</td>' +
+      fxCell('est_'+gl, 'estimate_override', estimate, estFormula) +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula) +
+      '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
+      '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
+      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula) +
       '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
       '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }
