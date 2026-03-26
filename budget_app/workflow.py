@@ -2369,6 +2369,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
 
 <script>
 const entityCode = '{{ entity_code }}';
+let allSheets = {};  // populated in loadDetail, used by Budget Summary
 
 function showToast(msg, type='info') {
   const c = document.getElementById('toastContainer');
@@ -2564,7 +2565,8 @@ function renderDetail(data) {
   document.getElementById('downloadExcelBtn').href = '/api/download-budget/' + entityCode;
 
   // Budget Workbook Tabs
-  const sheets = data.sheets || {};
+  allSheets = data.sheets || {};  // global for Budget Summary access
+  const sheets = allSheets;
   const sheetOrder = data.sheet_order || Object.keys(sheets);
   const tabsDiv = document.getElementById('sheetTabs');
   const contentDiv = document.getElementById('sheetContent');
@@ -2580,6 +2582,16 @@ function renderDetail(data) {
       tab.onclick = () => renderSheet(sheetName, sheets[sheetName], tab);
       tabsDiv.appendChild(tab);
     });
+
+    // Add Summary tab before Assumptions
+    const summaryTab = document.createElement('button');
+    summaryTab.textContent = '\ud83d\udcca Summary';
+    summaryTab.className = 'sheet-tab';
+    summaryTab.style.background = '#e0f2fe';
+    summaryTab.style.color = 'var(--primary)';
+    summaryTab.style.fontWeight = '600';
+    summaryTab.onclick = () => renderSheet('Summary', null, summaryTab);
+    tabsDiv.appendChild(summaryTab);
 
     // Add Assumptions tab
     const assumTab = document.createElement('button');
@@ -2747,6 +2759,40 @@ async function dismissReclass(glCode) {
 const YTD_MONTHS = 2;
 const REMAINING_MONTHS = 10;
 
+// Category grouping definitions per sheet
+const SHEET_CATEGORIES = {
+  'Repairs & Supplies': {
+    groups: [
+      {key: 'supplies', label: 'Supplies', match: l => l.category === 'supplies'},
+      {key: 'repairs', label: 'Repairs', match: l => l.category === 'repairs'},
+      {key: 'maintenance', label: 'Maintenance Contracts', match: l => l.category === 'maintenance'}
+    ]
+  },
+  'Gen & Admin': {
+    groups: [
+      {key: 'prof_fees', label: 'Professional Fees', match: l => (l.row_num >= 8 && l.row_num <= 16)},
+      {key: 'admin', label: 'Administrative & Other', match: l => (l.row_num >= 20 && l.row_num <= 49)},
+      {key: 'insurance', label: 'Insurance', match: l => (l.row_num >= 53 && l.row_num <= 64)},
+      {key: 'taxes', label: 'Taxes', match: l => (l.row_num >= 68 && l.row_num <= 78)},
+      {key: 'financial', label: 'Financial Expenses', match: l => (l.row_num >= 82 && l.row_num <= 90)}
+    ]
+  }
+};
+
+// Budget Summary mapping (matches template_populator.py BUDGET_SUMMARY_MAPPING)
+const SUMMARY_ROWS = [
+  {label: 'Total Operating Income', sheet: 'Income', type: 'income'},
+  {label: 'Payroll & Related', sheet: 'Payroll', type: 'expense'},
+  {label: 'Energy', sheet: 'Energy', type: 'expense'},
+  {label: 'Water & Sewer', sheet: 'Water & Sewer', type: 'expense'},
+  {label: 'Repairs & Supplies', sheet: 'Repairs & Supplies', type: 'expense'},
+  {label: 'Professional Fees', sheet: 'Gen & Admin', rowRange: [8,16], type: 'expense'},
+  {label: 'Administrative & Other', sheet: 'Gen & Admin', rowRange: [20,49], type: 'expense'},
+  {label: 'Insurance', sheet: 'Gen & Admin', rowRange: [53,64], type: 'expense'},
+  {label: 'Taxes', sheet: 'Gen & Admin', rowRange: [68,78], type: 'expense'},
+  {label: 'Financial Expenses', sheet: 'Gen & Admin', rowRange: [82,90], type: 'expense'}
+];
+
 function faComputeEstimate(l) {
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
@@ -2761,11 +2807,45 @@ function faComputeForecast(l) {
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
 
+function faGetFormulaTooltip(l, field) {
+  const ytd = l.ytd_actual || 0;
+  const accrual = l.accrual_adj || 0;
+  const unpaid = l.unpaid_bills || 0;
+  const prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  const estimate = faComputeEstimate(l);
+  const forecast = faComputeForecast(l);
+  const incPct = l.increase_pct || 0;
+
+  if (field === 'estimate') {
+    if (base >= prior && prior > 0) {
+      return 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
+    } else {
+      return 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
+    }
+  }
+  if (field === 'forecast') {
+    return fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
+  }
+  if (field === 'proposed') {
+    const proposed = l.proposed_budget || (forecast * (1 + incPct));
+    return fmt(forecast) + ' × (1 + ' + (incPct * 100).toFixed(1) + '%) = ' + fmt(proposed);
+  }
+  return '';
+}
+
 function renderSheet(sheetName, sheetLines, tabEl) {
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   tabEl.classList.add('active');
 
   const contentDiv = document.getElementById('sheetContent');
+
+  // Handle Budget Summary tab
+  if (sheetName === 'Summary') {
+    renderBudgetSummary(contentDiv);
+    return;
+  }
+
   if (!sheetLines || sheetLines.length === 0) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No data for this sheet.</p>';
     return;
@@ -2773,6 +2853,89 @@ function renderSheet(sheetName, sheetLines, tabEl) {
 
   // All sheets are editable for the FA — this is the budget workbench
   renderEditableSheet(sheetName, sheetLines, contentDiv);
+}
+
+function renderBudgetSummary(contentDiv) {
+  const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
+  let html = '<div style="margin-bottom:8px; display:flex; align-items:center; gap:12px;">' +
+    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span></div>';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:14px;">' +
+    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+    '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
+    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
+    '<th style="' + thStyle + '">Current<br>Budget</th>' +
+    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
+    '<th style="' + thStyle + '">$<br>Variance</th>' +
+    '<th style="' + thStyle + '">%<br>Change</th>' +
+    '</tr></thead><tbody>';
+
+  let totalIncome = {prior:0, budget:0, proposed:0};
+  let totalExpense = {prior:0, budget:0, proposed:0};
+
+  SUMMARY_ROWS.forEach((sr, idx) => {
+    const sheetLines = allSheets[sr.sheet] || [];
+    let lines = sheetLines;
+    if (sr.rowRange) {
+      lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
+    }
+    let prior = 0, budget = 0, proposed = 0;
+    lines.forEach(l => {
+      prior += l.prior_year || 0;
+      budget += l.current_budget || 0;
+      const forecast = faComputeForecast(l);
+      proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    });
+
+    const variance = proposed - prior;
+    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const varColor = sr.type === 'income'
+      ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
+      : (variance >= 0 ? 'var(--red)' : 'var(--green)');
+
+    if (sr.type === 'income') { totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; }
+    else { totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; }
+
+    // Bold for income row, normal for expense detail
+    const isIncomeRow = idx === 0;
+    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-50, #eff6ff);' : '';
+    html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
+      '<td style="padding:10px 12px;">' + sr.label + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
+
+    // After last expense row, add totals
+    if (idx === SUMMARY_ROWS.length - 1) {
+      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
+      const teVar = teProposed - tePrior;
+      const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
+      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
+
+      // NOI
+      const noiPrior = totalIncome.prior - tePrior;
+      const noiBudget = totalIncome.budget - teBudget;
+      const noiProposed = totalIncome.proposed - teProposed;
+      const noiVar = noiProposed - noiPrior;
+      const noiPct = noiPrior ? (noiProposed / noiPrior - 1) : 0;
+      const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
+      html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + (noiPct * 100).toFixed(1) + '%</td></tr>';
+    }
+  });
+
+  html += '</tbody></table>';
+  contentDiv.innerHTML = html;
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
@@ -2822,8 +2985,19 @@ function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const thStyle = 'text-align:right; padding:8px; white-space:nowrap;';
   const inputStyle = 'text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;';
+  // Cell background colors: system-imported=light blue, formula-computed=light green, FA-editable=white
+  const sysBg = '#eff6ff';  // light blue — data from Yardi
+  const formulaBg = '#f0fdf4';  // light green — computed
+  const faBg = '#ffffff';  // white — FA editable
 
-  let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+  // Legend
+  let html = '<div style="display:flex; gap:16px; margin-bottom:8px; font-size:11px; color:var(--gray-500);">' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + sysBg + ';border:1px solid #bfdbfe;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Yardi Data</span>' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + formulaBg + ';border:1px solid #bbf7d0;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Calculated</span>' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + faBg + ';border:1px solid #e5e7eb;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>FA Editable</span>' +
+    '</div>';
+
+  html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
     '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
     '<th style="text-align:left; padding:8px;">GL Code</th>' +
     '<th style="text-align:left; padding:8px;">Description</th>' +
@@ -2842,9 +3016,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<th style="' + thStyle + '">%<br>Change</th>' +
     '</tr></thead><tbody>';
 
-  let totals = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+  const catConfig = SHEET_CATEGORIES[sheetName];
 
-  sheetLines.forEach(l => {
+  function buildLineRow(l) {
     const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
     const ytdBudget = l.ytd_budget || 0;
@@ -2855,34 +3029,99 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const variance = proposed - prior;
     const pctChange = prior ? (proposed / prior - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
-
-    totals.prior += prior; totals.ytd += ytd; totals.ytdBudget += ytdBudget;
-    totals.estimate += estimate; totals.forecast += forecast; totals.budget += budget; totals.proposed += proposed;
-
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
 
-    html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
+    // Tooltip for formula cells
+    const estTip = faGetFormulaTooltip(l, 'estimate');
+    const fcstTip = faGetFormulaTooltip(l, 'forecast');
+    const propTip = faGetFormulaTooltip(l, 'proposed');
+
+    return '<tr style="border-bottom:1px solid var(--gray-100);">' +
       '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + l.gl_code + reclassBadge + '</td>' +
       '<td style="padding:6px 8px;">' + l.description + '</td>' +
       '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:100px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(prior) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(ytd) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(l.accrual_adj || 0) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(l.unpaid_bills || 0) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(estimate) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(forecast) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(ytdBudget) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + formulaBg + '; cursor:help;" title="' + estTip + '">' + fmt(estimate) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + formulaBg + '; cursor:help;" title="' + fcstTip + '">' + fmt(forecast) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(budget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)"></td>' +
+      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)" title="' + propTip + '"></td>' +
       '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
-  });
+  }
 
+  function sumLines(lines) {
+    const t = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    lines.forEach(l => {
+      t.prior += l.prior_year || 0;
+      t.ytd += l.ytd_actual || 0;
+      t.ytdBudget += l.ytd_budget || 0;
+      t.estimate += faComputeEstimate(l);
+      t.forecast += faComputeForecast(l);
+      t.budget += l.current_budget || 0;
+      const forecast = faComputeForecast(l);
+      t.proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    });
+    return t;
+  }
+
+  function buildSubtotalRow(label, t) {
+    const v = t.proposed - t.prior;
+    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
+    return '<tr style="font-weight:600; background:#f8fafc; border-top:1px solid var(--gray-200); border-bottom:1px solid var(--gray-200);">' +
+      '<td style="padding:8px;" colspan="2">' + label + '</td><td></td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.prior) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.ytd) + '</td>' +
+      '<td></td><td></td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.ytdBudget) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.estimate) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.forecast) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.budget) + '</td>' +
+      '<td></td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(t.proposed) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + fmt(v) + '</td>' +
+      '<td style="text-align:right; padding:8px;">' + (p * 100).toFixed(1) + '%</td></tr>';
+  }
+
+  if (catConfig) {
+    // Render with category groupings and subtotals
+    catConfig.groups.forEach(grp => {
+      const groupLines = sheetLines.filter(grp.match);
+      if (groupLines.length === 0) return;
+
+      // Category header
+      html += '<tr><td colspan="15" style="padding:10px 8px 4px; font-weight:700; color:var(--primary); font-size:14px; border-bottom:2px solid var(--primary);">' + grp.label + '</td></tr>';
+
+      groupLines.forEach(l => { html += buildLineRow(l); });
+
+      // Category subtotal
+      const t = sumLines(groupLines);
+      html += buildSubtotalRow('Total ' + grp.label, t);
+    });
+
+    // Render any lines that didn't match a category
+    const allGrouped = catConfig.groups.flatMap(g => sheetLines.filter(g.match));
+    const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
+    if (ungrouped.length > 0) {
+      html += '<tr><td colspan="15" style="padding:10px 8px 4px; font-weight:700; color:var(--gray-500); font-size:14px; border-bottom:2px solid var(--gray-300);">Other</td></tr>';
+      ungrouped.forEach(l => { html += buildLineRow(l); });
+      html += buildSubtotalRow('Total Other', sumLines(ungrouped));
+    }
+  } else {
+    // Simple sheet — no category groupings, just rows
+    sheetLines.forEach(l => { html += buildLineRow(l); });
+  }
+
+  // Sheet total
+  const totals = sumLines(sheetLines);
   const totalVar = totals.proposed - totals.prior;
   const totalPct = totals.prior ? (totals.proposed / totals.prior - 1) : 0;
-  html += '<tr style="font-weight:700; background:var(--gray-100);"><td style="padding:8px;" colspan="2">Sheet Total</td><td></td>' +
+  html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:8px;" colspan="2">Sheet Total</td><td></td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
     '<td></td><td></td>' +
