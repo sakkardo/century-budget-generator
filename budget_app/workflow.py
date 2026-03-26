@@ -3242,15 +3242,13 @@ function faUpdateSheetTotals() {
   const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
 
   function sumGLs(glCodes) {
-    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
     glCodes.forEach(gl => {
       const row = document.querySelector('tr[data-gl="' + gl + '"]');
       if (row && row.style.display === 'none') return;
-      t.prior += raw('pr_' + gl);
       t.ytd += raw('ytd_' + gl);
       t.accrual += raw('acc_' + gl);
       t.unpaid += raw('unp_' + gl);
-      t.ytdBudget += raw('ytdb_' + gl);
       t.estimate += raw('est_' + gl);
       t.forecast += raw('fcst_' + gl);
       t.budget += raw('bud_' + gl);
@@ -3261,23 +3259,21 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    const v = t.proposed - t.prior;
-    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
+    const v = t.proposed - t.budget;
+    const p = t.budget ? (t.proposed / t.budget - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
-    if (cells.length >= 13) {
-      cells[1].textContent = fmt(t.prior);
-      cells[2].textContent = fmt(t.ytd);
-      cells[3].textContent = fmt(t.accrual);
-      cells[4].textContent = fmt(t.unpaid);
-      cells[5].textContent = fmt(t.ytdBudget);
-      cells[6].textContent = fmt(t.estimate);
-      cells[7].textContent = fmt(t.forecast);
-      cells[8].textContent = fmt(t.budget);
-      cells[9].textContent = '';
-      cells[10].textContent = fmt(t.proposed);
-      cells[11].textContent = fmt(v);
-      cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-      cells[12].textContent = (p * 100).toFixed(1) + '%';
+    if (cells.length >= 11) {
+      cells[1].textContent = fmt(t.ytd);
+      cells[2].textContent = fmt(t.accrual);
+      cells[3].textContent = fmt(t.unpaid);
+      cells[4].textContent = fmt(t.estimate);
+      cells[5].textContent = fmt(t.forecast);
+      cells[6].textContent = fmt(t.budget);
+      cells[7].textContent = '';
+      cells[8].textContent = fmt(t.proposed);
+      cells[9].textContent = fmt(v);
+      cells[9].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+      cells[10].textContent = (p * 100).toFixed(1) + '%';
     }
   }
 
@@ -3431,15 +3427,14 @@ function renderBudgetSummary(contentDiv) {
   html += '<table style="width:100%; border-collapse:collapse; font-size:14px;">' +
     '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
     '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
-    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
     '<th style="' + thStyle + '">Current<br>Budget</th>' +
     '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
     '<th style="' + thStyle + '">$<br>Variance</th>' +
     '<th style="' + thStyle + '">%<br>Change</th>' +
     '</tr></thead><tbody>';
 
-  let totalIncome = {prior:0, budget:0, proposed:0};
-  let totalExpense = {prior:0, budget:0, proposed:0};
+  let totalIncome = {budget:0, proposed:0};
+  let totalExpense = {budget:0, proposed:0};
 
   SUMMARY_ROWS.forEach((sr, idx) => {
     const sheetLines = allSheets[sr.sheet] || [];
@@ -3447,29 +3442,27 @@ function renderBudgetSummary(contentDiv) {
     if (sr.rowRange) {
       lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
     }
-    let prior = 0, budget = 0, proposed = 0;
+    let budget = 0, proposed = 0;
     lines.forEach(l => {
-      prior += l.prior_year || 0;
       budget += l.current_budget || 0;
       const forecast = faComputeForecast(l);
       proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     });
 
-    const variance = proposed - prior;
-    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const variance = proposed - budget;
+    const pctChange = budget ? (proposed / budget - 1) : 0;
     const varColor = sr.type === 'income'
       ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
       : (variance >= 0 ? 'var(--red)' : 'var(--green)');
 
-    if (sr.type === 'income') { totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; }
-    else { totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; }
+    if (sr.type === 'income') { totalIncome.budget += budget; totalIncome.proposed += proposed; }
+    else { totalExpense.budget += budget; totalExpense.proposed += proposed; }
 
     // Bold for income row, normal for expense detail
     const isIncomeRow = idx === 0;
     const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-50, #eff6ff);' : '';
     html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
       '<td style="padding:10px 12px;">' + sr.label + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
       '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
       '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
@@ -3477,25 +3470,22 @@ function renderBudgetSummary(contentDiv) {
 
     // After last expense row, add totals
     if (idx === SUMMARY_ROWS.length - 1) {
-      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
-      const teVar = teProposed - tePrior;
-      const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
+      const teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
+      const teVar = teProposed - teBudget;
+      const tePct = teBudget ? (teProposed / teBudget - 1) : 0;
       html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
 
       // NOI
-      const noiPrior = totalIncome.prior - tePrior;
       const noiBudget = totalIncome.budget - teBudget;
       const noiProposed = totalIncome.proposed - teProposed;
-      const noiVar = noiProposed - noiPrior;
-      const noiPct = noiPrior ? (noiProposed / noiPrior - 1) : 0;
+      const noiVar = noiProposed - noiBudget;
+      const noiPct = noiBudget ? (noiProposed / noiBudget - 1) : 0;
       const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
       html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
         '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
@@ -3513,38 +3503,30 @@ function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
     '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
     '<th style="text-align:left; padding:8px;">GL Code</th>' +
     '<th style="text-align:left; padding:8px;">Description</th>' +
-    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
     '<th style="' + thStyle + '">YTD<br>Actual</th>' +
-    '<th style="' + thStyle + '">YTD<br>Budget</th>' +
     '<th style="' + thStyle + '">Approved<br>Budget</th>' +
     '<th style="' + thStyle + '">Variance</th>' +
     '</tr></thead><tbody>';
 
-  let totals = {prior:0, ytd:0, ytdBudget:0, budget:0};
+  let totals = {ytd:0, budget:0};
   sheetLines.forEach(l => {
-    const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
-    const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
-    const variance = budget - prior;
-    totals.prior += prior; totals.ytd += ytd; totals.ytdBudget += ytdBudget; totals.budget += budget;
+    const variance = budget - ytd;
+    totals.ytd += ytd; totals.budget += budget;
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
 
     html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
       '<td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + '</td>' +
       '<td style="padding:6px 8px;">' + l.description + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td></tr>';
   });
 
-  const totalVar = totals.budget - totals.prior;
+  const totalVar = totals.budget - totals.ytd;
   html += '<tr style="font-weight:700; background:var(--gray-100);"><td style="padding:8px;" colspan="2">Sheet Total</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytdBudget) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.budget) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td></tr>';
   html += '</tbody></table>';
@@ -3743,9 +3725,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
-    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
+    '<th class="num">YTD Actual</th>' +
     '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
-    '<th class="num">YTD Budget</th>' +
     '<th class="num">' + estLbl + ' Est</th><th class="num">12 Mo Forecast</th>' +
     '<th class="num">Curr Budget</th><th class="num">Inc %</th>' +
     '<th class="num">Proposed</th><th class="num">$ Var</th><th class="num">% Chg</th>' +
@@ -3755,18 +3736,16 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   function buildLineRow(l) {
     const gl = l.gl_code;
-    const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
     const accrual = l.accrual_adj || 0;
     const unpaid = l.unpaid_bills || 0;
-    const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
-    const isZero = !prior && !ytd && !accrual && !unpaid && !ytdBudget && !budget && !(l.increase_pct);
+    const isZero = !ytd && !accrual && !unpaid && !budget && !(l.increase_pct);
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const variance = proposed - prior;
-    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const variance = proposed - budget;
+    const pctChange = budget ? (proposed / budget - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
@@ -3803,11 +3782,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
-      '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
-      '<td class="num">' + $cell('ytdb_'+gl, 'ytd_budget', ytdBudget) + '</td>' +
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
@@ -3818,13 +3795,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function sumLines(lines) {
-    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
     lines.forEach(l => {
-      t.prior += l.prior_year || 0;
       t.ytd += l.ytd_actual || 0;
       t.accrual += l.accrual_adj || 0;
       t.unpaid += l.unpaid_bills || 0;
-      t.ytdBudget += l.ytd_budget || 0;
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
       t.budget += l.current_budget || 0;
@@ -3834,16 +3809,14 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function subtotalRow(label, t, cls, rowId) {
-    const v = t.proposed - t.prior;
-    const p = t.prior ? (t.proposed/t.prior-1) : 0;
+    const v = t.proposed - t.budget;
+    const p = t.budget ? (t.proposed/t.budget-1) : 0;
     const rid = rowId ? ' id="' + rowId + '"' : '';
     return '<tr class="' + (cls||'sub-row') + '"' + rid + '>' +
       '<td colspan="3">' + label + '</td>' +
-      '<td class="num">' + fmt(t.prior) + '</td>' +
       '<td class="num">' + fmt(t.ytd) + '</td>' +
       '<td class="num">' + fmt(t.accrual || 0) + '</td>' +
       '<td class="num">' + fmt(t.unpaid || 0) + '</td>' +
-      '<td class="num">' + fmt(t.ytdBudget) + '</td>' +
       '<td class="num">' + fmt(t.estimate) + '</td>' +
       '<td class="num">' + fmt(t.forecast) + '</td>' +
       '<td class="num">' + fmt(t.budget) + '</td>' +
@@ -4430,11 +4403,9 @@ PM_EDIT_TEMPLATE = r"""
             <th>GL Code</th>
             <th>Description</th>
             <th>Notes</th>
-            <th class="number">Prior Year<br>Actual</th>
             <th class="number">YTD<br>Actual</th>
             <th class="number">Accrual<br>Adj</th>
             <th class="number">Unpaid<br>Bills</th>
-            <th class="number">YTD<br>Budget</th>
             <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">Current<br>Budget</th>
@@ -4516,8 +4487,8 @@ function renderTable() {
         if (categories[l.category]) categories[l.category].push(l);
     });
 
-    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
-    const NC = 15;
+    let grandTotals = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const NC = 13;
 
     for (const [cat, catLines] of Object.entries(categories)) {
         if (catLines.length === 0) continue;
@@ -4527,18 +4498,18 @@ function renderTable() {
         headerRow.innerHTML = '<td colspan="' + NC + '">' + catLabels[cat] + '</td>';
         tbody.appendChild(headerRow);
 
-        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+        let catTotals = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
 
         catLines.forEach(line => {
             const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            const variance = proposed - (line.prior_year || 0);
-            const pctChange = (line.prior_year || 0) ? (proposed / (line.prior_year) - 1) : 0;
+            const variance = proposed - (line.current_budget || 0);
+            const pctChange = (line.current_budget || 0) ? (proposed / (line.current_budget) - 1) : 0;
 
-            catTotals.prior += (line.prior_year || 0);
             catTotals.ytd += (line.ytd_actual || 0);
-            catTotals.ytdBudget += (line.ytd_budget || 0);
+            catTotals.accrual += (line.accrual_adj || 0);
+            catTotals.unpaid += (line.unpaid_bills || 0);
             catTotals.estimate += estimate;
             catTotals.forecast += forecast;
             catTotals.budget += (line.current_budget || 0);
@@ -4546,18 +4517,16 @@ function renderTable() {
 
             const reclassBadge = line.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">Reclass</span>' : '';
 
-            const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.ytd_budget || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
+            const isZero = !(line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
             tr.innerHTML = `
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
-                <td class="number">${fmt(line.prior_year)}</td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
                 <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number">${fmt(line.ytd_budget)}</td>
                 <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
                 <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
                 <td class="number">${fmt(line.current_budget)}</td>
@@ -4570,15 +4539,14 @@ function renderTable() {
         });
 
         // Subtotal
-        const catVar = catTotals.proposed - catTotals.prior;
+        const catVar = catTotals.proposed - catTotals.budget;
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
             <td></td><td>Total ${catLabels[cat]}</td><td></td>
-            <td class="number">${fmt(catTotals.prior)}</td>
             <td class="number">${fmt(catTotals.ytd)}</td>
-            <td></td><td></td>
-            <td class="number">${fmt(catTotals.ytdBudget)}</td>
+            <td class="number"><input type="number" step="1" value="${Math.round(catTotals.accrual || 0)}" disabled></td>
+            <td class="number"><input type="number" step="1" value="${Math.round(catTotals.unpaid || 0)}" disabled></td>
             <td class="number">${fmt(catTotals.estimate)}</td>
             <td class="number">${fmt(catTotals.forecast)}</td>
             <td class="number">${fmt(catTotals.budget)}</td>
@@ -4589,20 +4557,19 @@ function renderTable() {
         `;
         tbody.appendChild(subRow);
 
-        Object.keys(grandTotals).forEach(k => grandTotals[k] += catTotals[k]);
+        Object.keys(grandTotals).forEach(k => { if (k in catTotals) grandTotals[k] += catTotals[k]; });
     }
 
     // Grand total
-    const grandVar = grandTotals.proposed - grandTotals.prior;
-    const grandPct = grandTotals.prior ? (grandTotals.proposed / grandTotals.prior - 1) : 0;
+    const grandVar = grandTotals.proposed - grandTotals.budget;
+    const grandPct = grandTotals.budget ? (grandTotals.proposed / grandTotals.budget - 1) : 0;
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
         <td></td><td>GRAND TOTAL R&M</td><td></td>
-        <td class="number">${fmt(grandTotals.prior)}</td>
         <td class="number">${fmt(grandTotals.ytd)}</td>
-        <td></td><td></td>
-        <td class="number">${fmt(grandTotals.ytdBudget)}</td>
+        <td class="number"><input type="number" step="1" value="${Math.round(grandTotals.accrual || 0)}" disabled></td>
+        <td class="number"><input type="number" step="1" value="${Math.round(grandTotals.unpaid || 0)}" disabled></td>
         <td class="number">${fmt(grandTotals.estimate)}</td>
         <td class="number">${fmt(grandTotals.forecast)}</td>
         <td class="number">${fmt(grandTotals.budget)}</td>
@@ -4836,8 +4803,8 @@ function onInput(el) {
     const est = computeEstimate(line);
     const fc = computeForecast(line);
     const pb = computeProposed(line);
-    const variance = pb - (line.prior_year || 0);
-    const pctChange = (line.prior_year || 0) ? (pb / line.prior_year - 1) : 0;
+    const variance = pb - (line.current_budget || 0);
+    const pctChange = (line.current_budget || 0) ? (pb / line.current_budget - 1) : 0;
 
     const estEl = document.getElementById('est_' + gl);
     const fcEl = document.getElementById('fc_' + gl);
@@ -5097,9 +5064,8 @@ const CATEGORIES = {
 };
 
 function sumLines(lines) {
-  const t = {prior:0, forecast:0, proposed:0, budget:0};
+  const t = {forecast:0, proposed:0, budget:0};
   lines.forEach(l => {
-    t.prior += l.prior_year || 0;
     t.forecast += computeForecast(l);
     t.budget += l.current_budget || 0;
     t.proposed += l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
@@ -5117,20 +5083,20 @@ function renderSummary() {
   const inc = sumLines(incomeLines);
   const exp = sumLines(expenseLines);
   const noiProposed = inc.proposed - exp.proposed;
-  const noiPrior = inc.prior - exp.prior;
+  const noiBudget = inc.budget - exp.budget;
 
   let html = '<div class="summary-cards">' +
     '<div class="card"><div class="label">Total Income</div><div class="value">' + fmt(inc.proposed) + '</div>' +
-    '<div class="delta ' + (inc.proposed >= inc.prior ? 'delta-down' : 'delta-up') + '">' + (inc.prior ? ((inc.proposed/inc.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
+    '<div class="delta ' + (inc.proposed >= inc.budget ? 'delta-down' : 'delta-up') + '">' + (inc.budget ? ((inc.proposed/inc.budget-1)*100).toFixed(1) + '% vs budget' : '') + '</div></div>' +
     '<div class="card"><div class="label">Total Expenses</div><div class="value">' + fmt(exp.proposed) + '</div>' +
-    '<div class="delta ' + (exp.proposed <= exp.prior ? 'delta-down' : 'delta-up') + '">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
+    '<div class="delta ' + (exp.proposed <= exp.budget ? 'delta-down' : 'delta-up') + '">' + (exp.budget ? ((exp.proposed/exp.budget-1)*100).toFixed(1) + '% vs budget' : '') + '</div></div>' +
     '<div class="card"><div class="label">Net Operating Income</div><div class="value">' + fmt(noiProposed) + '</div>' +
-    '<div class="delta ' + (noiProposed >= noiPrior ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiPrior) + ' vs prior</div></div>' +
+    '<div class="delta ' + (noiProposed >= noiBudget ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiBudget) + ' vs budget</div></div>' +
     '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '—') + '</div>' +
     '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
 
   // Summary table by sheet
-  html += '<table><thead><tr><th>Category</th><th class="num">Prior Year</th><th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>Category</th><th class="num">Proposed Budget</th></tr></thead><tbody>';
   SHEET_ORDER.forEach(s => {
     const cats = CATEGORIES[s];
     if (cats) {
@@ -5139,35 +5105,19 @@ function renderSummary() {
         const gl = sheetLines.filter(cat.match);
         if (gl.length === 0) return;
         const t = sumLines(gl);
-        const v = t.proposed - t.prior;
-        const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
-        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
-          '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-          '<td class="num">' + p.toFixed(1) + '%</td></tr>';
+        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.proposed) + '</td></tr>';
       });
       const st = sumLines(SHEETS[s] || []);
-      const sv = st.proposed - st.prior;
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.prior) + '</td><td class="num">' + fmt(st.proposed) + '</td>' +
-        '<td class="num ' + (sv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(sv) + '</td>' +
-        '<td class="num">' + (st.prior ? ((st.proposed/st.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.proposed) + '</td></tr>';
     } else {
       const t = sumLines(SHEETS[s] || []);
-      const v = t.proposed - t.prior;
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
-        '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-        '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.proposed) + '</td></tr>';
     }
   });
   // Total row
-  const totalV = exp.proposed - exp.prior;
-  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.prior) + '</td><td class="num">' + fmt(exp.proposed) + '</td>' +
-    '<td class="num ' + (totalV >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(totalV) + '</td>' +
-    '<td class="num">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.proposed) + '</td></tr>';
   // NOI
-  const noiV = noiProposed - noiPrior;
-  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiPrior) + '</td><td class="num">' + fmt(noiProposed) + '</td>' +
-    '<td class="num ' + (noiV >= 0 ? 'variance-neg' : 'variance-pos') + '">' + fmt(noiV) + '</td>' +
-    '<td class="num">' + (noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiProposed) + '</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }
@@ -5179,22 +5129,23 @@ function renderSheet(sheetName) {
 
   let html = '<table><thead><tr>' +
     '<th>GL Code</th><th>Description</th>' +
-    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
+    '<th class="num">YTD Actual</th>' +
     '<th class="num">' + estLabel + ' Est</th><th class="num">12 Mo Forecast</th>' +
-    '<th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
+    '<th class="num">Current Budget</th><th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
     '</tr></thead><tbody>';
 
   const cats = CATEGORIES[sheetName];
 
   function buildRow(l) {
-    const prior = l.prior_year || 0;
+    const budget = l.current_budget || 0;
     const forecast = computeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const v = proposed - prior;
-    const p = prior ? (proposed/prior-1)*100 : 0;
+    const v = proposed - budget;
+    const p = budget ? (proposed/budget-1)*100 : 0;
     return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
-      '<td class="num">' + fmt(prior) + '</td><td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
+      '<td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
       '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
+      '<td class="num">' + fmt(budget) + '</td>' +
       '<td class="num" style="font-weight:600;">' + fmt(proposed) + '</td>' +
       '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
       '<td class="num">' + p.toFixed(1) + '%</td></tr>';
@@ -5202,11 +5153,11 @@ function renderSheet(sheetName) {
 
   function buildSubtotal(label, ls) {
     const t = sumLines(ls);
-    const v = t.proposed - t.prior;
+    const v = t.proposed - t.budget;
     return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
-      '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-      '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+      '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+      '<td class="num">' + (t.budget ? ((t.proposed/t.budget-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   }
 
   if (cats) {
@@ -5223,11 +5174,11 @@ function renderSheet(sheetName) {
 
   // Sheet total
   const t = sumLines(lines);
-  const tv = t.proposed - t.prior;
+  const tv = t.proposed - t.budget;
   html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
-    '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-    '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
-    '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+    '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
+    '<td class="num">' + (t.budget ? ((t.proposed/t.budget-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }

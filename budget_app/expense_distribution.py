@@ -326,16 +326,25 @@ def create_expense_distribution_blueprint(db, workflow_models):
         if not file.filename.endswith(".xlsx"):
             return jsonify({"error": "File must be .xlsx"}), 400
 
+        # Allow caller to override entity code (Yardi sometimes embeds wrong entity)
+        override_entity = request.form.get("entity_code", "").strip()
+
         import tempfile, os
         tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
         file.save(tmp.name)
         tmp.close()
 
         try:
-            entity_code, period_from, period_to, invoices = parse_expense_distribution(tmp.name)
+            file_entity, period_from, period_to, invoices = parse_expense_distribution(tmp.name)
+
+            # Use override entity if provided, otherwise fall back to file contents
+            entity_code = override_entity or file_entity
 
             if not entity_code:
                 return jsonify({"error": "Could not detect entity code from report"}), 400
+
+            if override_entity and file_entity and override_entity != file_entity:
+                logger.warning(f"Entity override: file contains {file_entity}, storing under {override_entity}")
 
             report = store_expense_report(
                 entity_code, period_from, period_to, invoices, file.filename
@@ -718,6 +727,7 @@ async function uploadFile() {
   status.textContent = 'Uploading...';
   const form = new FormData();
   form.append('file', fileInput.files[0]);
+  form.append('entity_code', ENTITY);
 
   try {
     const resp = await fetch('/api/expense-dist/upload', { method: 'POST', body: form });
