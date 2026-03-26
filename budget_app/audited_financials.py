@@ -482,11 +482,17 @@ Be precise with numbers. Include all line items found.
         th { background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
         td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 14px; }
         tr:hover { background: var(--gray-50); }
-        .status-pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-        .status-uploaded { background: #fef3c7; color: #92400e; }
-        .status-extracted { background: #dbeafe; color: #1e40af; }
-        .status-mapped { background: #d1fae5; color: #065f46; }
-        .status-confirmed { background: #c7d2fe; color: #3730a3; }
+        .status-tracker { display: flex; align-items: center; gap: 0; font-size: 11px; white-space: nowrap; }
+        .status-step { display: flex; align-items: center; gap: 3px; padding: 2px 6px; color: var(--gray-400); }
+        .status-step.done { color: #059669; }
+        .status-step.done .step-dot { background: #059669; border-color: #059669; color: white; }
+        .status-step.current { color: #1e40af; font-weight: 700; }
+        .status-step.current .step-dot { background: #3b82f6; border-color: #3b82f6; color: white; animation: pulse-dot 2s infinite; }
+        .status-step.future { color: var(--gray-300); }
+        .status-step.future .step-dot { background: white; border-color: var(--gray-300); }
+        .step-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; flex-shrink: 0; }
+        .step-arrow { color: var(--gray-300); font-size: 10px; }
+        @keyframes pulse-dot { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); } 50% { box-shadow: 0 0 0 4px rgba(59,130,246,0); } }
         .alert { padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
         .alert-info { background: #fef3c7; color: #92400e; }
         .alert-success { background: var(--green-light); color: #065f46; }
@@ -644,16 +650,39 @@ Be precise with numbers. Include all line items found.
         ])
 
         # Build uploads table
+        status_order = ["uploaded", "extracted", "mapped", "confirmed"]
+        status_labels = {"uploaded": "Uploaded", "extracted": "Extracted", "mapped": "Mapped", "confirmed": "Confirmed"}
+
+        def build_status_tracker(current_status):
+            idx = status_order.index(current_status) if current_status in status_order else 0
+            steps = []
+            for i, s in enumerate(status_order):
+                if i < idx:
+                    cls = "done"
+                    dot = "&#10003;"
+                elif i == idx:
+                    cls = "current"
+                    dot = str(i + 1)
+                else:
+                    cls = "future"
+                    dot = str(i + 1)
+                steps.append(f'<span class="status-step {cls}"><span class="step-dot">{dot}</span>{status_labels[s]}</span>')
+                if i < len(status_order) - 1:
+                    arrow_color = "#059669" if i < idx else "var(--gray-300)"
+                    steps.append(f'<span class="step-arrow" style="color:{arrow_color};">›</span>')
+            return '<div class="status-tracker">' + ''.join(steps) + '</div>'
+
         rows = []
         for u in uploads:
             delete_btn = f'<button class="btn-small btn-delete" onclick="deleteUpload({u.id})">Delete</button>'
+            tracker = build_status_tracker(u.status)
             rows.append(f"""
                 <tr id="upload-row-{u.id}">
                     <td style="font-weight:600;">{u.entity_code}</td>
                     <td>{u.building_name}</td>
                     <td>{u.profile.name if u.profile else "—"}</td>
                     <td>{u.fiscal_year_end}</td>
-                    <td><span class="status-pill status-{u.status}">{u.status.title()}</span></td>
+                    <td>{tracker}</td>
                     <td style="white-space:nowrap;">
                         <button class="btn-small" onclick="reviewUpload({u.id})">Review</button>
                         {delete_btn}
