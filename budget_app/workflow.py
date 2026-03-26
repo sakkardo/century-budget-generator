@@ -782,6 +782,7 @@ def create_workflow_blueprint(db):
             lines_json=json_mod.dumps(lines_data),
             ytd_months=_ytd_months,
             remaining_months=_remaining_months,
+            estimate_label=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][_ytd_months] + '-Dec' if _ytd_months < 12 else 'Estimate',
         )
 
 
@@ -2427,6 +2428,12 @@ let allSheets = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
 let REMAINING_MONTHS = 10;  // updated from API response
 
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function estimateLabel() {
+  // e.g. YTD_MONTHS=2 → "Mar-Dec Estimate", YTD_MONTHS=6 → "Jul-Dec Estimate"
+  return MONTH_ABBR[YTD_MONTHS] + '-Dec';
+}
+
 function showToast(msg, type='info') {
   const c = document.getElementById('toastContainer');
   const t = document.createElement('div');
@@ -3064,7 +3071,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<th style="' + thStyle + '">Accrual<br>Adj</th>' +
     '<th style="' + thStyle + '">Unpaid<br>Bills</th>' +
     '<th style="' + thStyle + '">YTD<br>Budget</th>' +
-    '<th style="' + thStyle + '">Sep-Dec<br>Estimate</th>' +
+    '<th style="' + thStyle + '">' + estimateLabel() + '<br>Estimate</th>' +
     '<th style="' + thStyle + '">12 Month<br>Forecast</th>' +
     '<th style="' + thStyle + '">Current<br>Budget</th>' +
     '<th style="' + thStyle + '">Increase<br>%</th>' +
@@ -3734,7 +3741,7 @@ PM_EDIT_TEMPLATE = """
             <th class="number">Accrual<br>Adj</th>
             <th class="number">Unpaid<br>Bills</th>
             <th class="number">YTD<br>Budget</th>
-            <th class="number">Sep-Dec<br>Estimate</th>
+            <th class="number">{{ estimate_label }}<br>Estimate</th>
             <th class="number">12 Month<br>Forecast</th>
             <th class="number">Current<br>Budget</th>
             <th class="number">Increase<br>%</th>
