@@ -3060,23 +3060,35 @@ async function renderHistoryTab(contentDiv) {
 // Toggle formula visibility on computed cells
 function toggleFormula(el) {
   const cell = el.closest('td');
-  const ftxt = cell.querySelector('.formula-text');
-  if (ftxt) ftxt.style.display = ftxt.style.display === 'none' ? 'block' : 'none';
+  const ftxt = cell.querySelector('.fa-formula');
+  if (ftxt) ftxt.classList.toggle('visible');
 }
 
 // Show all formulas at once (toggle)
 let _formulasVisible = false;
 function toggleAllFormulas() {
   _formulasVisible = !_formulasVisible;
-  document.querySelectorAll('.formula-text').forEach(el => {
-    el.style.display = _formulasVisible ? 'block' : 'none';
+  document.querySelectorAll('.fa-formula').forEach(el => {
+    el.classList.toggle('visible', _formulasVisible);
   });
 }
 
 // When an input field changes, recalculate computed cells in that row and save
 function faLineChanged(gl, field, value) {
-  // Save to server
-  faAutoSave(gl, field, value);
+  // Map field names for saving — estimate_override/forecast_override don't exist on the model,
+  // so if user edits estimate or forecast directly, save as proposed_budget override
+  let saveField = field;
+  if (field === 'estimate_override' || field === 'forecast_override') {
+    // User manually typed in a computed cell — don't save these fields directly,
+    // they're just local overrides. Only recalculate and save proposed.
+    saveField = null;
+  } else if (field === 'increase_pct') {
+    // increase_pct input is in % form (e.g., 3.5), need to save as decimal (0.035)
+    faAutoSave(gl, 'increase_pct', parseFloat(value) / 100);
+    saveField = null;
+  }
+
+  if (saveField) faAutoSave(gl, saveField, value);
 
   // Find the row and read current input values
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
@@ -3092,27 +3104,40 @@ function faLineChanged(gl, field, value) {
   const accrual = getVal('acc_' + gl);
   const unpaid = getVal('unp_' + gl);
   const incInput = getVal('inc_' + gl);
-  const incPct = incInput / 100; // input is in % form
+  const incPct = incInput / 100;
 
-  // Recompute
-  const base = ytd + accrual + unpaid;
-  let estimate;
-  if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
-    estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+  // If user directly edited estimate or forecast, use their value; otherwise recalculate
+  let estimate, forecast;
+  if (field === 'estimate_override') {
+    estimate = parseFloat(value) || 0;
+    forecast = ytd + accrual + unpaid + estimate;
+  } else if (field === 'forecast_override') {
+    forecast = parseFloat(value) || 0;
+    estimate = forecast - (ytd + accrual + unpaid);
   } else {
-    estimate = Math.max(prior - base, 0);
+    const base = ytd + accrual + unpaid;
+    if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+      estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+    } else {
+      estimate = Math.max(prior - base, 0);
+    }
+    forecast = ytd + accrual + unpaid + estimate;
   }
-  const forecast = base + estimate;
+
   const proposed = forecast * (1 + incPct);
 
-  // Update computed display cells
-  const setCell = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = fmt(val); };
-  setCell('est_' + gl, estimate);
-  setCell('fcst_' + gl, forecast);
+  // Update estimate and forecast inputs (they're now <input> not <span>)
+  const estEl = document.getElementById('est_' + gl);
+  if (estEl && field !== 'estimate_override') estEl.value = Math.round(estimate);
+  const fcstEl = document.getElementById('fcst_' + gl);
+  if (fcstEl && field !== 'forecast_override') fcstEl.value = Math.round(forecast);
 
   // Update proposed input
   const propEl = document.getElementById('prop_' + gl);
-  if (propEl) propEl.value = Math.round(proposed);
+  if (propEl && field !== 'proposed_budget') propEl.value = Math.round(proposed);
+
+  // Always save the final proposed value
+  faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
   // Update variance and % change
   const variance = proposed - prior;
@@ -3373,65 +3398,66 @@ function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
 }
 
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
-  const thStyle = 'text-align:right; padding:8px; white-space:nowrap;';
-  const inputStyle = 'text-align:right; border:1px solid var(--gray-200); border-radius:4px; padding:4px; font-size:12px;';
-  // Cell background colors: system-imported=light blue, formula-computed=light green, FA-editable=white
-  const sysBg = '#eff6ff';  // light blue — data from Yardi
-  const formulaBg = '#f0fdf4';  // light green — computed
-  const faBg = '#ffffff';  // white — FA editable
+  const NC = 15;
+  const estLbl = estimateLabel();
 
-  // Legend with formula toggle
-  let html = '<div style="display:flex; gap:16px; margin-bottom:8px; font-size:11px; color:var(--gray-500); align-items:center;">' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + sysBg + ';border:1px solid #bfdbfe;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Yardi Data (editable)</span>' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + formulaBg + ';border:1px solid #bbf7d0;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Calculated (click <b>fx</b> for formula)</span>' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + faBg + ';border:1px solid #e5e7eb;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>FA Override</span>' +
-    '<span style="margin-left:auto;"><button onclick="toggleAllFormulas()" style="font-size:11px; padding:3px 10px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">fx Show All Formulas</button></span>' +
-    '</div>';
+  // Inject PM-style CSS if not already present
+  if (!document.getElementById('faSheetStyle')) {
+    const style = document.createElement('style');
+    style.id = 'faSheetStyle';
+    style.textContent = `
+      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
+      .fa-grid-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }
+      .fa-grid table { width:100%; border-collapse:collapse; font-size:13px; }
+      .fa-grid thead { background:var(--gray-100); position:sticky; top:0; z-index:10; }
+      .fa-grid th { padding:10px 12px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); }
+      .fa-grid th.num { text-align:right; }
+      .fa-grid td { padding:8px 12px; border-bottom:1px solid var(--gray-200); }
+      .fa-grid td.num { text-align:right; font-variant-numeric:tabular-nums; }
+      .fa-grid tbody tr:hover { background:#eef2ff; }
+      .fa-grid .cat-hdr td { background:var(--blue-light, #e1effe); font-weight:700; color:var(--blue, #1a56db); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #1a56db); }
+      .fa-grid .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }
+      .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
+      .fa-grid input[type="number"], .fa-grid input[type="text"] { width:100%; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; background:#fffff0; }
+      .fa-grid input[type="number"] { text-align:right; width:90px; }
+      .fa-grid input[type="text"] { min-width:100px; }
+      .fa-grid input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
+      .fa-formula { display:none; font-size:10px; color:var(--gray-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px; margin-top:1px; }
+      .fa-formula.visible { display:block; }
+      .fa-fx { cursor:pointer; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; margin-right:4px; vertical-align:middle; user-select:none; }
+      .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
+      .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
+      .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
+    `;
+    document.head.appendChild(style);
+  }
 
-  html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
-    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-    '<th style="text-align:left; padding:8px;">GL Code</th>' +
-    '<th style="text-align:left; padding:8px;">Description</th>' +
-    '<th style="text-align:left; padding:8px;">Notes</th>' +
-    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
-    '<th style="' + thStyle + '">YTD<br>Actual</th>' +
-    '<th style="' + thStyle + '">Accrual<br>Adj</th>' +
-    '<th style="' + thStyle + '">Unpaid<br>Bills</th>' +
-    '<th style="' + thStyle + '">YTD<br>Budget</th>' +
-    '<th style="' + thStyle + '">' + estimateLabel() + '<br>Estimate</th>' +
-    '<th style="' + thStyle + '">12 Month<br>Forecast</th>' +
-    '<th style="' + thStyle + '">Current<br>Budget</th>' +
-    '<th style="' + thStyle + '">Increase<br>%</th>' +
-    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
-    '<th style="' + thStyle + '">$<br>Variance</th>' +
-    '<th style="' + thStyle + '">%<br>Change</th>' +
+  let html = '<div class="fa-controls"><div class="fa-legend">' +
+    '<span><span class="fa-legend-dot" style="background:#fffff0;"></span>Editable</span>' +
+    '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated</span>' +
+    '<span>Click <span class="fa-fx">fx</span> to see formula</span>' +
+    '</div><button onclick="toggleAllFormulas()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">Show All Formulas</button></div>';
+
+  html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
+    '<th>GL Code</th><th>Description</th><th>Notes</th>' +
+    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
+    '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
+    '<th class="num">YTD Budget</th>' +
+    '<th class="num">' + estLbl + ' Est</th><th class="num">12 Mo Forecast</th>' +
+    '<th class="num">Curr Budget</th><th class="num">Inc %</th>' +
+    '<th class="num">Proposed</th><th class="num">$ Var</th><th class="num">% Chg</th>' +
     '</tr></thead><tbody>';
 
   const catConfig = SHEET_CATEGORIES[sheetName];
-
-  // Build an editable input cell
-  function inp(gl, field, val, opts) {
-    const w = opts.w || '80px';
-    const step = opts.step || '1';
-    const bg = opts.bg || faBg;
-    const extra = opts.extra || '';
-    const id = opts.id || '';
-    const idAttr = id ? ' id="' + id + '"' : '';
-    const type = opts.type || 'number';
-    if (type === 'text') {
-      return '<input' + idAttr + ' type="text" value="' + String(val || '').replace(/"/g, '&quot;') + '" style="width:' + w + '; ' + inputStyle + ' background:' + bg + ';" onchange="faAutoSave(\'' + gl + '\', \'' + field + '\', this.value)" ' + extra + '>';
-    }
-    return '<input' + idAttr + ' type="number" step="' + step + '" value="' + Math.round(val) + '" style="width:' + w + '; ' + inputStyle + ' background:' + bg + ';" onchange="faLineChanged(\'' + gl + '\', \'' + field + '\', this.value)" ' + extra + '>';
-  }
 
   function buildLineRow(l) {
     const gl = l.gl_code;
     const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
-    const ytdBudget = l.ytd_budget || 0;
-    const budget = l.current_budget || 0;
     const accrual = l.accrual_adj || 0;
     const unpaid = l.unpaid_bills || 0;
+    const ytdBudget = l.ytd_budget || 0;
+    const budget = l.current_budget || 0;
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
@@ -3439,43 +3465,40 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const pctChange = prior ? (proposed / prior - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
-    const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
+    const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
 
-    // Formula descriptions
     const estFormula = faGetFormulaTooltip(l, 'estimate');
     const fcstFormula = faGetFormulaTooltip(l, 'forecast');
     const propFormula = faGetFormulaTooltip(l, 'proposed');
 
-    // Computed cell with visible formula toggle
-    function computedCell(id, val, formula, bg) {
-      return '<td style="text-align:right; padding:4px 8px; background:' + bg + '; position:relative;">' +
-        '<div style="display:flex; align-items:center; justify-content:flex-end; gap:4px;">' +
-          '<span class="formula-toggle" onclick="toggleFormula(this)" style="cursor:pointer; font-size:10px; color:var(--blue); opacity:0.6;" title="Show formula">fx</span>' +
-          '<span id="' + id + '">' + fmt(val) + '</span>' +
-        '</div>' +
-        '<div class="formula-text" style="display:none; font-size:10px; color:var(--gray-400); margin-top:2px; text-align:right; word-break:break-all;">' + formula + '</div>' +
-      '</td>';
+    // Each number cell is an input. Estimate/Forecast have formula indicators + editable override.
+    function numInput(id, field, val, w) {
+      return '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + ';" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">';
+    }
+    function fxCell(id, field, val, formula, w) {
+      return '<td class="num"><span class="fa-fx" onclick="toggleFormula(this)" title="' + formula.replace(/"/g, '&quot;') + '">fx</span>' +
+        '<input id="' + id + '" type="number" step="1" value="' + Math.round(val) + '" style="width:' + (w||'90px') + '; background:#f0fdf4;" onchange="faLineChanged(\'' + gl + '\',\'' + field + '\',this.value)">' +
+        '<div class="fa-formula">' + formula + '</div></td>';
     }
 
-    return '<tr style="border-bottom:1px solid var(--gray-100);" data-gl="' + gl + '">' +
-      '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + gl + reclassBadge + '</td>' +
-      '<td style="padding:6px 8px; font-size:12px;">' + l.description + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'notes', l.notes, {type:'text', w:'100px'}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'prior_year', prior, {w:'80px', bg:sysBg, id:'pr_'+gl}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'ytd_actual', ytd, {w:'80px', bg:sysBg, id:'ytd_'+gl}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'accrual_adj', accrual, {w:'70px', id:'acc_'+gl}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'unpaid_bills', unpaid, {w:'70px', id:'unp_'+gl}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'ytd_budget', ytdBudget, {w:'80px', bg:sysBg, id:'ytdb_'+gl}) + '</td>' +
-      computedCell('est_'+gl, estimate, estFormula, formulaBg) +
-      computedCell('fcst_'+gl, forecast, fcstFormula, formulaBg) +
-      '<td style="padding:4px 6px;">' + inp(gl, 'current_budget', budget, {w:'80px', bg:sysBg, id:'bud_'+gl}) + '</td>' +
-      '<td style="padding:4px 6px;">' + inp(gl, 'increase_pct', incPct, {w:'55px', step:'0.1', id:'inc_'+gl, extra:'data-pct="true"'}) + '</td>' +
-      '<td style="padding:4px 6px; position:relative;">' +
-        inp(gl, 'proposed_budget', proposed, {w:'85px', id:'prop_'+gl}) +
-        '<div class="formula-text" style="display:none; font-size:10px; color:var(--gray-400); margin-top:2px;">' + propFormula + '</div>' +
-      '</td>' +
-      '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';" id="var_'+gl+'">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;" id="pct_'+gl+'">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
+    return '<tr data-gl="' + gl + '">' +
+      '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
+      '<td style="font-size:12px;">' + l.description + '</td>' +
+      '<td><input type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+      '<td class="num">' + numInput('pr_'+gl, 'prior_year', prior, '85px') + '</td>' +
+      '<td class="num">' + numInput('ytd_'+gl, 'ytd_actual', ytd, '85px') + '</td>' +
+      '<td class="num">' + numInput('acc_'+gl, 'accrual_adj', accrual, '80px') + '</td>' +
+      '<td class="num">' + numInput('unp_'+gl, 'unpaid_bills', unpaid, '80px') + '</td>' +
+      '<td class="num">' + numInput('ytdb_'+gl, 'ytd_budget', ytdBudget, '85px') + '</td>' +
+      fxCell('est_'+gl, 'estimate_override', estimate, estFormula, '90px') +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, '90px') +
+      '<td class="num">' + numInput('bud_'+gl, 'current_budget', budget, '85px') + '</td>' +
+      '<td class="num"><input id="inc_'+gl+'" type="number" step="0.1" value="'+incPct+'" style="width:65px;" onchange="faLineChanged(\''+gl+'\',\'increase_pct\',this.value)"></td>' +
+      '<td class="num"><span class="fa-fx" onclick="toggleFormula(this)" title="' + propFormula.replace(/"/g,'&quot;') + '">fx</span>' +
+        numInput('prop_'+gl, 'proposed_budget', proposed, '90px') +
+        '<div class="fa-formula">' + propFormula + '</div></td>' +
+      '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
+      '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }
 
   function sumLines(lines) {
@@ -3487,76 +3510,50 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
       t.budget += l.current_budget || 0;
-      const forecast = faComputeForecast(l);
-      t.proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+      t.proposed += l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0)));
     });
     return t;
   }
 
-  function buildSubtotalRow(label, t) {
+  function subtotalRow(label, t, cls) {
     const v = t.proposed - t.prior;
-    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
-    return '<tr style="font-weight:600; background:#f8fafc; border-top:1px solid var(--gray-200); border-bottom:1px solid var(--gray-200);">' +
-      '<td style="padding:8px;" colspan="2">' + label + '</td><td></td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.prior) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.ytd) + '</td>' +
-      '<td></td><td></td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.ytdBudget) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.estimate) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.forecast) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.budget) + '</td>' +
-      '<td></td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(t.proposed) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + fmt(v) + '</td>' +
-      '<td style="text-align:right; padding:8px;">' + (p * 100).toFixed(1) + '%</td></tr>';
+    const p = t.prior ? (t.proposed/t.prior-1) : 0;
+    return '<tr class="' + (cls||'sub-row') + '">' +
+      '<td colspan="3">' + label + '</td>' +
+      '<td class="num">' + fmt(t.prior) + '</td>' +
+      '<td class="num">' + fmt(t.ytd) + '</td>' +
+      '<td class="num"></td><td class="num"></td>' +
+      '<td class="num">' + fmt(t.ytdBudget) + '</td>' +
+      '<td class="num">' + fmt(t.estimate) + '</td>' +
+      '<td class="num">' + fmt(t.forecast) + '</td>' +
+      '<td class="num">' + fmt(t.budget) + '</td>' +
+      '<td class="num"></td>' +
+      '<td class="num">' + fmt(t.proposed) + '</td>' +
+      '<td class="num" style="color:' + (v>=0?'var(--red)':'var(--green)') + ';">' + fmt(v) + '</td>' +
+      '<td class="num">' + (p*100).toFixed(1) + '%</td></tr>';
   }
 
   if (catConfig) {
-    // Render with category groupings and subtotals
     catConfig.groups.forEach(grp => {
-      const groupLines = sheetLines.filter(grp.match);
-      if (groupLines.length === 0) return;
-
-      // Category header
-      html += '<tr><td colspan="15" style="padding:10px 8px 4px; font-weight:700; color:var(--primary); font-size:14px; border-bottom:2px solid var(--primary);">' + grp.label + '</td></tr>';
-
-      groupLines.forEach(l => { html += buildLineRow(l); });
-
-      // Category subtotal
-      const t = sumLines(groupLines);
-      html += buildSubtotalRow('Total ' + grp.label, t);
+      const gl = sheetLines.filter(grp.match);
+      if (gl.length === 0) return;
+      html += '<tr class="cat-hdr"><td colspan="' + NC + '">' + grp.label + '</td></tr>';
+      gl.forEach(l => { html += buildLineRow(l); });
+      html += subtotalRow('Total ' + grp.label, sumLines(gl));
     });
-
-    // Render any lines that didn't match a category
     const allGrouped = catConfig.groups.flatMap(g => sheetLines.filter(g.match));
     const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
     if (ungrouped.length > 0) {
-      html += '<tr><td colspan="15" style="padding:10px 8px 4px; font-weight:700; color:var(--gray-500); font-size:14px; border-bottom:2px solid var(--gray-300);">Other</td></tr>';
+      html += '<tr class="cat-hdr"><td colspan="' + NC + '" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td></tr>';
       ungrouped.forEach(l => { html += buildLineRow(l); });
-      html += buildSubtotalRow('Total Other', sumLines(ungrouped));
+      html += subtotalRow('Total Other', sumLines(ungrouped));
     }
   } else {
-    // Simple sheet — no category groupings, just rows
     sheetLines.forEach(l => { html += buildLineRow(l); });
   }
 
-  // Sheet total
-  const totals = sumLines(sheetLines);
-  const totalVar = totals.proposed - totals.prior;
-  const totalPct = totals.prior ? (totals.proposed / totals.prior - 1) : 0;
-  html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:8px;" colspan="2">Sheet Total</td><td></td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
-    '<td></td><td></td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytdBudget) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.estimate) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.forecast) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.budget) + '</td>' +
-    '<td></td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totals.proposed) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td>' +
-    '<td style="text-align:right; padding:8px;">' + (totalPct * 100).toFixed(1) + '%</td></tr>';
-  html += '</tbody></table>';
+  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row');
+  html += '</tbody></table></div></div>';
   contentDiv.innerHTML = html;
 }
 
