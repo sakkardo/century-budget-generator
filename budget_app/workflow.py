@@ -651,32 +651,27 @@ def create_workflow_blueprint(db):
         return result
 
 
-    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year, ytd_months=2):
+    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year=0, ytd_months=2):
         """
         Compute 12-month forecast.
 
         Formula: ytd_actual + accrual_adj + unpaid_bills + estimate
-        where estimate = IF(ytd_total >= prior_year,
-                            annualize: (ytd_total / ytd_months) * remaining_months,
-                            prior_year_adj: prior_year - ytd_total)
+        where estimate = annualize: (ytd_total / ytd_months) * remaining_months
         """
         ytd_total = ytd_actual + accrual_adj + unpaid_bills
         remaining = 12 - ytd_months
 
-        if ytd_total >= prior_year and prior_year > 0 and ytd_months > 0:
+        if ytd_months > 0 and ytd_total > 0:
             estimate = (ytd_total / ytd_months) * remaining
         else:
-            estimate = max(prior_year - ytd_total, 0)
+            estimate = 0
 
         return ytd_total + estimate
 
 
-    def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year):
+    def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year=0):
         """Return the forecast method label for display purposes."""
-        ytd_total = ytd_actual + accrual_adj + unpaid_bills
-        if ytd_total >= prior_year and prior_year > 0:
-            return 'Annualized'
-        return 'Prior Year Adjusted'
+        return 'Annualized'
 
 
     def compute_proposed_budget(forecast, increase_pct):
@@ -1231,15 +1226,14 @@ def create_workflow_blueprint(db):
         # Recompute proposed_budget for all affected lines
         for line in lines:
             if line.increase_pct:
-                prior = float(line.prior_year or 0)
                 ytd = float(line.ytd_actual or 0)
                 accrual = float(line.accrual_adj or 0)
                 unpaid = float(line.unpaid_bills or 0)
                 base = ytd + accrual + unpaid
-                if base >= prior and prior > 0:
-                    estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
+                if base > 0 and _ytd_months > 0:
+                    estimate = (base / _ytd_months) * _remaining
                 else:
-                    estimate = max(prior - base, 0)
+                    estimate = 0
                 forecast = base + estimate
                 line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
 
@@ -3177,7 +3171,6 @@ function faLineChanged(gl, field, value) {
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
   if (!row) return;
 
-  const prior = parseFloat(row.dataset.prior) || 0;
   const ytd = getRaw('ytd_' + gl);
   const accrual = getRaw('acc_' + gl);
   const unpaid = getRaw('unp_' + gl);
@@ -3194,10 +3187,10 @@ function faLineChanged(gl, field, value) {
     estimate = forecast - (ytd + accrual + unpaid);
   } else {
     const base = ytd + accrual + unpaid;
-    if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+    if (base > 0 && YTD_MONTHS > 0) {
       estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
     } else {
-      estimate = Math.max(prior - base, 0);
+      estimate = 0;
     }
     forecast = ytd + accrual + unpaid + estimate;
   }
@@ -3214,12 +3207,7 @@ function faLineChanged(gl, field, value) {
   };
   // Build updated formula strings
   const base = ytd + accrual + unpaid;
-  let estFormula;
-  if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
-    estFormula = 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' x ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
-  } else {
-    estFormula = 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
-  }
+  const estFormula = 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
   const fcstFormula = fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
   const propFormula = fmt(forecast) + ' x (1 + ' + (incRaw).toFixed(1) + '%) = ' + fmt(proposed);
 
@@ -3360,10 +3348,9 @@ function faComputeEstimate(l) {
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
-  const prior = l.prior_year || 0;
   const base = ytd + accrual + unpaid;
-  if (base >= prior && prior > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
-  return Math.max(prior - base, 0);
+  if (base > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return 0;
 }
 
 function faComputeForecast(l) {
@@ -3376,18 +3363,13 @@ function faGetFormulaTooltip(l, field) {
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
-  const prior = l.prior_year || 0;
   const base = ytd + accrual + unpaid;
   const estimate = faComputeEstimate(l);
   const forecast = faComputeForecast(l);
   const incPct = l.increase_pct || 0;
 
   if (field === 'estimate') {
-    if (base >= prior && prior > 0) {
-      return 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
-    } else {
-      return 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
-    }
+    return 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
   }
   if (field === 'forecast') {
     return fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
@@ -3779,8 +3761,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
-    const priorYear = l.prior_year || 0;
-    return '<tr data-gl="' + gl + '" data-prior="' + priorYear + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
+    return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
@@ -3870,14 +3851,9 @@ function computeForecast(l) {
   const ytdActual = l.ytd_actual || 0;
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
-  const priorYear = l.prior_year || 0;
   const ytdTotal = ytdActual + accrualAdj + unpaidBills;
-
-  if (ytdTotal >= priorYear) {
-    return ytdTotal + (ytdTotal / 2) * 10;
-  } else {
-    return ytdTotal + (priorYear - ytdTotal);
-  }
+  const estimate = (ytdTotal > 0 && YTD_MONTHS > 0) ? (ytdTotal / YTD_MONTHS) * REMAINING_MONTHS : 0;
+  return ytdTotal + estimate;
 }
 
 async function sendToPM() {
@@ -4457,13 +4433,11 @@ function computeEstimate(line) {
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
-    const prior = line.prior_year || 0;
     const base = ytd + accrual + unpaid;
-    if (base >= prior && prior > 0) {
+    if (base > 0 && YTD_MONTHS > 0) {
         return (base / YTD_MONTHS) * REMAINING_MONTHS;
-    } else {
-        return Math.max(prior - base, 0);
     }
+    return 0;
 }
 
 function computeForecast(line) {
@@ -4624,18 +4598,13 @@ function showPmFormula(cell, type, gl) {
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
     const base = ytd + accrual + unpaid;
-    const prior = line.prior_year || 0;
     const est = computeEstimate(line);
     const fc = computeForecast(line);
     const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
 
     let formula = '';
     if (type === 'est') {
-        if (base >= prior && prior > 0) {
-            formula = `(YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)}) / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
-        } else {
-            formula = `max(Prior ${fmt(prior)} − Base ${fmt(base)}, 0) = ${fmt(est)}`;
-        }
+        formula = `(YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)}) / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
     } else if (type === 'fc') {
         formula = `YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)} + Est ${fmt(est)} = ${fmt(fc)}`;
     } else if (type === 'pb') {
@@ -5040,10 +5009,10 @@ document.getElementById('printDate').textContent = new Date().toLocaleDateString
 function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
 
 function computeEstimate(l) {
-  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0, prior = l.prior_year || 0;
+  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0;
   const base = ytd + accrual + unpaid;
-  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
-  return Math.max(prior - base, 0);
+  if (base > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return 0;
 }
 
 function computeForecast(l) {
