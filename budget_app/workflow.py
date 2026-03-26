@@ -3262,8 +3262,8 @@ function faUpdateSheetTotals() {
   const v = t.proposed - t.prior;
   const p = t.prior ? (t.proposed / t.prior - 1) : 0;
   const cells = totalRow.querySelectorAll('td');
-  // cells[0] = label (Sheet Total), cells[1..14] = data columns
-  if (cells.length >= 14) {
+  // cells[0] = label (colspan=3: GL+Desc+Notes), cells[1..12] = data columns
+  if (cells.length >= 13) {
     cells[1].textContent = fmt(t.prior);
     cells[2].textContent = fmt(t.ytd);
     cells[3].textContent = fmt(t.accrual);
@@ -3863,8 +3863,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   html += '</div>';
   contentDiv.innerHTML = html;
 
-  // Sync sticky scrollbar width and scroll position with table
+  // Recalculate totals from rounded cell values so they match exactly
   setTimeout(() => {
+    faUpdateSheetTotals();
+
+    // Sync sticky scrollbar width and scroll position with table
     const gridScroll = document.querySelector('.fa-grid-scroll');
     const stickyScroll = document.getElementById('faStickyScroll');
     const stickyInner = document.getElementById('faStickyScrollInner');
