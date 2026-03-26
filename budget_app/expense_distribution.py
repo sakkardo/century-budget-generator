@@ -540,7 +540,7 @@ PM_EXPENSE_TEMPLATE = """
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
-  header { background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%); color: white; padding: 24px 20px; }
+  header { background: linear-gradient(135deg, #1a56db 0%, #1e429f 100%); color: white; padding: 24px 20px; }
   header h1 { font-size: 24px; margin-bottom: 4px; }
   header p { opacity: 0.9; font-size: 14px; }
   .back-link { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 14px; }
@@ -651,6 +651,9 @@ PM_EXPENSE_TEMPLATE = """
 
   <div class="grid-wrapper">
     <div class="grid-container">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+        <button id="expZeroToggle" onclick="expToggleZeroRows()" style="font-size:12px; padding:5px 14px; background:#e1effe; color:#1a56db; border:1px solid #1a56db; border-radius:6px; cursor:pointer;"></button>
+      </div>
       <table id="expenseTable">
         <thead>
           <tr>
@@ -739,6 +742,7 @@ async function loadReport() {
     reportData = await resp.json();
     renderSummaryCards();
     renderTable();
+    expUpdateZeroToggle();
   } catch(e) {
     console.error('Failed to load report:', e);
   }
@@ -752,6 +756,34 @@ function renderSummaryCards() {
   document.getElementById('cardInvoices').textContent = r.invoice_count;
   document.getElementById('cardGLs').textContent = reportData.gl_groups.length;
   document.getElementById('cardTotal').textContent = fmt(r.total_amount);
+}
+
+// ── Zero-row toggle ──────────────────────────────────────────────────────────
+
+let _expShowZeroRows = false;
+
+function expCountZeroRows() {
+  return document.querySelectorAll('#expenseBody .zero-row').length;
+}
+
+function expUpdateZeroToggle() {
+  const btn = document.getElementById('expZeroToggle');
+  if (!btn) return;
+  const count = expCountZeroRows();
+  if (count === 0) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  btn.textContent = _expShowZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Zero Rows';
+  btn.style.background = _expShowZeroRows ? '#f3f4f6' : '#e1effe';
+  btn.style.color = _expShowZeroRows ? '#6b7280' : '#1a56db';
+  btn.style.borderColor = _expShowZeroRows ? '#d1d5db' : '#1a56db';
+}
+
+function expToggleZeroRows() {
+  _expShowZeroRows = !_expShowZeroRows;
+  document.querySelectorAll('#expenseBody .zero-row').forEach(row => {
+    row.style.display = _expShowZeroRows ? '' : 'none';
+  });
+  expUpdateZeroToggle();
 }
 
 // ── Render Table ────────────────────────────────────────────────────────────
@@ -791,9 +823,11 @@ function renderTable() {
     const pctVariance = currentBudget ? (overUnder / currentBudget * 100) : 0;
 
     // GL summary row
+    const isZero = !adj.original && !adj.reclass_in && !adj.reclass_out && !currentBudget;
     const tr = document.createElement('tr');
-    tr.className = 'gl-row' + (expandedGLs.has(gl) ? ' expanded' : '');
+    tr.className = 'gl-row' + (expandedGLs.has(gl) ? ' expanded' : '') + (isZero ? ' zero-row' : '');
     tr.dataset.gl = gl;
+    if (isZero && !_expShowZeroRows) tr.style.display = 'none';
     tr.onclick = () => toggleGL(gl);
     tr.innerHTML = `
       <td><strong>${gl}</strong></td>
@@ -840,6 +874,7 @@ function toggleGL(gl) {
   if (expandedGLs.has(gl)) expandedGLs.delete(gl);
   else expandedGLs.add(gl);
   renderTable();
+  expUpdateZeroToggle();
 }
 
 // ── Reclass Modal ───────────────────────────────────────────────────────────
