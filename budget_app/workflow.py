@@ -3725,17 +3725,16 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
     function fxCell(id, field, val, formula, isOverride) {
       const overrideAttr = isOverride ? 'true' : 'false';
-      const badge = isOverride ? '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">✎</span>'
-        : '<span class="fa-fx" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">fx</span>';
-      return '<td class="num" style="position:relative;">' + badge +
-        '<input id="' + id + '" class="cell cell-fx" type="text"' +
+      const badge = isOverride ? '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;">✎</span>'
+        : '<span class="fa-fx">fx</span>';
+      return '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
+        '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
         ' data-override="' + overrideAttr + '"' +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
-        ' onfocus="fxCellFocus(this)"' +
-        ' onblur="fxCellBlur(this)"></td>';
+        ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
