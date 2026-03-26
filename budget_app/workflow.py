@@ -2498,12 +2498,8 @@ function renderSheet(sheetName, sheetLines, tabEl) {
     return;
   }
 
-  const editableSheets = ['Repairs & Supplies', 'Gen & Admin'];
-  if (editableSheets.includes(sheetName)) {
-    renderEditableSheet(sheetName, sheetLines, contentDiv);
-  } else {
-    renderReadOnlySheet(sheetName, sheetLines, contentDiv);
-  }
+  // All sheets are editable for the FA — this is the budget workbench
+  renderEditableSheet(sheetName, sheetLines, contentDiv);
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
