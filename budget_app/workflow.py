@@ -3421,7 +3421,7 @@ async function faFetchExpenseData() {
     if (!res.ok) { _faExpenseCache = false; return null; }
     _faExpenseCache = await res.json();
     return _faExpenseCache;
-  } catch { _faExpenseCache = false; return null; }
+  } catch(e) { _faExpenseCache = false; return null; }
 }
 
 async function faToggleInvoices(glCode, el) {
@@ -4032,7 +4032,7 @@ loadInitialData();
 </html>
 """
 
-PM_EDIT_TEMPLATE = """
+PM_EDIT_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4526,7 +4526,7 @@ async function fetchExpenseData() {
         if (!res.ok) { _expenseCache = false; return null; }
         _expenseCache = await res.json();
         return _expenseCache;
-    } catch { _expenseCache = false; return null; }
+    } catch(e) { _expenseCache = false; return null; }
 }
 
 async function toggleInvoices(glCode, linkEl) {
