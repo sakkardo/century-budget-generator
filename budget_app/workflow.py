@@ -3583,6 +3583,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { width:60px; }
+      .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
@@ -3642,7 +3643,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     }
     // Formula cell: shows $1,234 normally, shows formula on focus, editable
     function fxCell(id, field, val, formula) {
-      return '<td class="num"><input id="' + id + '" class="cell cell-fx" type="text"' +
+      return '<td class="num" style="position:relative;"><span class="fa-fx">fx</span>' +
+        '<input id="' + id + '" class="cell cell-fx" type="text"' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
