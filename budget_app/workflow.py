@@ -2556,6 +2556,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <script>
 const entityCode = '{{ entity_code }}';
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
+let allAssumptions = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
 let REMAINING_MONTHS = 10;  // updated from API response
 
@@ -2783,6 +2784,7 @@ function renderDetail(data) {
 
   // Budget Workbook Tabs
   allSheets = data.sheets || {};  // global for Budget Summary access
+  allAssumptions = data.assumptions || {};  // global for Budget Summary access
   const sheets = allSheets;
   const sheetOrder = data.sheet_order || Object.keys(sheets);
   const tabsDiv = document.getElementById('sheetTabs');
@@ -2906,6 +2908,21 @@ function assumAutoSave(section, field, value) {
   }, 800);
 }
 
+function recalcPayrollEstimate() {
+  const hc = parseFloat(document.getElementById('ps_headcount')?.value) || 0;
+  const rate = parseFloat(document.getElementById('ps_avg_rate')?.value) || 0;
+  const hrs = parseFloat(document.getElementById('ps_hrs_wk')?.value) || 40;
+  const wks = parseFloat(document.getElementById('ps_wks_yr')?.value) || 52;
+  const benPct = (parseFloat(document.getElementById('ps_ben_pct')?.value) || 0) / 100;
+  const baseWages = hc * rate * hrs * wks;
+  const benefits = baseWages * benPct;
+  const total = baseWages + benefits;
+  const el = id => document.getElementById(id);
+  if (el('ps_base_wages')) el('ps_base_wages').textContent = fmt(baseWages);
+  if (el('ps_benefits')) el('ps_benefits').textContent = fmt(benefits);
+  if (el('ps_total')) el('ps_total').textContent = fmt(total);
+}
+
 function renderAssumptionsTab(assumptions, contentDiv) {
   const a = assumptions || {};
   const inputStyle = 'padding:6px 10px; border:1px solid var(--gray-200); border-radius:6px; font-size:13px; width:120px;';
@@ -2990,6 +3007,65 @@ function renderAssumptionsTab(assumptions, contentDiv) {
   // Water & Sewer
   html += section('Water & Sewer',
     item('Rate Increase %', field('water_sewer','rate_increase', pctVal(ws.rate_increase), pctStyle, '%'))
+  );
+
+  // Payroll Staffing (assumptions-driven estimator)
+  const ps = a.payroll_staffing || {};
+  const psHeadcount = numVal(ps.headcount) || 0;
+  const psAvgRate = numVal(ps.avg_hourly_rate) || 0;
+  const psHrsWk = numVal(ps.hours_per_week) || 40;
+  const psWeeksYr = numVal(ps.weeks_per_year) || 52;
+  const psBenefitsPct = ps.benefits_pct !== undefined ? ps.benefits_pct : 0;
+  const psBaseWages = psHeadcount * psAvgRate * psHrsWk * psWeeksYr;
+  const psBenefits = psBaseWages * psBenefitsPct;
+  const psTotalPayroll = psBaseWages + psBenefits;
+
+  html += '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:20px 24px; margin-bottom:16px;">' +
+    '<h3 style="font-size:16px; color:var(--blue); margin-bottom:4px; font-weight:600;">Payroll Staffing Estimator</h3>' +
+    '<p style="font-size:11px; color:var(--gray-400); margin-bottom:16px;">Estimates total payroll from staffing inputs. Use as a reference when budgeting payroll GL lines.</p>' +
+    '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">' +
+    item('Union Contract', '<input type="text" value="' + (ps.union_contract || '32BJ') + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'union_contract\', this.value); recalcPayrollEstimate();">') +
+    item('Total Headcount', '<input type="number" step="1" id="ps_headcount" value="' + psHeadcount + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'headcount\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
+    item('Avg Hourly Rate ($)', '<input type="number" step="0.01" id="ps_avg_rate" value="' + psAvgRate + '" style="' + dollarStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'avg_hourly_rate\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
+    item('Hours / Week', '<input type="number" step="1" id="ps_hrs_wk" value="' + psHrsWk + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'hours_per_week\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
+    item('Weeks / Year', '<input type="number" step="1" id="ps_wks_yr" value="' + psWeeksYr + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'weeks_per_year\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
+    item('Benefits %', '<input type="number" step="0.1" id="ps_ben_pct" value="' + (psBenefitsPct * 100).toFixed(1) + '" style="' + pctStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'benefits_pct\', this.value/100); recalcPayrollEstimate();">%') +
+    '</div>' +
+    '<div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--gray-200); display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center;">' +
+    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Base Wages</div><div id="ps_base_wages" style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(psBaseWages) + '</div></div>' +
+    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Benefits</div><div id="ps_benefits" style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(psBenefits) + '</div></div>' +
+    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Total Payroll</div><div id="ps_total" style="font-size:20px; font-weight:700; color:var(--primary); margin-top:4px;">' + fmt(psTotalPayroll) + '</div></div>' +
+    '</div></div>';
+
+  // Non-Operating Items
+  const no = a.non_operating || {};
+  const noI = no.income || {};
+  const noE = no.expense || {};
+
+  function noField(subSection, key, val) {
+    return '<input type="number" step="1" value="' + (val || 0) + '" style="' + dollarStyle + '" ' +
+      'onchange="assumAutoSave(\'non_operating\', \'' + subSection + '\', Object.assign({}, (allAssumptions.non_operating||{}).' + subSection + ' || {}, {' + key + ': parseFloat(this.value)||0})); allAssumptions.non_operating = allAssumptions.non_operating || {}; allAssumptions.non_operating.' + subSection + ' = allAssumptions.non_operating.' + subSection + ' || {}; allAssumptions.non_operating.' + subSection + '.' + key + ' = parseFloat(this.value)||0;">';
+  }
+
+  html += section('Non-Operating Income',
+    item('Capital Assessment', noField('income','capital_assessment', noI.capital_assessment)) +
+    item('Special Assessment', noField('income','special_assessment', noI.special_assessment)) +
+    item('Interest Income', noField('income','interest_income', noI.interest_income)) +
+    item('Insurance Proceeds', noField('income','insurance_proceeds', noI.insurance_proceeds)) +
+    item('Other Non-Op Income', noField('income','other_non_op_income', noI.other_non_op_income))
+  );
+
+  html += section('Non-Operating Expenses',
+    item('Capital Expenses', noField('expense','capital_expenses', noE.capital_expenses)) +
+    item('Cert Fee (Tax Reduction)', noField('expense','cert_fee_tax_reduction', noE.cert_fee_tax_reduction)) +
+    item('Other Non-Op Expense', noField('expense','other_non_op_expense', noE.other_non_op_expense))
+  );
+
+  // Capital Reserve
+  const cr = a.capital_reserve || {};
+  html += section('Capital Reserve',
+    item('Reserve Balance ($)', '<input type="number" step="1" value="' + numVal(cr.reserve_balance) + '" style="' + dollarStyle + '" onchange="assumAutoSave(\'capital_reserve\',\'reserve_balance\', parseFloat(this.value)||0)">') +
+    item('Reserve Note', '<input type="text" value="' + (cr.note || '') + '" style="' + inputStyle + ' width:200px;" onchange="assumAutoSave(\'capital_reserve\',\'note\', this.value)">')
   );
 
   html += '</div>';
@@ -3214,11 +3290,11 @@ function faLineChanged(gl, field, value) {
 
   faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
-  const variance = proposed - budget;
+  const variance = proposed - forecast;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (budget ? ((proposed / budget - 1) * 100).toFixed(1) : '0.0') + '%';
+  if (pctEl) pctEl.textContent = (forecast ? ((proposed / forecast - 1) * 100).toFixed(1) : '0.0') + '%';
 
   // Recalculate sheet totals from live cell values
   faUpdateSheetTotals();
@@ -3245,8 +3321,8 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    const v = t.proposed - t.budget;
-    const p = t.budget ? (t.proposed / t.budget - 1) : 0;
+    const v = t.proposed - t.forecast;
+    const p = t.forecast ? (t.proposed / t.forecast - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
     if (cells.length >= 11) {
       cells[1].textContent = fmt(t.ytd);
@@ -3406,12 +3482,12 @@ function renderBudgetSummary(contentDiv) {
     '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
     '<th style="' + thStyle + '">Current<br>Budget</th>' +
     '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
-    '<th style="' + thStyle + '">$<br>Variance</th>' +
+    '<th style="' + thStyle + '">$ V.<br>Forecast</th>' +
     '<th style="' + thStyle + '">%<br>Change</th>' +
     '</tr></thead><tbody>';
 
-  let totalIncome = {budget:0, proposed:0};
-  let totalExpense = {budget:0, proposed:0};
+  let totalIncome = {budget:0, proposed:0, forecast:0};
+  let totalExpense = {budget:0, proposed:0, forecast:0};
 
   SUMMARY_ROWS.forEach((sr, idx) => {
     const sheetLines = allSheets[sr.sheet] || [];
@@ -3419,21 +3495,22 @@ function renderBudgetSummary(contentDiv) {
     if (sr.rowRange) {
       lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
     }
-    let budget = 0, proposed = 0;
+    let budget = 0, proposed = 0, fcTotal = 0;
     lines.forEach(l => {
       budget += l.current_budget || 0;
       const forecast = faComputeForecast(l);
+      fcTotal += forecast;
       proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     });
 
-    const variance = proposed - budget;
-    const pctChange = budget ? (proposed / budget - 1) : 0;
+    const variance = proposed - fcTotal;
+    const pctChange = fcTotal ? (proposed / fcTotal - 1) : 0;
     const varColor = sr.type === 'income'
       ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
       : (variance >= 0 ? 'var(--red)' : 'var(--green)');
 
-    if (sr.type === 'income') { totalIncome.budget += budget; totalIncome.proposed += proposed; }
-    else { totalExpense.budget += budget; totalExpense.proposed += proposed; }
+    if (sr.type === 'income') { totalIncome.budget += budget; totalIncome.proposed += proposed; totalIncome.forecast += fcTotal; }
+    else { totalExpense.budget += budget; totalExpense.proposed += proposed; totalExpense.forecast += fcTotal; }
 
     // Bold for income row, normal for expense detail
     const isIncomeRow = idx === 0;
@@ -3447,9 +3524,9 @@ function renderBudgetSummary(contentDiv) {
 
     // After last expense row, add totals
     if (idx === SUMMARY_ROWS.length - 1) {
-      const teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
-      const teVar = teProposed - teBudget;
-      const tePct = teBudget ? (teProposed / teBudget - 1) : 0;
+      const teBudget = totalExpense.budget, teProposed = totalExpense.proposed, teForecast = totalExpense.forecast;
+      const teVar = teProposed - teForecast;
+      const tePct = teForecast ? (teProposed / teForecast - 1) : 0;
       html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
@@ -3457,13 +3534,13 @@ function renderBudgetSummary(contentDiv) {
         '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
 
       // NOI
-      const noiBudget = totalIncome.budget - teBudget;
+      const noiForecast = totalIncome.forecast - teForecast;
       const noiProposed = totalIncome.proposed - teProposed;
-      const noiVar = noiProposed - noiBudget;
-      const noiPct = noiBudget ? (noiProposed / noiBudget - 1) : 0;
+      const noiVar = noiProposed - noiForecast;
+      const noiPct = noiForecast ? (noiProposed / noiForecast - 1) : 0;
       const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
       html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(totalIncome.budget - teBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
         '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + (noiPct * 100).toFixed(1) + '%</td></tr>';
@@ -3471,6 +3548,150 @@ function renderBudgetSummary(contentDiv) {
   });
 
   html += '</tbody></table>';
+
+  // ── Deficit Calculator + Maintenance Increase ─────────────────────
+  const deficit = totalIncome.proposed - totalExpense.proposed;
+  const isDeficit = deficit < 0;
+  const deficitColor = isDeficit ? 'var(--red)' : 'var(--green)';
+  const deficitLabel = isDeficit ? '<Deficit>' : 'Surplus';
+  const maintIncrease = (isDeficit && totalIncome.proposed > 0)
+    ? (Math.abs(deficit) / totalIncome.proposed * 100).toFixed(2)
+    : '0.00';
+
+  html += '<div style="margin-top:24px; padding:20px; background:var(--gray-50, #f9fafb); border:1px solid var(--gray-200); border-radius:8px;">' +
+    '<div style="font-size:14px; font-weight:600; margin-bottom:12px; color:var(--gray-700);">Operating Surplus / ' + deficitLabel + '</div>' +
+    '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; font-size:14px;">' +
+    '<div style="color:var(--gray-500);">Total Income (Proposed)</div><div style="text-align:right; font-weight:500;">' + fmt(totalIncome.proposed) + '</div>' +
+    '<div style="color:var(--gray-500);">Total Expenses (Proposed)</div><div style="text-align:right; font-weight:500;">' + fmt(totalExpense.proposed) + '</div>' +
+    '<div style="border-top:1px solid var(--gray-300); padding-top:8px; font-weight:600;">Net Operating</div>' +
+    '<div style="border-top:1px solid var(--gray-300); padding-top:8px; text-align:right; font-weight:700; font-size:16px; color:' + deficitColor + ';">' + fmt(deficit) + '</div>' +
+    '</div>';
+
+  if (isDeficit) {
+    html += '<div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--gray-300);">' +
+      '<div style="font-size:13px; font-weight:600; margin-bottom:8px; color:var(--gray-600);">Maintenance Increase to Cover Deficit</div>' +
+      '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px;">' +
+      '<div style="color:var(--gray-500);">Current Proposed Income</div><div style="text-align:right;">' + fmt(totalIncome.proposed) + '</div>' +
+      '<div style="color:var(--gray-500);">Deficit Amount</div><div style="text-align:right; color:var(--red);">' + fmt(Math.abs(deficit)) + '</div>' +
+      '<div style="font-weight:600; color:var(--orange, #d97706);">Required Increase</div><div style="text-align:right; font-weight:700; font-size:15px; color:var(--orange, #d97706);">' + maintIncrease + '%</div>' +
+      '</div></div>';
+  }
+
+  html += '</div>';
+
+  // ── Non-Operating Income / Expense ────────────────────────────────
+  const nonOp = allAssumptions.non_operating || {};
+  const noIncome = nonOp.income || {};
+  const noExpense = nonOp.expense || {};
+  const noIncomeItems = [
+    {key: 'capital_assessment', label: 'Capital Assessment'},
+    {key: 'special_assessment', label: 'Special Assessment'},
+    {key: 'interest_income', label: 'Interest Income'},
+    {key: 'insurance_proceeds', label: 'Insurance Proceeds'},
+    {key: 'other_non_op_income', label: 'Other Non-Op Income'}
+  ];
+  const noExpenseItems = [
+    {key: 'capital_expenses', label: 'Capital Expenses'},
+    {key: 'cert_fee_tax_reduction', label: 'Cert Fee for Tax Reduction'},
+    {key: 'other_non_op_expense', label: 'Other Non-Op Expense'}
+  ];
+
+  let totalNOI = 0, totalNOE = 0;
+  noIncomeItems.forEach(i => { totalNOI += parseFloat(noIncome[i.key] || 0); });
+  noExpenseItems.forEach(i => { totalNOE += parseFloat(noExpense[i.key] || 0); });
+
+  if (totalNOI > 0 || totalNOE > 0) {
+    html += '<div style="margin-top:24px; padding:20px; background:white; border:1px solid var(--gray-200); border-radius:8px;">' +
+      '<div style="font-size:14px; font-weight:600; margin-bottom:12px; color:var(--gray-700);">Non-Operating Items</div>';
+
+    if (totalNOI > 0) {
+      html += '<div style="font-size:12px; font-weight:600; color:var(--green); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Non-Operating Income</div>' +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px; margin-bottom:12px;">';
+      noIncomeItems.forEach(i => {
+        const v = parseFloat(noIncome[i.key] || 0);
+        if (v > 0) html += '<div style="color:var(--gray-500);">' + i.label + '</div><div style="text-align:right;">' + fmt(v) + '</div>';
+      });
+      html += '<div style="font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">Total Non-Op Income</div>' +
+        '<div style="text-align:right; font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">' + fmt(totalNOI) + '</div></div>';
+    }
+
+    if (totalNOE > 0) {
+      html += '<div style="font-size:12px; font-weight:600; color:var(--red); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Non-Operating Expense</div>' +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px; margin-bottom:12px;">';
+      noExpenseItems.forEach(i => {
+        const v = parseFloat(noExpense[i.key] || 0);
+        if (v > 0) html += '<div style="color:var(--gray-500);">' + i.label + '</div><div style="text-align:right;">' + fmt(v) + '</div>';
+      });
+      html += '<div style="font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">Total Non-Op Expense</div>' +
+        '<div style="text-align:right; font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">' + fmt(totalNOE) + '</div></div>';
+    }
+
+    // Net after non-operating
+    const netAfterNonOp = deficit + totalNOI - totalNOE;
+    const netColor = netAfterNonOp >= 0 ? 'var(--green)' : 'var(--red)';
+    html += '<div style="border-top:2px solid var(--gray-300); padding-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:14px;">' +
+      '<div style="font-weight:700;">Net After Non-Operating</div>' +
+      '<div style="text-align:right; font-weight:700; font-size:16px; color:' + netColor + ';">' + fmt(netAfterNonOp) + '</div></div>';
+
+    html += '</div>';
+  }
+
+  // ── Capital Budget + Reserve Tracker ──────────────────────────────
+  const reserveBal = parseFloat((allAssumptions.capital_reserve || {}).reserve_balance || 0);
+  // Find capital GL lines (7xxx series) across all sheets
+  const capLines = [];
+  Object.keys(allSheets).forEach(sn => {
+    (allSheets[sn] || []).forEach(l => {
+      if (l.gl_code && l.gl_code.startsWith('7')) capLines.push(l);
+    });
+  });
+  const capExpFromNonOp = parseFloat((nonOp.expense || {}).capital_expenses || 0);
+  const totalCapFromLines = capLines.reduce((s, l) => s + (l.proposed_budget || faComputeForecast(l) * (1 + (l.increase_pct || 0))), 0);
+  const totalCapSpend = totalCapFromLines > 0 ? totalCapFromLines : capExpFromNonOp;
+
+  if (reserveBal > 0 || totalCapSpend > 0 || capLines.length > 0) {
+    const remaining = reserveBal - totalCapSpend;
+    const utilizationPct = reserveBal > 0 ? Math.min(100, (totalCapSpend / reserveBal * 100)) : 0;
+    const barColor = utilizationPct > 80 ? 'var(--red)' : utilizationPct > 50 ? 'var(--orange, #d97706)' : 'var(--green)';
+
+    html += '<div style="margin-top:24px; padding:20px; background:white; border:1px solid var(--gray-200); border-radius:8px;">' +
+      '<div style="font-size:14px; font-weight:600; margin-bottom:16px; color:var(--gray-700);">Capital Budget</div>';
+
+    // Reserve summary
+    if (reserveBal > 0) {
+      html += '<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center; margin-bottom:16px;">' +
+        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Reserve Balance</div><div style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(reserveBal) + '</div></div>' +
+        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Planned Spend</div><div style="font-size:18px; font-weight:700; color:var(--red); margin-top:4px;">' + fmt(totalCapSpend) + '</div></div>' +
+        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Remaining</div><div style="font-size:18px; font-weight:700; color:' + (remaining >= 0 ? 'var(--green)' : 'var(--red)') + '; margin-top:4px;">' + fmt(remaining) + '</div></div></div>';
+
+      // Utilization bar
+      html += '<div style="margin-bottom:16px;"><div style="display:flex; justify-content:space-between; font-size:11px; color:var(--gray-500); margin-bottom:4px;"><span>Reserve Utilization</span><span>' + utilizationPct.toFixed(0) + '%</span></div>' +
+        '<div style="background:var(--gray-200); border-radius:4px; height:8px; overflow:hidden;"><div style="background:' + barColor + '; height:100%; width:' + utilizationPct.toFixed(0) + '%; border-radius:4px; transition:width 0.3s;"></div></div></div>';
+    }
+
+    // Capital line items table
+    if (capLines.length > 0) {
+      html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+        '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+        '<th style="text-align:left; padding:8px;">GL Code</th><th style="text-align:left; padding:8px;">Description</th>' +
+        '<th style="text-align:right; padding:8px;">YTD Actual</th><th style="text-align:right; padding:8px;">Proposed</th></tr></thead><tbody>';
+      let capTotal = 0;
+      capLines.forEach(l => {
+        const proposed = l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0)));
+        capTotal += proposed;
+        html += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + '</td>' +
+          '<td style="padding:6px 8px;">' + l.description + '</td>' +
+          '<td style="text-align:right; padding:6px 8px;">' + fmt(l.ytd_actual || 0) + '</td>' +
+          '<td style="text-align:right; padding:6px 8px;">' + fmt(proposed) + '</td></tr>';
+      });
+      html += '<tr style="font-weight:700; background:var(--gray-100);"><td colspan="2" style="padding:8px;">Total Capital</td>' +
+        '<td></td><td style="text-align:right; padding:8px;">' + fmt(capTotal) + '</td></tr>';
+      html += '</tbody></table>';
+    }
+
+    html += '</div>';
+  }
+
   contentDiv.innerHTML = html;
 }
 
@@ -3706,7 +3927,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
     '<th class="num">' + estLbl + ' Est</th><th class="num">12 Mo Forecast</th>' +
     '<th class="num">Curr Budget</th><th class="num">Inc %</th>' +
-    '<th class="num">Proposed</th><th class="num">$ Var</th><th class="num">% Chg</th>' +
+    '<th class="num">Proposed</th><th class="num">$ V. Fcst</th><th class="num">% Chg</th>' +
     '</tr></thead><tbody>';
 
   const catConfig = SHEET_CATEGORIES[sheetName];
@@ -3721,8 +3942,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const variance = proposed - budget;
-    const pctChange = budget ? (proposed / budget - 1) : 0;
+    const variance = proposed - forecast;
+    const pctChange = forecast ? (proposed / forecast - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
@@ -3786,8 +4007,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function subtotalRow(label, t, cls, rowId) {
-    const v = t.proposed - t.budget;
-    const p = t.budget ? (t.proposed/t.budget-1) : 0;
+    const v = t.proposed - t.forecast;
+    const p = t.forecast ? (t.proposed/t.forecast-1) : 0;
     const rid = rowId ? ' id="' + rowId + '"' : '';
     return '<tr class="' + (cls||'sub-row') + '"' + rid + '>' +
       '<td colspan="3">' + label + '</td>' +
@@ -4382,7 +4603,7 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">Current<br>Budget</th>
             <th class="number">Increase<br>%</th>
             <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
-            <th class="number">$<br>Variance</th>
+            <th class="number">$ V.<br>Forecast</th>
             <th class="number">%<br>Change</th>
           </tr>
         </thead>
@@ -4470,8 +4691,8 @@ function renderTable() {
             const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            const variance = proposed - (line.current_budget || 0);
-            const pctChange = (line.current_budget || 0) ? (proposed / (line.current_budget) - 1) : 0;
+            const variance = proposed - forecast;
+            const pctChange = forecast ? (proposed / forecast - 1) : 0;
 
             catTotals.ytd += (line.ytd_actual || 0);
             catTotals.accrual += (line.accrual_adj || 0);
@@ -4505,7 +4726,7 @@ function renderTable() {
         });
 
         // Subtotal
-        const catVar = catTotals.proposed - catTotals.budget;
+        const catVar = catTotals.proposed - catTotals.forecast;
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
@@ -4527,8 +4748,8 @@ function renderTable() {
     }
 
     // Grand total
-    const grandVar = grandTotals.proposed - grandTotals.budget;
-    const grandPct = grandTotals.budget ? (grandTotals.proposed / grandTotals.budget - 1) : 0;
+    const grandVar = grandTotals.proposed - grandTotals.forecast;
+    const grandPct = grandTotals.forecast ? (grandTotals.proposed / grandTotals.forecast - 1) : 0;
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
@@ -5091,7 +5312,7 @@ function renderSheet(sheetName) {
     '<th>GL Code</th><th>Description</th>' +
     '<th class="num">YTD Actual</th>' +
     '<th class="num">' + estLabel + ' Est</th><th class="num">12 Mo Forecast</th>' +
-    '<th class="num">Current Budget</th><th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
+    '<th class="num">Current Budget</th><th class="num">Proposed Budget</th><th class="num">$ V. Forecast</th><th class="num">% Change</th>' +
     '</tr></thead><tbody>';
 
   const cats = CATEGORIES[sheetName];
@@ -5100,8 +5321,8 @@ function renderSheet(sheetName) {
     const budget = l.current_budget || 0;
     const forecast = computeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const v = proposed - budget;
-    const p = budget ? (proposed/budget-1)*100 : 0;
+    const v = proposed - forecast;
+    const p = forecast ? (proposed/forecast-1)*100 : 0;
     return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
       '<td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
       '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
@@ -5113,11 +5334,11 @@ function renderSheet(sheetName) {
 
   function buildSubtotal(label, ls) {
     const t = sumLines(ls);
-    const v = t.proposed - t.budget;
+    const v = t.proposed - t.forecast;
     return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
       '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
       '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + (t.budget ? ((t.proposed/t.budget-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      '<td class="num">' + (t.forecast ? ((t.proposed/t.forecast-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   }
 
   if (cats) {
@@ -5134,11 +5355,11 @@ function renderSheet(sheetName) {
 
   // Sheet total
   const t = sumLines(lines);
-  const tv = t.proposed - t.budget;
+  const tv = t.proposed - t.forecast;
   html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
     '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
     '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
-    '<td class="num">' + (t.budget ? ((t.proposed/t.budget-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    '<td class="num">' + (t.forecast ? ((t.proposed/t.forecast-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }
