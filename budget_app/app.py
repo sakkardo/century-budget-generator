@@ -96,6 +96,7 @@ with app.app_context():
             ("budget_lines", "reclass_amount", "FLOAT DEFAULT 0"),
             ("budget_lines", "reclass_notes", "TEXT DEFAULT ''"),
             ("budget_lines", "proposed_budget", "FLOAT DEFAULT 0"),
+            ("budgets", "assumptions_json", "TEXT DEFAULT '{}'"),
         ]
         for table, col, col_type in _migrations:
             try:
@@ -577,16 +578,22 @@ def process_files():
                 )
 
                 if success and output_path.exists():
+                    # Merge assumptions for this building
+                    merged = None
+                    try:
+                        merged = merge_assumptions(entity)
+                    except Exception:
+                        pass
+
                     # Store ALL GL data in database for budget review workflow
                     try:
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH)
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged)
                         logger.info(f"All GL data stored for entity {entity}")
                     except Exception as wfe:
                         logger.warning(f"Could not store GL data for {entity}: {wfe}")
 
-                    # Apply assumptions if available for this building
+                    # Apply assumptions to Excel file
                     try:
-                        merged = merge_assumptions(entity)
                         if merged:
                             apply_assumptions(output_path, merged)
                             logger.info(f"Assumptions applied for entity {entity}")

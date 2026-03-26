@@ -190,6 +190,9 @@ def create_workflow_blueprint(db):
         effective_date = db.Column(db.String(20), nullable=True)
         ar_notes = db.Column(db.Text, default="")
 
+        # Assumptions snapshot (JSON — merged portfolio + building overrides)
+        assumptions_json = db.Column(db.Text, default="{}")
+
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
@@ -211,7 +214,8 @@ def create_workflow_blueprint(db):
                 "increase_pct": self.increase_pct,
                 "effective_date": self.effective_date,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
-                "updated_at": self.updated_at.isoformat() if self.updated_at else None
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+                "ar_notes": self.ar_notes or ""
             }
 
 
@@ -519,10 +523,11 @@ def create_workflow_blueprint(db):
         "Gen & Admin": "gen_admin",
     }
 
-    def store_all_lines(entity_code, building_name, gl_data, template_path):
+    def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
         Uses GLMapper to get sheet/row/description for every GL code.
+        Optionally stores merged assumptions snapshot on the Budget record.
         """
         try:
             from gl_mapper import build_gl_mapping_with_descriptions
@@ -546,6 +551,11 @@ def create_workflow_blueprint(db):
                 )
                 db.session.add(budget)
                 db.session.flush()
+
+            # Store assumptions snapshot if provided
+            if assumptions:
+                import json as _json_mod
+                budget.assumptions_json = _json_mod.dumps(assumptions)
 
             is_draft = budget.status == "draft"
             stored = 0
@@ -1031,6 +1041,13 @@ def create_workflow_blueprint(db):
         # Ordered sheet tab names
         sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Unmapped"]
 
+        # Parse stored assumptions
+        import json as _json
+        try:
+            assumptions = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            assumptions = {}
+
         return jsonify({
             "budget": budget.to_dict(),
             "lines": [l.to_dict() for l in lines],
@@ -1038,8 +1055,55 @@ def create_workflow_blueprint(db):
             "sheet_order": [s for s in sheet_order if s in sheets],
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
-            "audit": audit_data
+            "audit": audit_data,
+            "assumptions": assumptions
         })
+
+
+    # ─── API Routes: Budget Assumptions ──────────────────────────────────────
+
+    @bp.route("/api/budget-assumptions/<entity_code>", methods=["GET"])
+    def get_budget_assumptions(entity_code):
+        """Get assumptions for a budget."""
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        try:
+            assumptions = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            assumptions = {}
+        return jsonify(assumptions)
+
+    @bp.route("/api/budget-assumptions/<entity_code>", methods=["PUT"])
+    def update_budget_assumptions(entity_code):
+        """Update assumptions for a budget and optionally recalculate."""
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Merge updates into existing assumptions
+        try:
+            current = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            current = {}
+
+        # Deep merge: update each section
+        for key, value in data.items():
+            if isinstance(value, dict) and isinstance(current.get(key), dict):
+                current[key].update(value)
+            else:
+                current[key] = value
+
+        budget.assumptions_json = _json.dumps(current)
+        db.session.commit()
+
+        return jsonify({"status": "saved", "assumptions": current})
 
 
     # ─── API Routes: Lines ───────────────────────────────────────────────────
@@ -2440,8 +2504,133 @@ function renderDetail(data) {
       tab.onclick = () => renderSheet(sheetName, sheets[sheetName], tab);
       tabsDiv.appendChild(tab);
     });
+
+    // Add Assumptions tab
+    const assumTab = document.createElement('button');
+    assumTab.textContent = '\u2699 Assumptions';
+    assumTab.className = 'sheet-tab';
+    assumTab.style.marginLeft = 'auto';
+    assumTab.style.background = 'var(--blue-light)';
+    assumTab.style.color = 'var(--blue)';
+    assumTab.onclick = () => {
+      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      assumTab.classList.add('active');
+      renderAssumptionsTab(data.assumptions || {}, contentDiv);
+    };
+    tabsDiv.appendChild(assumTab);
+
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
   }
+}
+
+// ── Assumptions Tab ──
+let _assumSaveTimer = null;
+function assumAutoSave(section, field, value) {
+  clearTimeout(_assumSaveTimer);
+  const indicator = document.getElementById('faSaveIndicator');
+  indicator.textContent = 'Saving assumptions...';
+  _assumSaveTimer = setTimeout(async () => {
+    const payload = {};
+    payload[section] = {};
+    payload[section][field] = value;
+    await fetch('/api/budget-assumptions/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    indicator.textContent = 'Assumptions saved';
+    setTimeout(() => { indicator.textContent = ''; }, 2000);
+  }, 800);
+}
+
+function renderAssumptionsTab(assumptions, contentDiv) {
+  const a = assumptions || {};
+  const inputStyle = 'padding:6px 10px; border:1px solid var(--gray-200); border-radius:6px; font-size:13px; width:120px;';
+  const pctStyle = inputStyle + ' text-align:right; width:80px;';
+  const dollarStyle = inputStyle + ' text-align:right; width:100px;';
+
+  function pctVal(v) { return v ? (v * 100).toFixed(2) : '0'; }
+  function numVal(v) { return v || 0; }
+
+  function field(section, key, val, style, suffix) {
+    const s = suffix || '';
+    return '<input type="number" step="any" value="' + val + '" style="' + style + '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', ' + (suffix === '%' ? 'this.value/100' : 'parseFloat(this.value)||0') + ')">' + s;
+  }
+
+  function section(title, content) {
+    return '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:20px 24px; margin-bottom:16px;">' +
+      '<h3 style="font-size:16px; color:var(--blue); margin-bottom:16px; font-weight:600;">' + title + '</h3>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">' + content + '</div></div>';
+  }
+
+  function item(label, input) {
+    return '<div><label style="font-size:12px; color:var(--gray-500); display:block; margin-bottom:4px;">' + label + '</label>' + input + '</div>';
+  }
+
+  const pt = a.payroll_tax || {};
+  const ub = a.union_benefits || {};
+  const wc = a.workers_comp || {};
+  const wi = a.wage_increase || {};
+  const ir = a.insurance_renewal || {};
+  const en = a.energy || {};
+  const ws = a.water_sewer || {};
+
+  let html = '<div style="padding:16px 0;">';
+
+  // Payroll Tax Rates
+  html += section('Payroll Tax Rates',
+    item('FICA', field('payroll_tax','FICA', pctVal(pt.FICA), pctStyle, '%')) +
+    item('SUI', field('payroll_tax','SUI', pctVal(pt.SUI), pctStyle, '%')) +
+    item('FUI', field('payroll_tax','FUI', pctVal(pt.FUI), pctStyle, '%')) +
+    item('MTA', field('payroll_tax','MTA', pctVal(pt.MTA), pctStyle, '%')) +
+    item('NYS Disability', field('payroll_tax','NYS_Disability', pctVal(pt.NYS_Disability), pctStyle, '%')) +
+    item('PFL', field('payroll_tax','PFL', pctVal(pt.PFL), pctStyle, '%'))
+  );
+
+  // Union Benefits
+  html += section('Union Benefits (32BJ)',
+    item('Welfare ($/mo/man)', field('union_benefits','welfare_monthly', numVal(ub.welfare_monthly), dollarStyle, '')) +
+    item('Pension ($/wk/man)', field('union_benefits','pension_weekly', numVal(ub.pension_weekly), dollarStyle, '')) +
+    item('Supp Retirement ($/wk)', field('union_benefits','supp_retirement_weekly', numVal(ub.supp_retirement_weekly), dollarStyle, '')) +
+    item('Legal ($/mo)', field('union_benefits','legal_monthly', numVal(ub.legal_monthly), dollarStyle, '')) +
+    item('Training ($/mo)', field('union_benefits','training_monthly', numVal(ub.training_monthly), dollarStyle, '')) +
+    item('Profit Sharing ($/qtr)', field('union_benefits','profit_sharing_quarterly', numVal(ub.profit_sharing_quarterly), dollarStyle, ''))
+  );
+
+  // Workers Comp + Wage Increase
+  html += section('Workers Comp & Wage Increase',
+    item('Workers Comp %', field('workers_comp','percent', pctVal(wc.percent), pctStyle, '%')) +
+    item('Wage Increase %', field('wage_increase','percent', pctVal(wi.percent), pctStyle, '%')) +
+    item('Effective Week', '<input type="text" value="' + (wi.effective_week || 'Wk 16') + '" style="' + inputStyle + '" onchange="assumAutoSave(\'wage_increase\',\'effective_week\', this.value)">') +
+    item('Pre-Increase Weeks', field('wage_increase','pre_increase_weeks', numVal(wi.pre_increase_weeks), inputStyle, '')) +
+    item('Post-Increase Weeks', field('wage_increase','post_increase_weeks', numVal(wi.post_increase_weeks), inputStyle, ''))
+  );
+
+  // Insurance
+  html += section('Insurance Renewal',
+    item('Renewal Increase %', field('insurance_renewal','increase_percent', pctVal(ir.increase_percent), pctStyle, '%')) +
+    item('Effective Date', '<input type="text" value="' + (ir.effective_date || 'Mar 2027') + '" style="' + inputStyle + '" onchange="assumAutoSave(\'insurance_renewal\',\'effective_date\', this.value)">') +
+    item('Pre-Renewal Months', field('insurance_renewal','pre_renewal_months', numVal(ir.pre_renewal_months), inputStyle, '')) +
+    item('Post-Renewal Months', field('insurance_renewal','post_renewal_months', numVal(ir.post_renewal_months), inputStyle, ''))
+  );
+
+  // Energy
+  html += section('Energy Rates',
+    item('Gas ESCO Rate ($/Therm)', field('energy','gas_esco_rate', numVal(en.gas_esco_rate), dollarStyle, '')) +
+    item('Electric ESCO Rate ($/KWH)', field('energy','electric_esco_rate', numVal(en.electric_esco_rate), dollarStyle, '')) +
+    item('Gas Rate Increase %', field('energy','gas_rate_increase', pctVal(en.gas_rate_increase), pctStyle, '%')) +
+    item('Electric Rate Increase %', field('energy','electric_rate_increase', pctVal(en.electric_rate_increase), pctStyle, '%')) +
+    item('Oil Price/Gallon', field('energy','oil_price_per_gallon', numVal(en.oil_price_per_gallon), dollarStyle, '')) +
+    item('Oil Rate Increase %', field('energy','oil_rate_increase', pctVal(en.oil_rate_increase), pctStyle, '%'))
+  );
+
+  // Water & Sewer
+  html += section('Water & Sewer',
+    item('Rate Increase %', field('water_sewer','rate_increase', pctVal(ws.rate_increase), pctStyle, '%'))
+  );
+
+  html += '</div>';
+  contentDiv.innerHTML = html;
 }
 
 let _faSaveTimer = null;
