@@ -2383,9 +2383,9 @@ BUILDING_DETAIL_TEMPLATE = r"""
       <div id="pmTrackContent"></div>
     </div>
 
-    <!-- Track 2: Budget Assembly -->
+    <!-- Track 2: FA Completion Checklist -->
     <div class="section" style="margin-bottom:0;">
-      <h2>Budget Assembly</h2>
+      <h2>FA Completion Checklist</h2>
       <div id="assemblyContent"></div>
     </div>
   </div>
@@ -2550,25 +2550,49 @@ function renderDetail(data) {
       (data.assignments.pm ? '<span style="font-size:13px; color:var(--gray-500);">Assigned to: ' + data.assignments.pm + '</span>' : '') +
     '</div>' + pmActions;
 
-  // Assembly Track
+  // FA Completion Checklist — guided workflow
+  const assumptions = data.assumptions || {};
+  const hasAssumptions = Object.keys(assumptions).length > 0;
+  const hasBudgetPeriod = !!assumptions.budget_period;
+  const hasEnergyRates = !!(assumptions.energy_rates && Object.keys(assumptions.energy_rates).length);
+  const hasWaterRates = !!(assumptions.water_rates && Object.keys(assumptions.water_rates).length);
+  const hasInsuranceInc = !!(assumptions.insurance_increase && assumptions.insurance_increase.percent);
+  const hasWageInc = !!(assumptions.wage_increase && assumptions.wage_increase.percent);
+  const anyAssumptions = hasBudgetPeriod || hasEnergyRates || hasWaterRates || hasInsuranceInc || hasWageInc;
+  const linesWithProposed = lines.filter(l => l.proposed_budget && l.proposed_budget > 0).length;
+  const pmDone = ['fa_review','approved'].includes(b.status);
+  const pmSent = ['pm_pending','pm_in_progress','fa_review','approved'].includes(b.status);
+
   const checks = [
-    { label: 'Budget Generated', done: true },
-    { label: 'Expense Distribution Uploaded', done: data.expenses.exists },
-    { label: 'Audit Data Confirmed', done: data.audit.exists }
+    { label: 'YSL Data Imported', done: true, detail: lines.length + ' GL lines loaded' },
+    { label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
+    { label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
+    { label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
+    { label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
+    { label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values' },
+    { label: 'Final Approval', done: b.status === 'approved', detail: b.status === 'approved' ? 'Budget approved' : 'Complete all steps above first' }
   ];
-  let assemblyHtml = '<div style="display:flex; flex-direction:column; gap:8px;">';
-  checks.forEach(c => {
-    const icon = c.done ? '\u2713' : '\u2717';
-    const color = c.done ? 'var(--green)' : 'var(--gray-300)';
-    assemblyHtml += '<div style="display:flex; align-items:center; gap:8px;"><span style="color:' + color + '; font-weight:bold; font-size:18px;">' + icon + '</span> ' + c.label + '</div>';
+
+  const doneCount = checks.filter(c => c.done).length;
+  const pct = Math.round(doneCount / checks.length * 100);
+  const barColor = pct === 100 ? 'var(--green)' : pct >= 60 ? 'var(--blue)' : 'var(--yellow)';
+
+  let assemblyHtml = '<div style="margin-bottom:12px;">' +
+    '<div style="display:flex; justify-content:space-between; font-size:12px; color:var(--gray-500); margin-bottom:4px;"><span>' + doneCount + ' of ' + checks.length + ' complete</span><span>' + pct + '%</span></div>' +
+    '<div style="height:6px; background:var(--gray-100); border-radius:3px; overflow:hidden;"><div style="height:100%; width:' + pct + '%; background:' + barColor + '; border-radius:3px; transition:width 0.3s;"></div></div></div>';
+
+  assemblyHtml += '<div style="display:flex; flex-direction:column; gap:6px;">';
+  checks.forEach((c, i) => {
+    const icon = c.done ? '\u2705' : '\u2B1C';
+    const opacity = c.done ? '0.7' : '1';
+    const weight = c.done ? '400' : '500';
+    const actionBtn = c.action ? ' <button onclick="' + c.action + '()" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; margin-left:8px;">Go</button>' : '';
+    assemblyHtml += '<div style="display:flex; align-items:center; gap:8px; opacity:' + opacity + '; font-weight:' + weight + ';">' +
+      '<span style="font-size:16px;">' + icon + '</span>' +
+      '<div><span style="font-size:13px;">' + c.label + '</span>' + actionBtn +
+      '<div style="font-size:11px; color:var(--gray-400); margin-top:1px;">' + c.detail + '</div></div></div>';
   });
   assemblyHtml += '</div>';
-
-  if (data.expenses.exists) {
-    assemblyHtml += '<div style="margin-top:12px; font-size:13px; color:var(--gray-500);">' +
-      data.expenses.invoice_count + ' invoices | ' + data.expenses.period_from + ' to ' + data.expenses.period_to +
-      ' | Total: ' + fmt(data.expenses.total_amount) + '</div>';
-  }
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
 
@@ -2676,6 +2700,14 @@ function renderDetail(data) {
 
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
   }
+}
+
+// ── Checklist Action Helpers ──
+function openAssumptions() {
+  const tabs = document.querySelectorAll('.sheet-tab');
+  const assumTab = Array.from(tabs).find(t => t.textContent.includes('Assumptions'));
+  if (assumTab) assumTab.click();
+  assumTab?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ── Assumptions Tab ──
