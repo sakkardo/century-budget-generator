@@ -1315,23 +1315,24 @@ def create_workflow_blueprint(db):
             ).first()
             if not line:
                 continue
-            # Track changes for audit trail
+            # Track changes for audit trail — all editable fields
             changes = []
-            if "increase_pct" in line_data:
-                new_val = float(line_data["increase_pct"] or 0)
-                if line.increase_pct != new_val:
-                    changes.append(("increase_pct", str(line.increase_pct or 0), str(new_val)))
-                line.increase_pct = new_val
+            editable_float_fields = [
+                "increase_pct", "proposed_budget", "accrual_adj", "unpaid_bills",
+                "prior_year", "ytd_actual", "ytd_budget", "current_budget"
+            ]
+            for fname in editable_float_fields:
+                if fname in line_data:
+                    new_val = float(line_data[fname] or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
+                    setattr(line, fname, new_val)
             if "notes" in line_data:
                 new_val = line_data["notes"]
                 if (line.notes or "") != new_val:
                     changes.append(("notes", line.notes or "", new_val))
                 line.notes = new_val
-            if "proposed_budget" in line_data:
-                new_val = float(line_data["proposed_budget"] or 0)
-                if line.proposed_budget != new_val:
-                    changes.append(("proposed_budget", str(line.proposed_budget or 0), str(new_val)))
-                line.proposed_budget = new_val
 
             for field, old_v, new_v in changes:
                 db.session.add(BudgetRevision(
@@ -3056,6 +3057,71 @@ async function renderHistoryTab(contentDiv) {
   }
 }
 
+// Toggle formula visibility on computed cells
+function toggleFormula(el) {
+  const cell = el.closest('td');
+  const ftxt = cell.querySelector('.formula-text');
+  if (ftxt) ftxt.style.display = ftxt.style.display === 'none' ? 'block' : 'none';
+}
+
+// Show all formulas at once (toggle)
+let _formulasVisible = false;
+function toggleAllFormulas() {
+  _formulasVisible = !_formulasVisible;
+  document.querySelectorAll('.formula-text').forEach(el => {
+    el.style.display = _formulasVisible ? 'block' : 'none';
+  });
+}
+
+// When an input field changes, recalculate computed cells in that row and save
+function faLineChanged(gl, field, value) {
+  // Save to server
+  faAutoSave(gl, field, value);
+
+  // Find the row and read current input values
+  const row = document.querySelector('tr[data-gl="' + gl + '"]');
+  if (!row) return;
+
+  const getVal = (id) => {
+    const el = document.getElementById(id);
+    return el ? parseFloat(el.value) || 0 : 0;
+  };
+
+  const prior = getVal('pr_' + gl);
+  const ytd = getVal('ytd_' + gl);
+  const accrual = getVal('acc_' + gl);
+  const unpaid = getVal('unp_' + gl);
+  const incInput = getVal('inc_' + gl);
+  const incPct = incInput / 100; // input is in % form
+
+  // Recompute
+  const base = ytd + accrual + unpaid;
+  let estimate;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+    estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+  } else {
+    estimate = Math.max(prior - base, 0);
+  }
+  const forecast = base + estimate;
+  const proposed = forecast * (1 + incPct);
+
+  // Update computed display cells
+  const setCell = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = fmt(val); };
+  setCell('est_' + gl, estimate);
+  setCell('fcst_' + gl, forecast);
+
+  // Update proposed input
+  const propEl = document.getElementById('prop_' + gl);
+  if (propEl) propEl.value = Math.round(proposed);
+
+  // Update variance and % change
+  const variance = proposed - prior;
+  const varEl = document.getElementById('var_' + gl);
+  if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
+  const pctEl = document.getElementById('pct_' + gl);
+  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
+}
+
 let _faSaveTimer = null;
 function faAutoSave(gl, field, value) {
   clearTimeout(_faSaveTimer);
@@ -3314,11 +3380,12 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const formulaBg = '#f0fdf4';  // light green — computed
   const faBg = '#ffffff';  // white — FA editable
 
-  // Legend
-  let html = '<div style="display:flex; gap:16px; margin-bottom:8px; font-size:11px; color:var(--gray-500);">' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + sysBg + ';border:1px solid #bfdbfe;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Yardi Data</span>' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + formulaBg + ';border:1px solid #bbf7d0;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Calculated</span>' +
-    '<span><span style="display:inline-block;width:12px;height:12px;background:' + faBg + ';border:1px solid #e5e7eb;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>FA Editable</span>' +
+  // Legend with formula toggle
+  let html = '<div style="display:flex; gap:16px; margin-bottom:8px; font-size:11px; color:var(--gray-500); align-items:center;">' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + sysBg + ';border:1px solid #bfdbfe;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Yardi Data (editable)</span>' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + formulaBg + ';border:1px solid #bbf7d0;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>Calculated (click <b>fx</b> for formula)</span>' +
+    '<span><span style="display:inline-block;width:12px;height:12px;background:' + faBg + ';border:1px solid #e5e7eb;border-radius:2px;vertical-align:middle;margin-right:4px;"></span>FA Override</span>' +
+    '<span style="margin-left:auto;"><button onclick="toggleAllFormulas()" style="font-size:11px; padding:3px 10px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">fx Show All Formulas</button></span>' +
     '</div>';
 
   html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
@@ -3342,11 +3409,29 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   const catConfig = SHEET_CATEGORIES[sheetName];
 
+  // Build an editable input cell
+  function inp(gl, field, val, opts) {
+    const w = opts.w || '80px';
+    const step = opts.step || '1';
+    const bg = opts.bg || faBg;
+    const extra = opts.extra || '';
+    const id = opts.id || '';
+    const idAttr = id ? ' id="' + id + '"' : '';
+    const type = opts.type || 'number';
+    if (type === 'text') {
+      return '<input' + idAttr + ' type="text" value="' + String(val || '').replace(/"/g, '&quot;') + '" style="width:' + w + '; ' + inputStyle + ' background:' + bg + ';" onchange="faAutoSave(\'' + gl + '\', \'' + field + '\', this.value)" ' + extra + '>';
+    }
+    return '<input' + idAttr + ' type="number" step="' + step + '" value="' + Math.round(val) + '" style="width:' + w + '; ' + inputStyle + ' background:' + bg + ';" onchange="faLineChanged(\'' + gl + '\', \'' + field + '\', this.value)" ' + extra + '>';
+  }
+
   function buildLineRow(l) {
+    const gl = l.gl_code;
     const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
     const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
+    const accrual = l.accrual_adj || 0;
+    const unpaid = l.unpaid_bills || 0;
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
@@ -3356,27 +3441,41 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:2px 6px; border-radius:10px;">Reclass</span>' : '';
 
-    // Tooltip for formula cells
-    const estTip = faGetFormulaTooltip(l, 'estimate');
-    const fcstTip = faGetFormulaTooltip(l, 'forecast');
-    const propTip = faGetFormulaTooltip(l, 'proposed');
+    // Formula descriptions
+    const estFormula = faGetFormulaTooltip(l, 'estimate');
+    const fcstFormula = faGetFormulaTooltip(l, 'forecast');
+    const propFormula = faGetFormulaTooltip(l, 'proposed');
 
-    return '<tr style="border-bottom:1px solid var(--gray-100);">' +
-      '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + l.gl_code + reclassBadge + '</td>' +
-      '<td style="padding:6px 8px;">' + l.description + '</td>' +
-      '<td style="padding:6px 8px;"><input type="text" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" style="width:100px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'notes\', this.value)"></td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(prior) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(ytd) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(l.accrual_adj || 0) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + fmt(l.unpaid_bills || 0) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(ytdBudget) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + formulaBg + '; cursor:help;" title="' + estTip + '">' + fmt(estimate) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + formulaBg + '; cursor:help;" title="' + fcstTip + '">' + fmt(forecast) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px; background:' + sysBg + ';">' + fmt(budget) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="0.1" value="' + incPct + '" style="width:60px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'increase_pct\', this.value / 100)"></td>' +
-      '<td style="text-align:right; padding:6px 8px;"><input type="number" step="1" value="' + Math.round(proposed) + '" style="width:90px; ' + inputStyle + '" onchange="faAutoSave(\'' + l.gl_code + '\', \'proposed_budget\', this.value)" title="' + propTip + '"></td>' +
-      '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; padding:6px 8px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
+    // Computed cell with visible formula toggle
+    function computedCell(id, val, formula, bg) {
+      return '<td style="text-align:right; padding:4px 8px; background:' + bg + '; position:relative;">' +
+        '<div style="display:flex; align-items:center; justify-content:flex-end; gap:4px;">' +
+          '<span class="formula-toggle" onclick="toggleFormula(this)" style="cursor:pointer; font-size:10px; color:var(--blue); opacity:0.6;" title="Show formula">fx</span>' +
+          '<span id="' + id + '">' + fmt(val) + '</span>' +
+        '</div>' +
+        '<div class="formula-text" style="display:none; font-size:10px; color:var(--gray-400); margin-top:2px; text-align:right; word-break:break-all;">' + formula + '</div>' +
+      '</td>';
+    }
+
+    return '<tr style="border-bottom:1px solid var(--gray-100);" data-gl="' + gl + '">' +
+      '<td style="font-family:monospace; font-size:12px; padding:6px 8px; white-space:nowrap;">' + gl + reclassBadge + '</td>' +
+      '<td style="padding:6px 8px; font-size:12px;">' + l.description + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'notes', l.notes, {type:'text', w:'100px'}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'prior_year', prior, {w:'80px', bg:sysBg, id:'pr_'+gl}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'ytd_actual', ytd, {w:'80px', bg:sysBg, id:'ytd_'+gl}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'accrual_adj', accrual, {w:'70px', id:'acc_'+gl}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'unpaid_bills', unpaid, {w:'70px', id:'unp_'+gl}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'ytd_budget', ytdBudget, {w:'80px', bg:sysBg, id:'ytdb_'+gl}) + '</td>' +
+      computedCell('est_'+gl, estimate, estFormula, formulaBg) +
+      computedCell('fcst_'+gl, forecast, fcstFormula, formulaBg) +
+      '<td style="padding:4px 6px;">' + inp(gl, 'current_budget', budget, {w:'80px', bg:sysBg, id:'bud_'+gl}) + '</td>' +
+      '<td style="padding:4px 6px;">' + inp(gl, 'increase_pct', incPct, {w:'55px', step:'0.1', id:'inc_'+gl, extra:'data-pct="true"'}) + '</td>' +
+      '<td style="padding:4px 6px; position:relative;">' +
+        inp(gl, 'proposed_budget', proposed, {w:'85px', id:'prop_'+gl}) +
+        '<div class="formula-text" style="display:none; font-size:10px; color:var(--gray-400); margin-top:2px;">' + propFormula + '</div>' +
+      '</td>' +
+      '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';" id="var_'+gl+'">' + fmt(variance) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;" id="pct_'+gl+'">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
   }
 
   function sumLines(lines) {
