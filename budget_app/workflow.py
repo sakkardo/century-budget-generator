@@ -4113,6 +4113,34 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const NC = 15;
   const estLbl = estimateLabel();
 
+  // ── Apply PM reclass adjustments to YTD at display time ──
+  // Source GL: reduce ytd_actual by reclass_amount
+  // Target GL: increase ytd_actual by reclass_amount
+  // Store original YTD so we can show it and avoid double-applying on re-render
+  const _reclassAdj = {};  // {gl_code: net adjustment}
+  sheetLines.forEach(l => {
+    if (l.reclass_to_gl && l.reclass_amount) {
+      const amt = parseFloat(l.reclass_amount) || 0;
+      if (amt) {
+        _reclassAdj[l.gl_code] = (_reclassAdj[l.gl_code] || 0) - amt;
+        _reclassAdj[l.reclass_to_gl] = (_reclassAdj[l.reclass_to_gl] || 0) + amt;
+      }
+    }
+  });
+  // Apply adjustments (store original for tooltip)
+  sheetLines.forEach(l => {
+    // Always restore original first (in case of re-render)
+    if (l._orig_ytd !== undefined) l.ytd_actual = l._orig_ytd;
+    l._orig_ytd = l.ytd_actual || 0;
+    const adj = _reclassAdj[l.gl_code] || 0;
+    if (adj) {
+      l.ytd_actual = (l.ytd_actual || 0) + adj;
+      l._reclass_ytd_adj = adj;
+    } else {
+      l._reclass_ytd_adj = 0;
+    }
+  });
+
   // Inject PM-style CSS if not already present
   if (!document.getElementById('faSheetStyle')) {
     const style = document.createElement('style');
@@ -4224,7 +4252,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + notesDisplay.replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"' + (l.reclass_to_gl ? ' style="background:#fef9e7; border-left:3px solid var(--orange);"' : '') + '></td>' +
-      '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
+      '<td class="num" style="position:relative;">' + $cell('ytd_'+gl, 'ytd_actual', ytd) +
+        (l._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange); background:var(--orange-light); padding:0 3px; border-radius:3px; border:1px solid var(--orange);" title="Original: ' + fmt(l._orig_ytd) + ' | Reclass adj: ' + (l._reclass_ytd_adj > 0 ? '+' : '') + fmt(l._reclass_ytd_adj) + '">R</span>' : '') + '</td>' +
       '<td class="num" style="position:relative;">' + $cell('acc_'+gl, 'accrual_adj', accrual) +
         (accrual !== 0 ? '<span onclick="faToggleAccrualDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); cursor:pointer; background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);" title="View prior-year invoices">▼</span>' : '') + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
