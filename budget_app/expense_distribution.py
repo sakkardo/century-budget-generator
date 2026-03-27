@@ -659,6 +659,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
     helpers = {
         "parse_expense_distribution": parse_expense_distribution,
         "store_expense_report": store_expense_report,
+        "apply_accrual_adjustments": apply_accrual_adjustments,
         "get_adjusted_gl_totals": get_adjusted_gl_totals,
     }
 

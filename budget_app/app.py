@@ -796,9 +796,22 @@ def process_files():
                         # Filename doesn't match any YSL entity — log warning but store as-is
                         logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Neither matches YSL entities {ysl_entities}. Using file entity {exp_entity}.")
 
-                ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
-                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices)")
+                report = ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
                 logger.info(f"Expense distribution stored for entity {target_entity}")
+
+                # Apply accrual adjustments (prior-year invoices backed out of YTD)
+                accrual_result = {"applied": 0, "accruals": {}}
+                if exp_from:
+                    try:
+                        accrual_result = ed_helpers["apply_accrual_adjustments"](target_entity, report.id, exp_from)
+                        if accrual_result["applied"] > 0:
+                            logger.info(f"Auto-applied accrual adjustments to {accrual_result['applied']} GL lines for entity {target_entity}")
+                    except Exception as accrual_err:
+                        logger.error(f"Accrual adjustment failed for {target_entity}: {accrual_err}")
+                        results["warnings"].append(f"Accrual adjustments failed for {target_entity}: {str(accrual_err)}")
+
+                accrual_msg = f", {accrual_result['applied']} accrual adj" if accrual_result["applied"] > 0 else ""
+                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices{accrual_msg})")
             except Exception as exp_err:
                 logger.error(f"Expense parse error for {exp_filename}: {exp_err}")
                 results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
