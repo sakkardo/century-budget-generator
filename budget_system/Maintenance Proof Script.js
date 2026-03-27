@@ -14,7 +14,9 @@
   // ║  EDIT THESE BEFORE EACH RUN                      ║
   // ╠══════════════════════════════════════════════════╣
   // ║                                                  ║
-  const ENTITIES = [148, 204, 206, 805];
+  // Entity → charge code mapping (coop=maint, condo=common)
+  const ENTITY_CHARGES = {204: 'maint', 206: 'common', 148: 'maint', 805: 'maint'};
+  const ENTITIES = Object.keys(ENTITY_CHARGES).map(Number);
   // ║                                                  ║
   const BATCH_SIZE = 3;  // How many to run in parallel
   // ║                                                  ║
@@ -53,7 +55,8 @@
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      log(`  ${entity}: Submitting Generate request...`);
+      const chargeCode = ENTITY_CHARGES[entity] || 'maint';
+      log(`  ${entity}: Submitting Generate request (charge: ${chargeCode})...`);
 
       // Step 2: POST to generate the report
       const post = {
@@ -65,7 +68,7 @@
         'Ysi2376:LookupCode': String(entity),  // Property
         'Ysi2377:LookupCode': '',               // Unit Code (blank = all)
         'Ysi2378:LookupCode': 'Current',        // Status
-        'Ysi2379:LookupCode': '',               // Charge Code (blank = all)
+        'Ysi2379:LookupCode': chargeCode,       // Charge Code (maint or common)
         'Ysi2380:DropDownList': 'No',           // Is Excluded
         'txtMergedFileEmailID:TextBox': '',
         'txtEmailRoleFlag:TextBox': 'False',

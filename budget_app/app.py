@@ -478,10 +478,29 @@ def generate_script():
     )
 
     # Build Maintenance Proof script with user settings
+    # Map entity → charge code based on building type from CSV
+    building_charges = {}
+    try:
+        with open(BUILDINGS_CSV, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                ec = str(row.get("entity_code", "")).strip()
+                btype = (row.get("type", "") or "").strip().lower()
+                if btype in ("coop", "cond-op"):
+                    building_charges[ec] = "maint"
+                elif btype == "condo":
+                    building_charges[ec] = "common"
+                # Rental, Mitchell Lama, Comm/Retail → skip (no maint proof)
+    except Exception:
+        pass
+
+    # Only include entities that need a maintenance proof
+    mp_entities = [e for e in entities if str(e) in building_charges]
+    mp_mapping_js = ", ".join(f"{e}: '{building_charges[str(e)]}'" for e in mp_entities)
+
     mp_script = MAINT_PROOF_SCRIPT
     mp_script = mp_script.replace(
-        "const ENTITIES = [148, 204, 206, 805];",
-        f"const ENTITIES = [{entities_js}];"
+        "const ENTITY_CHARGES = {204: 'maint', 206: 'common', 148: 'maint', 805: 'maint'};",
+        f"const ENTITY_CHARGES = {{{mp_mapping_js}}};"
     )
 
     # Combine into one script that runs all three sequentially
@@ -510,7 +529,7 @@ def generate_script():
   // ── Part 2: Expense Distribution ──
   await {exp_script}
 
-  console.log('\\n>>> Starting Part 3: Maintenance Proof <<<\\n');
+  console.log('\\n>>> Starting Part 3: Maintenance Proof ({len(mp_entities)} of {len(entities)} buildings — coops/condos only) <<<\\n');
   // ── Part 3: Maintenance Proof (Ad Hoc AMP) ──
   await {mp_script}
 
