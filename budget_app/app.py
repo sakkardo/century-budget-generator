@@ -108,6 +108,7 @@ with app.app_context():
             ("budget_lines", "estimate_override", "FLOAT"),
             ("budget_lines", "forecast_override", "FLOAT"),
             ("budget_lines", "accrual_adj", "FLOAT DEFAULT 0"),
+            ("budgets", "building_type", "VARCHAR(50) DEFAULT ''"),
         ]
         for table, col, col_type in _migrations:
             try:
@@ -116,6 +117,35 @@ with app.app_context():
                 logger.info(f"Added column {table}.{col}")
             except Exception:
                 db.session.rollback()  # Column already exists, skip
+
+        # Backfill building_type on existing budgets from buildings.csv
+        try:
+            import csv as _csv
+            _csv_path = BUDGET_SYSTEM / "buildings.csv"
+            _type_map = {}
+            if _csv_path.exists():
+                with open(_csv_path, newline="", encoding="utf-8") as _f:
+                    for _r in _csv.DictReader(_f):
+                        ec = str(_r.get("entity_code", "")).strip()
+                        bt = (_r.get("type", "") or "").strip()
+                        if ec and bt:
+                            _type_map[ec] = bt
+            empty_bt = db.session.execute(
+                db.text("SELECT id, entity_code FROM budgets WHERE building_type IS NULL OR building_type = ''")
+            ).fetchall()
+            if empty_bt and _type_map:
+                for row in empty_bt:
+                    bt = _type_map.get(str(row[1]).strip(), "")
+                    if bt:
+                        db.session.execute(
+                            db.text("UPDATE budgets SET building_type = :bt WHERE id = :id"),
+                            {"bt": bt, "id": row[0]}
+                        )
+                db.session.commit()
+                logger.info(f"Backfilled building_type on {len(empty_bt)} budgets")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Building type backfill skipped: {e}")
 
 # Health check for Railway
 @app.route("/healthz")

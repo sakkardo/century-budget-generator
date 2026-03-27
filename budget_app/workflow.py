@@ -13,6 +13,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from decimal import Decimal
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,7 @@ def create_workflow_blueprint(db):
         id = db.Column(db.Integer, primary_key=True)
         entity_code = db.Column(db.String(50), nullable=False, index=True)
         building_name = db.Column(db.String(255), nullable=False)
+        building_type = db.Column(db.String(50), default="")
         year = db.Column(db.Integer, default=2027)
         status = db.Column(db.String(20), default="not_started")
         fa_notes = db.Column(db.Text, default="")
@@ -203,6 +205,7 @@ def create_workflow_blueprint(db):
                 "id": self.id,
                 "entity_code": self.entity_code,
                 "building_name": self.building_name,
+                "building_type": self.building_type or "",
                 "year": self.year,
                 "status": self.status,
                 "fa_notes": self.fa_notes,
@@ -529,6 +532,33 @@ def create_workflow_blueprint(db):
         "Gen & Admin": "gen_admin",
     }
 
+    # ── Building type lookup (from CSV, synced from Monday.com) ──────────────
+    _building_type_cache = {}
+
+    def _load_building_types():
+        """Load entity→building_type mapping from buildings.csv (once, cached)."""
+        if _building_type_cache:
+            return _building_type_cache
+        import csv as _csv
+        csv_path = os.path.join(os.path.dirname(__file__), "budget_system", "buildings.csv")
+        if not os.path.exists(csv_path):
+            csv_path = os.path.join(os.path.dirname(__file__), "..", "budget_system", "buildings.csv")
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                for row in _csv.DictReader(f):
+                    ec = str(row.get("entity_code", "")).strip()
+                    btype = (row.get("type", "") or "").strip()
+                    if ec:
+                        _building_type_cache[ec] = btype
+        except Exception as e:
+            logger.warning(f"Could not load building types from CSV: {e}")
+        return _building_type_cache
+
+    def _lookup_building_type(entity_code):
+        """Return building type (Coop/Condo/etc.) for an entity code."""
+        types = _load_building_types()
+        return types.get(str(entity_code).strip(), "")
+
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
@@ -552,11 +582,14 @@ def create_workflow_blueprint(db):
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
+                    building_type=_lookup_building_type(entity_code),
                     year=2027,
                     status="draft"
                 )
                 db.session.add(budget)
                 db.session.flush()
+            elif not budget.building_type:
+                budget.building_type = _lookup_building_type(entity_code)
 
             # Store assumptions snapshot if provided
             if assumptions:
