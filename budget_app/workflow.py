@@ -1124,33 +1124,17 @@ def create_workflow_blueprint(db):
         except Exception:
             pass
 
-        # Check building type for this entity
-        building_type_info = {"building_type": "", "charge_label": "Maintenance", "needs_maint_proof": False}
-        try:
-            bt_row = db.session.execute(
-                db.text("SELECT type FROM buildings WHERE entity_code = :ec LIMIT 1"),
-                {"ec": entity_code}
-            ).fetchone()
-            if not bt_row:
-                # Fallback: read from CSV
-                import csv as _csv
-                csv_path = os.path.join(os.path.dirname(__file__), "budget_system", "buildings.csv")
-                if not os.path.exists(csv_path):
-                    csv_path = os.path.join(os.path.dirname(__file__), "..", "budget_system", "buildings.csv")
-                if os.path.exists(csv_path):
-                    with open(csv_path) as _f:
-                        for _r in _csv.DictReader(_f):
-                            if str(_r.get("entity_code", "")).strip() == str(entity_code).strip():
-                                btype = _r.get("type", "").strip()
-                                charge_label = "Common Charges" if btype.lower() == "condo" else "Maintenance"
-                                building_type_info = {
-                                    "building_type": btype,
-                                    "charge_label": charge_label,
-                                    "needs_maint_proof": btype.lower() in ["coop", "condo", "cond-op"],
-                                }
-                                break
-        except Exception:
-            pass
+        # Check building type for this entity (from CSV cache)
+        btype = _lookup_building_type(entity_code)
+        if btype:
+            charge_label = "Common Charges" if btype.lower() == "condo" else "Maintenance"
+            building_type_info = {
+                "building_type": btype,
+                "charge_label": charge_label,
+                "needs_maint_proof": btype.lower() in ["coop", "condo", "cond-op"],
+            }
+        else:
+            building_type_info = {"building_type": "", "charge_label": "Maintenance", "needs_maint_proof": False}
 
         # Group lines by sheet for tabbed view
         sheets = {}
