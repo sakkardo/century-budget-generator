@@ -534,6 +534,7 @@ def generate_script():
     )
 
     # Combine into one script that runs all three sequentially
+    # Each part is wrapped in try/catch so errors don't kill subsequent parts
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
  * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof
@@ -544,6 +545,7 @@ def generate_script():
  */
 (async function() {{
   'use strict';
+  const _partResults = {{ysl: null, exp: null, mp: null}};
   console.log('='.repeat(60));
   console.log('Century Budget — Combined Download');
   console.log('Part 1: YSL Annual Budget reports');
@@ -553,18 +555,42 @@ def generate_script():
 
   // ── Part 1: YSL Annual Budget ──
   console.log('\\n>>> Starting Part 1: YSL Annual Budget <<<\\n');
-  await {ysl_script}
+  try {{
+    _partResults.ysl = await {ysl_script}
+    console.log('\\n>>> Part 1 (YSL) completed successfully <<<\\n');
+  }} catch (_e1) {{
+    console.error('>>> Part 1 (YSL) FAILED with error:', _e1.message);
+    console.error(_e1.stack);
+    _partResults.ysl = 'ERROR: ' + _e1.message;
+  }}
 
-  console.log('\\n>>> Starting Part 2: Expense Distribution <<<\\n');
   // ── Part 2: Expense Distribution ──
-  await {exp_script}
+  console.log('\\n>>> Starting Part 2: Expense Distribution <<<\\n');
+  try {{
+    _partResults.exp = await {exp_script}
+    console.log('\\n>>> Part 2 (Expense Distribution) completed successfully <<<\\n');
+  }} catch (_e2) {{
+    console.error('>>> Part 2 (Expense Distribution) FAILED with error:', _e2.message);
+    console.error(_e2.stack);
+    _partResults.exp = 'ERROR: ' + _e2.message;
+  }}
 
+  // ── Part 3: Maintenance Proof ({len(mp_entities)} of {len(entities)} buildings — coops/condos only) ──
   console.log('\\n>>> Starting Part 3: Maintenance Proof ({len(mp_entities)} of {len(entities)} buildings — coops/condos only) <<<\\n');
-  // ── Part 3: Maintenance Proof (Ad Hoc AMP) ──
-  await {mp_script}
+  try {{
+    _partResults.mp = await {mp_script}
+    console.log('\\n>>> Part 3 (Maintenance Proof) completed successfully <<<\\n');
+  }} catch (_e3) {{
+    console.error('>>> Part 3 (Maintenance Proof) FAILED with error:', _e3.message);
+    console.error(_e3.stack);
+    _partResults.mp = 'ERROR: ' + _e3.message;
+  }}
 
   console.log('\\n' + '='.repeat(60));
-  console.log('ALL DONE — YSL + Expense Distribution + Maintenance Proof downloads complete.');
+  console.log('ALL DONE — Summary:');
+  console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
+  console.log('  Part 2 (Exp):', _partResults.exp === null ? 'SKIPPED' : (typeof _partResults.exp === 'string' && _partResults.exp.startsWith('ERROR') ? _partResults.exp : 'OK'));
+  console.log('  Part 3 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
   console.log('Drag all downloaded .xlsx files into the budget generator to process.');
   console.log('='.repeat(60));
 }})();"""
