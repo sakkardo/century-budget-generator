@@ -1067,7 +1067,7 @@ def create_workflow_blueprint(db):
                     "invoice_count": invoice_count
                 }
         except Exception:
-            pass
+            db.session.rollback()
 
         # Check audit data — fetch ALL confirmed uploads for multi-year comparison
         audit_data = {"exists": False, "years": {}}
@@ -1102,7 +1102,7 @@ def create_workflow_blueprint(db):
                         "category_mapping": BUDGET_CAT_TO_CENTURY
                     }
         except Exception:
-            pass
+            db.session.rollback()
 
         # Check maintenance proof data
         maint_proof_data = {"exists": False}
@@ -1123,7 +1123,7 @@ def create_workflow_blueprint(db):
                     "file_name": mp_row[7] or "",
                 }
         except Exception:
-            pass
+            db.session.rollback()
 
         # Check building type for this entity (from CSV cache)
         btype = _lookup_building_type(entity_code)
