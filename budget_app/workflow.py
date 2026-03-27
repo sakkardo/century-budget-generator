@@ -1060,6 +1060,7 @@ def create_workflow_blueprint(db):
                 ).fetchone()[0]
                 expense_data = {
                     "exists": True,
+                    "report_id": row[0],
                     "period_from": row[1],
                     "period_to": row[2],
                     "total_amount": float(row[3]) if row[3] else 0,
@@ -1138,25 +1139,29 @@ def create_workflow_blueprint(db):
 
         # Compute expense invoice reclass adjustments per GL
         expense_reclass_adj = {}  # {gl_code: net_ytd_adjustment}
+        _reclass_debug = {"step": "init"}
         try:
-            if expense_data.get("exists"):
-                report_id = db.session.execute(
-                    db.text("SELECT id FROM expense_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
-                    {"ec": entity_code}
-                ).fetchone()
-                if report_id:
-                    reclassed_invoices = db.session.execute(
-                        db.text("SELECT gl_code, reclass_to_gl, amount FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
-                        {"rid": report_id[0]}
-                    ).fetchall()
-                    for inv in reclassed_invoices:
-                        src_gl = inv[0]
-                        tgt_gl = inv[1]
-                        amt = float(inv[2] or 0)
-                        expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
-                        expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
+            exp_report_id = expense_data.get("report_id")
+            _reclass_debug["report_id"] = exp_report_id
+            if exp_report_id:
+                reclassed_invoices = db.session.execute(
+                    db.text("SELECT gl_code, reclass_to_gl, amount FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
+                    {"rid": exp_report_id}
+                ).fetchall()
+                _reclass_debug["reclassed_count"] = len(reclassed_invoices)
+                for inv in reclassed_invoices:
+                    src_gl = inv[0]
+                    tgt_gl = inv[1]
+                    amt = float(inv[2] or 0)
+                    expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
+                    expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
+                _reclass_debug["adjustments"] = {k: round(v, 2) for k, v in expense_reclass_adj.items()}
+                logger.info(f"Expense reclass for {entity_code}: report_id={exp_report_id}, {len(reclassed_invoices)} reclassed invoices, adj={expense_reclass_adj}")
+            else:
+                _reclass_debug["step"] = "no_report_id"
         except Exception as e:
             logger.warning(f"Could not compute expense reclass adjustments: {e}")
+            _reclass_debug["error"] = str(e)
 
         # Group lines by sheet for tabbed view
         sheets = {}
@@ -1216,7 +1221,8 @@ def create_workflow_blueprint(db):
             "building_type_info": building_type_info,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
-            "remaining_months": remaining_months
+            "remaining_months": remaining_months,
+            "_reclass_debug": _reclass_debug
         })
 
 
