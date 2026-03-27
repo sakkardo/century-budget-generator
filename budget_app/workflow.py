@@ -1139,29 +1139,23 @@ def create_workflow_blueprint(db):
 
         # Compute expense invoice reclass adjustments per GL
         expense_reclass_adj = {}  # {gl_code: net_ytd_adjustment}
-        _reclass_debug = {"step": "init"}
         try:
             exp_report_id = expense_data.get("report_id")
-            _reclass_debug["report_id"] = exp_report_id
             if exp_report_id:
                 reclassed_invoices = db.session.execute(
                     db.text("SELECT gl_code, reclass_to_gl, amount FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
                     {"rid": exp_report_id}
                 ).fetchall()
-                _reclass_debug["reclassed_count"] = len(reclassed_invoices)
                 for inv in reclassed_invoices:
                     src_gl = inv[0]
                     tgt_gl = inv[1]
                     amt = float(inv[2] or 0)
                     expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
                     expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
-                _reclass_debug["adjustments"] = {k: round(v, 2) for k, v in expense_reclass_adj.items()}
-                logger.info(f"Expense reclass for {entity_code}: report_id={exp_report_id}, {len(reclassed_invoices)} reclassed invoices, adj={expense_reclass_adj}")
-            else:
-                _reclass_debug["step"] = "no_report_id"
+                if reclassed_invoices:
+                    logger.info(f"Expense reclass for {entity_code}: {len(reclassed_invoices)} reclassed invoices, adj={expense_reclass_adj}")
         except Exception as e:
             logger.warning(f"Could not compute expense reclass adjustments: {e}")
-            _reclass_debug["error"] = str(e)
 
         # Group lines by sheet for tabbed view
         sheets = {}
@@ -1221,8 +1215,7 @@ def create_workflow_blueprint(db):
             "building_type_info": building_type_info,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
-            "remaining_months": remaining_months,
-            "_reclass_debug": _reclass_debug
+            "remaining_months": remaining_months
         })
 
 
