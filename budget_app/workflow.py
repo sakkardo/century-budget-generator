@@ -4981,8 +4981,9 @@ function renderTable() {
             const isZero = !(line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
+            tr.dataset.gl = line.gl_code;
             tr.innerHTML = `
-                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
+                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}${CAN_EDIT ? ' <button onclick="showReclass(\'' + line.gl_code + '\')" style="font-size:9px; padding:1px 5px; background:var(--orange-light,#fef3c7); color:var(--orange,#d97706); border:1px solid var(--orange,#d97706); border-radius:4px; cursor:pointer; margin-left:4px;" title="Suggest reclassification to another GL code">↗ Reclass</button>' : ''}</td>
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
                 <td class="number">${fmt(line.ytd_actual)}</td>
@@ -5385,14 +5386,14 @@ function showReclass(glCode) {
     const formRow = document.createElement('tr');
     formRow.className = 'reclass-form-row';
     formRow.innerHTML = `
-        <td colspan="12" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
+        <td colspan="13" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
                 <input id="reclass_target_${glCode}" list="reclass_target_list_${glCode}" placeholder="Search GL code..." style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px; width:180px;">
                 <datalist id="reclass_target_list_${glCode}">
                     ${glOptions}
                 </datalist>
-                <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.current_budget || 0)}"
+                <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.ytd_actual || 0)}"
                        style="width:100px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
                 <input type="text" id="reclass_notes_${glCode}" placeholder="Notes for FA" value="${line.reclass_notes || ''}"
                        style="width:200px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
