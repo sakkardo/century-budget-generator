@@ -1184,7 +1184,7 @@ def create_workflow_blueprint(db):
             sheets[sn].append(ld)
 
         # Ordered sheet tab names
-        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Unmapped"]
+        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Unmapped"]
 
         # Parse stored assumptions
         import json as _json
@@ -1203,6 +1203,16 @@ def create_workflow_blueprint(db):
             pass
         remaining_months = 12 - ytd_months
 
+        # Fetch RE Taxes data for co-ops
+        re_taxes_data = None
+        try:
+            from dof_taxes import is_coop, compute_re_taxes
+            if is_coop(entity_code):
+                re_taxes_data = compute_re_taxes(entity_code, assumptions.get("re_taxes_overrides"))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"RE Taxes fetch failed for {entity_code}: {e}")
+
         # Build lines list with reclass adjustments applied
         lines_with_adj = []
         for l in lines:
@@ -1218,7 +1228,7 @@ def create_workflow_blueprint(db):
             "budget": budget.to_dict(),
             "lines": lines_with_adj,
             "sheets": sheets,
-            "sheet_order": [s for s in sheet_order if s in sheets],
+            "sheet_order": [s for s in sheet_order if s in sheets or (s == "RE Taxes" and re_taxes_data)],
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data,
@@ -1227,7 +1237,8 @@ def create_workflow_blueprint(db):
             "assumptions": assumptions,
             "ytd_months": ytd_months,
             "remaining_months": remaining_months,
-            "reclass_summary": reclass_summary_items
+            "reclass_summary": reclass_summary_items,
+            "re_taxes": re_taxes_data
         })
 
 
@@ -1369,6 +1380,61 @@ def create_workflow_blueprint(db):
 
         return jsonify({"status": "saved", "assumptions": current, "recalculated": recalc_count})
 
+    @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
+    def get_re_taxes(entity_code):
+        """Get RE Taxes calculation for a co-op property, pulling from NYC DOF."""
+        try:
+            from dof_taxes import is_coop, compute_re_taxes
+            if not is_coop(entity_code):
+                return jsonify({"error": "Not a co-op", "is_coop": False}), 200
+            import json as _json
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            overrides = None
+            if budget and budget.assumptions_json:
+                try:
+                    assumptions = _json.loads(budget.assumptions_json)
+                    overrides = assumptions.get("re_taxes_overrides")
+                except Exception:
+                    pass
+            result = compute_re_taxes(entity_code, overrides)
+            return jsonify({"is_coop": True, "re_taxes": result})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/re-taxes/<entity_code>", methods=["PUT"])
+    def update_re_taxes(entity_code):
+        """Save RE Taxes overrides (exemptions, transitional increase, etc.)."""
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        try:
+            current = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            current = {}
+        current["re_taxes_overrides"] = data
+        budget.assumptions_json = _json.dumps(current)
+        try:
+            from dof_taxes import compute_re_taxes
+            result = compute_re_taxes(entity_code, data)
+            _update_gl_line(budget.id, "6315-0000", result["gross_tax"])
+            _update_gl_line(budget.id, "6315-0010", -result["exemptions"]["coop_abatement"]["budget_year"])
+            _update_gl_line(budget.id, "6315-0020", -result["exemptions"]["star"]["budget_year"])
+            _update_gl_line(budget.id, "6315-0025", -result["exemptions"]["veteran"]["budget_year"])
+            _update_gl_line(budget.id, "6315-0035", -result["exemptions"]["sche"]["budget_year"])
+        except Exception as e:
+            logger.warning(f"Failed to update Gen & Admin tax lines: {e}")
+        db.session.commit()
+        return jsonify({"status": "saved", "re_taxes": result})
+
+    def _update_gl_line(budget_id, gl_code, value):
+        """Update the proposed_budget for a specific GL line."""
+        line = BudgetLine.query.filter_by(budget_id=budget_id, gl_code=gl_code).first()
+        if line:
+            line.proposed_budget = value
 
     # ─── API Routes: Lines ───────────────────────────────────────────────────
 
@@ -3016,6 +3082,7 @@ function renderDetail(data) {
 
   // Budget Workbook Tabs
   allSheets = data.sheets || {};  // global for Budget Summary access
+  window._reTaxesData = data.re_taxes || null;  // RE Taxes tab data for co-ops
   allAssumptions = data.assumptions || {};  // global for Budget Summary access
   const sheets = allSheets;
   const sheetOrder = data.sheet_order || Object.keys(sheets);
@@ -3768,6 +3835,12 @@ function renderSheet(sheetName, sheetLines, tabEl) {
     return;
   }
 
+  // Handle RE Taxes tab — custom calculation layout
+  if (sheetName === 'RE Taxes') {
+    renderRETaxesTab(contentDiv);
+    return;
+  }
+
   if (!sheetLines || sheetLines.length === 0) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No data for this sheet.</p>';
     return;
@@ -3998,6 +4071,234 @@ function renderBudgetSummary(contentDiv) {
   }
 
   contentDiv.innerHTML = html;
+}
+
+// ── RE Taxes Tab — Custom Calculation Layout ──────────────────────────────────────────
+function renderRETaxesTab(contentDiv) {
+  const reTaxes = window._reTaxesData;
+  if (!reTaxes) {
+    contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">RE Taxes data not available. This building may not be a co-op, or DOF data has not been fetched yet.</p>';
+    return;
+  }
+  const fmt = v => '$' + Math.round(v).toLocaleString();
+  const pctFmt = v => (v * 100).toFixed(2) + '%';
+  const rateFmt = v => (v * 100).toFixed(4) + '%';
+  const inputStyle = 'background:#dce6f1; color:#0000ff; font-weight:600; text-align:right; padding:6px 10px; border:1px solid #b0c4de; border-radius:4px; width:140px;';
+  const outputStyle = 'background:#e2efda; color:#000; font-weight:600; text-align:right; padding:8px 12px;';
+  const labelStyle = 'padding:8px 12px; font-size:14px;';
+  const noteStyle = 'padding:8px 12px; font-size:12px; color:#808080; font-style:italic;';
+  const headerStyle = 'background:#1f4e79; color:#fff; padding:10px 12px; font-weight:700; font-size:13px;';
+  const subHeaderStyle = 'background:#f2f2f2; padding:8px 12px; font-weight:600; font-size:13px;';
+
+  const d = reTaxes;
+  const ex = d.exemptions || {};
+
+  let html = `
+  <div style="max-width:900px; margin:0 auto;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <div>
+        <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
+        <div style="font-size:13px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} &nbsp;|&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;|&nbsp; Source: ${d.source || 'N/A'}</div>
+      </div>
+      <button onclick="refreshDOFData()" style="padding:8px 16px; background:var(--primary); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">
+        ↻ Refresh from NYC DOF
+      </button>
+    </div>
+
+    <table style="width:100%; border-collapse:collapse; font-size:14px; border:1px solid #ddd;">
+      <colgroup>
+        <col style="width:35%">
+        <col style="width:20%">
+        <col style="width:25%">
+        <col style="width:20%">
+      </colgroup>
+
+      <!-- TAX CALCULATION HEADER -->
+      <tr><td colspan="4" style="${headerStyle}">TAX CALCULATION</td></tr>
+
+      <!-- 1st Half -->
+      <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Assessed Valuation (Actual)</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Tax Rate (Actual)</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
+        <td style="${noteStyle}">← 1st Half Tax</td>
+      </tr>
+
+      <!-- 2nd Half -->
+      <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Transitional AV Increase %</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Estimated Assessed Valuation</td>
+        <td style="${outputStyle}" id="re_est_av">${fmt(d.est_assessed_value)}</td>
+        <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Estimated Tax Rate</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
+        <td style="${noteStyle}">← 2nd Half Tax</td>
+      </tr>
+
+      <tr style="border-top:2px solid #333; border-bottom:2px solid #333;">
+        <td style="padding:10px 12px; font-weight:700; font-size:15px;">GROSS TAX LIABILITY (Full Year)</td>
+        <td style="${outputStyle}; font-size:15px;" id="re_gross">${fmt(d.gross_tax)}</td>
+        <td colspan="2" style="${noteStyle}">1st Half + 2nd Half</td>
+      </tr>
+
+      <tr><td colspan="4" style="${headerStyle}">TAX EXEMPTIONS & ABATEMENTS</td></tr>
+      <tr style="background:#d6e4f0;">
+        <td style="padding:8px 12px; font-weight:600; font-size:12px;">Exemption Type</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:center;">Growth %</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Current Year</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Budget Year</td>
+      </tr>`;
+
+  // Exemption rows
+  const exRows = [
+    {key:'veteran', label:'Veteran Exemption', gl:'GL 6315-0025'},
+    {key:'sche', label:'Senior Citizen (SCHE)', gl:'GL 6315-0035'},
+    {key:'star', label:'STAR Exemption', gl:'GL 6315-0020'},
+    {key:'coop_abatement', label:'Co-op Abatement', gl:'GL 6315-0010'},
+  ];
+  exRows.forEach(r => {
+    const e = ex[r.key] || {growth_pct:0, current_year:0, budget_year:0};
+    html += `<tr style="border-bottom:1px solid #eee;">
+      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:#999;">(${r.gl})</span></td>
+      <td style="padding:6px 12px; text-align:center;"><input type="text" id="re_ex_${r.key}_growth" value="${e.growth_pct}" onchange="reCalcTaxes()" style="${inputStyle} width:80px;"></td>
+      <td style="padding:6px 12px;"><input type="text" id="re_ex_${r.key}_current" value="${e.current_year}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+      <td style="${outputStyle}" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
+    </tr>`;
+  });
+
+  html += `
+      <tr style="border-top:1px solid #999;">
+        <td style="padding:10px 12px; font-weight:700;">TOTAL EXEMPTIONS</td>
+        <td></td>
+        <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
+        <td style="${outputStyle}" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
+      </tr>
+
+      <tr style="border-top:3px solid #1f4e79; background:#f0f7ff;">
+        <td style="padding:12px; font-weight:700; font-size:16px;">NET TAX LIABILITY (Proposed Budget)</td>
+        <td style="${outputStyle}; font-size:16px; background:#e2efda;" id="re_net">${fmt(d.net_tax)}</td>
+        <td colspan="2" style="${noteStyle}">Gross Tax − Total Exemptions</td>
+      </tr>
+    </table>
+
+    <div style="margin-top:12px; display:flex; gap:12px;">
+      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--green, #22c55e); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600;">
+        ✓ Save RE Taxes
+      </button>
+      <span id="reTaxSaveStatus" style="font-size:13px; color:var(--gray-400); padding:8px 0;"></span>
+    </div>
+  </div>`;
+
+  contentDiv.innerHTML = html;
+
+  // Format input displays
+  document.getElementById('re_av').value = d.assessed_value;
+  document.getElementById('re_rate').value = d.tax_rate;
+  document.getElementById('re_trans').value = d.transitional_av_increase;
+  document.getElementById('re_est_rate').value = d.est_tax_rate;
+}
+
+// Live recalculation of RE Taxes when inputs change
+function reCalcTaxes() {
+  const av = parseFloat(document.getElementById('re_av').value) || 0;
+  const rate = parseFloat(document.getElementById('re_rate').value) || 0;
+  const trans = parseFloat(document.getElementById('re_trans').value) || 0;
+  const estRate = parseFloat(document.getElementById('re_est_rate').value) || 0;
+
+  const h1 = av * rate / 2;
+  const estAv = av * (1 + trans);
+  const h2 = estAv * estRate / 2;
+  const gross = h1 + h2;
+
+  document.getElementById('re_h1_tax').textContent = '$' + Math.round(h1).toLocaleString();
+  document.getElementById('re_est_av').textContent = '$' + Math.round(estAv).toLocaleString();
+  document.getElementById('re_h2_tax').textContent = '$' + Math.round(h2).toLocaleString();
+  document.getElementById('re_gross').textContent = '$' + Math.round(gross).toLocaleString();
+
+  let totalCurrent = 0, totalBudget = 0;
+  ['veteran','sche','star','coop_abatement'].forEach(key => {
+    const growth = parseFloat(document.getElementById('re_ex_' + key + '_growth').value) || 0;
+    const current = parseFloat(document.getElementById('re_ex_' + key + '_current').value) || 0;
+    const budget = current * (1 + growth);
+    document.getElementById('re_ex_' + key + '_budget').textContent = '$' + Math.round(budget).toLocaleString();
+    totalCurrent += current;
+    totalBudget += budget;
+  });
+
+  document.getElementById('re_ex_total_current').textContent = '$' + Math.round(totalCurrent).toLocaleString();
+  document.getElementById('re_ex_total_budget').textContent = '$' + Math.round(totalBudget).toLocaleString();
+  document.getElementById('re_net').textContent = '$' + Math.round(gross - totalBudget).toLocaleString();
+}
+
+// Save RE Taxes overrides to server
+async function saveRETaxes() {
+  const overrides = {
+    assessed_value: parseFloat(document.getElementById('re_av').value) || 0,
+    tax_rate: parseFloat(document.getElementById('re_rate').value) || 0,
+    transitional_av_increase: parseFloat(document.getElementById('re_trans').value) || 0,
+    est_tax_rate: parseFloat(document.getElementById('re_est_rate').value) || 0,
+    veteran_growth: parseFloat(document.getElementById('re_ex_veteran_growth').value) || 0,
+    veteran_current: parseFloat(document.getElementById('re_ex_veteran_current').value) || 0,
+    sche_growth: parseFloat(document.getElementById('re_ex_sche_growth').value) || 0,
+    sche_current: parseFloat(document.getElementById('re_ex_sche_current').value) || 0,
+    star_growth: parseFloat(document.getElementById('re_ex_star_growth').value) || 0,
+    star_current: parseFloat(document.getElementById('re_ex_star_current').value) || 0,
+    abatement_growth: parseFloat(document.getElementById('re_ex_coop_abatement_growth').value) || 0,
+    abatement_current: parseFloat(document.getElementById('re_ex_coop_abatement_current').value) || 0,
+  };
+  const statusEl = document.getElementById('reTaxSaveStatus');
+  statusEl.textContent = 'Saving...';
+  statusEl.style.color = 'var(--gray-500)';
+  try {
+    const resp = await fetch('/api/re-taxes/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(overrides)
+    });
+    const result = await resp.json();
+    if (result.status === 'saved') {
+      statusEl.textContent = '✓ Saved — Gen & Admin tax lines updated';
+      statusEl.style.color = 'var(--green, #22c55e)';
+      window._reTaxesData = result.re_taxes;
+    } else {
+      statusEl.textContent = 'Error: ' + (result.error || 'Unknown');
+      statusEl.style.color = 'var(--red, #ef4444)';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = 'var(--red, #ef4444)';
+  }
+}
+
+// Refresh DOF data from NYC
+async function refreshDOFData() {
+  const statusEl = document.getElementById('reTaxSaveStatus');
+  if (statusEl) { statusEl.textContent = 'Fetching from NYC DOF...'; statusEl.style.color = 'var(--gray-500)'; }
+  try {
+    const resp = await fetch('/api/re-taxes/' + entityCode);
+    const result = await resp.json();
+    if (result.re_taxes) {
+      window._reTaxesData = result.re_taxes;
+      renderRETaxesTab(document.getElementById('sheetContent'));
+      if (statusEl) { statusEl.textContent = '✓ DOF data refreshed'; statusEl.style.color = 'var(--green, #22c55e)'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red, #ef4444)'; }
+  }
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
