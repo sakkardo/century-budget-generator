@@ -145,6 +145,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
 
     Budget = workflow_models["Budget"]
     BudgetLine = workflow_models["BudgetLine"]
+    BudgetRevision = workflow_models["BudgetRevision"]
 
     # ─── Models ───────────────────────────────────────────────────────────────
 
