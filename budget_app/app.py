@@ -139,6 +139,7 @@ DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 # Console JS script templates — entities/email/period get injected
 CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
 EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
+MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8")
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -476,10 +477,18 @@ def generate_script():
         f"const PERIOD_TO   = '{period}';"
     )
 
-    # Combine into one script that runs both sequentially
+    # Build Maintenance Proof script with user settings
+    mp_script = MAINT_PROOF_SCRIPT
+    mp_script = mp_script.replace(
+        "const ENTITIES = [148, 204, 206, 805];",
+        f"const ENTITIES = [{entities_js}];"
+    )
+
+    # Combine into one script that runs all three sequentially
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
- * Downloads YSL Annual Budget + Expense Distribution for all selected entities.
+ * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof
+ * for all selected entities.
  * Generated for: {email}
  * Entities: {entities_js}
  * Period: {period}
@@ -490,6 +499,7 @@ def generate_script():
   console.log('Century Budget — Combined Download');
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Expense Distribution reports');
+  console.log('Part 3: Maintenance Proof reports');
   console.log('='.repeat(60));
 
   // ── Part 1: YSL Annual Budget ──
@@ -500,8 +510,12 @@ def generate_script():
   // ── Part 2: Expense Distribution ──
   await {exp_script}
 
+  console.log('\\n>>> Starting Part 3: Maintenance Proof <<<\\n');
+  // ── Part 3: Maintenance Proof (Ad Hoc AMP) ──
+  await {mp_script}
+
   console.log('\\n' + '='.repeat(60));
-  console.log('ALL DONE — Both YSL and Expense Distribution downloads complete.');
+  console.log('ALL DONE — YSL + Expense Distribution + Maintenance Proof downloads complete.');
   console.log('Drag all downloaded .xlsx files into the budget generator to process.');
   console.log('='.repeat(60));
 }})();"""
