@@ -61,7 +61,7 @@
       // Step 2: POST to generate the report
       const post = {
         ...hidden,
-        '__EVENTTARGET': 'btnSubmit_Button',
+        '__EVENTTARGET': 'btnSubmit',
         '__EVENTARGUMENT': '',
         '__LASTFOCUS': '',
         'txtCheckBoxValues:TextBox': '',
@@ -74,12 +74,19 @@
         'txtEmailRoleFlag:TextBox': 'False',
         'YsiOutpuType:DropDownList': 'Excel',   // Output Type
         'IsAttach:CheckBox': 'on',
+        'IsAttach:DisabledBox': 'on',
         'IsShowGrid:CheckBox': 'on',
+        'IsMergedReport:CheckBox': 'on',
         'txtEmailAddress:TextBox': '',
+        'IsEmail:DisabledBox': 'on',
+        'IsEmail:CheckBox': 'on',
+        'IsPreviewed:CheckBox': 'on',
+        'IsFilterChanged:CheckBox': 'on',
+        'IsAlwaysPreview:CheckBox': 'on',
         'BSAVE': '',
-        'bDevMode': '',
-        'IsEditMode': '',
-        'RequestAction': '',
+        'bDevMode': 'false',
+        'IsEditMode': 'false',
+        'RequestAction': 'NoAction',
       };
 
       const body = Object.entries(post).map(([k, v]) =>
