@@ -4185,6 +4185,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
 
+    // Build notes display: prepend PM reclass info if present
+    let notesDisplay = l.notes || '';
+    if (l.reclass_to_gl) {
+      const reclassInfo = '[PM Reclass → ' + l.reclass_to_gl + (l.reclass_amount ? ' $' + Math.round(l.reclass_amount).toLocaleString() : '') + ']' + (l.reclass_notes ? ' ' + l.reclass_notes : '');
+      notesDisplay = notesDisplay ? reclassInfo + ' | ' + notesDisplay : reclassInfo;
+    }
+
     const estFormula = faGetFormulaTooltip(l, 'estimate');
     const fcstFormula = faGetFormulaTooltip(l, 'forecast');
     const propFormula = faGetFormulaTooltip(l, 'proposed');
@@ -4216,7 +4223,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
-      '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+      '<td><input class="cell cell-notes" type="text" value="' + notesDisplay.replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"' + (l.reclass_to_gl ? ' style="background:#fef9e7; border-left:3px solid var(--orange);"' : '') + '></td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
       '<td class="num" style="position:relative;">' + $cell('acc_'+gl, 'accrual_adj', accrual) +
         (accrual !== 0 ? '<span onclick="faToggleAccrualDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); cursor:pointer; background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);" title="View prior-year invoices">▼</span>' : '') + '</td>' +
