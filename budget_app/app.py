@@ -66,6 +66,14 @@ except ImportError:
 ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflow_models)
 app.register_blueprint(ed_bp)
 
+# Register maintenance proof blueprint
+try:
+    from maintenance_proof import create_maintenance_proof_blueprint
+except ImportError:
+    from budget_app.maintenance_proof import create_maintenance_proof_blueprint
+mp_bp, mp_models, mp_helpers = create_maintenance_proof_blueprint(db, workflow_models)
+app.register_blueprint(mp_bp)
+
 # Resolve all model relationships after ALL blueprints are registered
 try:
     db.configure_mappers()
@@ -99,6 +107,7 @@ with app.app_context():
             ("budgets", "assumptions_json", "TEXT DEFAULT '{}'"),
             ("budget_lines", "estimate_override", "FLOAT"),
             ("budget_lines", "forecast_override", "FLOAT"),
+            ("budget_lines", "accrual_adj", "FLOAT DEFAULT 0"),
         ]
         for table, col, col_type in _migrations:
             try:

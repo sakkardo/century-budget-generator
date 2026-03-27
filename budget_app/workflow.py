@@ -945,8 +945,17 @@ def create_workflow_blueprint(db):
                 ).fetchone() is not None
             except Exception:
                 has_audit = False
+            # Check maintenance proof exists
+            try:
+                has_maint_proof = db.session.execute(
+                    db.text("SELECT 1 FROM maint_proof_reports WHERE entity_code = :ec LIMIT 1"),
+                    {"ec": b.entity_code}
+                ).fetchone() is not None
+            except Exception:
+                has_maint_proof = False
             d["has_expenses"] = has_expenses
             d["has_audit"] = has_audit
+            d["has_maint_proof"] = has_maint_proof
             result.append(d)
         return jsonify(result)
 
@@ -1061,6 +1070,55 @@ def create_workflow_blueprint(db):
         except Exception:
             pass
 
+        # Check maintenance proof data
+        maint_proof_data = {"exists": False}
+        try:
+            mp_row = db.session.execute(
+                db.text("SELECT id, building_type, charge_label, total_units, total_shares, total_monthly, total_annual, file_name FROM maint_proof_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if mp_row:
+                maint_proof_data = {
+                    "exists": True,
+                    "building_type": mp_row[1] or "",
+                    "charge_label": mp_row[2] or "Maintenance",
+                    "total_units": mp_row[3] or 0,
+                    "total_shares": float(mp_row[4] or 0),
+                    "total_monthly": float(mp_row[5] or 0),
+                    "total_annual": float(mp_row[6] or 0),
+                    "file_name": mp_row[7] or "",
+                }
+        except Exception:
+            pass
+
+        # Check building type for this entity
+        building_type_info = {"building_type": "", "charge_label": "Maintenance", "needs_maint_proof": False}
+        try:
+            bt_row = db.session.execute(
+                db.text("SELECT type FROM buildings WHERE entity_code = :ec LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if not bt_row:
+                # Fallback: read from CSV
+                import csv as _csv
+                csv_path = os.path.join(os.path.dirname(__file__), "budget_system", "buildings.csv")
+                if not os.path.exists(csv_path):
+                    csv_path = os.path.join(os.path.dirname(__file__), "..", "budget_system", "buildings.csv")
+                if os.path.exists(csv_path):
+                    with open(csv_path) as _f:
+                        for _r in _csv.DictReader(_f):
+                            if str(_r.get("entity_code", "")).strip() == str(entity_code).strip():
+                                btype = _r.get("type", "").strip()
+                                charge_label = "Common Charges" if btype.lower() == "condo" else "Maintenance"
+                                building_type_info = {
+                                    "building_type": btype,
+                                    "charge_label": charge_label,
+                                    "needs_maint_proof": btype.lower() in ["coop", "condo", "cond-op"],
+                                }
+                                break
+        except Exception:
+            pass
+
         # Group lines by sheet for tabbed view
         sheets = {}
         for l in lines:
@@ -1097,6 +1155,8 @@ def create_workflow_blueprint(db):
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data,
+            "maint_proof": maint_proof_data,
+            "building_type_info": building_type_info,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
             "remaining_months": remaining_months
@@ -2205,6 +2265,9 @@ function renderBudgets(budgets) {
     const auditIcon = b.has_audit
       ? '<span style="color:var(--green);" title="Audit confirmed">&#10003; Audit</span>'
       : '<span style="color:var(--gray-300);" title="No audit">&#10007; Audit</span>';
+    const maintIcon = b.has_maint_proof
+      ? '<span style="color:var(--green);" title="Maint Proof uploaded">&#10003; Maint</span>'
+      : '<span style="color:var(--gray-300);" title="No maint proof">&#10007; Maint</span>';
 
     // PM review status pill
     const pmStatusMap = {
@@ -2230,7 +2293,7 @@ function renderBudgets(budgets) {
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
-      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
+      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}<br>${maintIcon}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
       <td>${actionHtml}</td>
@@ -2527,6 +2590,39 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </table>
   </div>
 
+  <!-- Maintenance Proof Upload Panel -->
+  <div class="section" id="maintProofSection" style="display:none;">
+    <h2 id="maintProofTitle">Maintenance Proof</h2>
+    <div id="maintProofContent">
+      <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px;">
+        <input type="file" id="maintProofFile" accept=".xlsx" style="font-size:13px;">
+        <button onclick="uploadMaintProof()" class="btn" style="background:var(--blue); color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer;">Upload</button>
+        <span id="maintProofStatus" style="font-size:12px; color:var(--gray-500);"></span>
+      </div>
+      <div id="maintProofSummary" style="display:none;">
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:12px;">
+          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:var(--gray-500);">Total Units</div>
+            <div style="font-size:20px; font-weight:600;" id="mpUnits">0</div>
+          </div>
+          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:var(--gray-500);">Total Shares</div>
+            <div style="font-size:20px; font-weight:600;" id="mpShares">0</div>
+          </div>
+          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:var(--gray-500);">Monthly Total</div>
+            <div style="font-size:20px; font-weight:600;" id="mpMonthly">$0</div>
+          </div>
+          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:var(--gray-500);">Annual Total</div>
+            <div style="font-size:20px; font-weight:600;" id="mpAnnual">$0</div>
+          </div>
+        </div>
+        <div id="maintProofCharges" style="font-size:13px;"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Reclass Suggestions (shown if any exist) -->
   <div class="section" id="reclassSuggestions" style="display:none;">
     <h2>Pending Reclass Suggestions <span style="font-size:13px; font-weight:400; color:var(--gray-500);">(from PM)</span></h2>
@@ -2695,6 +2791,7 @@ function renderDetail(data) {
     { label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
     { label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
     { label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
+    { label: data.building_type_info.charge_label + ' Proof', done: data.maint_proof.exists, detail: data.maint_proof.exists ? data.maint_proof.total_units + ' units, ' + fmt(data.maint_proof.total_monthly) + '/mo (' + data.maint_proof.charge_label + ')' : (data.building_type_info.needs_maint_proof ? 'Upload via Data Collection' : 'N/A — ' + (data.building_type_info.building_type || 'Rental') + ' building') },
     { label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
     { label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values' },
     { label: 'Final Approval', done: b.status === 'approved', detail: b.status === 'approved' ? 'Budget approved' : 'Complete all steps above first' }
@@ -2841,6 +2938,79 @@ function renderDetail(data) {
     tabsDiv.appendChild(histTab);
 
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
+  }
+
+  // Initialize maintenance proof panel
+  initMaintProofPanel(data);
+}
+
+// ── Maintenance Proof Upload ──
+function initMaintProofPanel(data) {
+  const btInfo = data.building_type_info || {};
+  const mp = data.maint_proof || {};
+  const section = document.getElementById('maintProofSection');
+  if (!section) return;
+
+  // Only show for coop/condo/cond-op buildings
+  if (!btInfo.needs_maint_proof && !mp.exists) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  const label = btInfo.charge_label || 'Maintenance';
+  document.getElementById('maintProofTitle').textContent = label + ' Proof';
+
+  if (mp.exists) {
+    document.getElementById('maintProofSummary').style.display = '';
+    document.getElementById('mpUnits').textContent = (mp.total_units || 0).toLocaleString();
+    document.getElementById('mpShares').textContent = (mp.total_shares || 0).toLocaleString();
+    document.getElementById('mpMonthly').textContent = '$' + (mp.total_monthly || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById('mpAnnual').textContent = '$' + (mp.total_annual || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById('maintProofStatus').innerHTML = '<span style="color:var(--green);">✓ ' + (mp.file_name || 'Uploaded') + '</span>';
+
+    // Load charge breakdown
+    fetch('/api/maint-proof/' + ENTITY)
+      .then(r => r.json())
+      .then(d => {
+        if (d.charge_summary) {
+          let html = '<table style="width:100%; font-size:13px; border-collapse:collapse;">';
+          html += '<thead><tr style="background:var(--gray-50);"><th style="text-align:left; padding:6px 12px;">Charge Code</th><th style="text-align:right; padding:6px 12px;">Units</th><th style="text-align:right; padding:6px 12px;">Shares</th><th style="text-align:right; padding:6px 12px;">Monthly</th><th style="text-align:right; padding:6px 12px;">Annual</th></tr></thead><tbody>';
+          for (const [code, s] of Object.entries(d.charge_summary)) {
+            html += '<tr><td style="padding:6px 12px;">' + code + '</td><td style="text-align:right; padding:6px 12px;">' + s.count + '</td><td style="text-align:right; padding:6px 12px;">' + s.shares.toLocaleString() + '</td><td style="text-align:right; padding:6px 12px;">$' + s.monthly.toLocaleString(undefined,{minimumFractionDigits:2}) + '</td><td style="text-align:right; padding:6px 12px;">$' + s.annual.toLocaleString(undefined,{minimumFractionDigits:2}) + '</td></tr>';
+          }
+          html += '</tbody></table>';
+          document.getElementById('maintProofCharges').innerHTML = html;
+        }
+      }).catch(() => {});
+  }
+}
+
+async function uploadMaintProof() {
+  const fileInput = document.getElementById('maintProofFile');
+  const status = document.getElementById('maintProofStatus');
+  if (!fileInput.files.length) {
+    status.innerHTML = '<span style="color:var(--red);">Please select a file</span>';
+    return;
+  }
+  status.innerHTML = '<span style="color:var(--blue);">Uploading...</span>';
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('entity_code', ENTITY);
+  try {
+    const resp = await fetch('/api/maint-proof/upload', { method: 'POST', body: fd });
+    const result = await resp.json();
+    if (result.error) {
+      status.innerHTML = '<span style="color:var(--red);">' + result.error + '</span>';
+      return;
+    }
+    status.innerHTML = '<span style="color:var(--green);">✓ Uploaded — ' + result.units_parsed + ' units parsed</span>';
+    if (result.income_applied > 0) {
+      status.innerHTML += '<br><span style="color:var(--blue);">' + result.income_applied + ' income line(s) auto-populated</span>';
+    }
+    // Refresh the page data
+    setTimeout(() => loadDetail(), 500);
+  } catch (e) {
+    status.innerHTML = '<span style="color:var(--red);">Upload failed: ' + e.message + '</span>';
   }
 }
 
