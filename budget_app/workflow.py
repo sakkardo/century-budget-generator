@@ -1136,13 +1136,42 @@ def create_workflow_blueprint(db):
         else:
             building_type_info = {"building_type": "", "charge_label": "Maintenance", "needs_maint_proof": False}
 
+        # Compute expense invoice reclass adjustments per GL
+        expense_reclass_adj = {}  # {gl_code: net_ytd_adjustment}
+        try:
+            if expense_data.get("exists"):
+                report_id = db.session.execute(
+                    db.text("SELECT id FROM expense_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                    {"ec": entity_code}
+                ).fetchone()
+                if report_id:
+                    reclassed_invoices = db.session.execute(
+                        db.text("SELECT gl_code, reclass_to_gl, amount FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
+                        {"rid": report_id[0]}
+                    ).fetchall()
+                    for inv in reclassed_invoices:
+                        src_gl = inv[0]
+                        tgt_gl = inv[1]
+                        amt = float(inv[2] or 0)
+                        expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
+                        expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
+        except Exception as e:
+            logger.warning(f"Could not compute expense reclass adjustments: {e}")
+
         # Group lines by sheet for tabbed view
         sheets = {}
         for l in lines:
             sn = l.sheet_name or "Unmapped"
             if sn not in sheets:
                 sheets[sn] = []
-            sheets[sn].append(l.to_dict())
+            ld = l.to_dict()
+            # Attach reclass adjustment info
+            adj = expense_reclass_adj.get(l.gl_code, 0)
+            if adj:
+                ld["_reclass_ytd_adj"] = round(adj, 2)
+                ld["_orig_ytd"] = ld["ytd_actual"]
+                ld["ytd_actual"] = round(ld["ytd_actual"] + adj, 2)
+            sheets[sn].append(ld)
 
         # Ordered sheet tab names
         sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Unmapped"]
@@ -1164,9 +1193,20 @@ def create_workflow_blueprint(db):
             pass
         remaining_months = 12 - ytd_months
 
+        # Build lines list with reclass adjustments applied
+        lines_with_adj = []
+        for l in lines:
+            ld = l.to_dict()
+            adj = expense_reclass_adj.get(l.gl_code, 0)
+            if adj:
+                ld["_reclass_ytd_adj"] = round(adj, 2)
+                ld["_orig_ytd"] = ld["ytd_actual"]
+                ld["ytd_actual"] = round(ld["ytd_actual"] + adj, 2)
+            lines_with_adj.append(ld)
+
         return jsonify({
             "budget": budget.to_dict(),
-            "lines": [l.to_dict() for l in lines],
+            "lines": lines_with_adj,
             "sheets": sheets,
             "sheet_order": [s for s in sheet_order if s in sheets],
             "assignments": {"fa": fa_name, "pm": pm_name},
@@ -4113,32 +4153,15 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const NC = 15;
   const estLbl = estimateLabel();
 
-  // ── Apply PM reclass adjustments to YTD at display time ──
-  // Source GL: reduce ytd_actual by reclass_amount
-  // Target GL: increase ytd_actual by reclass_amount
-  // Store original YTD so we can show it and avoid double-applying on re-render
-  const _reclassAdj = {};  // {gl_code: net adjustment}
+  // ── Invoice reclass adjustments are now computed server-side ──
+  // Lines with _reclass_ytd_adj already have adjusted ytd_actual from the API
+  // Ensure _orig_ytd and _reclass_ytd_adj are available for tooltip display
   sheetLines.forEach(l => {
-    if (l.reclass_to_gl && l.reclass_amount) {
-      const amt = parseFloat(l.reclass_amount) || 0;
-      if (amt) {
-        _reclassAdj[l.gl_code] = (_reclassAdj[l.gl_code] || 0) - amt;
-        _reclassAdj[l.reclass_to_gl] = (_reclassAdj[l.reclass_to_gl] || 0) + amt;
-      }
+    if (!l._orig_ytd && l._reclass_ytd_adj) {
+      l._orig_ytd = (l.ytd_actual || 0) - l._reclass_ytd_adj;
     }
-  });
-  // Apply adjustments (store original for tooltip)
-  sheetLines.forEach(l => {
-    // Always restore original first (in case of re-render)
-    if (l._orig_ytd !== undefined) l.ytd_actual = l._orig_ytd;
-    l._orig_ytd = l.ytd_actual || 0;
-    const adj = _reclassAdj[l.gl_code] || 0;
-    if (adj) {
-      l.ytd_actual = (l.ytd_actual || 0) + adj;
-      l._reclass_ytd_adj = adj;
-    } else {
-      l._reclass_ytd_adj = 0;
-    }
+    if (!l._reclass_ytd_adj) l._reclass_ytd_adj = 0;
+    if (!l._orig_ytd) l._orig_ytd = l.ytd_actual || 0;
   });
 
   // Inject PM-style CSS if not already present
@@ -4983,10 +5006,10 @@ function renderTable() {
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
             tr.dataset.gl = line.gl_code;
             tr.innerHTML = `
-                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}${CAN_EDIT ? ' <button onclick="showReclass(\'' + line.gl_code + '\')" style="font-size:9px; padding:1px 5px; background:var(--orange-light,#fef3c7); color:var(--orange,#d97706); border:1px solid var(--orange,#d97706); border-radius:4px; cursor:pointer; margin-left:4px;" title="Suggest reclassification to another GL code">↗ Reclass</button>' : ''}</td>
+                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
-                <td class="number">${fmt(line.ytd_actual)}</td>
+                <td class="number" style="position:relative;">${fmt(line.ytd_actual)}${line._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange,#d97706); background:var(--orange-light,#fef3c7); padding:0 3px; border-radius:3px; border:1px solid var(--orange,#d97706);" title="Original: ' + fmt(line._orig_ytd) + ' | Reclass adj: ' + (line._reclass_ytd_adj > 0 ? '+' : '') + fmt(line._reclass_ytd_adj) + '">R</span>' : ''}</td>
                 <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.accrual_adj || 0) !== 0 ? '<span onclick="pmToggleAccrualDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #fde68a;" title="View prior-year invoices">▼</span>' : ''}</td>
                 <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
@@ -5128,6 +5151,44 @@ async function fetchExpenseData() {
     } catch(e) { _expenseCache = false; return null; }
 }
 
+// ── Apply invoice-level reclass adjustments to LINES YTD ──
+// Scans reclassed invoices in expense data and adjusts ytd_actual on LINES
+async function applyExpenseReclassAdjustments() {
+    const data = await fetchExpenseData();
+    if (!data || !data.gl_groups) return;
+
+    // Restore original YTD values first (avoid double-counting on re-render)
+    LINES.forEach(l => {
+        if (l._orig_ytd !== undefined) l.ytd_actual = l._orig_ytd;
+        l._orig_ytd = l.ytd_actual || 0;
+    });
+
+    // Compute net adjustment per GL from reclassed invoices
+    const adj = {};  // {gl_code: net_amount_change}
+    data.gl_groups.forEach(g => {
+        if (!g.invoices) return;
+        g.invoices.forEach(inv => {
+            if (inv.reclass_to_gl) {
+                // Source GL loses this amount
+                adj[g.gl_code] = (adj[g.gl_code] || 0) - inv.amount;
+                // Target GL gains this amount
+                adj[inv.reclass_to_gl] = (adj[inv.reclass_to_gl] || 0) + inv.amount;
+            }
+        });
+    });
+
+    // Apply adjustments to LINES
+    LINES.forEach(l => {
+        const a = adj[l.gl_code] || 0;
+        if (a) {
+            l.ytd_actual = (l.ytd_actual || 0) + a;
+            l._reclass_ytd_adj = a;
+        } else {
+            l._reclass_ytd_adj = 0;
+        }
+    });
+}
+
 async function pmToggleAccrualDrill(glCode, el) {
   const row = el.closest('tr');
   const existingDrill = row.nextElementSibling;
@@ -5249,10 +5310,11 @@ async function inlineReclass(invoiceId, fromGL) {
         });
         if (resp.ok) {
             _expenseCache = null; // Clear cache to refresh
-            // Re-toggle to refresh the detail view
-            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
-            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
-            showToast('Invoice reclassified to ' + select.value, 'success');
+            // Re-apply reclass adjustments to YTD and re-render the whole table
+            await applyExpenseReclassAdjustments();
+            renderTable();
+            updateZeroToggle();
+            showToast('Invoice reclassified to ' + select.value + ' — YTD updated', 'success');
         } else { showToast('Reclass failed', 'error'); }
     } catch(e) { showToast('Reclass error: ' + e.message, 'error'); }
 }
@@ -5266,9 +5328,11 @@ async function inlineUndoReclass(invoiceId, fromGL) {
         });
         if (resp.ok) {
             _expenseCache = null;
-            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
-            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
-            showToast('Reclass undone', 'success');
+            // Re-apply reclass adjustments to YTD and re-render
+            await applyExpenseReclassAdjustments();
+            renderTable();
+            updateZeroToggle();
+            showToast('Reclass undone — YTD restored', 'success');
         } else { showToast('Undo failed', 'error'); }
     } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
 }
@@ -5439,8 +5503,12 @@ if (!CAN_EDIT) {
     if (btn) btn.disabled = true;
 }
 
-renderTable();
-updateZeroToggle();
+// Apply invoice reclass adjustments before first render, then render
+(async () => {
+    await applyExpenseReclassAdjustments();
+    renderTable();
+    updateZeroToggle();
+})();
 </script>
 </body>
 </html>
