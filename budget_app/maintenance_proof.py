@@ -114,29 +114,66 @@ def create_maintenance_proof_blueprint(db, workflow_models):
         units = []
         total_shares_footer = 0
 
-        for row in ws.iter_rows(min_row=8, max_row=ws.max_row, min_col=1, max_col=8, values_only=False):
-            unit_code = str(row[1].value or "").strip()  # Col B
-            shares = row[2].value                         # Col C
-            status = str(row[3].value or "").strip()      # Col D
-            charge_code = str(row[4].value or "").strip() # Col E
-            amount = row[5].value                         # Col F
+        # Detect header row to find column positions dynamically
+        header_map = {}
+        header_row = 7  # Default
+        for r in range(1, min(15, ws.max_row + 1)):
+            for c in range(1, min(15, ws.max_column + 1)):
+                val = str(ws.cell(row=r, column=c).value or "").strip().lower()
+                if val in ("unit code", "unitcode"):
+                    header_map["unit_code"] = c - 1
+                    header_row = r
+                elif val in ("share", "shares", "%common", "% common", "%common/share"):
+                    header_map["shares"] = c - 1
+                elif val == "status":
+                    header_map["status"] = c - 1
+                elif val in ("charge code", "chargecode"):
+                    header_map["charge_code"] = c - 1
+                elif val == "amount":
+                    header_map["amount"] = c - 1
+
+        # Fallback column positions if headers not found
+        col_unit = header_map.get("unit_code", 1)
+        col_shares = header_map.get("shares", 2)
+        col_status = header_map.get("status", 3)
+        col_charge = header_map.get("charge_code", 4)
+        col_amount = header_map.get("amount", 5)
+
+        data_start = header_row + 1
+
+        for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, values_only=False):
+            ncols = len(row)
+            def cell(idx):
+                return row[idx].value if idx < ncols else None
+
+            unit_code = str(cell(col_unit) or "").strip()
+            shares = cell(col_shares)
+            status = str(cell(col_status) or "").strip() if col_status < ncols else ""
+            charge_code = str(cell(col_charge) or "").strip() if col_charge < ncols else ""
+            amount = cell(col_amount)
 
             # Footer row: only shares column has a value (total shares)
             if shares and not unit_code and not charge_code:
-                total_shares_footer = float(shares)
+                try:
+                    total_shares_footer = float(shares)
+                except (ValueError, TypeError):
+                    pass
                 continue
 
             # Skip empty rows
             if not unit_code or amount is None:
                 continue
 
-            units.append({
-                "unit_code": unit_code,
-                "shares": float(shares or 0),
-                "status": status,
-                "charge_code": charge_code,
-                "monthly_amount": float(amount or 0),
-            })
+            try:
+                units.append({
+                    "unit_code": unit_code,
+                    "shares": float(shares or 0),
+                    "status": status,
+                    "charge_code": charge_code,
+                    "monthly_amount": float(amount or 0),
+                })
+            except (ValueError, TypeError):
+                continue  # Skip rows with non-numeric data
 
         wb.close()
         return report_title, units, total_shares_footer
