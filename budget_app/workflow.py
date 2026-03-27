@@ -1139,11 +1139,12 @@ def create_workflow_blueprint(db):
 
         # Compute expense invoice reclass adjustments per GL
         expense_reclass_adj = {}  # {gl_code: net_ytd_adjustment}
+        reclass_summary_items = []  # for FA summary panel
         try:
             exp_report_id = expense_data.get("report_id")
             if exp_report_id:
                 reclassed_invoices = db.session.execute(
-                    db.text("SELECT gl_code, reclass_to_gl, amount FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
+                    db.text("SELECT gl_code, reclass_to_gl, amount, payee_name, invoice_num, reclassed_by, reclassed_at, reclass_notes FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
                     {"rid": exp_report_id}
                 ).fetchall()
                 for inv in reclassed_invoices:
@@ -1152,6 +1153,16 @@ def create_workflow_blueprint(db):
                     amt = float(inv[2] or 0)
                     expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
                     expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
+                    reclass_summary_items.append({
+                        "from_gl": src_gl,
+                        "to_gl": tgt_gl,
+                        "amount": round(amt, 2),
+                        "vendor": inv[3] or "",
+                        "invoice_num": inv[4] or "",
+                        "reclassed_by": inv[5] or "PM",
+                        "reclassed_at": str(inv[6]) if inv[6] else "",
+                        "notes": inv[7] or ""
+                    })
                 if reclassed_invoices:
                     logger.info(f"Expense reclass for {entity_code}: {len(reclassed_invoices)} reclassed invoices, adj={expense_reclass_adj}")
         except Exception as e:
@@ -1215,7 +1226,8 @@ def create_workflow_blueprint(db):
             "building_type_info": building_type_info,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
-            "remaining_months": remaining_months
+            "remaining_months": remaining_months,
+            "reclass_summary": reclass_summary_items
         })
 
 
@@ -2688,6 +2700,32 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </table>
   </div>
 
+  <!-- Invoice Reclass Summary Panel -->
+  <div class="section" id="reclassSummarySection" style="display:none;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; cursor:pointer;" onclick="document.getElementById('reclassSummaryBody').style.display = document.getElementById('reclassSummaryBody').style.display === 'none' ? '' : 'none'; this.querySelector('.toggle-arrow').textContent = document.getElementById('reclassSummaryBody').style.display === 'none' ? '▶' : '▼';">
+      <h2 style="margin:0;">Invoice Reclasses</h2>
+      <span class="toggle-arrow" style="font-size:12px; color:var(--gray-400);">▼</span>
+      <span id="reclassSummaryBadge" style="font-size:12px; font-weight:600; padding:2px 10px; border-radius:12px; background:#fef3c7; color:#d97706;"></span>
+    </div>
+    <div id="reclassSummaryBody">
+      <div id="reclassSummaryStats" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;"></div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%; font-size:12px; border-collapse:collapse;" id="reclassSummaryTable">
+          <thead><tr style="background:var(--gray-50); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px; color:var(--gray-500);">
+            <th style="padding:6px 10px; text-align:left;">Invoice</th>
+            <th style="padding:6px 10px; text-align:left;">Vendor</th>
+            <th style="padding:6px 10px; text-align:right;">Amount</th>
+            <th style="padding:6px 10px; text-align:left;">From GL</th>
+            <th style="padding:6px 10px; text-align:left;">To GL</th>
+            <th style="padding:6px 10px; text-align:left;">By</th>
+            <th style="padding:6px 10px; text-align:left;">Notes</th>
+          </tr></thead>
+          <tbody id="reclassSummaryTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- Budget Workbook (Tabbed) -->
   <div class="section">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -2875,6 +2913,47 @@ function renderDetail(data) {
   assemblyHtml += '</div>';
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
+
+  // Invoice Reclass Summary Panel
+  const reclassSummary = data.reclass_summary || [];
+  if (reclassSummary.length > 0) {
+    document.getElementById('reclassSummarySection').style.display = '';
+    const totalDollars = reclassSummary.reduce((s, r) => s + r.amount, 0);
+    const glsAffected = new Set();
+    reclassSummary.forEach(r => { glsAffected.add(r.from_gl); glsAffected.add(r.to_gl); });
+
+    document.getElementById('reclassSummaryBadge').textContent = reclassSummary.length + ' invoice' + (reclassSummary.length !== 1 ? 's' : '') + ' · ' + fmt(totalDollars) + ' moved';
+
+    document.getElementById('reclassSummaryStats').innerHTML =
+      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
+        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + reclassSummary.length + '</div>' +
+        '<div style="font-size:11px; color:var(--gray-500);">Invoices Reclassed</div></div>' +
+      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
+        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + fmt(totalDollars) + '</div>' +
+        '<div style="font-size:11px; color:var(--gray-500);">Total Dollars Moved</div></div>' +
+      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
+        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + glsAffected.size + '</div>' +
+        '<div style="font-size:11px; color:var(--gray-500);">GL Lines Affected</div></div>';
+
+    const tbody = document.getElementById('reclassSummaryTableBody');
+    tbody.innerHTML = '';
+    // Find GL descriptions from budget lines
+    const glDescMap = {};
+    lines.forEach(l => { if (l.gl_code) glDescMap[l.gl_code] = l.description || ''; });
+    reclassSummary.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.style.borderBottom = '1px solid var(--gray-100)';
+      tr.innerHTML =
+        '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">#' + (r.invoice_num || '—') + '</td>' +
+        '<td style="padding:6px 10px;">' + (r.vendor || '—') + '</td>' +
+        '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(r.amount) + '</td>' +
+        '<td style="padding:6px 10px; color:var(--red);">' + r.from_gl + ' <span style="font-size:10px; color:var(--gray-400);">' + (glDescMap[r.from_gl] || '') + '</span></td>' +
+        '<td style="padding:6px 10px; color:var(--green);">' + r.to_gl + ' <span style="font-size:10px; color:var(--gray-400);">' + (glDescMap[r.to_gl] || '') + '</span></td>' +
+        '<td style="padding:6px 10px; font-size:11px;">' + (r.reclassed_by || 'PM') + '</td>' +
+        '<td style="padding:6px 10px; font-size:11px; color:var(--gray-500);">' + (r.notes || '') + '</td>';
+      tbody.appendChild(tr);
+    });
+  }
 
   // Historical Actuals Panel (from audited financials)
   const auditYears = data.audit.exists ? data.audit.years : {};
@@ -5267,13 +5346,23 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
     html += '</div>';
 
+    // Build datalist options once (shared)
+    let dlOptions = '';
+    allGLs.forEach(g => { dlOptions += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
+
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+    html += '<td style="padding:6px 6px; width:28px;"><input type="checkbox" id="batch_all_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" onchange="toggleBatchAll(this,\'' + glCode + '\')" title="Select all"></td>';
     html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
         html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
+        html += '<td style="padding:6px 6px;">';
+        if (!isReclassed) {
+            html += '<input type="checkbox" class="batch-cb" data-inv-id="' + inv.id + '" data-gl="' + glCode + '" data-amt="' + inv.amount + '" onchange="updateBatchBar(\'' + glCode + '\')">';
+        }
+        html += '</td>';
         html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
         html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
         html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
@@ -5284,16 +5373,25 @@ async function toggleInvoices(glCode, linkEl) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
-            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
-            html += '<datalist id="reclass_list_' + inv.id + '">';
-            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
-            html += '</datalist> ';
-            html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
+            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
+            html += ' <button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
         }
         html += '</td></tr>';
     });
+    // Shared datalist (one per GL)
+    html += '</table>';
+    html += '<datalist id="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '">' + dlOptions + '</datalist>';
 
-    html += '</table></div></td>';
+    // Batch reclass bar (hidden by default)
+    html += '<div id="batch_bar_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="display:none; margin-top:8px; padding:8px 12px; background:#dbeafe; border:1px solid #2563eb; border-radius:6px; font-size:12px;">';
+    html += '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
+    html += '<span id="batch_count_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="font-weight:600; color:#2563eb;">0 selected ($0)</span>';
+    html += '<span>→ Reclass to:</span>';
+    html += '<input id="batch_target_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" placeholder="Search GL..." style="font-size:11px; padding:3px 8px; border:1px solid #2563eb; border-radius:4px; width:220px;">';
+    html += '<button onclick="batchReclass(\'' + glCode + '\')" style="font-size:11px; padding:4px 12px; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Reclass Selected</button>';
+    html += '</div></div>';
+
+    html += '</div></td>';
     detailRow.innerHTML = html;
     row.after(detailRow);
 }
@@ -5334,6 +5432,52 @@ async function inlineUndoReclass(invoiceId, fromGL) {
             showToast('Reclass undone — YTD restored', 'success');
         } else { showToast('Undo failed', 'error'); }
     } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
+}
+
+function glKey(glCode) { return glCode.replace(/[^a-zA-Z0-9]/g,'_'); }
+
+function toggleBatchAll(masterCb, glCode) {
+    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]');
+    cbs.forEach(cb => { cb.checked = masterCb.checked; });
+    updateBatchBar(glCode);
+}
+
+function updateBatchBar(glCode) {
+    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]:checked');
+    const bar = document.getElementById('batch_bar_' + glKey(glCode));
+    const countEl = document.getElementById('batch_count_' + glKey(glCode));
+    if (!bar) return;
+    let total = 0;
+    cbs.forEach(cb => { total += parseFloat(cb.dataset.amt || 0); });
+    if (cbs.length > 0) {
+        bar.style.display = 'block';
+        countEl.textContent = cbs.length + ' selected (' + fmt(total) + ')';
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+async function batchReclass(glCode) {
+    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]:checked');
+    const target = document.getElementById('batch_target_' + glKey(glCode));
+    if (!cbs.length) { alert('No invoices selected'); return; }
+    if (!target || !target.value) { alert('Select a target GL code'); return; }
+    const ids = Array.from(cbs).map(cb => parseInt(cb.dataset.invId));
+    try {
+        const resp = await fetch('/api/expense-dist/reclass-batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ invoice_ids: ids, reclass_to_gl: target.value, reclass_notes: 'Batch reclassed from PM budget review' })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            _expenseCache = null;
+            await applyExpenseReclassAdjustments();
+            renderTable();
+            updateZeroToggle();
+            showToast(data.reclassed + ' invoice' + (data.reclassed !== 1 ? 's' : '') + ' reclassified to ' + target.value + ' — YTD updated', 'success');
+        } else { showToast('Batch reclass failed: ' + (data.error || 'Unknown error'), 'error'); }
+    } catch(e) { showToast('Batch reclass error: ' + e.message, 'error'); }
 }
 
 function onInput(el) {

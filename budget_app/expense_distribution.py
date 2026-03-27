@@ -572,6 +572,39 @@ def create_expense_distribution_blueprint(db, workflow_models):
 
         return jsonify({"status": "ok", "invoice": inv.to_dict()})
 
+    @bp.route("/api/expense-dist/reclass-batch", methods=["POST"])
+    def reclass_batch():
+        """Reclassify multiple invoices to a target GL code."""
+        data = request.get_json()
+        invoice_ids = data.get("invoice_ids", [])
+        target_gl = data.get("reclass_to_gl", "").strip()
+        notes = data.get("reclass_notes", "").strip()
+        user = data.get("user", "PM")
+
+        if not invoice_ids:
+            return jsonify({"error": "No invoices specified"}), 400
+        if not target_gl:
+            return jsonify({"error": "No target GL specified"}), 400
+
+        results = []
+        errors = []
+        for inv_id in invoice_ids:
+            inv = ExpenseInvoice.query.get(inv_id)
+            if not inv:
+                errors.append({"id": inv_id, "error": "Not found"})
+                continue
+            if target_gl == inv.gl_code:
+                errors.append({"id": inv_id, "error": "Same GL"})
+                continue
+            inv.reclass_to_gl = target_gl
+            inv.reclass_notes = notes
+            inv.reclassed_by = user
+            inv.reclassed_at = datetime.utcnow()
+            results.append(inv.to_dict())
+
+        db.session.commit()
+        return jsonify({"status": "ok", "reclassed": len(results), "errors": errors, "invoices": results})
+
     @bp.route("/api/expense-dist/<entity_code>/summary", methods=["GET"])
     def gl_summary(entity_code):
         """
