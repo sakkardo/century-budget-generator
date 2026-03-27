@@ -22,6 +22,10 @@ IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
 BUDGET_SYSTEM = Path(__file__).parent.parent / "budget_system"
 sys.path.insert(0, str(BUDGET_SYSTEM))
 
+# Add budget_app to path so workflow.py can import sibling modules (e.g. dof_taxes)
+BUDGET_APP = Path(__file__).parent
+sys.path.insert(0, str(BUDGET_APP))
+
 from ysl_parser import parse_ysl_file
 from template_populator import populate_template, apply_assumptions, apply_pm_projections
 
