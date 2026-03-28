@@ -123,28 +123,41 @@ def fetch_dof_data(entity_code: str) -> dict | None:
         return None
 
     # Try SODA API first
+    # Note: This dataset (8y4t-faws) uses separate boro/block/lot columns,
+    # NOT a combined bble field. Column names:
+    #   curacttot = current actual total assessed value
+    #   curmkttot = current market value total
+    #   curtxbtot = current taxable total
+    #   curtrntot = current transitional total
+    # Tax rate and tax amount are NOT in this dataset — we use the
+    # hardcoded rate from PROPERTY_TAX_CONFIG as the base.
     try:
         import requests
-        bbl = f"{cfg['borough']}{cfg['block']}{cfg['lot']}"
         params = {
-            "$where": f"bble='{bbl}'",
+            "boro": cfg["borough"],
+            "block": cfg["block"],
+            "lot": cfg["lot"],
             "$limit": 1,
-            "$order": ":id DESC"
         }
         resp = requests.get(SODA_API_URL, params=params, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if data:
                 record = data[0]
+                assessed_value = float(record.get("curacttot", 0))
+                market_value = float(record.get("curmkttot", 0))
+                # Tax rate not in this dataset — use config value
+                tax_rate = cfg.get("tax_rate", 0)
+                annual_tax = assessed_value * tax_rate if tax_rate else cfg.get("annual_tax", 0)
                 result = {
                     "entity_code": entity_code,
                     "bbl": cfg["bbl"],
-                    "assessed_value": float(record.get("curravtot", 0)),
-                    "tax_rate": float(record.get("taxrate", 0)),
-                    "annual_tax": float(record.get("taxamt", 0)),
-                    "market_value": float(record.get("currmktval", 0)),
+                    "assessed_value": assessed_value,
+                    "tax_rate": tax_rate,
+                    "annual_tax": round(annual_tax, 2),
+                    "market_value": market_value,
                     "source": "nyc_open_data_api",
-                    "tax_class": cfg["tax_class"],
+                    "tax_class": cfg.get("tax_class", record.get("curtaxclass", "2")),
                 }
                 # Cache the result
                 _save_cache(entity_code, result)
