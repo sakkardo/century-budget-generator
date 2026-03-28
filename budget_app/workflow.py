@@ -4316,19 +4316,42 @@ function renderRETaxesTab(contentDiv) {
 
   contentDiv.innerHTML = html;
 
-  // Format input displays
-  document.getElementById('re_av').value = d.assessed_value;
-  document.getElementById('re_rate').value = d.tax_rate;
-  document.getElementById('re_trans').value = d.transitional_av_increase;
-  document.getElementById('re_est_rate').value = d.est_tax_rate;
+  // Format input displays on load
+  _reFmtDollar('re_av');
+  _reFmtRate('re_rate');
+  _reFmtPct('re_trans');
+  _reFmtRate('re_est_rate');
+  ['veteran','sche','star','coop_abatement'].forEach(k => {
+    _reFmtPct('re_ex_' + k + '_growth');
+    _reFmtDollar('re_ex_' + k + '_current');
+  });
+
+  // Attach focus/blur handlers to toggle between raw and formatted
+  document.querySelectorAll('#sheetContent input[type=text]').forEach(inp => {
+    inp.addEventListener('focus', function() { this.dataset.fmt = this.value; this.value = this.dataset.raw || _reParseNum(this.value); this.select(); });
+    inp.addEventListener('blur', function() { this.dataset.raw = _reParseNum(this.value); _reApplyFmt(this); reCalcTaxes(); });
+  });
+}
+
+// ── RE Taxes formatting helpers ──
+function _reParseNum(v) { return String(v).replace(/[$,%\s]/g, '').replace(/,/g, '') || '0'; }
+function _reFmtDollar(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = '$' + Math.round(n).toLocaleString(); el.dataset.type = 'dollar'; }
+function _reFmtRate(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = (n * 100).toFixed(4) + '%'; el.dataset.type = 'rate'; }
+function _reFmtPct(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = (n * 100).toFixed(2) + '%'; el.dataset.type = 'pct'; }
+function _reApplyFmt(el) {
+  const raw = parseFloat(el.dataset.raw) || 0;
+  if (el.dataset.type === 'dollar') el.value = '$' + Math.round(raw).toLocaleString();
+  else if (el.dataset.type === 'rate') el.value = (raw * 100).toFixed(4) + '%';
+  else if (el.dataset.type === 'pct') el.value = (raw * 100).toFixed(2) + '%';
 }
 
 // Live recalculation of RE Taxes when inputs change
+function _reVal(id) { const el = document.getElementById(id); return parseFloat(el.dataset.raw !== undefined ? el.dataset.raw : _reParseNum(el.value)) || 0; }
 function reCalcTaxes() {
-  const av = parseFloat(document.getElementById('re_av').value) || 0;
-  const rate = parseFloat(document.getElementById('re_rate').value) || 0;
-  const trans = parseFloat(document.getElementById('re_trans').value) || 0;
-  const estRate = parseFloat(document.getElementById('re_est_rate').value) || 0;
+  const av = _reVal('re_av');
+  const rate = _reVal('re_rate');
+  const trans = _reVal('re_trans');
+  const estRate = _reVal('re_est_rate');
 
   const h1 = av * rate / 2;
   const estAv = av * (1 + trans);
@@ -4342,8 +4365,8 @@ function reCalcTaxes() {
 
   let totalCurrent = 0, totalBudget = 0;
   ['veteran','sche','star','coop_abatement'].forEach(key => {
-    const growth = parseFloat(document.getElementById('re_ex_' + key + '_growth').value) || 0;
-    const current = parseFloat(document.getElementById('re_ex_' + key + '_current').value) || 0;
+    const growth = _reVal('re_ex_' + key + '_growth');
+    const current = _reVal('re_ex_' + key + '_current');
     const budget = current * (1 + growth);
     document.getElementById('re_ex_' + key + '_budget').textContent = '$' + Math.round(budget).toLocaleString();
     totalCurrent += current;
@@ -4353,23 +4376,29 @@ function reCalcTaxes() {
   document.getElementById('re_ex_total_current').textContent = '$' + Math.round(totalCurrent).toLocaleString();
   document.getElementById('re_ex_total_budget').textContent = '$' + Math.round(totalBudget).toLocaleString();
   document.getElementById('re_net').textContent = '$' + Math.round(gross - totalBudget).toLocaleString();
+
+  // Re-format inputs that weren't just edited
+  if (document.activeElement && document.activeElement.tagName !== 'INPUT') {
+    _reFmtDollar('re_av'); _reFmtRate('re_rate'); _reFmtPct('re_trans'); _reFmtRate('re_est_rate');
+    ['veteran','sche','star','coop_abatement'].forEach(k => { _reFmtPct('re_ex_'+k+'_growth'); _reFmtDollar('re_ex_'+k+'_current'); });
+  }
 }
 
 // Save RE Taxes overrides to server
 async function saveRETaxes() {
   const overrides = {
-    assessed_value: parseFloat(document.getElementById('re_av').value) || 0,
-    tax_rate: parseFloat(document.getElementById('re_rate').value) || 0,
-    transitional_av_increase: parseFloat(document.getElementById('re_trans').value) || 0,
-    est_tax_rate: parseFloat(document.getElementById('re_est_rate').value) || 0,
-    veteran_growth: parseFloat(document.getElementById('re_ex_veteran_growth').value) || 0,
-    veteran_current: parseFloat(document.getElementById('re_ex_veteran_current').value) || 0,
-    sche_growth: parseFloat(document.getElementById('re_ex_sche_growth').value) || 0,
-    sche_current: parseFloat(document.getElementById('re_ex_sche_current').value) || 0,
-    star_growth: parseFloat(document.getElementById('re_ex_star_growth').value) || 0,
-    star_current: parseFloat(document.getElementById('re_ex_star_current').value) || 0,
-    abatement_growth: parseFloat(document.getElementById('re_ex_coop_abatement_growth').value) || 0,
-    abatement_current: parseFloat(document.getElementById('re_ex_coop_abatement_current').value) || 0,
+    assessed_value: _reVal('re_av'),
+    tax_rate: _reVal('re_rate'),
+    transitional_av_increase: _reVal('re_trans'),
+    est_tax_rate: _reVal('re_est_rate'),
+    veteran_growth: _reVal('re_ex_veteran_growth'),
+    veteran_current: _reVal('re_ex_veteran_current'),
+    sche_growth: _reVal('re_ex_sche_growth'),
+    sche_current: _reVal('re_ex_sche_current'),
+    star_growth: _reVal('re_ex_star_growth'),
+    star_current: _reVal('re_ex_star_current'),
+    abatement_growth: _reVal('re_ex_coop_abatement_growth'),
+    abatement_current: _reVal('re_ex_coop_abatement_current'),
   };
   const statusEl = document.getElementById('reTaxSaveStatus');
   statusEl.textContent = 'Saving...';
