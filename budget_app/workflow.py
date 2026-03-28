@@ -2577,12 +2577,45 @@ BUILDING_DETAIL_TEMPLATE = r"""
   }
   .card-value { font-size: 26px; font-weight: 700; color: var(--blue); }
   .card-label { font-size: 12px; color: var(--gray-500); text-transform: uppercase; font-weight: 600; margin-top: 4px; }
-  .tracks {
+  .context-strip {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    margin-bottom: 28px;
+    gap: 12px;
+    margin-bottom: 16px;
   }
+  .panel {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .panel-header:hover { background: var(--gray-50); }
+  .panel-header h3 { font-size: 14px; font-weight: 600; color: var(--gray-700); margin: 0; }
+  .panel-header .badge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px; }
+  .badge-blue { background: var(--blue-light); color: var(--blue); }
+  .badge-green { background: var(--green-light); color: var(--green); }
+  .badge-amber { background: var(--yellow-light); color: #d97706; }
+  .badge-gray { background: var(--gray-100); color: var(--gray-500); }
+  .panel-header .chevron { color: var(--gray-400); font-size: 16px; transition: transform 0.2s; }
+  .panel-header .chevron.open { transform: rotate(180deg); }
+  .panel-body { padding: 0 20px 16px; display: none; }
+  .panel-body.open { display: block; }
+  .panel-summary { font-size: 12px; color: var(--gray-500); margin-left: 8px; }
+  .checklist-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--gray-100); }
+  .checklist-item:last-child { border-bottom: none; }
+  .check-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0; margin-top: 1px; }
+  .check-done { background: var(--green-light); color: var(--green); }
+  .check-pending { background: var(--gray-100); color: var(--gray-400); border: 1.5px solid var(--gray-300); }
+  .checklist-label { font-size: 13px; font-weight: 500; color: var(--gray-700); }
+  .checklist-detail { font-size: 11px; color: var(--gray-400); margin-top: 1px; }
   .section {
     background: white;
     border-radius: 12px;
@@ -2591,6 +2624,21 @@ BUILDING_DETAIL_TEMPLATE = r"""
     margin-bottom: 28px;
   }
   .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+  .workbook-section {
+    background: white;
+    border: 2px solid var(--blue);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+  .workbook-section .workbook-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .workbook-section .workbook-header h2 { font-size: 16px; font-weight: 700; color: var(--blue); margin: 0; }
   table { width: 100%; border-collapse: collapse; }
   th {
     background: var(--gray-100);
@@ -2653,7 +2701,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   }
   @media (max-width: 768px) {
     .summary-cards { grid-template-columns: repeat(2, 1fr); }
-    .tracks { grid-template-columns: 1fr; }
+    .context-strip { grid-template-columns: 1fr; }
   }
   /* ── Loading spinner ── */
   .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--gray-200); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; }
@@ -2700,28 +2748,45 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <!-- Summary Cards -->
   <!-- summary cards removed -->
 
-  <!-- Two Track Cards -->
-  <div class="tracks">
-    <!-- Track 1: PM Expense Review -->
-    <div class="section" style="margin-bottom:0;">
-      <h2>PM Expense Review</h2>
-      <div id="pmTrackContent"></div>
+  <div class="context-strip">
+    <div class="panel" id="pmPanel">
+      <div class="panel-header" onclick="togglePanel(this)">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <h3>PM Expense Review</h3>
+          <span class="badge badge-gray" id="pmBadge"></span>
+          <span class="panel-summary" id="pmSummary"></span>
+        </div>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="pmTrackContent"></div>
     </div>
-
-    <!-- Track 2: FA Completion Checklist -->
-    <div class="section" style="margin-bottom:0;">
-      <h2>FA Completion Checklist</h2>
-      <div id="assemblyContent"></div>
+    <div class="panel" id="faPanel">
+      <div class="panel-header" onclick="togglePanel(this)">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <h3>FA Completion Checklist</h3>
+          <span class="badge badge-blue" id="faBadge"></span>
+          <span class="panel-summary" id="faSummary"></span>
+        </div>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="panel-body" id="assemblyContent"></div>
     </div>
   </div>
 
-  <!-- Historical Actuals (from Audited Financials) -->
-  <div class="section" id="auditActualsSection" style="display:none;">
-    <h2>Historical Actuals <span style="font-size:13px; font-weight:400; color:var(--gray-500);">(from Audited Financials)</span></h2>
-    <table id="auditActualsTable">
-      <thead id="auditActualsHead"></thead>
-      <tbody id="auditActualsBody"></tbody>
-    </table>
+  <div class="panel" id="auditActualsSection" style="display:none; margin-bottom:16px;">
+    <div class="panel-header" onclick="togglePanel(this)">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <h3>Historical Actuals</h3>
+        <span class="badge badge-gray" id="auditBadge"></span>
+      </div>
+      <span class="chevron">▾</span>
+    </div>
+    <div class="panel-body">
+      <table id="auditActualsTable">
+        <thead id="auditActualsHead"></thead>
+        <tbody id="auditActualsBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Maintenance Proof Upload Panel -->
@@ -2757,13 +2822,20 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Reclass Suggestions (shown if any exist) -->
-  <div class="section" id="reclassSuggestions" style="display:none;">
-    <h2>Pending Reclass Suggestions <span style="font-size:13px; font-weight:400; color:var(--gray-500);">(from PM)</span></h2>
-    <table id="reclassTable">
-      <thead><tr><th>From GL</th><th>To GL</th><th>Amount</th><th>PM Notes</th><th>Action</th></tr></thead>
-      <tbody id="reclassBody"></tbody>
-    </table>
+  <div class="panel" id="reclassSuggestions" style="display:none; margin-bottom:16px;">
+    <div class="panel-header" onclick="togglePanel(this)">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <h3>Invoice Reclasses</h3>
+        <span class="badge badge-green" id="reclassBadge"></span>
+      </div>
+      <span class="chevron">▾</span>
+    </div>
+    <div class="panel-body">
+      <table id="reclassTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead><tr><th>From GL</th><th>To GL</th><th>Amount</th><th>PM Notes</th><th>Action</th></tr></thead>
+        <tbody id="reclassBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Invoice Reclass Summary Panel -->
@@ -2792,18 +2864,17 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Budget Workbook (Tabbed) -->
-  <div class="section">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+  <div class="workbook-section">
+    <div class="workbook-header">
       <h2>Budget Workbook</h2>
       <div style="display:flex; gap:8px;">
         <button onclick="generatePresentationLink()" id="presLinkBtn" class="btn" style="background:var(--primary); color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer;">Board Presentation</button>
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
-    <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap;"></div>
-    <div id="sheetContent" style="overflow-x:auto;"></div>
-    <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px;"></div>
+    <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap; padding:0 24px; background:var(--gray-50);"></div>
+    <div id="sheetContent" style="overflow-x:auto; padding:0 24px;"></div>
+    <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px; padding:0 24px 12px;"></div>
   </div>
 
   </div><!-- end detailContent -->
@@ -2811,6 +2882,13 @@ BUILDING_DETAIL_TEMPLATE = r"""
 
 <script>
 const entityCode = '{{ entity_code }}';
+
+function togglePanel(header) {
+  const body = header.nextElementSibling;
+  const chevron = header.querySelector('.chevron');
+  body.classList.toggle('open');
+  chevron.classList.toggle('open');
+}
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
 let allAssumptions = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
@@ -2893,6 +2971,11 @@ function renderDetail(data) {
   // PM Track
   const statusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
   const pmStatus = statusLabels[b.status] || b.status;
+  const pmBadgeClass = ['fa_review','approved'].includes(b.status) ? 'badge-green' : ['pm_pending','pm_in_progress'].includes(b.status) ? 'badge-amber' : 'badge-gray';
+  document.getElementById('pmBadge').className = 'badge ' + pmBadgeClass;
+  document.getElementById('pmBadge').textContent = pmStatus;
+  document.getElementById('pmSummary').textContent = data.assignments.pm ? data.assignments.pm : '';
+
   let pmActions = '';
   if (b.status === 'draft') {
     pmActions = '<button onclick="sendToPM()" style="background:var(--blue); color:white;">Send to PM for Review</button>';
@@ -2961,22 +3044,24 @@ function renderDetail(data) {
   const pct = Math.round(doneCount / checks.length * 100);
   const barColor = pct === 100 ? 'var(--green)' : pct >= 60 ? 'var(--blue)' : 'var(--yellow)';
 
+  const faBadgeClass = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-blue' : 'badge-amber';
+  document.getElementById('faBadge').className = 'badge ' + faBadgeClass;
+  document.getElementById('faBadge').textContent = doneCount + ' / ' + checks.length;
+  document.getElementById('faSummary').textContent = pct + '% complete';
+
   let assemblyHtml = '<div style="margin-bottom:12px;">' +
     '<div style="display:flex; justify-content:space-between; font-size:12px; color:var(--gray-500); margin-bottom:4px;"><span>' + doneCount + ' of ' + checks.length + ' complete</span><span>' + pct + '%</span></div>' +
     '<div style="height:6px; background:var(--gray-100); border-radius:3px; overflow:hidden;"><div style="height:100%; width:' + pct + '%; background:' + barColor + '; border-radius:3px; transition:width 0.3s;"></div></div></div>';
 
-  assemblyHtml += '<div style="display:flex; flex-direction:column; gap:6px;">';
   checks.forEach((c, i) => {
-    const icon = c.done ? '\u2705' : '\u2B1C';
-    const opacity = c.done ? '0.7' : '1';
-    const weight = c.done ? '400' : '500';
+    const iconClass = c.done ? 'check-done' : 'check-pending';
+    const iconChar = c.done ? '\u2713' : '';
     const actionBtn = c.action ? ' <button onclick="' + c.action + '()" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; margin-left:8px;">Go</button>' : '';
-    assemblyHtml += '<div style="display:flex; align-items:center; gap:8px; opacity:' + opacity + '; font-weight:' + weight + ';">' +
-      '<span style="font-size:16px;">' + icon + '</span>' +
-      '<div><span style="font-size:13px;">' + c.label + '</span>' + actionBtn +
-      '<div style="font-size:11px; color:var(--gray-400); margin-top:1px;">' + c.detail + '</div></div></div>';
+    assemblyHtml += '<div class="checklist-item">' +
+      '<div class="check-icon ' + iconClass + '">' + iconChar + '</div>' +
+      '<div><div class="checklist-label">' + c.label + actionBtn + '</div>' +
+      '<div class="checklist-detail">' + c.detail + '</div></div></div>';
   });
-  assemblyHtml += '</div>';
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
 
@@ -3028,6 +3113,7 @@ function renderDetail(data) {
 
   if (auditYearKeys.length > 0) {
     document.getElementById('auditActualsSection').style.display = '';
+    document.getElementById('auditBadge').textContent = auditYearKeys.length + ' years';
     const auditHead = document.getElementById('auditActualsHead');
     const auditBody = document.getElementById('auditActualsBody');
     auditHead.innerHTML = '<tr><th>Century Category</th>' + auditYearKeys.map(y => '<th style="text-align:right">' + y + ' Actual</th>').join('') + '</tr>';
@@ -3063,6 +3149,8 @@ function renderDetail(data) {
   const reclassLines = lines.filter(l => l.reclass_to_gl);
   if (reclassLines.length > 0) {
     document.getElementById('reclassSuggestions').style.display = '';
+    const totalReclass = reclassLines.reduce((s, l) => s + Math.abs(l.reclass_amount || 0), 0);
+    document.getElementById('reclassBadge').textContent = reclassLines.length + ' items \u00b7 ' + fmt(totalReclass);
     const reclassBody = document.getElementById('reclassBody');
     reclassBody.innerHTML = '';
     reclassLines.forEach(l => {
