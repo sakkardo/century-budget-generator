@@ -4172,120 +4172,142 @@ function renderRETaxesTab(contentDiv) {
   const fmt = v => '$' + Math.round(v).toLocaleString();
   const pctFmt = v => (v * 100).toFixed(2) + '%';
   const rateFmt = v => (v * 100).toFixed(4) + '%';
-  const inputStyle = 'background:#dce6f1; color:#0000ff; font-weight:600; text-align:right; padding:6px 10px; border:1px solid #b0c4de; border-radius:4px; width:140px;';
-  const outputStyle = 'background:#e2efda; color:#000; font-weight:600; text-align:right; padding:8px 12px;';
-  const labelStyle = 'padding:8px 12px; font-size:14px;';
-  const noteStyle = 'padding:8px 12px; font-size:12px; color:#808080; font-style:italic;';
-  const headerStyle = 'background:#1f4e79; color:#fff; padding:10px 12px; font-weight:700; font-size:13px;';
-  const subHeaderStyle = 'background:#f2f2f2; padding:8px 12px; font-weight:600; font-size:13px;';
+  const inputStyle = 'background:var(--blue-light,#eff6ff); color:var(--blue,#1a56db); font-weight:600; text-align:right; padding:7px 10px; border:1.5px solid var(--gray-200,#e5e7eb); border-radius:6px; width:140px; font-size:13px; outline:none; transition:border-color 0.15s;';
+  const outputStyle = 'font-weight:600; text-align:right; padding:8px 12px; color:var(--gray-700,#374151); font-size:14px;';
+  const labelStyle = 'padding:10px 16px; font-size:13px; color:var(--gray-700,#374151);';
+  const noteStyle = 'padding:8px 12px; font-size:12px; color:var(--gray-400,#9ca3af);';
+  const sectionStyle = 'padding:10px 16px; font-size:12px; font-weight:700; color:var(--blue,#1a56db); text-transform:uppercase; letter-spacing:0.5px; background:var(--blue-light,#eff6ff); border-top:1px solid var(--gray-200,#e5e7eb);';
+  const subHeaderStyle = 'background:var(--gray-50,#f9fafb); padding:8px 16px; font-weight:600; font-size:12px; color:var(--gray-500,#6b7280);';
 
   const d = reTaxes;
   const ex = d.exemptions || {};
 
   let html = `
   <div style="max-width:900px; margin:0 auto;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <!-- Header -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
       <div>
-        <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
-        <div style="font-size:13px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} &nbsp;|&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;|&nbsp; Source: ${d.source || 'N/A'}</div>
+        <div style="font-size:15px; font-weight:700; color:var(--gray-700,#374151);">Real Estate Tax Calculation</div>
+        <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:4px;">BBL: ${d.bbl || 'N/A'} &nbsp;&middot;&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;&middot;&nbsp; Source: ${d.source || 'N/A'}</div>
       </div>
-      <button onclick="refreshDOFData()" style="padding:8px 16px; background:var(--primary); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">
+      <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
         ↻ Refresh from NYC DOF
       </button>
     </div>
 
-    <table style="width:100%; border-collapse:collapse; font-size:14px; border:1px solid #ddd;">
-      <colgroup>
-        <col style="width:35%">
-        <col style="width:20%">
-        <col style="width:25%">
-        <col style="width:20%">
-      </colgroup>
+    <!-- Tax Calculation Card -->
+    <div style="background:white; border:1px solid var(--gray-200,#e5e7eb); border-radius:10px; overflow:hidden; margin-bottom:16px;">
+      <div style="${sectionStyle}; border-top:none;">Tax Calculation</div>
 
-      <!-- TAX CALCULATION HEADER -->
-      <tr><td colspan="4" style="${headerStyle}">TAX CALCULATION</td></tr>
+      <table style="width:100%; border-collapse:collapse; font-size:14px;">
+        <colgroup>
+          <col style="width:35%">
+          <col style="width:20%">
+          <col style="width:25%">
+          <col style="width:20%">
+        </colgroup>
 
-      <!-- 1st Half -->
-      <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Assessed Valuation (Actual)</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
-      </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Tax Rate (Actual)</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
-        <td style="${noteStyle}">← 1st Half Tax</td>
-      </tr>
+        <!-- 1st Half -->
+        <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
+        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+          <td style="${labelStyle}">Assessed Valuation (Actual)</td>
+          <td style="padding:6px 16px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+          <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+          <td style="${labelStyle}">Tax Rate (Actual)</td>
+          <td style="padding:6px 16px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+          <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
+          <td style="${noteStyle}">1st Half Tax</td>
+        </tr>
 
-      <!-- 2nd Half -->
-      <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Transitional AV Increase %</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
-      </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Estimated Assessed Valuation</td>
-        <td style="${outputStyle}" id="re_est_av">${fmt(d.est_assessed_value)}</td>
-        <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
-      </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Estimated Tax Rate</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
-        <td style="${noteStyle}">← 2nd Half Tax</td>
-      </tr>
+        <!-- 2nd Half -->
+        <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
+        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+          <td style="${labelStyle}">Transitional AV Increase %</td>
+          <td style="padding:6px 16px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+          <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+          <td style="${labelStyle}">Estimated Assessed Valuation</td>
+          <td style="${outputStyle}; padding-left:16px;" id="re_est_av">${fmt(d.est_assessed_value)}</td>
+          <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+          <td style="${labelStyle}">Estimated Tax Rate</td>
+          <td style="padding:6px 16px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+          <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
+          <td style="${noteStyle}">2nd Half Tax</td>
+        </tr>
+      </table>
 
-      <tr style="border-top:2px solid #333; border-bottom:2px solid #333;">
-        <td style="padding:10px 12px; font-weight:700; font-size:15px;">GROSS TAX LIABILITY (Full Year)</td>
-        <td style="${outputStyle}; font-size:15px;" id="re_gross">${fmt(d.gross_tax)}</td>
-        <td colspan="2" style="${noteStyle}">1st Half + 2nd Half</td>
-      </tr>
+      <!-- Gross Total -->
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; background:var(--gray-50,#f9fafb); border-top:2px solid var(--gray-200,#e5e7eb);">
+        <span style="font-weight:700; font-size:14px; color:var(--gray-700,#374151);">Gross Tax Liability (Full Year)</span>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <span style="font-weight:700; font-size:16px; color:var(--blue,#1a56db);" id="re_gross">${fmt(d.gross_tax)}</span>
+          <span style="font-size:11px; color:var(--gray-400,#9ca3af);">1st Half + 2nd Half</span>
+        </div>
+      </div>
+    </div>
 
-      <tr><td colspan="4" style="${headerStyle}">TAX EXEMPTIONS & ABATEMENTS</td></tr>
-      <tr style="background:#d6e4f0;">
-        <td style="padding:8px 12px; font-weight:600; font-size:12px;">Exemption Type</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:center;">Growth %</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Current Year</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Budget Year</td>
-      </tr>`;
+    <!-- Exemptions Card -->
+    <div style="background:white; border:1px solid var(--gray-200,#e5e7eb); border-radius:10px; overflow:hidden; margin-bottom:16px;">
+      <div style="${sectionStyle}; border-top:none;">Tax Exemptions & Abatements</div>
+
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <colgroup>
+          <col style="width:35%">
+          <col style="width:18%">
+          <col style="width:22%">
+          <col style="width:25%">
+        </colgroup>
+        <tr style="border-bottom:1px solid var(--gray-200,#e5e7eb);">
+          <td style="padding:8px 16px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px;">Exemption Type</td>
+          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:center;">Growth %</td>
+          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:right;">Current Year</td>
+          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:right;">Budget Year</td>
+        </tr>`;
 
   // Exemption rows
   const exRows = [
-    {key:'veteran', label:'Veteran Exemption', gl:'GL 6315-0025'},
-    {key:'sche', label:'Senior Citizen (SCHE)', gl:'GL 6315-0035'},
-    {key:'star', label:'STAR Exemption', gl:'GL 6315-0020'},
-    {key:'coop_abatement', label:'Co-op Abatement', gl:'GL 6315-0010'},
+    {key:'veteran', label:'Veteran Exemption', gl:'6315-0025'},
+    {key:'sche', label:'Senior Citizen (SCHE)', gl:'6315-0035'},
+    {key:'star', label:'STAR Exemption', gl:'6315-0020'},
+    {key:'coop_abatement', label:'Co-op Abatement', gl:'6315-0010'},
   ];
   exRows.forEach(r => {
     const e = ex[r.key] || {growth_pct:0, current_year:0, budget_year:0};
-    html += `<tr style="border-bottom:1px solid #eee;">
-      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:#999;">(${r.gl})</span></td>
+    html += `<tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
+      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:var(--gray-400,#9ca3af);">GL ${r.gl}</span></td>
       <td style="padding:6px 12px; text-align:center;"><input type="text" id="re_ex_${r.key}_growth" value="${e.growth_pct}" onchange="reCalcTaxes()" style="${inputStyle} width:80px;"></td>
       <td style="padding:6px 12px;"><input type="text" id="re_ex_${r.key}_current" value="${e.current_year}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-      <td style="${outputStyle}" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
+      <td style="${outputStyle}; padding-right:16px;" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
     </tr>`;
   });
 
   html += `
-      <tr style="border-top:1px solid #999;">
-        <td style="padding:10px 12px; font-weight:700;">TOTAL EXEMPTIONS</td>
-        <td></td>
-        <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
-        <td style="${outputStyle}" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
-      </tr>
+        <tr style="border-top:1px solid var(--gray-200,#e5e7eb);">
+          <td style="padding:10px 16px; font-weight:700; font-size:13px; color:var(--gray-700,#374151);">Total Exemptions</td>
+          <td></td>
+          <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
+          <td style="${outputStyle}; padding-right:16px;" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
+        </tr>
+      </table>
+    </div>
 
-      <tr style="border-top:3px solid #1f4e79; background:#f0f7ff;">
-        <td style="padding:12px; font-weight:700; font-size:16px;">NET TAX LIABILITY (Proposed Budget)</td>
-        <td style="${outputStyle}; font-size:16px; background:#e2efda;" id="re_net">${fmt(d.net_tax)}</td>
-        <td colspan="2" style="${noteStyle}">Gross Tax − Total Exemptions</td>
-      </tr>
-    </table>
+    <!-- Net Total Card -->
+    <div style="background:var(--blue-light,#eff6ff); border:2px solid var(--blue,#1a56db); border-radius:10px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <div>
+        <div style="font-weight:700; font-size:15px; color:var(--blue,#1a56db);">Net Tax Liability (Proposed Budget)</div>
+        <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:2px;">Gross Tax − Total Exemptions</div>
+      </div>
+      <span style="font-weight:700; font-size:22px; color:var(--blue,#1a56db);" id="re_net">${fmt(d.net_tax)}</span>
+    </div>
 
-    <div style="margin-top:12px; display:flex; gap:12px;">
-      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--green, #22c55e); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600;">
+    <!-- Actions -->
+    <div style="display:flex; align-items:center; gap:12px;">
+      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--blue,#1a56db); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; transition:background 0.15s;">
         ✓ Save RE Taxes
       </button>
       <span id="reTaxSaveStatus" style="font-size:13px; color:var(--gray-400); padding:8px 0;"></span>
