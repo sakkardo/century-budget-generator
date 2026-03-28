@@ -2959,6 +2959,7 @@ function renderDetail(data) {
   document.getElementById('breadcrumbName').textContent = b.building_name;
   document.title = b.building_name + ' - Century Management';
   let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
+  if (b.created_at) meta += ' | Generated ' + new Date(b.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) + ' at ' + new Date(b.created_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
   if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;
   if (data.assignments.pm) meta += ' | PM: ' + data.assignments.pm;
   document.getElementById('buildingMeta').textContent = meta;
