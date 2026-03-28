@@ -4190,11 +4190,14 @@ function renderRETaxesTab(contentDiv) {
         <div style="font-size:15px; font-weight:700; color:var(--gray-700,#374151);">Real Estate Tax Calculation</div>
         <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:4px;">BBL: ${d.bbl || 'N/A'} &nbsp;&middot;&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;&middot;&nbsp; Source: ${d.source || 'N/A'}</div>
       </div>
-      <div style="display:flex; align-items:center; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <span id="dofRefreshTimestamp" style="font-size:11px; color:var(--gray-400,#9ca3af);"></span>
         <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
           ↻ Refresh from NYC DOF
         </button>
+        <a href="https://a836-pts-access.nyc.gov/care/search/commonsearch.aspx?mode=persprop" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; padding:7px 14px; background:var(--gray-50,#f9fafb); color:var(--gray-600,#4b5563); border:1.5px solid var(--gray-300,#d1d5db); border-radius:6px; text-decoration:none; font-size:12px; font-weight:600; transition:background 0.15s, border-color 0.15s;" onmouseover="this.style.background='#fff'; this.style.borderColor='var(--blue,#1a56db)'; this.style.color='var(--blue,#1a56db)';" onmouseout="this.style.background='var(--gray-50,#f9fafb)'; this.style.borderColor='var(--gray-300,#d1d5db)'; this.style.color='var(--gray-600,#4b5563)';">
+          <span style="font-size:14px;">↗</span> Verify on DOF Site
+        </a>
       </div>
     </div>
 
@@ -4218,7 +4221,7 @@ function renderRETaxesTab(contentDiv) {
           <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Tax Rate (Actual)</td>
+          <td style="${labelStyle}">Tax Rate (Actual) <span style="display:block; font-size:10px; color:var(--orange,#d97706); margin-top:2px;">⚠ Manual — not from DOF API</span></td>
           <td style="padding:6px 16px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
           <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
           <td style="${noteStyle}">1st Half Tax</td>
@@ -4237,7 +4240,7 @@ function renderRETaxesTab(contentDiv) {
           <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Estimated Tax Rate</td>
+          <td style="${labelStyle}">Estimated Tax Rate <span style="display:block; font-size:10px; color:var(--orange,#d97706); margin-top:2px;">⚠ Manual — verify on DOF site</span></td>
           <td style="padding:6px 16px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
           <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
           <td style="${noteStyle}">2nd Half Tax</td>
