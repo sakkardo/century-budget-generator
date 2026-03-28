@@ -4190,9 +4190,12 @@ function renderRETaxesTab(contentDiv) {
         <div style="font-size:15px; font-weight:700; color:var(--gray-700,#374151);">Real Estate Tax Calculation</div>
         <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:4px;">BBL: ${d.bbl || 'N/A'} &nbsp;&middot;&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;&middot;&nbsp; Source: ${d.source || 'N/A'}</div>
       </div>
-      <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
-        ↻ Refresh from NYC DOF
-      </button>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span id="dofRefreshTimestamp" style="font-size:11px; color:var(--gray-400,#9ca3af);"></span>
+        <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
+          ↻ Refresh from NYC DOF
+        </button>
+      </div>
     </div>
 
     <!-- Tax Calculation Card -->
@@ -4331,6 +4334,13 @@ function renderRETaxesTab(contentDiv) {
     inp.addEventListener('focus', function() { this.dataset.fmt = this.value; this.value = this.dataset.raw || _reParseNum(this.value); this.select(); });
     inp.addEventListener('blur', function() { this.dataset.raw = _reParseNum(this.value); _reApplyFmt(this); reCalcTaxes(); });
   });
+
+  // Show last refresh timestamp if available
+  const tsEl = document.getElementById('dofRefreshTimestamp');
+  if (tsEl && window._dofLastRefresh) {
+    const t = window._dofLastRefresh;
+    tsEl.textContent = 'Last refreshed ' + t.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' at ' + t.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  }
 }
 
 // ── RE Taxes formatting helpers ──
@@ -4433,6 +4443,7 @@ async function refreshDOFData() {
     const result = await resp.json();
     if (result.re_taxes) {
       window._reTaxesData = result.re_taxes;
+      window._dofLastRefresh = new Date();
       renderRETaxesTab(document.getElementById('sheetContent'));
       if (statusEl) { statusEl.textContent = '✓ DOF data refreshed'; statusEl.style.color = 'var(--green, #22c55e)'; }
     }
