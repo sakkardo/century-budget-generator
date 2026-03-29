@@ -4322,14 +4322,13 @@ function renderRETaxesTab(contentDiv) {
 
   contentDiv.innerHTML = html;
 
-  // Build DOF verify link with auto-populated borough/block/lot
+  // Build DOF verify link — use Property Information Portal (direct BBL lookup)
   try {
-    const bbl = (d.bbl || '').split('-');
-    if (bbl.length === 3) {
+    const bblClean = (d.bbl || '').replace(/-/g, '');
+    if (bblClean.length >= 10) {
       const dofLink = document.getElementById('dofVerifyLink');
       if (dofLink) {
-        dofLink.href = 'https://a836-pts-access.nyc.gov/care/search/commonsearch.aspx?mode=persprop&boro=' +
-          encodeURIComponent(bbl[0]) + '&block=' + encodeURIComponent(bbl[1]) + '&lot=' + encodeURIComponent(bbl[2]);
+        dofLink.href = 'https://propertyinformationportal.nyc.gov/parcels/parcel/' + bblClean;
       }
     }
   } catch(e) { console.warn('Could not build DOF verify link:', e); }
