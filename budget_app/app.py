@@ -12,8 +12,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 from io import BytesIO
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify, send_file, make_response
 from flask_sqlalchemy import SQLAlchemy
+from functools import wraps
 
 # Detect cloud deployment (Railway sets PORT env var)
 IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
@@ -476,6 +477,306 @@ def delete_building(entity_code):
     return jsonify({"message": "Building deleted"}), 200
 
 
+# ─── CORS Helper for Yardi Auto-Upload ────────────────────────────────────
+def cors_headers(f):
+    """Decorator to add CORS headers for cross-origin Yardi→Railway requests."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if request.method == "OPTIONS":
+            resp = make_response()
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Upload-Session, X-Entity-Code, X-File-Type, X-Filename"
+            resp.headers["Access-Control-Max-Age"] = "3600"
+            return resp
+        result = f(*args, **kwargs)
+        if isinstance(result, tuple):
+            resp = make_response(result[0], result[1])
+        else:
+            resp = make_response(result)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    return decorated
+
+
+# ─── Auto-Upload: Yardi → Budget App (no manual file upload needed) ───────
+_upload_sessions = {}  # session_id → {files: [{name, data, type}], entities: [], period: str}
+
+@app.route("/api/auto-upload", methods=["POST", "OPTIONS"])
+@cors_headers
+def auto_upload_file():
+    """Accept a single file blob from the Yardi console script.
+
+    The Yardi script POSTs each downloaded report here as it completes.
+    Files accumulate in a server-side session until /api/auto-process is called.
+    """
+    if request.method == "OPTIONS":
+        return make_response(""), 200
+
+    session_id = request.headers.get("X-Upload-Session", "default")
+    entity_code = request.headers.get("X-Entity-Code", "")
+    file_type = request.headers.get("X-File-Type", "unknown")  # ysl, expense, maint, ap
+
+    if session_id not in _upload_sessions:
+        _upload_sessions[session_id] = {"files": [], "entities": set(), "period": ""}
+
+    sess = _upload_sessions[session_id]
+
+    # Accept the file from the request body
+    if request.content_type and "multipart" in request.content_type:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file in request"}), 400
+        filename = f.filename or f"upload_{entity_code}_{file_type}.xls"
+        file_data = f.read()
+    else:
+        # Raw binary body
+        file_data = request.get_data()
+        filename = request.headers.get("X-Filename", f"upload_{entity_code}_{file_type}.xls")
+
+    if not file_data:
+        return jsonify({"error": "Empty file"}), 400
+
+    sess["files"].append({
+        "name": filename,
+        "data": file_data,
+        "type": file_type,
+        "entity": entity_code,
+    })
+    if entity_code:
+        sess["entities"].add(entity_code)
+
+    logger.info(f"Auto-upload: received {filename} ({len(file_data)} bytes) for entity {entity_code}, session {session_id}")
+
+    return jsonify({
+        "status": "received",
+        "filename": filename,
+        "size": len(file_data),
+        "total_files": len(sess["files"]),
+    })
+
+
+@app.route("/api/auto-process", methods=["POST", "OPTIONS"])
+@cors_headers
+def auto_process():
+    """Trigger processing of all files accumulated via auto-upload.
+
+    Called by the Yardi script after all downloads complete.
+    Reuses the same processing logic as /api/process.
+    """
+    if request.method == "OPTIONS":
+        return make_response(""), 200
+
+    data = request.get_json(silent=True) or {}
+    session_id = data.get("session_id", request.headers.get("X-Upload-Session", "default"))
+    period = data.get("period", "02/2026")
+
+    if session_id not in _upload_sessions or not _upload_sessions[session_id]["files"]:
+        return jsonify({"error": "No files in session. Upload files first via /api/auto-upload"}), 400
+
+    sess = _upload_sessions.pop(session_id)
+    file_list = sess["files"]
+
+    logger.info(f"Auto-process: session {session_id}, {len(file_list)} files, entities: {sess['entities']}")
+
+    # Save files to a temp dir and reuse the existing /api/process logic
+    # by writing them as real files and processing them
+    save_dir_str = load_settings().get("save_dir", DEFAULT_SAVE_DIR)
+    save_dir = Path(save_dir_str)
+    ysl_archive = BUDGET_SYSTEM / "ysl_downloads"
+    ysl_archive.mkdir(exist_ok=True)
+
+    results = {"success": [], "failed": [], "warnings": [], "save_dir": str(save_dir), "auto_upload": True}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        output_files = []
+        saved_files = []
+        ysl_entities = set()
+        expense_files = []
+        open_ap_files = []
+
+        # Pass 1: Save all files, classify, process YSL first
+        for finfo in file_list:
+            filename = finfo["name"]
+            if not filename.endswith((".xlsx", ".xls")):
+                results["warnings"].append(f"Skipped non-Excel: {filename}")
+                continue
+
+            file_path = tmp / filename
+            file_path.write_bytes(finfo["data"])
+
+            try:
+                if detect_open_ap_file(str(file_path)):
+                    logger.info(f"Auto-upload detection for {filename}: Open AP (Aging) report")
+                    open_ap_files.append((file_path, filename))
+                    continue
+
+                from openpyxl import load_workbook as _lwb
+                _wb_check = _lwb(str(file_path), data_only=True)
+                _ws_check = _wb_check.active
+                _row1 = str(_ws_check.cell(row=1, column=1).value or "")
+                _row2 = str(_ws_check.cell(row=2, column=1).value or "")
+                _wb_check.close()
+
+                is_expense = "expense distribution" in _row1.lower() or "expense dist" in _row1.lower()
+                logger.info(f"Auto-upload detection for {filename}: Row1='{_row1}', is_expense={is_expense}")
+
+                if is_expense:
+                    expense_files.append((file_path, filename))
+                    continue
+            except Exception as detect_err:
+                logger.error(f"Auto-upload detection error for {filename}: {detect_err}")
+                results["warnings"].append(f"Could not read {filename}: {str(detect_err)}")
+                continue
+
+            # Process YSL file
+            try:
+                gl_data, property_info = parse_ysl_file(file_path)
+                entity = property_info.get("property_code", "unknown")
+                name = property_info.get("property_name", f"Entity_{entity}")
+                ysl_entities.add(str(entity))
+
+                building_folder_name = f"{entity} - {name}"
+                building_dir = save_dir / building_folder_name
+                building_dir.mkdir(parents=True, exist_ok=True)
+
+                output_name = f"{entity}_{name}_2027_Budget.xlsx"
+                output_path = building_dir / output_name
+
+                _gen_ytd = 2
+                try:
+                    _gen_ytd = int(period.split("/")[0])
+                except Exception:
+                    pass
+
+                success = populate_template(
+                    template_path=TEMPLATE_PATH,
+                    gl_data=gl_data,
+                    property_info=property_info,
+                    output_path=output_path,
+                    ytd_months=_gen_ytd,
+                    remaining_months=12 - _gen_ytd,
+                )
+
+                if success and output_path.exists():
+                    merged = None
+                    try:
+                        merged = merge_assumptions(entity)
+                    except Exception:
+                        pass
+
+                    try:
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged)
+                    except Exception as wfe:
+                        logger.warning(f"Could not store GL data for {entity}: {wfe}")
+
+                    try:
+                        if merged:
+                            apply_assumptions(output_path, merged)
+                    except Exception as ae:
+                        logger.warning(f"Could not apply assumptions for {entity}: {ae}")
+
+                    try:
+                        pm_proj = workflow_helpers["get_pm_projections"](entity)
+                        if pm_proj:
+                            apply_pm_projections(output_path, pm_proj)
+                    except Exception as pe:
+                        logger.warning(f"Could not apply PM projections for {entity}: {pe}")
+
+                    output_files.append((output_name, output_path))
+                    shutil.copy2(file_path, ysl_archive / filename)
+                    yardi_drops = building_dir / "yardi_drops"
+                    yardi_drops.mkdir(exist_ok=True)
+                    shutil.copy2(file_path, yardi_drops / filename)
+
+                    results["success"].append({
+                        "entity": entity, "name": name, "file": output_name,
+                        "size_kb": round(output_path.stat().st_size / 1024),
+                        "saved_to": str(building_dir),
+                    })
+                else:
+                    results["failed"].append({"entity": entity, "file": filename, "reason": "Pipeline returned failure"})
+            except Exception as e:
+                logger.exception(f"Auto-upload error processing {filename}")
+                results["failed"].append({"file": filename, "reason": str(e)})
+
+        # Pass 2: Expense Distribution
+        for exp_path, exp_filename in expense_files:
+            try:
+                from expense_distribution import parse_expense_distribution
+            except ImportError:
+                from budget_app.expense_distribution import parse_expense_distribution
+            try:
+                exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(exp_path))
+                if not exp_invoices:
+                    results["warnings"].append(f"Expense file {exp_filename}: no invoices found")
+                    continue
+
+                import re as _re
+                fname_match = _re.search(r'ExpenseDistribution[_-]?(\d+)', exp_filename)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = exp_entity
+                if fname_entity and fname_entity != exp_entity:
+                    if fname_entity in ysl_entities:
+                        target_entity = fname_entity
+                    elif not ysl_entities:
+                        target_entity = fname_entity
+
+                report = ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
+                accrual_result = {"applied": 0, "accruals": {}}
+                if exp_from:
+                    try:
+                        accrual_result = ed_helpers["apply_accrual_adjustments"](target_entity, report.id, exp_from)
+                    except Exception as accrual_err:
+                        results["warnings"].append(f"Accrual adjustments failed for {target_entity}: {str(accrual_err)}")
+
+                accrual_msg = f", {accrual_result['applied']} accrual adj" if accrual_result["applied"] > 0 else ""
+                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices{accrual_msg})")
+            except Exception as exp_err:
+                results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
+
+        # Pass 3: Open AP
+        for ap_path, ap_filename in open_ap_files:
+            try:
+                ap_entity, ap_invoices = parse_open_ap_report(str(ap_path))
+                if not ap_invoices:
+                    results["warnings"].append(f"Open AP file {ap_filename}: no invoices found")
+                    continue
+
+                import re as _re
+                fname_match = _re.search(r'(?:Aging|OpenAP|AP)[_-]?(\d+)', ap_filename, _re.IGNORECASE)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = ap_entity
+                if fname_entity and fname_entity != ap_entity:
+                    if fname_entity in ysl_entities:
+                        target_entity = fname_entity
+                    elif not ysl_entities:
+                        target_entity = fname_entity
+                elif not target_entity and fname_entity:
+                    target_entity = fname_entity
+
+                if not target_entity:
+                    results["warnings"].append(f"Open AP file {ap_filename}: could not determine entity code")
+                    continue
+
+                report = oa_helpers["store_open_ap_report"](target_entity, ap_invoices, ap_filename)
+                unpaid_result = {"applied": 0, "gl_totals": {}}
+                try:
+                    unpaid_result = oa_helpers["apply_unpaid_bills"](target_entity)
+                except Exception as unpaid_err:
+                    results["warnings"].append(f"Unpaid bills failed for {target_entity}: {str(unpaid_err)}")
+
+                unpaid_msg = f", {unpaid_result['applied']} GL lines updated" if unpaid_result["applied"] > 0 else ""
+                results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
+            except Exception as ap_err:
+                results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
+
+        return jsonify({"message": f"Auto-processed {len(file_list)} files", **results}), 200
+
+
 @app.route("/api/generate-script", methods=["POST"])
 def generate_script():
     """Generate a customized Console script for selected buildings.
@@ -573,6 +874,55 @@ def generate_script():
     _partResults.ap = 'ERROR: ' + _e4.message;
   }}"""
 
+    # ── Inject auto-upload into each script's triggerDownload function ──
+    # The 3 scripts (Expense, MaintProof, AP Aging) all have a triggerDownload(blob, entity)
+    # function. We inject a call to the global _autoUpload helper after the local download.
+    # YSL has inline download code — we handle that separately.
+
+    # Patch Expense Distribution triggerDownload
+    exp_script = exp_script.replace(
+        "URL.revokeObjectURL(a.href);\n  }",
+        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'expense');\n  }"
+    )
+
+    # Patch Maintenance Proof triggerDownload
+    mp_script = mp_script.replace(
+        "URL.revokeObjectURL(a.href);\n  }",
+        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
+    )
+
+    # Patch AP Aging triggerDownload (if available)
+    if AP_AGING_SCRIPT:
+        ap_aging_script = ap_aging_script.replace(
+            "URL.revokeObjectURL(a.href);\n  }",
+            "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
+        )
+        ap_script_block = f"""
+  // ── Part 4: AP Aging (Open AP) ──
+  console.log('\\n>>> Starting Part 4: AP Aging (Open AP) <<<\\n');
+  try {{
+    _partResults.ap = await {ap_aging_script}
+    console.log('\\n>>> Part 4 (AP Aging) completed successfully <<<\\n');
+  }} catch (_e4) {{
+    console.error('>>> Part 4 (AP Aging) FAILED with error:', _e4.message);
+    console.error(_e4.stack);
+    _partResults.ap = 'ERROR: ' + _e4.message;
+  }}"""
+
+    # Patch YSL inline download (it doesn't use triggerDownload function)
+    ysl_script = ysl_script.replace(
+        "URL.revokeObjectURL(a.href);",
+        "URL.revokeObjectURL(a.href);\n          if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ysl');"
+    )
+
+    # Get the Railway app URL for auto-upload target
+    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_url and not railway_url.startswith("http"):
+        railway_url = f"https://{railway_url}"
+    if not railway_url:
+        # Fallback to known production URL
+        railway_url = "https://century-budget-generator-production.up.railway.app"
+
     # Combine into one script that runs all four sequentially
     # Each part is wrapped in try/catch so errors don't kill subsequent parts
     combined = f"""/**
@@ -582,12 +932,78 @@ def generate_script():
  * Generated for: {email}
  * Entities: {entities_js}
  * Period: {period}
+ *
+ * AUTO-UPLOAD: Files are automatically sent to the budget app for processing.
+ * Local downloads are also saved as backup.
  */
 (async function() {{
   'use strict';
   const _partResults = {{ysl: null, exp: null, mp: null, ap: null}};
+  const _uploadedFiles = [];
+  const _SESSION_ID = 'yardi_' + Date.now();
+  const _BUDGET_APP = '{railway_url}';
+  const _PERIOD = '{period}';
+
+  // ── Auto-Upload Helper ──
+  // Sends each downloaded blob to the budget app in the background
+  async function _autoUpload(blob, filename, entity, fileType) {{
+    try {{
+      const formData = new FormData();
+      formData.append('file', blob, filename);
+      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
+        method: 'POST',
+        headers: {{
+          'X-Upload-Session': _SESSION_ID,
+          'X-Entity-Code': String(entity),
+          'X-File-Type': fileType,
+          'X-Filename': filename,
+        }},
+        body: formData,
+      }});
+      const data = await resp.json();
+      if (resp.ok) {{
+        _uploadedFiles.push(filename);
+        console.log('  ↑ Auto-uploaded: ' + filename + ' (' + data.total_files + ' files in session)');
+      }} else {{
+        console.warn('  ↑ Upload failed for ' + filename + ': ' + (data.error || resp.status));
+      }}
+    }} catch (err) {{
+      console.warn('  ↑ Upload error for ' + filename + ': ' + err.message);
+    }}
+  }}
+
+  // ── Auto-Process: triggers server-side processing after all downloads ──
+  async function _autoProcess() {{
+    if (_uploadedFiles.length === 0) {{
+      console.log('No files uploaded — skipping auto-process.');
+      return;
+    }}
+    try {{
+      console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
+      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ session_id: _SESSION_ID, period: _PERIOD }}),
+      }});
+      const data = await resp.json();
+      if (resp.ok) {{
+        console.log('✓ Server processed ' + _uploadedFiles.length + ' files successfully!');
+        if (data.success) console.log('  Successes:', data.success);
+        if (data.warnings && data.warnings.length) console.log('  Warnings:', data.warnings);
+        if (data.failed && data.failed.length) console.log('  Failures:', data.failed);
+      }} else {{
+        console.error('✗ Server processing failed:', data.error || resp.status);
+      }}
+    }} catch (err) {{
+      console.error('✗ Auto-process error:', err.message);
+      console.log('Files were downloaded locally — you can upload them manually via the Generator page.');
+    }}
+  }}
+
   console.log('='.repeat(60));
-  console.log('Century Budget — Combined Download');
+  console.log('Century Budget — Combined Download + Auto-Upload');
+  console.log('Target: ' + _BUDGET_APP);
+  console.log('Session: ' + _SESSION_ID);
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Expense Distribution reports');
   console.log('Part 3: Maintenance Proof reports');
@@ -628,13 +1044,17 @@ def generate_script():
   }}
 {ap_script_block}
 
+  // ── Auto-Process all uploaded files ──
+  await _autoProcess();
+
   console.log('\\n' + '='.repeat(60));
   console.log('ALL DONE — Summary:');
   console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
   console.log('  Part 2 (Exp):', _partResults.exp === null ? 'SKIPPED' : (typeof _partResults.exp === 'string' && _partResults.exp.startsWith('ERROR') ? _partResults.exp : 'OK'));
   console.log('  Part 3 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
   console.log('  Part 4 (AP): ', _partResults.ap === null ? 'SKIPPED' : (typeof _partResults.ap === 'string' && _partResults.ap.startsWith('ERROR') ? _partResults.ap : 'OK'));
-  console.log('Drag all downloaded files into the budget generator to process.');
+  console.log('  Auto-Upload:', _uploadedFiles.length + ' files sent to server');
+  console.log(_uploadedFiles.length > 0 ? 'Files were auto-processed — check the dashboard!' : 'Files were downloaded locally — upload them via the Generator page.');
   console.log('='.repeat(60));
 }})();"""
 
