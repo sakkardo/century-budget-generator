@@ -2276,6 +2276,7 @@ DASHBOARD_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 
@@ -2739,6 +2740,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/files" class="nav-link">Files</a>
   </div>
   <div class="breadcrumb">
     <a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span>
@@ -2808,38 +2810,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Maintenance Proof Upload Panel -->
-  <div class="section" id="maintProofSection" style="display:none;">
-    <h2 id="maintProofTitle">Maintenance Proof</h2>
-    <div id="maintProofContent">
-      <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px;">
-        <input type="file" id="maintProofFile" accept=".xlsx" style="font-size:13px;">
-        <button onclick="uploadMaintProof()" class="btn" style="background:var(--blue); color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer;">Upload</button>
-        <span id="maintProofStatus" style="font-size:12px; color:var(--gray-500);"></span>
-      </div>
-      <div id="maintProofSummary" style="display:none;">
-        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:12px;">
-          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
-            <div style="font-size:11px; color:var(--gray-500);">Total Units</div>
-            <div style="font-size:20px; font-weight:600;" id="mpUnits">0</div>
-          </div>
-          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
-            <div style="font-size:11px; color:var(--gray-500);">Total Shares</div>
-            <div style="font-size:20px; font-weight:600;" id="mpShares">0</div>
-          </div>
-          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
-            <div style="font-size:11px; color:var(--gray-500);">Monthly Total</div>
-            <div style="font-size:20px; font-weight:600;" id="mpMonthly">$0</div>
-          </div>
-          <div style="background:var(--gray-50); padding:12px; border-radius:8px; text-align:center;">
-            <div style="font-size:11px; color:var(--gray-500);">Annual Total</div>
-            <div style="font-size:20px; font-weight:600;" id="mpAnnual">$0</div>
-          </div>
-        </div>
-        <div id="maintProofCharges" style="font-size:13px;"></div>
-      </div>
-    </div>
-  </div>
+  <!-- Maintenance Proof: upload moved to /files repository -->
 
   <div class="panel" id="reclassSuggestions" style="display:none; margin-bottom:16px;">
     <div class="panel-header" onclick="togglePanel(this)">
@@ -3251,78 +3222,7 @@ function renderDetail(data) {
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
   }
 
-  // Initialize maintenance proof panel
-  initMaintProofPanel(data);
-}
-
-// ── Maintenance Proof Upload ──
-function initMaintProofPanel(data) {
-  const btInfo = data.building_type_info || {};
-  const mp = data.maint_proof || {};
-  const section = document.getElementById('maintProofSection');
-  if (!section) return;
-
-  // Only show for coop/condo/cond-op buildings
-  if (!btInfo.needs_maint_proof && !mp.exists) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = '';
-  const label = btInfo.charge_label || 'Maintenance';
-  document.getElementById('maintProofTitle').textContent = label + ' Proof';
-
-  if (mp.exists) {
-    document.getElementById('maintProofSummary').style.display = '';
-    document.getElementById('mpUnits').textContent = (mp.total_units || 0).toLocaleString();
-    document.getElementById('mpShares').textContent = (mp.total_shares || 0).toLocaleString();
-    document.getElementById('mpMonthly').textContent = '$' + (mp.total_monthly || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-    document.getElementById('mpAnnual').textContent = '$' + (mp.total_annual || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-    document.getElementById('maintProofStatus').innerHTML = '<span style="color:var(--green);">✓ ' + (mp.file_name || 'Uploaded') + '</span>';
-
-    // Load charge breakdown
-    fetch('/api/maint-proof/' + entityCode)
-      .then(r => r.json())
-      .then(d => {
-        if (d.charge_summary) {
-          let html = '<table style="width:100%; font-size:13px; border-collapse:collapse;">';
-          html += '<thead><tr style="background:var(--gray-50);"><th style="text-align:left; padding:6px 12px;">Charge Code</th><th style="text-align:right; padding:6px 12px;">Units</th><th style="text-align:right; padding:6px 12px;">Shares</th><th style="text-align:right; padding:6px 12px;">Monthly</th><th style="text-align:right; padding:6px 12px;">Annual</th></tr></thead><tbody>';
-          for (const [code, s] of Object.entries(d.charge_summary)) {
-            html += '<tr><td style="padding:6px 12px;">' + code + '</td><td style="text-align:right; padding:6px 12px;">' + s.count + '</td><td style="text-align:right; padding:6px 12px;">' + s.shares.toLocaleString() + '</td><td style="text-align:right; padding:6px 12px;">$' + s.monthly.toLocaleString(undefined,{minimumFractionDigits:2}) + '</td><td style="text-align:right; padding:6px 12px;">$' + s.annual.toLocaleString(undefined,{minimumFractionDigits:2}) + '</td></tr>';
-          }
-          html += '</tbody></table>';
-          document.getElementById('maintProofCharges').innerHTML = html;
-        }
-      }).catch(() => {});
-  }
-}
-
-async function uploadMaintProof() {
-  const fileInput = document.getElementById('maintProofFile');
-  const status = document.getElementById('maintProofStatus');
-  if (!fileInput.files.length) {
-    status.innerHTML = '<span style="color:var(--red);">Please select a file</span>';
-    return;
-  }
-  status.innerHTML = '<span style="color:var(--blue);">Uploading...</span>';
-  const fd = new FormData();
-  fd.append('file', fileInput.files[0]);
-  fd.append('entity_code', entityCode);
-  try {
-    const resp = await fetch('/api/maint-proof/upload', { method: 'POST', body: fd });
-    const result = await resp.json();
-    if (result.error) {
-      status.innerHTML = '<span style="color:var(--red);">' + result.error + '</span>';
-      return;
-    }
-    status.innerHTML = '<span style="color:var(--green);">✓ Uploaded — ' + result.units_parsed + ' units parsed</span>';
-    if (result.income_applied > 0) {
-      status.innerHTML += '<br><span style="color:var(--blue);">' + result.income_applied + ' income line(s) auto-populated</span>';
-    }
-    // Refresh the page data
-    setTimeout(() => loadDetail(), 500);
-  } catch (e) {
-    status.innerHTML = '<span style="color:var(--red);">Upload failed: ' + e.message + '</span>';
-  }
+  // Maintenance proof upload moved to /files repository
 }
 
 // ── Checklist Action Helpers ──
@@ -5432,6 +5332,7 @@ PM_PORTAL_TEMPLATE = r"""
     <a href="/pm" class="nav-link active">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 
@@ -5757,6 +5658,7 @@ PM_EDIT_TEMPLATE = r"""
     <a href="/pm" class="nav-link active">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 

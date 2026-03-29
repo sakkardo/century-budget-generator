@@ -87,6 +87,14 @@ except ImportError:
 oa_bp, oa_models, oa_helpers = create_open_ap_blueprint(db, workflow_models)
 app.register_blueprint(oa_bp)
 
+# Register file repository blueprint
+try:
+    from file_repository import create_file_repository_blueprint
+except ImportError:
+    from budget_app.file_repository import create_file_repository_blueprint
+fr_bp, fr_models, fr_helpers = create_file_repository_blueprint(db, workflow_models)
+app.register_blueprint(fr_bp)
+
 # Resolve all model relationships after ALL blueprints are registered
 try:
     db.configure_mappers()
@@ -1748,6 +1756,7 @@ HOME_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
   <header>
@@ -1816,6 +1825,12 @@ HOME_TEMPLATE = r"""
           <div class="icon">📋</div>
           <h2>Audited Financials</h2>
           <p>Extract and map audited financial data into budget templates.</p>
+          <span class="arrow">→</span>
+        </a>
+        <a href="/files" class="nav-card">
+          <div class="icon">📁</div>
+          <h2>File Repository</h2>
+          <p>Upload, browse, and manage supporting documents — maint proofs, YSL exports, GL detail, and more.</p>
           <span class="arrow">→</span>
         </a>
       </div>
