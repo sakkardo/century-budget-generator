@@ -87,69 +87,20 @@ def create_maintenance_proof_blueprint(db, workflow_models):
 
     # ─── Parser ───────────────────────────────────────────────────────────────
 
-    def parse_maintenance_proof(file_path):
-        """
-        Parse a Yardi Maintenance Proof / Common Charges .xlsx export.
-
-        Expected format:
-        - Row 2: Report title (e.g., "Maint Proof" or "Common Charges")
-        - Row 4-5: Property/charge code filter info
-        - Row 7: Headers (Property, Unit Code, %common/Share, Status, Charge Code, Amount, Unit)
-        - Row 8+: Data rows (unit_code in col B, shares in col C, status in col D,
-                   charge_code in col E, amount in col F)
-        - Last row: Total shares in col C
-
-        Returns:
-            tuple: (report_title, units_list, total_shares_from_footer)
-        """
-        import openpyxl
-
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        ws = wb.active
-
-        # Row 2: Report title
-        report_title = str(ws.cell(row=2, column=1).value or "").strip()
-
-        # Parse data rows (start from row 8 based on format)
+    def _parse_section(ws, col_unit, col_shares, col_status, col_charge, col_amount,
+                       data_start, max_row):
+        """Parse one section (maint, storage, or bike) of the maint proof sheet."""
         units = []
         total_shares_footer = 0
 
-        # Detect header row to find column positions dynamically
-        header_map = {}
-        header_row = 7  # Default
-        for r in range(1, min(15, ws.max_row + 1)):
-            for c in range(1, min(15, ws.max_column + 1)):
-                val = str(ws.cell(row=r, column=c).value or "").strip().lower()
-                if val in ("unit code", "unitcode"):
-                    header_map["unit_code"] = c - 1
-                    header_row = r
-                elif val in ("share", "shares", "%common", "% common", "%common/share"):
-                    header_map["shares"] = c - 1
-                elif val == "status":
-                    header_map["status"] = c - 1
-                elif val in ("charge code", "chargecode"):
-                    header_map["charge_code"] = c - 1
-                elif val == "amount":
-                    header_map["amount"] = c - 1
-
-        # Fallback column positions if headers not found
-        col_unit = header_map.get("unit_code", 1)
-        col_shares = header_map.get("shares", 2)
-        col_status = header_map.get("status", 3)
-        col_charge = header_map.get("charge_code", 4)
-        col_amount = header_map.get("amount", 5)
-
-        data_start = header_row + 1
-
-        for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, values_only=False):
-            ncols = len(row)
-            def cell(idx):
-                return row[idx].value if idx < ncols else None
+        for r in range(data_start, max_row + 1):
+            def cell(c):
+                return ws.cell(row=r, column=c).value
 
             unit_code = str(cell(col_unit) or "").strip()
             shares = cell(col_shares)
-            status = str(cell(col_status) or "").strip() if col_status < ncols else ""
-            charge_code = str(cell(col_charge) or "").strip() if col_charge < ncols else ""
+            status = str(cell(col_status) or "").strip()
+            charge_code = str(cell(col_charge) or "").strip()
             amount = cell(col_amount)
 
             # Footer row: only shares column has a value (total shares)
@@ -173,10 +124,92 @@ def create_maintenance_proof_blueprint(db, workflow_models):
                     "monthly_amount": float(amount or 0),
                 })
             except (ValueError, TypeError):
-                continue  # Skip rows with non-numeric data
+                continue
+
+        return units, total_shares_footer
+
+    def parse_maintenance_proof(file_path):
+        """
+        Parse a Yardi Maintenance Proof / Common Charges .xlsx export.
+
+        Handles the standard 3-section side-by-side layout:
+        - Section 1 (cols A-G): Maintenance charges (maint)
+        - Section 2 (cols I-O): Storage charges (storage)
+        - Section 3 (cols Q-W): Bicycle charges (bike)
+
+        Each section has the same structure:
+        - Row 7: Headers (Property, Unit Code, %common/Share, Status, Charge Code, Amount, Unit)
+        - Row 8+: Data rows
+        - Footer: Total shares
+
+        Also supports single-section files (auto-detected).
+
+        Returns:
+            tuple: (report_title, units_list, total_shares_from_footer)
+        """
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        ws = wb.active
+
+        # Row 2: Report title
+        report_title = str(ws.cell(row=2, column=1).value or "").strip()
+
+        all_units = []
+        total_shares_footer = 0
+
+        # Detect sections by looking for "Charge Code" or "Unit Code" headers
+        # across the sheet. The standard layout has 3 sections starting at cols A, I, Q.
+        SECTION_DEFS = [
+            # (unit_col, shares_col, status_col, charge_col, amount_col) — 1-indexed
+            (2, 3, 4, 5, 6),     # Section 1: B-F (maint)
+            (10, 11, 12, 13, 14), # Section 2: J-N (storage)
+            (18, 19, 20, 21, 22), # Section 3: R-V (bike)
+        ]
+
+        # Detect if multi-section by checking if col I or J row 7 has header content
+        header_row = 7
+        has_section2 = ws.cell(row=header_row, column=10).value is not None  # col J
+        has_section3 = ws.cell(row=header_row, column=18).value is not None  # col R
+
+        # Also try to detect header row dynamically (single-section files)
+        if not ws.cell(row=header_row, column=2).value:
+            for r in range(1, min(15, ws.max_row + 1)):
+                for c in range(1, min(8, ws.max_column + 1)):
+                    val = str(ws.cell(row=r, column=c).value or "").strip().lower()
+                    if val in ("unit code", "unitcode"):
+                        header_row = r
+                        break
+
+        data_start = header_row + 1
+
+        # Parse section 1 (always present)
+        s1_units, s1_shares = _parse_section(
+            ws, *SECTION_DEFS[0], data_start, ws.max_row
+        )
+        all_units.extend(s1_units)
+        total_shares_footer = s1_shares  # Primary shares total from maint section
+
+        # Parse section 2 (storage) if present
+        if has_section2:
+            s2_units, _ = _parse_section(
+                ws, *SECTION_DEFS[1], data_start, ws.max_row
+            )
+            all_units.extend(s2_units)
+            logger.info(f"Parsed storage section: {len(s2_units)} units")
+
+        # Parse section 3 (bike) if present
+        if has_section3:
+            s3_units, _ = _parse_section(
+                ws, *SECTION_DEFS[2], data_start, ws.max_row
+            )
+            all_units.extend(s3_units)
+            logger.info(f"Parsed bike section: {len(s3_units)} units")
 
         wb.close()
-        return report_title, units, total_shares_footer
+        logger.info(f"Parsed maintenance proof: {len(all_units)} total units across "
+                     f"{'3' if has_section3 else '2' if has_section2 else '1'} sections")
+        return report_title, all_units, total_shares_footer
 
     # ─── Building Type Lookup ─────────────────────────────────────────────────
 
@@ -269,15 +302,22 @@ def create_maintenance_proof_blueprint(db, workflow_models):
             "maintenance": "4010-0000",
             "common": "4010-0000",
             "common charges": "4010-0000",
-            "storage": "4030-0000",
-            "stor": "4030-0000",
-            "parking": "4025-0000",
-            "garage": "4025-0000",
+            "storage": "4130-0010",
+            "stor": "4130-0010",
+            "bike": "4130-0015",
+            "bicycle": "4130-0015",
+            "parking": "4135-0010",
+            "garage": "4135-0010",
             "assessment": "4200-0000",
             "assess": "4200-0000",
         }
 
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        # Find the active budget for this entity (try current year first, then prior)
+        from datetime import datetime as _dt
+        budget_year = _dt.now().year
+        budget = Budget.query.filter_by(entity_code=entity_code, year=budget_year).first()
+        if not budget:
+            budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc()).first()
         if not budget:
             logger.warning(f"No budget found for entity {entity_code}, cannot apply income from proof")
             return {"applied": 0, "details": {}}

@@ -3927,6 +3927,12 @@ async function dismissReclass(glCode) {
 
 // Category grouping definitions per sheet
 const SHEET_CATEGORIES = {
+  'Income': {
+    groups: [
+      {key: 'recurring', label: 'Recurring Income', match: l => l.gl_code >= '4000' && l.gl_code < '4700'},
+      {key: 'non_recurring', label: 'Non-Recurring Income', match: l => l.gl_code >= '4700' && l.gl_code < '5000'}
+    ]
+  },
   'Repairs & Supplies': {
     groups: [
       {key: 'supplies', label: 'Supplies', match: l => l.category === 'supplies'},
@@ -4844,6 +4850,98 @@ async function faUndoReclass(invoiceId, fromGL) {
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
 
+// ── FA Maint Proof toggle for Income lines ───────────────────────────
+async function faToggleMaintProof(glCode, el) {
+  const row = el.closest('tr');
+  if (!row) return;
+  const detailRow = row.nextElementSibling;
+
+  // Collapse if already open
+  if (detailRow && detailRow.classList && detailRow.classList.contains('fa-maint-detail')) {
+    detailRow.remove();
+    el.classList.remove('fa-drill-open');
+    return;
+  }
+
+  // Map GL codes to charge codes
+  const glToChargeCode = {
+    '4010-0000': 'maint',
+    '4130-0010': 'storage',
+    '4130-0015': 'bike'
+  };
+
+  const chargeCode = glToChargeCode[glCode];
+
+  // Create detail row
+  const newRow = document.createElement('tr');
+  newRow.classList.add('fa-maint-detail');
+  newRow.innerHTML = '<td colspan="15" style="padding:0;">';
+
+  if (!chargeCode) {
+    newRow.innerHTML += '<div style="padding:12px 16px; background:#f3f4f6; color:var(--gray-500); font-size:12px;">No proof data for this income line</div>';
+  } else {
+    newRow.innerHTML += '<div style="padding:16px; background:#f3f4f6; min-height:100px;"><p style="font-size:12px; color:var(--gray-600); margin-bottom:8px;">Loading maint proof data...</p></div>';
+  }
+
+  newRow.innerHTML += '</td>';
+  row.after(newRow);
+  el.classList.add('fa-drill-open');
+
+  if (!chargeCode) return;
+
+  // Fetch maint proof data
+  try {
+    const proofResp = await fetch('/api/maint-proof/' + ENTITY);
+    if (!proofResp.ok) {
+      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Failed to load maint proof data</p>';
+      return;
+    }
+
+    const proofData = await proofResp.json();
+    const charge = proofData.charge_summary ? proofData.charge_summary[chargeCode] : null;
+
+    if (!charge) {
+      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--gray-500); padding:12px 16px;">No data for ' + chargeCode + '</p>';
+      return;
+    }
+
+    // Fetch unit detail
+    try {
+      const unitsResp = await fetch('/api/maint-proof/' + ENTITY + '/units?charge_code=' + chargeCode);
+      const unitsData = unitsResp.ok ? await unitsResp.json() : {};
+      const units = unitsData.units || [];
+
+      // Build unit table
+      let html = '<div style="padding:16px; background:#f3f4f6;">';
+      html += '<div style="margin-bottom:12px; font-weight:600; font-size:13px; color:var(--gray-700);">' + chargeCode.toUpperCase() + ' Unit Proof</div>';
+      html += '<table style="width:100%; border-collapse:collapse; font-size:12px; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+      html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+      html += '<td style="padding:6px 10px;">Unit Code</td><td style="padding:6px 10px;">Shares</td><td style="padding:6px 10px;">Status</td><td style="padding:6px 10px; text-align:right;">Monthly</td><td style="padding:6px 10px; text-align:right;">Annual</td></tr></thead>';
+      html += '<tbody>';
+
+      units.forEach(u => {
+        html += '<tr style="border-top:1px solid var(--gray-200);">';
+        html += '<td style="padding:6px 10px;">' + (u.unit_code || '—') + '</td>';
+        html += '<td style="padding:6px 10px;">' + (u.shares || '—') + '</td>';
+        html += '<td style="padding:6px 10px;">' + (u.status || '—') + '</td>';
+        html += '<td style="padding:6px 10px; text-align:right;">$' + (u.monthly ? Math.round(u.monthly).toLocaleString() : '—') + '</td>';
+        html += '<td style="padding:6px 10px; text-align:right;">$' + (u.annual ? Math.round(u.annual).toLocaleString() : '—') + '</td>';
+        html += '</tr>';
+      });
+
+      html += '</tbody></table>';
+      html += '<div style="margin-top:10px; font-size:11px; color:var(--gray-500);">Total: ' + units.length + ' units · ' + (charge.count || '—') + ' records</div>';
+      html += '</div>';
+
+      newRow.querySelector('div').innerHTML = html;
+    } catch(e) {
+      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Failed to load unit detail: ' + e.message + '</p>';
+    }
+  } catch(e) {
+    newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Error: ' + e.message + '</p>';
+  }
+}
+
 // ── FA Zero-row toggle ───────────────────────────────────────────────
 let _faShowZeroRows = false;
 
@@ -4928,6 +5026,71 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" onblur="formulaBarBlur()" onkeydown="formulaBarKeydown(event)">' +
     '</div>';
 
+  // Maint proof tie-out panel for Income sheet
+  if (sheetName === 'Income') {
+    html += '<div id="faMaintTieoutPanel" style="padding:12px 16px; background:#f0f9ff; border:1px solid var(--blue-light, #bfdbfe); border-radius:8px; margin-bottom:12px;">' +
+      '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out</div>' +
+      '<p style="font-size:12px; color:var(--gray-500); margin-bottom:8px;">Loading proof data...</p>' +
+      '</div>';
+
+    // Fetch and render maint proof tie-out
+    (async () => {
+      try {
+        const proofResp = await fetch('/api/maint-proof/' + ENTITY);
+        if (!proofResp.ok) {
+          document.getElementById('faMaintTieoutPanel').innerHTML = '<p style="font-size:12px; color:var(--red);">Failed to load maint proof data</p>';
+          return;
+        }
+
+        const proofData = proofResp.ok ? await proofResp.json() : {exists: false, charge_summary: {}};
+        const cs = proofData.charge_summary || {};
+
+        const chargeMap = {
+          'maint': {gl: '4010-0000', label: 'Maintenance'},
+          'storage': {gl: '4130-0010', label: 'Storage Room'},
+          'bike': {gl: '4130-0015', label: 'Bicycle Charge'}
+        };
+
+        let tieoutHtml = '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out</div>';
+        tieoutHtml += '<table style="width:100%; border-collapse:collapse; font-size:12px; background:white; border-radius:4px; overflow:hidden;">';
+        tieoutHtml += '<thead><tr style="background:var(--blue-light, #bfdbfe); border-bottom:1px solid var(--blue, #1a56db);">';
+        tieoutHtml += '<th style="text-align:left; padding:6px 10px; color:var(--blue); font-weight:600;">Charge Code</th>';
+        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Proof Monthly</th>';
+        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Proof Annual</th>';
+        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Budget Amount</th>';
+        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Variance</th>';
+        tieoutHtml += '<th style="text-align:center; padding:6px 10px; color:var(--blue); font-weight:600;">Status</th>';
+        tieoutHtml += '</tr></thead><tbody>';
+
+        Object.keys(chargeMap).forEach(chargeCode => {
+          const cfg = chargeMap[chargeCode];
+          const charge = cs[chargeCode];
+          const budgetLine = sheetLines.find(l => l.gl_code === cfg.gl);
+          const proofAnnual = charge ? (charge.annual || 0) : 0;
+          const budgetAmount = budgetLine ? (budgetLine.current_budget || 0) : 0;
+          const variance = budgetAmount - proofAnnual;
+          const varColor = Math.abs(variance) <= 1 ? 'var(--green)' : 'var(--red)';
+          const status = Math.abs(variance) <= 1 ? '✓' : '⚠';
+          const statusColor = Math.abs(variance) <= 1 ? 'var(--green)' : 'var(--orange)';
+
+          tieoutHtml += '<tr style="border-top:1px solid var(--gray-200);">';
+          tieoutHtml += '<td style="padding:6px 10px; color:var(--gray-700);">' + cfg.label + ' (' + cfg.gl + ')</td>';
+          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + (charge ? Math.round(charge.monthly || 0).toLocaleString() : '0') + '</td>';
+          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(proofAnnual).toLocaleString() + '</td>';
+          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(budgetAmount).toLocaleString() + '</td>';
+          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums; color:' + varColor + ';">' + (variance >= 0 ? '+' : '') + '$' + Math.round(variance).toLocaleString() + '</td>';
+          tieoutHtml += '<td style="padding:6px 10px; text-align:center; color:' + statusColor + '; font-weight:700;">' + status + '</td>';
+          tieoutHtml += '</tr>';
+        });
+
+        tieoutHtml += '</tbody></table>';
+        document.getElementById('faMaintTieoutPanel').innerHTML = tieoutHtml;
+      } catch(e) {
+        document.getElementById('faMaintTieoutPanel').innerHTML = '<p style="font-size:12px; color:var(--red);">Error loading tie-out: ' + e.message + '</p>';
+      }
+    })();
+  }
+
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
     '<th class="num">YTD Actual</th>' +
@@ -4992,9 +5155,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
+    // Determine which toggle function to use based on sheet type
+    const toggleFn = sheetName === 'Income' ? 'faToggleMaintProof' : 'faToggleInvoices';
+    const toggleTitle = sheetName === 'Income' ? 'Click to view unit proof' : 'Click to view expenses';
+
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
-      '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
+      '<td style="font-size:12px;"><a href="#" onclick="' + toggleFn + '(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="' + toggleTitle + '">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td><input class="cell cell-notes" type="text" value="' + notesDisplay.replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"' + (l.reclass_to_gl ? ' style="background:#fef9e7; border-left:3px solid var(--orange);"' : '') + '></td>' +
       '<td class="num" style="position:relative;">' + $cell('ytd_'+gl, 'ytd_actual', ytd) +
         (l._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange); background:var(--orange-light); padding:0 3px; border-radius:3px; border:1px solid var(--orange);" title="Original: ' + fmt(l._orig_ytd) + ' | Reclass adj: ' + (l._reclass_ytd_adj > 0 ? '+' : '') + fmt(l._reclass_ytd_adj) + '">R</span>' : '') + '</td>' +
