@@ -5045,13 +5045,22 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         const proofData = proofResp.ok ? await proofResp.json() : {exists: false, charge_summary: {}};
         const cs = proofData.charge_summary || {};
 
+        if (!proofData.exists) {
+          document.getElementById('faMaintTieoutPanel').innerHTML =
+            '<div style="display:flex; align-items:center; gap:10px;">' +
+            '<div style="font-weight:600; font-size:13px; color:var(--blue);">Maint Proof Tie-Out</div>' +
+            '<span style="font-size:12px; color:var(--gray-500);">No maintenance proof uploaded yet. Upload via Data Collection to validate income lines.</span>' +
+            '</div>';
+          return;
+        }
+
         const chargeMap = {
           'maint': {gl: '4010-0000', label: 'Maintenance'},
           'storage': {gl: '4130-0010', label: 'Storage Room'},
           'bike': {gl: '4130-0015', label: 'Bicycle Charge'}
         };
 
-        let tieoutHtml = '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out</div>';
+        let tieoutHtml = '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out <span style="font-size:11px; font-weight:400; color:var(--gray-500);">(' + (proofData.report.total_units || 0) + ' units, ' + (proofData.report.total_shares || 0).toLocaleString() + ' shares)</span></div>';
         tieoutHtml += '<table style="width:100%; border-collapse:collapse; font-size:12px; background:white; border-radius:4px; overflow:hidden;">';
         tieoutHtml += '<thead><tr style="background:var(--blue-light, #bfdbfe); border-bottom:1px solid var(--blue, #1a56db);">';
         tieoutHtml += '<th style="text-align:left; padding:6px 10px; color:var(--blue); font-weight:600;">Charge Code</th>';
