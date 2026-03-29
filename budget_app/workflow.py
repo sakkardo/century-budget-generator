@@ -5037,16 +5037,19 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     (async () => {
       try {
         const proofResp = await fetch('/api/maint-proof/' + ENTITY);
+        const panel = document.getElementById('faMaintTieoutPanel');
+        if (!panel) return; // DOM was replaced (tab switched)
+
         if (!proofResp.ok) {
-          document.getElementById('faMaintTieoutPanel').innerHTML = '<p style="font-size:12px; color:var(--red);">Failed to load maint proof data</p>';
+          panel.innerHTML = '<p style="font-size:12px; color:var(--red);">Failed to load maint proof data</p>';
           return;
         }
 
-        const proofData = proofResp.ok ? await proofResp.json() : {exists: false, charge_summary: {}};
+        const proofData = await proofResp.json();
         const cs = proofData.charge_summary || {};
 
         if (!proofData.exists) {
-          document.getElementById('faMaintTieoutPanel').innerHTML =
+          panel.innerHTML =
             '<div style="display:flex; align-items:center; gap:10px;">' +
             '<div style="font-weight:600; font-size:13px; color:var(--blue);">Maint Proof Tie-Out</div>' +
             '<span style="font-size:12px; color:var(--gray-500);">No maintenance proof uploaded yet. Upload via Data Collection to validate income lines.</span>' +
@@ -5093,9 +5096,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         });
 
         tieoutHtml += '</tbody></table>';
-        document.getElementById('faMaintTieoutPanel').innerHTML = tieoutHtml;
+        if (panel) panel.innerHTML = tieoutHtml;
       } catch(e) {
-        document.getElementById('faMaintTieoutPanel').innerHTML = '<p style="font-size:12px; color:var(--red);">Error loading tie-out: ' + e.message + '</p>';
+        const p = document.getElementById('faMaintTieoutPanel');
+        if (p) p.innerHTML = '<p style="font-size:12px; color:var(--red);">Error loading tie-out: ' + e.message + '</p>';
       }
     })();
   }
