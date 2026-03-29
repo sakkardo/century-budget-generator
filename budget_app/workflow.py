@@ -3624,12 +3624,14 @@ function fxCellFocus(el) {
   if (field === 'proposed_budget' && el.dataset.proposedFormula) {
     bar.value = el.dataset.proposedFormula;
   } else if (el.dataset.override === 'true') {
-    bar.value = el.dataset.raw || '';
+    // If override was set via a formula, show the formula; otherwise show raw value
+    const storedFormula = el.dataset.formula || '';
+    bar.value = (storedFormula.startsWith('=') && /[+\-*\/()]/.test(storedFormula)) ? storedFormula : (el.dataset.raw || '');
   } else {
     bar.value = el.dataset.formula || '';
   }
   _formulaBarOriginal = bar.value;
-  const hasStoredFormula = !!(el.dataset.proposedFormula);
+  const hasStoredFormula = !!(el.dataset.proposedFormula) || (el.dataset.override === 'true' && (el.dataset.formula || '').startsWith('='));
   _showFormulaButtons(true, hasStoredFormula);
   formulaBarPreview();
 
@@ -3735,9 +3737,22 @@ function formulaBarAccept() {
       }
     }
   } else {
-    // Estimate/Forecast override: plain number or revert
+    // Estimate/Forecast override: formula, plain number, or revert
+    const formulaResult = safeEvalFormula(typed);
     const numericVal = parseDollar(typed);
-    if (typed !== '' && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed)) {
+    if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
+      // User typed a formula — evaluate it and save the result as override
+      const rounded = Math.round(formulaResult);
+      el.dataset.raw = rounded;
+      el.dataset.override = 'true';
+      el.value = fmt(formulaResult);
+      // Update bar to show the formula still (so they can re-edit)
+      el.dataset.formula = typed.startsWith('=') ? typed : '=' + typed;
+      const badge = el.parentElement.querySelector('.fa-fx');
+      if (badge) { badge.textContent = 'fx✎'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
+      faLineChanged(gl, field, formulaResult);
+      faAutoSave(gl, field, rounded);
+    } else if (typed !== '' && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed)) {
       el.dataset.raw = Math.round(numericVal);
       el.dataset.override = 'true';
       el.value = fmt(numericVal);
