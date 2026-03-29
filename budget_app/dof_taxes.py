@@ -115,24 +115,30 @@ def is_coop(entity_code: str, buildings: list[dict] = None) -> bool:
 
 
 def fetch_dof_data(entity_code: str) -> dict | None:
-    """Fetch current tax assessment data from NYC DOF via SODA API.
+    """Get tax assessment data for a property.
 
-    Returns dict with assessed_value, tax_rate, annual_tax or None on failure.
-    Falls back to cached/hardcoded values if API is unreachable.
+    Priority: hardcoded config (manually updated from DOF Final Assessment
+    Roll) is the primary source. The SODA API lags by 1-2 years, so we only
+    use it to supplement with market_value and as a cross-check.
+
+    The config uses Transitional AV (Trans AV) — that's what taxes are
+    actually billed on, not the Market AV.
     """
     cfg = PROPERTY_TAX_CONFIG.get(entity_code)
     if not cfg:
         return None
 
-    # Try SODA API first
-    # Note: This dataset (8y4t-faws) uses separate boro/block/lot columns,
-    # NOT a combined bble field. Column names:
-    #   curacttot = current actual total assessed value
-    #   curmkttot = current market value total
-    #   curtxbtot = current taxable total
-    #   curtrntot = current transitional total
-    # Tax rate and tax amount are NOT in this dataset — we use the
-    # hardcoded rate from PROPERTY_TAX_CONFIG as the base.
+    # Start with hardcoded config (most current — manually updated)
+    assessed_value = cfg.get("assessed_value", 0)
+    tax_rate = cfg.get("tax_rate", 0)
+    annual_tax = cfg.get("annual_tax", 0)
+    market_value = 0
+    source = "config"
+
+    # Try SODA API for supplemental data (market value, cross-check)
+    # Note: This dataset (8y4t-faws) often lags 1-2 years behind.
+    # Column names: curtrntot = transitional AV, curacttot = actual AV,
+    # curmkttot = market value. Tax rate is NOT in this dataset.
     try:
         import requests
         params = {
@@ -146,56 +152,42 @@ def fetch_dof_data(entity_code: str) -> dict | None:
             data = resp.json()
             if data:
                 record = data[0]
-                # Use transitional AV (curtrntot) for budgeting — this is
-                # what the actual tax bill is based on, not the full actual AV
-                transitional_av = float(record.get("curtrntot", 0))
-                actual_av = float(record.get("curacttot", 0))
                 market_value = float(record.get("curmkttot", 0))
-                # Prefer transitional; fall back to actual if transitional is 0
-                assessed_value = transitional_av if transitional_av > 0 else actual_av
-                # Tax rate not in this dataset — use config value
-                tax_rate = cfg.get("tax_rate", 0)
-                annual_tax = assessed_value * tax_rate if tax_rate else cfg.get("annual_tax", 0)
-                result = {
-                    "entity_code": entity_code,
-                    "bbl": cfg["bbl"],
-                    "assessed_value": assessed_value,
-                    "actual_av": actual_av,
-                    "transitional_av": transitional_av,
-                    "tax_rate": tax_rate,
-                    "annual_tax": round(annual_tax, 2),
-                    "market_value": market_value,
-                    "source": "nyc_open_data_api",
-                    "tax_class": cfg.get("tax_class", record.get("curtaxclass", "2")),
-                }
-                # Cache the result
-                _save_cache(entity_code, result)
-                logger.info(f"DOF data fetched from API for {entity_code}: AV=${result['assessed_value']:,.0f}")
-                return result
+                api_trans_av = float(record.get("curtrntot", 0))
+                # If config has no AV, fall back to API transitional AV
+                if assessed_value == 0 and api_trans_av > 0:
+                    assessed_value = api_trans_av
+                    source = "nyc_open_data_api"
+                else:
+                    source = "config+api"
+                logger.info(f"DOF API for {entity_code}: Trans AV=${api_trans_av:,.0f}, "
+                           f"Config AV=${cfg.get('assessed_value', 0):,.0f} (using {source})")
     except Exception as e:
         logger.warning(f"DOF API fetch failed for {entity_code}: {e}")
 
-    # Try cache
-    cached = _load_cache(entity_code)
-    if cached:
-        logger.info(f"Using cached DOF data for {entity_code}")
-        return cached
+    if assessed_value == 0:
+        # Try cache as last resort
+        cached = _load_cache(entity_code)
+        if cached:
+            logger.info(f"Using cached DOF data for {entity_code}")
+            return cached
+        return None
 
-    # Fall back to hardcoded config values
-    if cfg.get("assessed_value", 0) > 0:
-        logger.info(f"Using hardcoded DOF data for {entity_code}")
-        return {
-            "entity_code": entity_code,
-            "bbl": cfg["bbl"],
-            "assessed_value": cfg["assessed_value"],
-            "tax_rate": cfg["tax_rate"],
-            "annual_tax": cfg["annual_tax"],
-            "market_value": 0,
-            "source": "hardcoded_config",
-            "tax_class": cfg["tax_class"],
-        }
+    if not annual_tax and assessed_value and tax_rate:
+        annual_tax = round(assessed_value * tax_rate, 2)
 
-    return None
+    result = {
+        "entity_code": entity_code,
+        "bbl": cfg["bbl"],
+        "assessed_value": assessed_value,
+        "tax_rate": tax_rate,
+        "annual_tax": annual_tax,
+        "market_value": market_value,
+        "source": source,
+        "tax_class": cfg.get("tax_class", "2"),
+    }
+    _save_cache(entity_code, result)
+    return result
 
 
 def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
