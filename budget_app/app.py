@@ -2099,9 +2099,9 @@ GENERATE_TEMPLATE = r"""
   <div class="step">
     <div class="step-header">
       <div class="step-num">1</div>
-      <div class="step-title">Select Buildings & Download from Yardi</div>
+      <div class="step-title">Select Buildings & Run from Yardi</div>
     </div>
-    <p class="step-desc">Pick the buildings you want budgets for, then copy the script into your Yardi Console.</p>
+    <p class="step-desc">Pick buildings, copy the script into your Yardi Console (F12). Reports download locally and auto-upload to the budget system.</p>
 
     <input type="text" class="search-box" id="buildingSearch" placeholder="Search buildings..." oninput="filterBuildings()">
     <div class="select-actions">
@@ -2140,50 +2140,14 @@ GENERATE_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- STEP 2 -->
-  <div class="step">
-    <div class="step-header">
-      <div class="step-num">2</div>
-      <div class="step-title">Upload YSL Files & Generate Budgets</div>
-    </div>
-    <p class="step-desc">After downloading from Yardi, drag the YSL files here.</p>
-
-    <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <svg width="40" height="40" fill="none" stroke="#9ca3af" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2"/></svg>
-      <p class="upload-text"><strong>Click to browse</strong> or drag & drop YSL files here</p>
-      <p class="upload-text" style="font-size:12px; margin-top:4px;">Accepts .xlsx files named YSL_Annual_Budget_*.xlsx</p>
-    </div>
-    <input type="file" id="fileInput" multiple accept=".xlsx" style="display:none" onchange="handleFiles(this.files)">
-    <div class="file-list" id="fileList"></div>
-
-    <div class="settings-row" style="margin-top: 16px;">
-      <div class="setting" style="flex: 3;">
-        <label>Save Location</label>
-        <div style="display: flex; gap: 8px;">
-          <input type="text" id="saveDir" value="{{ save_dir }}" placeholder="Path to save completed budgets" style="flex:1;">
-          <button class="btn btn-primary" style="padding: 8px 14px; font-size: 12px; white-space: nowrap;" onclick="updateSaveDir()">Set</button>
-        </div>
-        <p style="font-size: 11px; color: var(--gray-500); margin-top: 4px;">
-          Budgets save to subfolders here (e.g., /148 - Building Name/). YSL sources also archived.
-        </p>
-      </div>
-    </div>
-
-    <div style="margin-top: 12px;">
-      <button class="btn btn-green" id="processBtn" onclick="processFiles()" disabled>
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-        Generate Budgets
-      </button>
-    </div>
-
-    <div class="progress-bar" id="progressBar"><div class="fill"></div></div>
-
-    <div class="results" id="results"></div>
+  <!-- Auto-upload status (populated by Yardi script) -->
+  <div id="autoStatus" style="display:none; margin-top:16px; padding:16px; background:#f0fdf4; border:1px solid #86efac; border-radius:8px;">
+    <p style="margin:0; font-weight:600; color:#166534;">Files auto-uploaded and processed. Check the FA Dashboard for results.</p>
   </div>
 </div>
 
 <script>
-let uploadedFiles = [];
+// Auto-upload: no manual file management needed
 
 function getSelected() {
   return [...document.querySelectorAll('#buildingGrid input:checked')].map(c => parseInt(c.value));
@@ -2250,135 +2214,7 @@ function copyScript() {
   });
 }
 
-// Drag & drop
-const dz = document.getElementById('dropZone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-dz.addEventListener('drop', e => {
-  e.preventDefault();
-  dz.classList.remove('dragover');
-  handleFiles(e.dataTransfer.files);
-});
-
-function handleFiles(fileListObj) {
-  for (const f of fileListObj) {
-    if (f.name.endsWith('.xlsx') && !uploadedFiles.find(u => u.name === f.name)) {
-      uploadedFiles.push(f);
-    }
-  }
-  renderFileList();
-}
-
-function removeFile(idx) {
-  uploadedFiles.splice(idx, 1);
-  renderFileList();
-}
-
-function renderFileList() {
-  const el = document.getElementById('fileList');
-  el.innerHTML = uploadedFiles.map((f, i) =>
-    `<div class="file-item">
-      <span>📄 ${f.name} (${(f.size/1024).toFixed(0)} KB)</span>
-      <button class="remove" onclick="removeFile(${i})">✕</button>
-    </div>`
-  ).join('');
-  document.getElementById('processBtn').disabled = !uploadedFiles.length;
-}
-
-async function updateSaveDir() {
-  const dir = document.getElementById('saveDir').value.trim();
-  if (!dir) { alert('Enter a save path'); return; }
-  const resp = await fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ save_dir: dir }),
-  });
-  const data = await resp.json();
-  if (data.error) { alert(data.error); return; }
-  document.getElementById('saveDir').value = data.save_dir;
-  // Brief visual confirmation
-  const btn = event.target;
-  btn.textContent = 'Saved!';
-  btn.style.background = '#057a55';
-  setTimeout(() => { btn.textContent = 'Set'; btn.style.background = ''; }, 1500);
-}
-
-async function processFiles() {
-  const btn = document.getElementById('processBtn');
-  btn.disabled = true;
-  btn.textContent = 'Processing...';
-  document.getElementById('progressBar').style.display = 'block';
-  document.getElementById('results').style.display = 'none';
-
-  const fd = new FormData();
-  uploadedFiles.forEach(f => fd.append('files', f));
-  fd.append('save_dir', document.getElementById('saveDir').value.trim());
-
-  try {
-    const resp = await fetch('/api/process', { method: 'POST', body: fd });
-
-    if (resp.ok) {
-      // Download the file
-      const blob = await resp.blob();
-      const cd = resp.headers.get('content-disposition') || '';
-      const match = cd.match(/filename="?([^"]+)"?/);
-      const filename = match ? match[1].trim() : 'Budget_Output.xlsx';
-
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-
-      // Parse results from header
-      let results = null;
-      try { results = JSON.parse(resp.headers.get('X-Budget-Results')); } catch(e) {}
-
-      document.getElementById('results').style.display = 'block';
-      if (results && results.success) {
-        let html = '';
-        results.success.forEach(s => {
-          html += `<div class="result-card success">
-            <div class="result-info">
-              <span>✅ <strong>${s.entity}</strong> — ${s.name} (${s.size_kb} KB)</span>
-            </div>
-            <span style="font-size:12px; color:var(--gray-500);">Saved to ${s.saved_to}</span>
-          </div>`;
-        });
-        if (results.failed) results.failed.forEach(f => {
-          html += `<div class="result-card failed"><div class="result-info">❌ ${f.file || f.entity} — ${f.reason}</div></div>`;
-        });
-        document.getElementById('results').innerHTML = html;
-      } else {
-        document.getElementById('results').innerHTML =
-          `<div class="result-card success">
-            <div class="result-info">✅ <strong>Success!</strong> ${uploadedFiles.length} budget(s) generated, saved, and downloading.</div>
-          </div>`;
-      }
-    } else {
-      const data = await resp.json();
-      document.getElementById('results').style.display = 'block';
-      let html = '';
-      if (data.success) data.success.forEach(s =>
-        html += `<div class="result-card success"><div class="result-info">✅ ${s.entity} — ${s.name} (${s.size_kb} KB) → ${s.saved_to}</div></div>`
-      );
-      if (data.failed) data.failed.forEach(f =>
-        html += `<div class="result-card failed"><div class="result-info">❌ ${f.file || f.entity} — ${f.reason}</div></div>`
-      );
-      document.getElementById('results').innerHTML = html || `<div class="result-card failed"><div class="result-info">❌ ${data.error}</div></div>`;
-    }
-  } catch (err) {
-    document.getElementById('results').style.display = 'block';
-    document.getElementById('results').innerHTML =
-      `<div class="result-card failed"><div class="result-info">❌ Error: ${err.message}</div></div>`;
-  }
-
-  btn.disabled = false;
-  btn.textContent = 'Generate Budgets';
-  document.getElementById('progressBar').style.display = 'none';
-}
+// Upload section removed — files auto-upload from Yardi script
 </script>
 </body>
 </html>
