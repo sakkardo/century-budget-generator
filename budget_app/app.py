@@ -130,6 +130,7 @@ with app.app_context():
             ("budget_lines", "forecast_override", "FLOAT"),
             ("budget_lines", "accrual_adj", "FLOAT DEFAULT 0"),
             ("budgets", "building_type", "VARCHAR(50) DEFAULT ''"),
+            ("budget_lines", "proposed_formula", "TEXT"),
         ]
         for table, col, col_type in _migrations:
             try:
