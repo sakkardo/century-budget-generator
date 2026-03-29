@@ -3280,7 +3280,7 @@ function initMaintProofPanel(data) {
     document.getElementById('maintProofStatus').innerHTML = '<span style="color:var(--green);">✓ ' + (mp.file_name || 'Uploaded') + '</span>';
 
     // Load charge breakdown
-    fetch('/api/maint-proof/' + ENTITY)
+    fetch('/api/maint-proof/' + entityCode)
       .then(r => r.json())
       .then(d => {
         if (d.charge_summary) {
@@ -3306,7 +3306,7 @@ async function uploadMaintProof() {
   status.innerHTML = '<span style="color:var(--blue);">Uploading...</span>';
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
-  fd.append('entity_code', ENTITY);
+  fd.append('entity_code', entityCode);
   try {
     const resp = await fetch('/api/maint-proof/upload', { method: 'POST', body: fd });
     const result = await resp.json();
@@ -4891,7 +4891,7 @@ async function faToggleMaintProof(glCode, el) {
 
   // Fetch maint proof data
   try {
-    const proofResp = await fetch('/api/maint-proof/' + ENTITY);
+    const proofResp = await fetch('/api/maint-proof/' + entityCode);
     if (!proofResp.ok) {
       newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Failed to load maint proof data</p>';
       return;
@@ -4907,7 +4907,7 @@ async function faToggleMaintProof(glCode, el) {
 
     // Fetch unit detail
     try {
-      const unitsResp = await fetch('/api/maint-proof/' + ENTITY + '/units?charge_code=' + chargeCode);
+      const unitsResp = await fetch('/api/maint-proof/' + entityCode + '/units?charge_code=' + chargeCode);
       const unitsData = unitsResp.ok ? await unitsResp.json() : {};
       const units = unitsData.units || [];
 
@@ -5036,7 +5036,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     // Fetch and render maint proof tie-out
     (async () => {
       try {
-        const proofResp = await fetch('/api/maint-proof/' + ENTITY);
+        const proofResp = await fetch('/api/maint-proof/' + entityCode);
         const panel = document.getElementById('faMaintTieoutPanel');
         if (!panel) return; // DOM was replaced (tab switched)
 
