@@ -2392,19 +2392,19 @@ function renderBudgets(budgets) {
     const statusLabel = statusLabels[b.status] || b.status;
     const statusClass = `pill-${b.status}`;
 
-    // Data completeness indicators
-    const budgetIcon = '<span style="color:var(--green);" title="Budget">&#10003; Budget</span>';
+    // Data completeness indicators — only show green checks for present items, dash for missing
+    const budgetIcon = '<span style="color:var(--green); font-weight:600;" title="Budget data loaded">&#10003; Budget</span>';
     const expenseIcon = b.has_expenses
-      ? '<span style="color:var(--green);" title="Expenses uploaded">&#10003; Expenses</span>'
-      : '<span style="color:var(--gray-300);" title="No expenses">&#10007; Expenses</span>';
+      ? '<span style="color:var(--green); font-weight:600;" title="Expenses uploaded">&#10003; Expenses</span>'
+      : '<span style="color:var(--gray-400);" title="No expenses">&mdash; Expenses</span>';
     const auditIcon = b.has_audit
-      ? '<span style="color:var(--green);" title="Audit confirmed">&#10003; Audit</span>'
-      : '<span style="color:var(--gray-300);" title="No audit">&#10007; Audit</span>';
+      ? '<span style="color:var(--green); font-weight:600;" title="Audit confirmed">&#10003; Audit</span>'
+      : '<span style="color:var(--gray-400);" title="No audit">&mdash; Audit</span>';
     const maintIcon = b.has_maint_proof
-      ? '<span style="color:var(--green);" title="Maint Proof uploaded">&#10003; Maint</span>'
-      : '<span style="color:var(--gray-300);" title="No maint proof">&#10007; Maint</span>';
+      ? '<span style="color:var(--green); font-weight:600;" title="Maint Proof uploaded">&#10003; Maint</span>'
+      : '<span style="color:var(--gray-400);" title="No maint proof">&mdash; Maint</span>';
 
-    // PM review status pill
+    // PM review status pill — uses distinct styling from workflow Status column
     const pmStatusMap = {
       'draft': 'Not Sent',
       'pm_pending': 'Sent to PM',
@@ -2414,6 +2414,15 @@ function renderBudgets(budgets) {
       'returned': 'Returned'
     };
     const pmLabel = pmStatusMap[b.status] || b.status;
+    // PM column: outline style to visually distinguish from solid Status pills
+    const pmPillStyle = {
+      'draft': 'background:transparent; color:var(--gray-500); border:1.5px solid var(--gray-300);',
+      'pm_pending': 'background:transparent; color:#a16207; border:1.5px solid #f59e0b;',
+      'pm_in_progress': 'background:transparent; color:var(--blue); border:1.5px solid var(--blue);',
+      'fa_review': 'background:transparent; color:var(--orange); border:1.5px solid var(--orange);',
+      'approved': 'background:transparent; color:var(--green); border:1.5px solid var(--green);',
+      'returned': 'background:transparent; color:var(--red); border:1.5px solid var(--red);'
+    }[b.status] || '';
 
     let actionHtml = '';
     if (b.status === 'draft') {
@@ -2438,7 +2447,7 @@ function renderBudgets(budgets) {
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${updatedStr}</td>
       <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}<br>${maintIcon}</td>
-      <td><span class="pill ${statusClass}">${pmLabel}</span></td>
+      <td><span class="pill" style="${pmPillStyle}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
       <td>${actionHtml}</td>
     `;
@@ -2969,8 +2978,8 @@ function renderDetail(data) {
   document.getElementById('breadcrumbName').textContent = b.building_name;
   document.title = b.building_name + ' - Century Management';
   let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
-  if (b.created_at) meta += ' | Generated ' + new Date(b.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) + ' at ' + new Date(b.created_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  if (b.updated_at && b.updated_at !== b.created_at) meta += ' | Updated ' + new Date(b.updated_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) + ' at ' + new Date(b.updated_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  if (b.created_at) meta += ' | Generated ' + new Date(b.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.created_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  if (b.updated_at && b.updated_at !== b.created_at) meta += ' | Updated ' + new Date(b.updated_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.updated_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
   if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;
   if (data.assignments.pm) meta += ' | PM: ' + data.assignments.pm;
   document.getElementById('buildingMeta').textContent = meta;
@@ -4924,10 +4933,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td><input class="cell cell-notes" type="text" value="' + notesDisplay.replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"' + (l.reclass_to_gl ? ' style="background:#fef9e7; border-left:3px solid var(--orange);"' : '') + '></td>' +
       '<td class="num" style="position:relative;">' + $cell('ytd_'+gl, 'ytd_actual', ytd) +
         (l._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange); background:var(--orange-light); padding:0 3px; border-radius:3px; border:1px solid var(--orange);" title="Original: ' + fmt(l._orig_ytd) + ' | Reclass adj: ' + (l._reclass_ytd_adj > 0 ? '+' : '') + fmt(l._reclass_ytd_adj) + '">R</span>' : '') + '</td>' +
-      '<td class="num" style="position:relative;">' + $cell('acc_'+gl, 'accrual_adj', accrual) +
-        (accrual !== 0 ? '<span onclick="faToggleAccrualDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); cursor:pointer; background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);" title="View prior-year invoices">▼</span>' : '') + '</td>' +
-      '<td class="num" style="position:relative;">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) +
-        (unpaid !== 0 ? '<span onclick="faToggleUnpaidDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;" title="View unpaid invoices">▼</span>' : '') + '</td>' +
+      '<td class="num" style="position:relative;' + (accrual !== 0 ? 'cursor:pointer;' : '') + '"' + (accrual !== 0 ? ' onclick="faToggleAccrualDrill(\'' + gl + '\', this)" onmouseenter="this.style.background=\'#e1effe\'" onmouseleave="this.style.background=\'\'" title="Click to view prior-year invoices"' : '') + '>' + $cell('acc_'+gl, 'accrual_adj', accrual) +
+        (accrual !== 0 ? '<span style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">▼</span>' : '') + '</td>' +
+      '<td class="num" style="position:relative;' + (unpaid !== 0 ? 'cursor:pointer;' : '') + '"' + (unpaid !== 0 ? ' onclick="faToggleUnpaidDrill(\'' + gl + '\', this)" onmouseenter="this.style.background=\'#fef3c7\'" onmouseleave="this.style.background=\'\'" title="Click to view unpaid invoices"' : '') + '>' + $cell('unp_'+gl, 'unpaid_bills', unpaid) +
+        (unpaid !== 0 ? '<span style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;">▼</span>' : '') + '</td>' +
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
