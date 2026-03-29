@@ -15,19 +15,41 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def _open_workbook(file_path):
+    """Open an Excel file with openpyxl, handling .xls extension that's actually .xlsx."""
+    import openpyxl
+    import shutil, tempfile, os
+    try:
+        return openpyxl.load_workbook(str(file_path), data_only=True)
+    except Exception:
+        # Yardi names .xlsx files as .xls — try copying with .xlsx extension
+        if str(file_path).lower().endswith('.xls'):
+            tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+            tmp.close()
+            shutil.copy2(str(file_path), tmp.name)
+            try:
+                wb = openpyxl.load_workbook(tmp.name, data_only=True)
+                wb._tmp_path = tmp.name  # stash for cleanup
+                return wb
+            except Exception:
+                os.unlink(tmp.name)
+                raise
+        raise
+
+
 def detect_open_ap_file(file_path):
     """
     Check if a file is an Open AP (Aging) report from Yardi.
 
-    Yardi AP Analytics exports as HTML-table .xls OR real .xlsx.
+    Yardi AP Analytics exports as .xls that's actually .xlsx format.
     Detection: scan first ~10 rows for telltale header patterns.
+    Handles multi-row headers where "Payee" and "Code" are split.
 
     Returns True if this looks like an AP Aging report.
     """
-    # Try openpyxl first (real .xlsx)
+    # Try openpyxl first (real .xlsx, or .xls that's actually .xlsx)
     try:
-        import openpyxl
-        wb = openpyxl.load_workbook(str(file_path), data_only=True)
+        wb = _open_workbook(file_path)
         ws = wb.active
         for row_num in range(1, min(15, ws.max_row + 1)):
             vals = [str(ws.cell(row=row_num, column=c).value or "").strip().lower()
@@ -40,21 +62,35 @@ def detect_open_ap_file(file_path):
             if "payable analytics" in row_text or "ap aging" in row_text:
                 wb.close()
                 return True
+            if "payables aging" in row_text:
+                wb.close()
+                return True
+        # Also check for split headers: Row N has "Payee" + "Current", Row N+1 has "Code" + "Owed"
+        for row_num in range(1, min(10, ws.max_row + 1)):
+            row_vals = [str(ws.cell(row=row_num, column=c).value or "").strip().lower()
+                        for c in range(1, min(20, ws.max_column + 1))]
+            if "payee" in row_vals and "current" in row_vals:
+                # Check next row for "code" and "owed"
+                if row_num + 1 <= ws.max_row:
+                    next_vals = [str(ws.cell(row=row_num + 1, column=c).value or "").strip().lower()
+                                 for c in range(1, min(20, ws.max_column + 1))]
+                    if "code" in next_vals and "owed" in next_vals:
+                        wb.close()
+                        return True
         wb.close()
         return False
     except Exception:
         pass
 
-    # Try pandas HTML reader (Yardi .xls is often HTML)
+    # Try pandas HTML reader (Yardi .xls is sometimes HTML)
     try:
         import pandas as pd
         dfs = pd.read_html(str(file_path))
         if dfs:
-            for df in dfs[:3]:  # Check first few tables
+            for df in dfs[:3]:
                 cols = " ".join(str(c).lower() for c in df.columns)
                 if "payee" in cols and ("current owed" in cols or "owed" in cols):
                     return True
-                # Check first few rows for header patterns
                 for _, row in df.head(10).iterrows():
                     row_text = " ".join(str(v).lower() for v in row.values if v is not None)
                     if "payee code" in row_text and "current owed" in row_text:
@@ -107,53 +143,80 @@ def parse_open_ap_report(file_path):
 
 
 def _parse_xlsx(file_path):
-    """Parse as a real .xlsx file via openpyxl."""
+    """Parse as a real .xlsx file via openpyxl.
+
+    Handles Yardi's multi-row header format where column headers are split:
+      Row 5: Payee | Payee Name | Invoice | ... | Current | 0-30  | ...
+      Row 6: Code  |            | Notes   | ... | Owed    | Owed  | ...
+      Row 7:       |            |         | ... |         |       | ... | Owed
+    We merge all header rows vertically (joining non-empty values with space).
+    """
     try:
-        import openpyxl
-        wb = openpyxl.load_workbook(str(file_path), data_only=True)
+        wb = _open_workbook(file_path)
         ws = wb.active
 
-        # Find the header row (contains "Payee Code" and "Current Owed")
-        header_row = None
-        headers = {}
-        for row_num in range(1, min(20, ws.max_row + 1)):
-            row_vals = {}
-            for col_num in range(1, ws.max_column + 1):
-                val = str(ws.cell(row=row_num, column=col_num).value or "").strip()
-                row_vals[col_num] = val
-                if val.lower() in ("payee code", "payeecode"):
-                    header_row = row_num
+        # Extract entity code from early rows (Row 2 typically has entity code)
+        entity_code = None
+        for row_num in range(1, min(6, ws.max_row + 1)):
+            val = ws.cell(row=row_num, column=1).value
+            if val is not None:
+                s = str(val).strip()
+                # Entity code is a short numeric string (e.g., "204")
+                if s.isdigit() and len(s) <= 5:
+                    entity_code = s
                     break
 
-            if header_row:
-                # Map header names to column indices
-                for col_num, val in row_vals.items():
-                    headers[val.lower()] = col_num
-                # Re-read the full header row
-                headers = {}
-                for col_num in range(1, ws.max_column + 1):
-                    val = str(ws.cell(row=row_num, column=col_num).value or "").strip().lower()
-                    if val:
-                        headers[val] = col_num
+        # Find header start row: look for row where column 1 has "Payee"
+        header_start = None
+        for row_num in range(1, min(20, ws.max_row + 1)):
+            val = str(ws.cell(row=row_num, column=1).value or "").strip().lower()
+            if val == "payee":
+                header_start = row_num
+                break
+            # Also check for single-row "Payee Code" header
+            if val in ("payee code", "payeecode"):
+                header_start = row_num
                 break
 
-        if not header_row:
+        if not header_start:
             wb.close()
             return None
 
+        # Merge up to 3 header rows vertically to handle split headers
+        # E.g., Row 5: "Payee" + Row 6: "Code" → "payee code"
+        merged_headers = {}
+        header_end = header_start
+        for col_num in range(1, ws.max_column + 1):
+            parts = []
+            for r_offset in range(3):  # up to 3 header rows
+                rn = header_start + r_offset
+                if rn > ws.max_row:
+                    break
+                v = str(ws.cell(row=rn, column=col_num).value or "").strip()
+                if v:
+                    parts.append(v)
+                    header_end = max(header_end, rn)
+            combined = " ".join(parts).lower().strip()
+            if combined:
+                merged_headers[combined] = col_num
+
+        logger.info(f"Open AP headers (merged): {merged_headers}")
+
         # Map expected columns
-        col_map = _build_column_map(headers)
+        col_map = _build_column_map(merged_headers)
         if not col_map:
             wb.close()
             return None
 
+        # Data starts after the last header row
+        data_start = header_end + 1
+
         # Parse data rows
         invoices = []
-        entity_code = None
         current_payee_code = None
         current_payee_name = None
 
-        for row_num in range(header_row + 1, ws.max_row + 1):
+        for row_num in range(data_start, ws.max_row + 1):
             def cell(col_key):
                 idx = col_map.get(col_key)
                 if idx is None:
@@ -390,7 +453,7 @@ def _build_column_map(headers):
         "0-30 owed": ["0-30 owed", "0-30\nowed", "0-30owed"],
         "31-60 owed": ["31-60 owed", "31-60\nowed", "31-60owed"],
         "61-90 owed": ["61-90 owed", "61-90\nowed", "61-90owed"],
-        "over 90 owed": ["over 90 owed", "over\n90\nowed", "over90owed", "over 90\nowed"],
+        "over 90 owed": ["over 90 owed", "over\n90\nowed", "over90owed", "over 90\nowed", "over 90 owed"],
         "future invoice": ["future invoice", "futureinvoice", "future\ninvoice"],
         "notes": ["notes"],
     }
