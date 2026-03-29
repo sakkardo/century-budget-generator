@@ -3620,28 +3620,18 @@ function fxCellFocus(el) {
   label.style.display = 'inline';
   bar.style.display = 'block';
 
-  // For Proposed Budget with a stored formula: show the formula
+  // All formula cells show =formula with live preview and buttons
   if (field === 'proposed_budget' && el.dataset.proposedFormula) {
     bar.value = el.dataset.proposedFormula;
-    _formulaBarOriginal = bar.value;
-    _showFormulaButtons(true, true);
-    formulaBarPreview();
-  } else if (field === 'proposed_budget') {
-    // Proposed budget without formula — show raw value so user can type a formula or number
-    bar.value = el.dataset.raw || '';
-    _formulaBarOriginal = bar.value;
-    _showFormulaButtons(true, false);
-    formulaBarPreview();
   } else if (el.dataset.override === 'true') {
-    bar.value = el.dataset.raw;
-    _formulaBarOriginal = bar.value;
-    _showFormulaButtons(true, false);
-    formulaBarPreview();
+    bar.value = el.dataset.raw || '';
   } else {
     bar.value = el.dataset.formula || '';
-    _formulaBarOriginal = bar.value;
-    _showFormulaButtons(false, false);
   }
+  _formulaBarOriginal = bar.value;
+  const hasStoredFormula = !!(el.dataset.proposedFormula);
+  _showFormulaButtons(true, hasStoredFormula);
+  formulaBarPreview();
 
   // Highlight the active cell
   el.style.border = '2px solid var(--blue)';
@@ -4107,18 +4097,17 @@ function faGetFormulaTooltip(l, field) {
   const incPct = l.increase_pct || 0;
 
   if (field === 'estimate') {
-    return 'Annualized: ' + fmt(ytd) + ' / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
+    if (ytd > 0 && YTD_MONTHS > 0) return '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    return '=0';
   }
   if (field === 'forecast') {
-    return fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
+    const estVal = Math.round(estimate);
+    return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+' + estVal;
   }
   if (field === 'proposed') {
-    if (l.proposed_formula) {
-      const evalResult = safeEvalFormula(l.proposed_formula);
-      return l.proposed_formula + ' = ' + fmt(evalResult !== null ? evalResult : (l.proposed_budget || 0));
-    }
+    if (l.proposed_formula) return l.proposed_formula;
     const proposed = l.proposed_budget || (forecast * (1 + incPct));
-    return fmt(forecast) + ' × (1 + ' + (incPct * 100).toFixed(1) + '%) = ' + fmt(proposed);
+    return '=' + Math.round(forecast) + '*(1+' + incPct.toFixed(4) + ')';
   }
   return '';
 }
