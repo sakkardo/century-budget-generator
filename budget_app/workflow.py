@@ -3626,10 +3626,17 @@ function fxCellFocus(el) {
     _formulaBarOriginal = bar.value;
     _showFormulaButtons(true, true);
     formulaBarPreview();
+  } else if (field === 'proposed_budget') {
+    // Proposed budget without formula — show raw value so user can type a formula or number
+    bar.value = el.dataset.raw || '';
+    _formulaBarOriginal = bar.value;
+    _showFormulaButtons(true, false);
+    formulaBarPreview();
   } else if (el.dataset.override === 'true') {
     bar.value = el.dataset.raw;
     _formulaBarOriginal = bar.value;
-    _showFormulaButtons(false, false);
+    _showFormulaButtons(true, false);
+    formulaBarPreview();
   } else {
     bar.value = el.dataset.formula || '';
     _formulaBarOriginal = bar.value;
@@ -3641,9 +3648,9 @@ function fxCellFocus(el) {
   el.style.borderRadius = '4px';
   el.style.background = '#ecfdf5';
 
-  // Focus the formula bar for editing
+  // Focus the formula bar for editing — do NOT select all (user needs to edit within formula)
   bar.focus({ preventScroll: true });
-  bar.select();
+  bar.setSelectionRange(bar.value.length, bar.value.length);
 }
 
 // fxCellBlur: just restore visual styling (editing now happens via Accept)
@@ -3668,37 +3675,33 @@ function formulaBarPreview() {
   if (!bar || !preview || !_activeFxCell) return;
 
   const typed = bar.value.trim();
-  if (!typed || typed === _formulaBarOriginal) {
-    // No change or empty — show current value
-    if (_activeFxCell.dataset.field === 'proposed_budget' && typed) {
-      const result = safeEvalFormula(typed);
-      if (result !== null) {
-        preview.textContent = '= ' + fmt(result);
-        preview.style.color = 'var(--green)';
-        preview.style.display = 'inline-block';
-        return;
-      }
-    }
+  if (!typed) {
     preview.style.display = 'none';
+    // Keep buttons visible if cell had a formula (so user can Clear)
+    const hadFormula = !!_activeFxCell.dataset.proposedFormula;
+    _showFormulaButtons(hadFormula, hadFormula);
     return;
   }
 
-  // Try to evaluate as formula
+  // Always evaluate and show live preview for any content in the bar
   const result = safeEvalFormula(typed);
+  const isChanged = typed !== _formulaBarOriginal;
   if (result !== null) {
     preview.textContent = '= ' + fmt(result);
-    preview.style.color = 'var(--green)';
+    preview.style.color = isChanged ? '#059669' : 'var(--green)';  // darker green when changed
   } else if (/^[\d$,.\-\s]+$/.test(typed)) {
-    // Plain number
     const num = parseDollar(typed);
     preview.textContent = '= ' + fmt(num);
-    preview.style.color = 'var(--blue)';
+    preview.style.color = isChanged ? '#2563eb' : 'var(--blue)';
   } else {
     preview.textContent = 'Invalid formula';
     preview.style.color = 'var(--red)';
   }
   preview.style.display = 'inline-block';
-  _showFormulaButtons(true, !!(_activeFxCell.dataset.proposedFormula));
+
+  // Always show Accept/Cancel when there's content; show Clear if cell has stored formula
+  const hasStoredFormula = !!_activeFxCell.dataset.proposedFormula;
+  _showFormulaButtons(true, hasStoredFormula || isChanged);
 }
 
 // ── Accept: commit formula/value to cell and save ──────────────────────
@@ -3762,11 +3765,24 @@ function formulaBarAccept() {
     }
   }
 
-  // Reset formula bar UI
+  // Success feedback: flash the cell green, update bar, hide buttons
+  el.style.border = '2px solid var(--green)';
+  el.style.background = '#ecfdf5';
+  const preview = document.getElementById('faFormulaPreview');
+  if (preview) {
+    preview.textContent = '✓ Accepted';
+    preview.style.color = 'var(--green)';
+    preview.style.display = 'inline-block';
+  }
   _showFormulaButtons(false, false);
-  el.style.border = '';
-  el.style.borderRadius = '';
-  el.style.background = '';
+  // Update _formulaBarOriginal so further edits start from new value
+  _formulaBarOriginal = bar.value.trim();
+  setTimeout(() => {
+    el.style.border = '';
+    el.style.borderRadius = '';
+    el.style.background = '';
+    if (preview) preview.style.display = 'none';
+  }, 1200);
 }
 
 // ── Cancel: revert formula bar to original ─────────────────────────────
