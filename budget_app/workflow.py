@@ -3637,25 +3637,72 @@ let _activeFxCell = null;
 // fxCellFocus: populate the formula bar when clicking a formula cell
 function fxCellFocus(el) {
   _activeFxCell = el;
+  // Update formula bar (secondary display)
   const bar = document.getElementById('faFormulaBar');
   const label = document.getElementById('faFormulaLabel');
-  if (!bar || !label) return;
-  label.textContent = el.dataset.gl + ' / ' + el.dataset.field.replace('_override','').replace('_',' ');
-  // Show override value if one exists, otherwise show formula
-  if (el.dataset.override === 'true') {
-    bar.value = el.dataset.raw;
-  } else {
-    bar.value = el.dataset.formula || '';
+  if (bar && label) {
+    label.textContent = el.dataset.gl + ' / ' + el.dataset.field.replace('_override','').replace('_',' ');
+    if (el.dataset.override === 'true') {
+      bar.value = el.dataset.raw;
+    } else {
+      bar.value = el.dataset.formula || '';
+    }
+    bar.style.display = 'block';
+    label.style.display = 'inline';
   }
-  bar.style.display = 'block';
-  label.style.display = 'inline';
-  bar.focus({ preventScroll: true });
+  // Make cell directly editable inline (like Excel)
+  el.readOnly = false;
+  el.style.pointerEvents = 'auto';
+  el.style.background = '#fff';
+  el.style.border = '2px solid var(--blue)';
+  el.style.borderRadius = '4px';
+  el.value = el.dataset.raw;
+  el.focus({ preventScroll: true });
+  el.select();
 }
 
-// fxCellBlur: just restore dollar display (formula bar handles edits)
+// fxCellBlur: user finished editing inline — apply override or revert
 function fxCellBlur(el) {
-  // Don't clear formula bar here — user may be clicking into the bar
-  el.value = fmt(parseFloat(el.dataset.raw) || 0);
+  // Restore readonly styling
+  el.readOnly = true;
+  el.style.pointerEvents = 'none';
+  el.style.background = '';
+  el.style.border = '';
+  el.style.borderRadius = '';
+
+  const typed = el.value.trim();
+  const gl = el.dataset.gl, field = el.dataset.field;
+  const formula = el.dataset.formula || '';
+  const numericVal = parseDollar(typed);
+  const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
+
+  if (isNumber) {
+    // User typed a number — apply as override
+    el.dataset.raw = Math.round(numericVal);
+    el.dataset.override = 'true';
+    el.value = fmt(numericVal);
+    // Update the fx badge to show override indicator
+    const badge = el.parentElement.querySelector('.fa-fx');
+    if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+    faLineChanged(gl, field, numericVal);
+    faAutoSave(gl, field, Math.round(numericVal));
+  } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
+    // User cleared — revert to auto-calculation
+    el.dataset.override = 'false';
+    const badge = el.parentElement.querySelector('.fa-fx');
+    if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
+    faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
+                       field === 'forecast_override' ? '__recalc_forecast' : field, null);
+    faAutoSave(gl, field, null);
+  } else {
+    // No change — restore formatted display
+    el.value = fmt(parseFloat(el.dataset.raw) || 0);
+  }
+  // Sync formula bar
+  const bar = document.getElementById('faFormulaBar');
+  if (bar && _activeFxCell === el) {
+    bar.value = el.dataset.override === 'true' ? el.dataset.raw : (el.dataset.formula || '');
+  }
 }
 
 // formulaBarBlur: user finished editing in the formula bar
@@ -3695,6 +3742,22 @@ function formulaBarKeydown(e) {
     e.preventDefault();
     formulaBarBlur();
     document.getElementById('faFormulaBar').blur();
+  }
+}
+
+// fxCellKeydown: Enter/Tab applies, Escape reverts
+function fxCellKeydown(el, e) {
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    el.blur(); // triggers fxCellBlur
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    el.value = fmt(parseFloat(el.dataset.raw) || 0);
+    el.readOnly = true;
+    el.style.pointerEvents = 'none';
+    el.style.background = '';
+    el.style.border = '';
+    el.style.borderRadius = '';
   }
 }
 
@@ -4924,6 +4987,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
         ' data-override="' + overrideAttr + '"' +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
+        ' onblur="fxCellBlur(this)"' +
+        ' onkeydown="fxCellKeydown(this, event)"' +
         ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
