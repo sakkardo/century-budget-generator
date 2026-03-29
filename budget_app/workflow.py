@@ -4101,13 +4101,15 @@ function faGetFormulaTooltip(l, field) {
     return '=0';
   }
   if (field === 'forecast') {
-    const estVal = Math.round(estimate);
-    return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+' + estVal;
+    // Use exact estimate expression to avoid rounding mismatch
+    const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+    return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   }
   if (field === 'proposed') {
     if (l.proposed_formula) return l.proposed_formula;
-    const proposed = l.proposed_budget || (forecast * (1 + incPct));
-    return '=' + Math.round(forecast) + '*(1+' + incPct.toFixed(4) + ')';
+    // Use exact forecast expression to avoid rounding
+    const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
+    return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
   }
   return '';
 }

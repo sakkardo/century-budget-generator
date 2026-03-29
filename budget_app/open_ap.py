@@ -660,7 +660,7 @@ def create_open_ap_blueprint(db, workflow_models):
         Returns:
             dict: {"applied": int, "gl_totals": {gl_code: amount}}
         """
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.id.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
         if not budget:
             logger.warning(f"No budget found for entity {entity_code}, cannot apply unpaid bills")
             return {"applied": 0, "gl_totals": {}}

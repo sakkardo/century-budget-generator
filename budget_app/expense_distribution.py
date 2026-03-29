@@ -347,7 +347,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         if not accruals:
             return {"applied": 0, "accruals": {}}
 
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.id.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
         if not budget:
             logger.warning(f"No budget found for entity {entity_code}, cannot apply accruals")
             return {"applied": 0, "accruals": {}}
@@ -614,7 +614,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         adjusted = get_adjusted_gl_totals(entity_code)
 
         # Get YSL budget data from BudgetLine
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.id.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
         budget_lines = {}
         if budget:
             for line in BudgetLine.query.filter_by(budget_id=budget.id).all():
@@ -664,7 +664,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         all_gl_codes.update({k: v[0] for k, v in GA_GL_MAP.items()})
 
         # Get budget data for variance display
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.id.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
         building_name = budget.building_name if budget else f"Entity {entity_code}"
         budget_lines = {}
         if budget:
