@@ -3624,14 +3624,12 @@ function fxCellFocus(el) {
   if (field === 'proposed_budget' && el.dataset.proposedFormula) {
     bar.value = el.dataset.proposedFormula;
   } else if (el.dataset.override === 'true') {
-    // If override was set via a formula, show the formula; otherwise show raw value
-    const storedFormula = el.dataset.formula || '';
-    bar.value = (storedFormula.startsWith('=') && /[+\-*\/()]/.test(storedFormula)) ? storedFormula : (el.dataset.raw || '');
+    bar.value = el.dataset.raw || '';
   } else {
     bar.value = el.dataset.formula || '';
   }
   _formulaBarOriginal = bar.value;
-  const hasStoredFormula = !!(el.dataset.proposedFormula) || (el.dataset.override === 'true' && (el.dataset.formula || '').startsWith('='));
+  const hasStoredFormula = !!(el.dataset.proposedFormula);
   _showFormulaButtons(true, hasStoredFormula);
   formulaBarPreview();
 
