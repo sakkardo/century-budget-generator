@@ -171,7 +171,8 @@ def create_workflow_blueprint(db):
         entity_code = db.Column(db.String(50), nullable=False, index=True)
         building_name = db.Column(db.String(255), nullable=False)
         building_type = db.Column(db.String(50), default="")
-        year = db.Column(db.Integer, default=2027)
+        year = db.Column(db.Integer, nullable=False)
+        version = db.Column(db.Integer, default=1)
         status = db.Column(db.String(20), default="not_started")
         fa_notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -198,7 +199,7 @@ def create_workflow_blueprint(db):
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
-        __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
+        __table_args__ = (db.UniqueConstraint("entity_code", "year", "version", name="uq_entity_year_ver"),)
 
         def to_dict(self):
             return {
@@ -207,6 +208,7 @@ def create_workflow_blueprint(db):
                 "building_name": self.building_name,
                 "building_type": self.building_type or "",
                 "year": self.year,
+                "version": self.version or 1,
                 "status": self.status,
                 "fa_notes": self.fa_notes,
                 "initiated_by": self.initiated_by,
@@ -460,13 +462,14 @@ def create_workflow_blueprint(db):
         If status is anything else, only updates YSL columns (doesn't overwrite PM inputs).
         """
         try:
-            # Get or create budget
-            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            # Get or create budget (latest version for budget year)
+            budget = get_budget_for_year(entity_code, BUDGET_YEAR)
             if not budget:
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
-                    year=2027,
+                    year=BUDGET_YEAR,
+                    version=1,
                     status="draft"
                 )
                 db.session.add(budget)
@@ -561,7 +564,24 @@ def create_workflow_blueprint(db):
         types = _load_building_types()
         return types.get(str(entity_code).strip(), "")
 
-    def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None):
+    # ── Budget year + version helpers ────────────────────────────────────
+    BUDGET_YEAR = datetime.utcnow().year + 1  # YSL is current year, budget is next
+
+    def get_active_budget(entity_code):
+        """Return the latest-version budget for an entity (any year, latest version)."""
+        return (Budget.query
+                .filter_by(entity_code=str(entity_code).strip())
+                .order_by(Budget.year.desc(), Budget.version.desc())
+                .first())
+
+    def get_budget_for_year(entity_code, year):
+        """Return the latest-version budget for an entity + specific year."""
+        return (Budget.query
+                .filter_by(entity_code=str(entity_code).strip(), year=year)
+                .order_by(Budget.version.desc())
+                .first())
+
+    def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
         Uses GLMapper to get sheet/row/description for every GL code.
@@ -579,19 +599,36 @@ def create_workflow_blueprint(db):
             gl_mapping = {}
 
         try:
-            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
-            if not budget:
+            if fresh_start:
+                # Create a brand new version — old budget stays untouched
+                existing = get_budget_for_year(entity_code, BUDGET_YEAR)
+                next_ver = (existing.version + 1) if existing else 1
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
                     building_type=_lookup_building_type(entity_code),
-                    year=2027,
+                    year=BUDGET_YEAR,
+                    version=next_ver,
                     status="draft"
                 )
                 db.session.add(budget)
                 db.session.flush()
-            elif not budget.building_type:
-                budget.building_type = _lookup_building_type(entity_code)
+            else:
+                # Update existing or create first version
+                budget = get_budget_for_year(entity_code, BUDGET_YEAR)
+                if not budget:
+                    budget = Budget(
+                        entity_code=entity_code,
+                        building_name=building_name,
+                        building_type=_lookup_building_type(entity_code),
+                        year=BUDGET_YEAR,
+                        version=1,
+                        status="draft"
+                    )
+                    db.session.add(budget)
+                    db.session.flush()
+                elif not budget.building_type:
+                    budget.building_type = _lookup_building_type(entity_code)
 
             # Store assumptions snapshot if provided
             if assumptions:
@@ -670,7 +707,7 @@ def create_workflow_blueprint(db):
 
         Returns: {gl_code: {accrual_adj, unpaid_bills, increase_pct, notes}}
         """
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return {}
 
@@ -755,7 +792,7 @@ def create_workflow_blueprint(db):
     @bp.route("/dashboard/<entity_code>", methods=["GET"])
     def building_detail(entity_code):
         """FA Building Detail - combined view of budget, expenses, audit."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return "No budget found for this building", 404
         return render_template_string(BUILDING_DETAIL_TEMPLATE, entity_code=entity_code)
@@ -783,7 +820,7 @@ def create_workflow_blueprint(db):
     @bp.route("/pm/<entity_code>", methods=["GET"])
     def pm_edit(entity_code):
         """PM Edit Page - spreadsheet-style R&M grid."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
 
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
@@ -1004,7 +1041,7 @@ def create_workflow_blueprint(db):
         if new_status not in BUDGET_STATUSES:
             return jsonify({"error": f"Invalid status. Must be one of {BUDGET_STATUSES}"}), 400
 
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1037,7 +1074,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
     def api_building_detail(entity_code):
         """Get combined budget data for building detail view."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1250,7 +1287,7 @@ def create_workflow_blueprint(db):
     def get_budget_assumptions(entity_code):
         """Get assumptions for a budget."""
         import json as _json
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
         try:
@@ -1263,7 +1300,7 @@ def create_workflow_blueprint(db):
     def update_budget_assumptions(entity_code):
         """Update assumptions for a budget and recalculate affected lines."""
         import json as _json
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1390,7 +1427,7 @@ def create_workflow_blueprint(db):
             if not is_coop(entity_code):
                 return jsonify({"error": "Not a co-op", "is_coop": False}), 200
             import json as _json
-            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            budget = get_active_budget(entity_code)
             overrides = None
             if budget and budget.assumptions_json:
                 try:
@@ -1407,7 +1444,7 @@ def create_workflow_blueprint(db):
     def update_re_taxes(entity_code):
         """Save RE Taxes overrides (exemptions, transitional increase, etc.)."""
         import json as _json
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
         data = request.get_json()
@@ -1443,7 +1480,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/lines/<entity_code>", methods=["GET"])
     def get_lines(entity_code):
         """Get all R&M lines for a building."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1456,7 +1493,7 @@ def create_workflow_blueprint(db):
         """Update R&M lines for a building (PM data entry)."""
         data = request.get_json()
 
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1500,7 +1537,7 @@ def create_workflow_blueprint(db):
     def update_fa_lines(entity_code):
         """FA edits to any budget line (all sheets, not just R&M)."""
         data = request.get_json()
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1557,7 +1594,7 @@ def create_workflow_blueprint(db):
     def update_reclass(entity_code):
         """PM suggests reclassifying a GL line (FA acts on it)."""
         data = request.get_json()
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1576,7 +1613,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
     def get_budget_history(entity_code):
         """Get change history (revisions) for a budget."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1600,7 +1637,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
     def download_budget(entity_code):
         """Regenerate and download budget Excel from DB data."""
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1628,7 +1665,7 @@ def create_workflow_blueprint(db):
         from flask import send_file as _send_file
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = _Path(tmpdir) / f"{entity_code}_{budget.building_name}_2027_Budget.xlsx"
+            output_path = _Path(tmpdir) / f"{entity_code}_{budget.building_name}_{budget.year}_Budget.xlsx"
             template_path = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
 
             property_info = {
@@ -1673,7 +1710,7 @@ def create_workflow_blueprint(db):
     def generate_presentation_link(entity_code):
         """Generate a shareable presentation token for a budget."""
         import secrets
-        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        budget = get_active_budget(entity_code)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -2451,8 +2488,9 @@ function renderBudgets(budgets) {
       updatedStr = d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
     }
 
+    const verBadge = (b.version && b.version > 1) ? `<span style="background:#dbeafe; color:var(--blue); font-size:10px; padding:1px 5px; border-radius:8px; margin-left:4px;">v${b.version}</span>` : '';
     tr.innerHTML = `
-      <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
+      <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a>${verBadge}</td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${updatedStr}</td>
       <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}<br>${maintIcon}</td>
@@ -2956,7 +2994,7 @@ function renderDetail(data) {
   document.getElementById('buildingName').textContent = b.building_name;
   document.getElementById('breadcrumbName').textContent = b.building_name;
   document.title = b.building_name + ' - Century Management';
-  let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
+  let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget' + (b.version > 1 ? ' (v' + b.version + ')' : '');
   if (b.created_at) meta += ' | Generated ' + new Date(b.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.created_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
   if (b.updated_at && b.updated_at !== b.created_at) meta += ' | Updated ' + new Date(b.updated_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.updated_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
   if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;

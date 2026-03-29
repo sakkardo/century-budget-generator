@@ -131,6 +131,7 @@ with app.app_context():
             ("budget_lines", "accrual_adj", "FLOAT DEFAULT 0"),
             ("budgets", "building_type", "VARCHAR(50) DEFAULT ''"),
             ("budget_lines", "proposed_formula", "TEXT"),
+            ("budgets", "version", "INTEGER DEFAULT 1"),
         ]
         for table, col, col_type in _migrations:
             try:
@@ -139,6 +140,20 @@ with app.app_context():
                 logger.info(f"Added column {table}.{col}")
             except Exception:
                 db.session.rollback()  # Column already exists, skip
+
+        # Migrate unique constraint: drop old, add new with version
+        try:
+            db.session.execute(db.text("ALTER TABLE budgets DROP CONSTRAINT IF EXISTS uq_entity_year"))
+            db.session.commit()
+            logger.info("Dropped old uq_entity_year constraint")
+        except Exception:
+            db.session.rollback()
+        try:
+            db.session.execute(db.text("ALTER TABLE budgets ADD CONSTRAINT uq_entity_year_ver UNIQUE (entity_code, year, version)"))
+            db.session.commit()
+            logger.info("Added new uq_entity_year_ver constraint")
+        except Exception:
+            db.session.rollback()
 
         # Backfill building_type on existing budgets from buildings.csv
         try:
@@ -676,7 +691,8 @@ def auto_process():
                         pass
 
                     try:
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged)
+                        fresh = data.get("fresh_start", False)
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged, fresh_start=fresh)
                     except Exception as wfe:
                         logger.warning(f"Could not store GL data for {entity}: {wfe}")
 
@@ -952,6 +968,7 @@ def generate_script():
   const _SESSION_ID = 'yardi_' + Date.now();
   const _BUDGET_APP = '{railway_url}';
   const _PERIOD = '{period}';
+  const _FRESH_START = {str(data.get('fresh_start', False)).lower()};
 
   // ── Auto-Upload Helper ──
   // Sends each downloaded blob to the budget app in the background
@@ -992,7 +1009,7 @@ def generate_script():
       const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ session_id: _SESSION_ID, period: _PERIOD }}),
+        body: JSON.stringify({{ session_id: _SESSION_ID, period: _PERIOD, fresh_start: _FRESH_START }}),
       }});
       const data = await resp.json();
       if (resp.ok) {{
@@ -1192,8 +1209,9 @@ def process_files():
 
                     # Store ALL GL data in database for budget review workflow
                     try:
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged)
-                        logger.info(f"All GL data stored for entity {entity}")
+                        fresh = request.form.get("fresh_start", "").lower() in ("true", "1", "yes")
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged, fresh_start=fresh)
+                        logger.info(f"All GL data stored for entity {entity} (fresh_start={fresh})")
                     except Exception as wfe:
                         logger.warning(f"Could not store GL data for {entity}: {wfe}")
 
@@ -2154,6 +2172,13 @@ GENERATE_TEMPLATE = r"""
         <label>Budget Period</label>
         <input type="text" id="period" value="02/2026" placeholder="MM/YYYY">
       </div>
+      <div class="setting">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="freshStart" style="width:16px; height:16px;">
+          <span>Fresh Start</span>
+        </label>
+        <span style="font-size:11px; color:var(--gray-500);">Creates a brand new budget version. Existing budget stays untouched.</span>
+      </div>
     </div>
 
     <button class="btn btn-primary" onclick="generateScript()" id="genBtn">
@@ -2218,10 +2243,11 @@ async function generateScript() {
   if (!entities.length) { alert('Select at least one building'); return; }
   if (!email) { alert('Enter your email'); return; }
 
+  const freshStart = document.getElementById('freshStart').checked;
   const resp = await fetch('/api/generate-script', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, email, period }),
+    body: JSON.stringify({ entities, email, period, fresh_start: freshStart }),
   });
 
   const data = await resp.json();
