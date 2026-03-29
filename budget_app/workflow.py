@@ -671,10 +671,18 @@ def create_workflow_blueprint(db):
                     line.category = category
                     line.pm_editable = pm_editable
                     if is_draft:
+                        # Clear ALL customizations on regeneration
                         line.accrual_adj = 0.0
                         line.unpaid_bills = 0.0
                         line.increase_pct = 0.0
                         line.notes = ""
+                        line.reclass_to_gl = None
+                        line.reclass_amount = 0.0
+                        line.reclass_notes = ""
+                        line.estimate_override = None
+                        line.forecast_override = None
+                        line.proposed_budget = 0.0
+                        line.proposed_formula = None
                 else:
                     line = BudgetLine(
                         budget_id=budget.id,
