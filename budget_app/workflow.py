@@ -3932,12 +3932,13 @@ function faLineChanged(gl, field, value) {
       if (newFormula && el.dataset.override !== 'true') el.dataset.formula = newFormula;
     }
   };
-  // Build updated formula strings
-  const estFormula = 'Annualized: ' + fmt(ytd) + ' / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
-  const fcstFormula = fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
+  // Build updated formula strings (real =formulas matching faGetFormulaTooltip)
+  const estFormula = (ytd > 0 && YTD_MONTHS > 0) ? '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '=0';
+  const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+  const fcstFormula = '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   const propFormula = hasUserFormula && field !== '__recalc_proposed'
-    ? propEl.dataset.proposedFormula + ' = ' + fmt(proposed)
-    : fmt(forecast) + ' x (1 + ' + (incRaw).toFixed(1) + '%) = ' + fmt(proposed);
+    ? propEl.dataset.proposedFormula
+    : '=(' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + '))*(1+' + incPct.toFixed(4) + ')';
 
   if (field !== 'estimate_override') updateCell('est_' + gl, estimate, estFormula);
   if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, fcstFormula);
