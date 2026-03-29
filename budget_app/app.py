@@ -78,6 +78,14 @@ except ImportError:
 mp_bp, mp_models, mp_helpers = create_maintenance_proof_blueprint(db, workflow_models)
 app.register_blueprint(mp_bp)
 
+# Register open AP (aging) blueprint
+try:
+    from open_ap import create_open_ap_blueprint, detect_open_ap_file, parse_open_ap_report
+except ImportError:
+    from budget_app.open_ap import create_open_ap_blueprint, detect_open_ap_file, parse_open_ap_report
+oa_bp, oa_models, oa_helpers = create_open_ap_blueprint(db, workflow_models)
+app.register_blueprint(oa_bp)
+
 # Resolve all model relationships after ALL blueprints are registered
 try:
     db.configure_mappers()
@@ -174,6 +182,10 @@ DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
 EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
 MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8")
+try:
+    AP_AGING_SCRIPT = (BUDGET_SYSTEM / "AP Aging Script.js").read_text(encoding="utf-8")
+except FileNotFoundError:
+    AP_AGING_SCRIPT = None
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -537,11 +549,35 @@ def generate_script():
         f"const ENTITY_CHARGES = {{{mp_mapping_js}}};"
     )
 
-    # Combine into one script that runs all three sequentially
+    # Build AP Aging script with user settings (if available)
+    ap_script_block = ""
+    if AP_AGING_SCRIPT:
+        ap_aging_script = AP_AGING_SCRIPT
+        ap_aging_script = ap_aging_script.replace(
+            "const ENTITIES = [148, 204, 206, 805];",
+            f"const ENTITIES = [{entities_js}];"
+        )
+        ap_aging_script = ap_aging_script.replace(
+            "const PERIOD_TO = '03/2026';",
+            f"const PERIOD_TO = '{period}';"
+        )
+        ap_script_block = f"""
+  // ── Part 4: AP Aging (Open AP) ──
+  console.log('\\n>>> Starting Part 4: AP Aging (Open AP) <<<\\n');
+  try {{
+    _partResults.ap = await {ap_aging_script}
+    console.log('\\n>>> Part 4 (AP Aging) completed successfully <<<\\n');
+  }} catch (_e4) {{
+    console.error('>>> Part 4 (AP Aging) FAILED with error:', _e4.message);
+    console.error(_e4.stack);
+    _partResults.ap = 'ERROR: ' + _e4.message;
+  }}"""
+
+    # Combine into one script that runs all four sequentially
     # Each part is wrapped in try/catch so errors don't kill subsequent parts
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
- * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof
+ * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof + AP Aging
  * for all selected entities.
  * Generated for: {email}
  * Entities: {entities_js}
@@ -549,12 +585,13 @@ def generate_script():
  */
 (async function() {{
   'use strict';
-  const _partResults = {{ysl: null, exp: null, mp: null}};
+  const _partResults = {{ysl: null, exp: null, mp: null, ap: null}};
   console.log('='.repeat(60));
   console.log('Century Budget — Combined Download');
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Expense Distribution reports');
   console.log('Part 3: Maintenance Proof reports');
+  console.log('Part 4: AP Aging (Open AP) reports');
   console.log('='.repeat(60));
 
   // ── Part 1: YSL Annual Budget ──
@@ -589,13 +626,15 @@ def generate_script():
     console.error(_e3.stack);
     _partResults.mp = 'ERROR: ' + _e3.message;
   }}
+{ap_script_block}
 
   console.log('\\n' + '='.repeat(60));
   console.log('ALL DONE — Summary:');
   console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
   console.log('  Part 2 (Exp):', _partResults.exp === null ? 'SKIPPED' : (typeof _partResults.exp === 'string' && _partResults.exp.startsWith('ERROR') ? _partResults.exp : 'OK'));
   console.log('  Part 3 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
-  console.log('Drag all downloaded .xlsx files into the budget generator to process.');
+  console.log('  Part 4 (AP): ', _partResults.ap === null ? 'SKIPPED' : (typeof _partResults.ap === 'string' && _partResults.ap.startsWith('ERROR') ? _partResults.ap : 'OK'));
+  console.log('Drag all downloaded files into the budget generator to process.');
   console.log('='.repeat(60));
 }})();"""
 
@@ -628,22 +667,29 @@ def process_files():
         tmp = Path(tmpdir)
         output_files = []
 
-        # Two-pass approach: separate YSL files from Expense Distribution files
-        # so we can determine entity codes from YSL first
+        # Multi-pass approach: separate file types so we process in correct order
+        # Order: YSL first (creates BudgetLines), then Expense Dist, then Open AP
         saved_files = []  # (path, filename, file_type, row1, row2)
         ysl_entities = set()  # entity codes found in YSL files
         expense_files = []  # (path, filename) for expense files to process after YSL
+        open_ap_files = []  # (path, filename) for AP Aging files to process after YSL
 
         # Pass 1: Save all files, classify them, process YSL files first
         for f in files:
-            if not f.filename or not f.filename.endswith(".xlsx"):
-                results["warnings"].append(f"Skipped non-xlsx: {f.filename}")
+            if not f.filename or not f.filename.endswith((".xlsx", ".xls")):
+                results["warnings"].append(f"Skipped non-Excel: {f.filename}")
                 continue
 
             file_path = tmp / f.filename
             f.save(str(file_path))
 
             try:
+                # Check if it's an Open AP (Aging) file first (uses robust detection)
+                if detect_open_ap_file(str(file_path)):
+                    logger.info(f"File detection for {f.filename}: Open AP (Aging) report")
+                    open_ap_files.append((file_path, f.filename))
+                    continue
+
                 from openpyxl import load_workbook as _lwb
                 _wb_check = _lwb(str(file_path), data_only=True)
                 _ws_check = _wb_check.active
@@ -819,6 +865,57 @@ def process_files():
             except Exception as exp_err:
                 logger.error(f"Expense parse error for {exp_filename}: {exp_err}")
                 results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
+
+        # Pass 3: Process Open AP (Aging) files
+        # These provide unpaid invoice data that populates BudgetLine.unpaid_bills
+        for ap_path, ap_filename in open_ap_files:
+            try:
+                ap_entity, ap_invoices = parse_open_ap_report(str(ap_path))
+                logger.info(f"Open AP parse: file={ap_filename}, entity={ap_entity}, invoices={len(ap_invoices) if ap_invoices else 0}")
+
+                if not ap_invoices:
+                    results["warnings"].append(f"Open AP file {ap_filename}: no invoices found")
+                    continue
+
+                # Determine correct entity code
+                # 1. Try to extract from filename (e.g., APAging_204.xlsx or OpenAP_204.xlsx)
+                import re as _re
+                fname_match = _re.search(r'(?:Aging|OpenAP|AP)[_-]?(\d+)', ap_filename, _re.IGNORECASE)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = ap_entity  # default: from file data
+                if fname_entity and fname_entity != ap_entity:
+                    if fname_entity in ysl_entities:
+                        target_entity = fname_entity
+                        logger.warning(f"Open AP entity mismatch: data says {ap_entity}, filename says {fname_entity}. Using {fname_entity}")
+                    elif not ysl_entities:
+                        target_entity = fname_entity
+                elif not target_entity and fname_entity:
+                    target_entity = fname_entity
+
+                if not target_entity:
+                    results["warnings"].append(f"Open AP file {ap_filename}: could not determine entity code")
+                    continue
+
+                # Store parsed invoices
+                report = oa_helpers["store_open_ap_report"](target_entity, ap_invoices, ap_filename)
+                logger.info(f"Open AP stored for entity {target_entity}: {len(ap_invoices)} invoices, ${report.total_amount:,.2f}")
+
+                # Auto-apply unpaid bills to BudgetLines
+                unpaid_result = {"applied": 0, "gl_totals": {}}
+                try:
+                    unpaid_result = oa_helpers["apply_unpaid_bills"](target_entity)
+                    if unpaid_result["applied"] > 0:
+                        logger.info(f"Auto-applied unpaid bills to {unpaid_result['applied']} GL lines for entity {target_entity}")
+                except Exception as unpaid_err:
+                    logger.error(f"Unpaid bills application failed for {target_entity}: {unpaid_err}")
+                    results["warnings"].append(f"Unpaid bills failed for {target_entity}: {str(unpaid_err)}")
+
+                unpaid_msg = f", {unpaid_result['applied']} GL lines updated" if unpaid_result["applied"] > 0 else ""
+                results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
+            except Exception as ap_err:
+                logger.error(f"Open AP parse error for {ap_filename}: {ap_err}")
+                results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
 
         if not output_files:
             # If expense files were processed successfully, return 200

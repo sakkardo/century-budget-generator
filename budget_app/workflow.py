@@ -4534,6 +4534,82 @@ async function faFetchExpenseData() {
   } catch(e) { _faExpenseCache = false; return null; }
 }
 
+// ── FA Open AP (Unpaid Bills) drill-down ─────────────────────────────
+let _faOpenAPCache = null;
+
+async function faFetchOpenAPData() {
+  if (_faOpenAPCache !== null) return _faOpenAPCache;
+  try {
+    const res = await fetch('/api/open-ap/' + entityCode);
+    if (!res.ok) { _faOpenAPCache = false; return null; }
+    _faOpenAPCache = await res.json();
+    return _faOpenAPCache;
+  } catch(e) { _faOpenAPCache = false; return null; }
+}
+
+async function faToggleUnpaidDrill(glCode, el) {
+  const row = el.closest('tr');
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('fa-unpaid-detail')) {
+    next.remove();
+    return;
+  }
+  // Remove any existing open detail rows for this GL
+  const existing = row.parentNode.querySelector('.fa-unpaid-detail[data-gl="' + glCode + '"]');
+  if (existing) existing.remove();
+
+  const data = await faFetchOpenAPData();
+  if (!data || !data.gl_groups) {
+    const noData = document.createElement('tr');
+    noData.className = 'fa-unpaid-detail';
+    noData.dataset.gl = glCode;
+    noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No Open AP data uploaded yet. Include the AP Aging report in your budget generator upload.</td>';
+    row.after(noData);
+    return;
+  }
+
+  const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
+  if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
+    const noInv = document.createElement('tr');
+    noInv.className = 'fa-unpaid-detail';
+    noInv.dataset.gl = glCode;
+    noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No unpaid invoices for ' + glCode + '</td>';
+    row.after(noInv);
+    return;
+  }
+
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'fa-unpaid-detail';
+  detailRow.dataset.gl = glCode;
+  let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
+  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">';
+  html += '<span style="font-weight:600; font-size:13px; color:#92400e;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span>';
+  html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
+  html += '</div>';
+
+  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+  html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+  html += '<td style="padding:5px 10px;">Vendor</td><td style="padding:5px 10px;">Invoice #</td><td style="padding:5px 10px;">Date</td><td style="padding:5px 10px;">Description</td><td style="padding:5px 10px; text-align:right;">Current Owed</td><td style="padding:5px 10px; text-align:right;">0-30</td><td style="padding:5px 10px; text-align:right;">31-60</td><td style="padding:5px 10px; text-align:right;">61-90</td><td style="padding:5px 10px; text-align:right;">Over 90</td></tr></thead>';
+
+  glGroup.invoices.forEach(inv => {
+    html += '<tr style="border-top:1px solid var(--gray-200);">';
+    html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="padding:5px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">' + fmt(inv.current_owed) + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_0_30 ? fmt(inv.aging_0_30) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_31_60 ? fmt(inv.aging_31_60) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_61_90 ? fmt(inv.aging_61_90) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:' + (inv.aging_over_90 > 0 ? '#dc2626' : 'var(--gray-500)') + ';">' + (inv.aging_over_90 ? fmt(inv.aging_over_90) : '—') + '</td>';
+    html += '</tr>';
+  });
+
+  html += '</table></div></td>';
+  detailRow.innerHTML = html;
+  row.after(detailRow);
+}
+
 async function faToggleAccrualDrill(glCode, el) {
   const row = el.closest('tr');
   // Check if drill-down already open
@@ -4842,7 +4918,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         (l._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange); background:var(--orange-light); padding:0 3px; border-radius:3px; border:1px solid var(--orange);" title="Original: ' + fmt(l._orig_ytd) + ' | Reclass adj: ' + (l._reclass_ytd_adj > 0 ? '+' : '') + fmt(l._reclass_ytd_adj) + '">R</span>' : '') + '</td>' +
       '<td class="num" style="position:relative;">' + $cell('acc_'+gl, 'accrual_adj', accrual) +
         (accrual !== 0 ? '<span onclick="faToggleAccrualDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); cursor:pointer; background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);" title="View prior-year invoices">▼</span>' : '') + '</td>' +
-      '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
+      '<td class="num" style="position:relative;">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) +
+        (unpaid !== 0 ? '<span onclick="faToggleUnpaidDrill(\'' + gl + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;" title="View unpaid invoices">▼</span>' : '') + '</td>' +
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
@@ -5574,7 +5651,7 @@ function renderTable() {
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
                 <td class="number" style="position:relative;">${fmt(line.ytd_actual)}${line._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange,#d97706); background:var(--orange-light,#fef3c7); padding:0 3px; border-radius:3px; border:1px solid var(--orange,#d97706);" title="Original: ' + fmt(line._orig_ytd) + ' | Reclass adj: ' + (line._reclass_ytd_adj > 0 ? '+' : '') + fmt(line._reclass_ytd_adj) + '">R</span>' : ''}</td>
                 <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.accrual_adj || 0) !== 0 ? '<span onclick="pmToggleAccrualDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #fde68a;" title="View prior-year invoices">▼</span>' : ''}</td>
-                <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.unpaid_bills || 0) !== 0 ? '<span onclick="pmToggleUnpaidDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;" title="View unpaid invoices">▼</span>' : ''}</td>
                 <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
                 <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
                 <td class="number">${fmt(line.current_budget)}</td>
@@ -5712,6 +5789,75 @@ async function fetchExpenseData() {
         _expenseCache = await res.json();
         return _expenseCache;
     } catch(e) { _expenseCache = false; return null; }
+}
+
+// ── PM Open AP (Unpaid Bills) drill-down ────────────────────────────
+let _pmOpenAPCache = null;
+
+async function pmFetchOpenAPData() {
+    if (_pmOpenAPCache !== null) return _pmOpenAPCache;
+    try {
+        const res = await fetch('/api/open-ap/' + ENTITY);
+        if (!res.ok) { _pmOpenAPCache = false; return null; }
+        _pmOpenAPCache = await res.json();
+        return _pmOpenAPCache;
+    } catch(e) { _pmOpenAPCache = false; return null; }
+}
+
+async function pmToggleUnpaidDrill(glCode, linkEl) {
+    const row = linkEl.closest('tr');
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('pm-unpaid-detail')) {
+        next.remove();
+        return;
+    }
+
+    const data = await pmFetchOpenAPData();
+    if (!data || !data.gl_groups) {
+        const noData = document.createElement('tr');
+        noData.className = 'pm-unpaid-detail';
+        noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No Open AP data available. Upload the AP Aging report with the budget generator.</td>';
+        row.after(noData);
+        return;
+    }
+
+    const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
+    if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
+        const noInv = document.createElement('tr');
+        noInv.className = 'pm-unpaid-detail';
+        noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No unpaid invoices for ' + glCode + '</td>';
+        row.after(noInv);
+        return;
+    }
+
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'pm-unpaid-detail';
+    let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
+    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">';
+    html += '<span style="font-weight:600; font-size:13px; color:#92400e;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span>';
+    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
+    html += '</div>';
+
+    html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+    html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+    html += '<td style="padding:5px 10px;">Vendor</td><td style="padding:5px 10px;">Invoice #</td><td style="padding:5px 10px;">Date</td><td style="padding:5px 10px;">Description</td><td style="padding:5px 10px; text-align:right;">Current Owed</td><td style="padding:5px 10px; text-align:right;">0-30</td><td style="padding:5px 10px; text-align:right;">31-60</td><td style="padding:5px 10px; text-align:right;">Over 90</td></tr></thead>';
+
+    glGroup.invoices.forEach(inv => {
+        html += '<tr style="border-top:1px solid var(--gray-200);">';
+        html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td style="padding:5px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="padding:5px 10px; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+        html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">' + fmt(inv.current_owed) + '</td>';
+        html += '<td style="padding:5px 10px; text-align:right; color:var(--gray-500);">' + (inv.aging_0_30 ? fmt(inv.aging_0_30) : '—') + '</td>';
+        html += '<td style="padding:5px 10px; text-align:right; color:var(--gray-500);">' + (inv.aging_31_60 ? fmt(inv.aging_31_60) : '—') + '</td>';
+        html += '<td style="padding:5px 10px; text-align:right; color:' + (inv.aging_over_90 > 0 ? '#dc2626' : 'var(--gray-500)') + ';">' + (inv.aging_over_90 ? fmt(inv.aging_over_90) : '—') + '</td>';
+        html += '</tr>';
+    });
+
+    html += '</table></div></td>';
+    detailRow.innerHTML = html;
+    row.after(detailRow);
 }
 
 // ── Apply invoice-level reclass adjustments to LINES YTD ──
