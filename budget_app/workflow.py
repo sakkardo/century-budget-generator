@@ -4344,9 +4344,28 @@ function renderRETaxesTab(contentDiv) {
   });
 
   // Attach focus/blur handlers to toggle between raw and formatted
+  // On focus: show the formatted percentage/dollar (user-friendly) not the raw decimal
+  // On blur: parse what the user typed and convert back to raw decimal
   document.querySelectorAll('#sheetContent input[type=text]').forEach(inp => {
-    inp.addEventListener('focus', function() { this.dataset.fmt = this.value; this.value = this.dataset.raw || _reParseNum(this.value); this.select(); });
-    inp.addEventListener('blur', function() { this.dataset.raw = _reParseNum(this.value); _reApplyFmt(this); reCalcTaxes(); });
+    inp.addEventListener('focus', function() {
+      // Show editable value in user-friendly format (percentage for rates/pcts)
+      const raw = parseFloat(this.dataset.raw) || 0;
+      if (this.dataset.type === 'rate') this.value = (raw * 100).toFixed(4);
+      else if (this.dataset.type === 'pct') this.value = (raw * 100).toFixed(2);
+      else if (this.dataset.type === 'dollar') this.value = Math.round(raw);
+      else this.value = this.dataset.raw || _reParseNum(this.value);
+      this.select();
+    });
+    inp.addEventListener('blur', function() {
+      let v = parseFloat(_reParseNum(this.value)) || 0;
+      // User types percentage values (e.g. 9.6324 for 9.6324%) — convert to decimal
+      if (this.dataset.type === 'rate' || this.dataset.type === 'pct') {
+        v = v / 100;
+      }
+      this.dataset.raw = v;
+      _reApplyFmt(this);
+      reCalcTaxes();
+    });
   });
 
   // Show last refresh timestamp if available
