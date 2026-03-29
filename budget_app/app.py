@@ -991,6 +991,17 @@ def generate_script():
         if (data.success) console.log('  Successes:', data.success);
         if (data.warnings && data.warnings.length) console.log('  Warnings:', data.warnings);
         if (data.failed && data.failed.length) console.log('  Failures:', data.failed);
+        // Show a Done banner with link to FA Dashboard
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;background:#065f46;color:white;padding:16px 24px;border-radius:12px;font-family:system-ui;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column;gap:10px;max-width:360px;';
+        banner.innerHTML = '<div style="font-weight:700;font-size:16px;">✓ Budget data updated</div>'
+          + '<div style="font-size:13px;opacity:0.9;">' + _uploadedFiles.length + ' files processed'
+          + (data.warnings && data.warnings.length ? ' · ' + data.warnings.length + ' warning(s)' : '')
+          + '</div>'
+          + '<a href="' + _BUDGET_APP + '/dashboard" target="_blank" style="display:inline-block;background:white;color:#065f46;padding:8px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;text-align:center;margin-top:4px;">Open FA Dashboard →</a>';
+        document.body.appendChild(banner);
+        // Auto-dismiss after 30s
+        setTimeout(() => banner.remove(), 30000);
       }} else {{
         console.error('✗ Server processing failed:', data.error || resp.status);
       }}

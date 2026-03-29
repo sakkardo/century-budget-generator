@@ -2307,6 +2307,7 @@ DASHBOARD_TEMPLATE = r"""
           <tr>
             <th>Building</th>
             <th>Entity</th>
+            <th>Last Updated</th>
             <th>Data</th>
             <th>PM Review</th>
             <th>Status</th>
@@ -2424,9 +2425,18 @@ function renderBudgets(budgets) {
       `;
     }
 
+    // Format updated_at timestamp
+    let updatedStr = '—';
+    const ts = b.updated_at || b.created_at;
+    if (ts) {
+      const d = new Date(ts);
+      updatedStr = d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+    }
+
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
+      <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${updatedStr}</td>
       <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}<br>${maintIcon}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
@@ -4583,28 +4593,25 @@ async function faToggleUnpaidDrill(glCode, el) {
   detailRow.className = 'fa-unpaid-detail';
   detailRow.dataset.gl = glCode;
   let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
-  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">';
-  html += '<span style="font-weight:600; font-size:13px; color:#92400e;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span>';
-  html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
-  html += '</div>';
-
   html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
   html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:5px 10px;">Vendor</td><td style="padding:5px 10px;">Invoice #</td><td style="padding:5px 10px;">Date</td><td style="padding:5px 10px;">Description</td><td style="padding:5px 10px; text-align:right;">Current Owed</td><td style="padding:5px 10px; text-align:right;">0-30</td><td style="padding:5px 10px; text-align:right;">31-60</td><td style="padding:5px 10px; text-align:right;">61-90</td><td style="padding:5px 10px; text-align:right;">Over 90</td></tr></thead>';
+  html += '<td style="padding:6px 10px;">Vendor</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px; text-align:right;">Amount</td></tr></thead>';
 
   glGroup.invoices.forEach(inv => {
-    html += '<tr style="border-top:1px solid var(--gray-200);">';
+    html += '<tr style="border-top:1px solid var(--gray-100);">';
     html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
     html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="padding:5px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:5px 10px; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">' + fmt(inv.current_owed) + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_0_30 ? fmt(inv.aging_0_30) : '—') + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_31_60 ? fmt(inv.aging_31_60) : '—') + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500);">' + (inv.aging_61_90 ? fmt(inv.aging_61_90) : '—') + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; color:' + (inv.aging_over_90 > 0 ? '#dc2626' : 'var(--gray-500)') + ';">' + (inv.aging_over_90 ? fmt(inv.aging_over_90) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td style="padding:5px 10px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
     html += '</tr>';
   });
+
+  // Total row — makes the sum obvious
+  html += '<tr style="border-top:2px solid #f59e0b; background:#fef3c7;">';
+  html += '<td colspan="4" style="padding:6px 10px; font-weight:700; color:#92400e; font-size:12px;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' → ' + glCode + ' ' + (glGroup.gl_name || '') + '</td>';
+  html += '<td style="padding:6px 10px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; color:#92400e; font-size:13px;">' + fmt(glGroup.total || 0) + '</td>';
+  html += '</tr>';
 
   html += '</table></div></td>';
   detailRow.innerHTML = html;
@@ -5834,27 +5841,25 @@ async function pmToggleUnpaidDrill(glCode, linkEl) {
     const detailRow = document.createElement('tr');
     detailRow.className = 'pm-unpaid-detail';
     let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
-    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">';
-    html += '<span style="font-weight:600; font-size:13px; color:#92400e;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span>';
-    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
-    html += '</div>';
-
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
     html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:5px 10px;">Vendor</td><td style="padding:5px 10px;">Invoice #</td><td style="padding:5px 10px;">Date</td><td style="padding:5px 10px;">Description</td><td style="padding:5px 10px; text-align:right;">Current Owed</td><td style="padding:5px 10px; text-align:right;">0-30</td><td style="padding:5px 10px; text-align:right;">31-60</td><td style="padding:5px 10px; text-align:right;">Over 90</td></tr></thead>';
+    html += '<td style="padding:6px 10px;">Vendor</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px; text-align:right;">Amount</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
-        html += '<tr style="border-top:1px solid var(--gray-200);">';
+        html += '<tr style="border-top:1px solid var(--gray-100);">';
         html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
         html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="padding:5px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:5px 10px; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-        html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600;">' + fmt(inv.current_owed) + '</td>';
-        html += '<td style="padding:5px 10px; text-align:right; color:var(--gray-500);">' + (inv.aging_0_30 ? fmt(inv.aging_0_30) : '—') + '</td>';
-        html += '<td style="padding:5px 10px; text-align:right; color:var(--gray-500);">' + (inv.aging_31_60 ? fmt(inv.aging_31_60) : '—') + '</td>';
-        html += '<td style="padding:5px 10px; text-align:right; color:' + (inv.aging_over_90 > 0 ? '#dc2626' : 'var(--gray-500)') + ';">' + (inv.aging_over_90 ? fmt(inv.aging_over_90) : '—') + '</td>';
+        html += '<td style="padding:5px 10px; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="padding:5px 10px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+        html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
         html += '</tr>';
     });
+
+    // Total row
+    html += '<tr style="border-top:2px solid #f59e0b; background:#fef3c7;">';
+    html += '<td colspan="4" style="padding:6px 10px; font-weight:700; color:#92400e; font-size:12px;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' → ' + glCode + ' ' + (glGroup.gl_name || '') + '</td>';
+    html += '<td style="padding:6px 10px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; color:#92400e; font-size:13px;">' + fmt(glGroup.total || 0) + '</td>';
+    html += '</tr>';
 
     html += '</table></div></td>';
     detailRow.innerHTML = html;
