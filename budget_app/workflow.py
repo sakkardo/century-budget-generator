@@ -4216,9 +4216,9 @@ function renderRETaxesTab(contentDiv) {
         <!-- 1st Half -->
         <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
         <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Assessed Valuation (Actual)</td>
+          <td style="${labelStyle}">Transitional Assessed Value</td>
           <td style="padding:6px 16px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-          <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
+          <td colspan="2" style="${noteStyle}">Trans AV from DOF Final Assessment Roll (not Market AV)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
           <td style="${labelStyle}">Tax Rate (Actual) <span style="display:block; font-size:10px; color:var(--orange,#d97706); margin-top:2px;">⚠ Manual — not from DOF API</span></td>

@@ -31,7 +31,9 @@ PROPERTY_TAX_CONFIG = {
         "property_type": "coop",
         "units": 315,
         # Known DOF values (updated 2026-03)
-        "assessed_value": 43138800,
+        # Transitional AV (from 2025-2026 Final Assessment Roll)
+        # Market AV is 43,138,800 but Trans AV is what taxes are based on
+        "assessed_value": 39979620,
         "annual_tax": 4155283,
         "tax_rate": 0.096324,
     },
@@ -144,8 +146,13 @@ def fetch_dof_data(entity_code: str) -> dict | None:
             data = resp.json()
             if data:
                 record = data[0]
-                assessed_value = float(record.get("curacttot", 0))
+                # Use transitional AV (curtrntot) for budgeting — this is
+                # what the actual tax bill is based on, not the full actual AV
+                transitional_av = float(record.get("curtrntot", 0))
+                actual_av = float(record.get("curacttot", 0))
                 market_value = float(record.get("curmkttot", 0))
+                # Prefer transitional; fall back to actual if transitional is 0
+                assessed_value = transitional_av if transitional_av > 0 else actual_av
                 # Tax rate not in this dataset — use config value
                 tax_rate = cfg.get("tax_rate", 0)
                 annual_tax = assessed_value * tax_rate if tax_rate else cfg.get("annual_tax", 0)
@@ -153,6 +160,8 @@ def fetch_dof_data(entity_code: str) -> dict | None:
                     "entity_code": entity_code,
                     "bbl": cfg["bbl"],
                     "assessed_value": assessed_value,
+                    "actual_av": actual_av,
+                    "transitional_av": transitional_av,
                     "tax_rate": tax_rate,
                     "annual_tax": round(annual_tax, 2),
                     "market_value": market_value,
