@@ -4195,7 +4195,7 @@ function renderRETaxesTab(contentDiv) {
         <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
           ↻ Refresh from NYC DOF
         </button>
-        <a href="https://a836-pts-access.nyc.gov/care/search/commonsearch.aspx?mode=persprop" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; padding:7px 14px; background:var(--gray-50,#f9fafb); color:var(--gray-600,#4b5563); border:1.5px solid var(--gray-300,#d1d5db); border-radius:6px; text-decoration:none; font-size:12px; font-weight:600; transition:background 0.15s, border-color 0.15s;" onmouseover="this.style.background='#fff'; this.style.borderColor='var(--blue,#1a56db)'; this.style.color='var(--blue,#1a56db)';" onmouseout="this.style.background='var(--gray-50,#f9fafb)'; this.style.borderColor='var(--gray-300,#d1d5db)'; this.style.color='var(--gray-600,#4b5563)';">
+        <a id="dofVerifyLink" href="#" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; padding:7px 14px; background:var(--gray-50,#f9fafb); color:var(--gray-600,#4b5563); border:1.5px solid var(--gray-300,#d1d5db); border-radius:6px; text-decoration:none; font-size:12px; font-weight:600; transition:background 0.15s, border-color 0.15s;" onmouseover="this.style.background='#fff'; this.style.borderColor='var(--blue,#1a56db)'; this.style.color='var(--blue,#1a56db)';" onmouseout="this.style.background='var(--gray-50,#f9fafb)'; this.style.borderColor='var(--gray-300,#d1d5db)'; this.style.color='var(--gray-600,#4b5563)';">
           <span style="font-size:14px;">↗</span> Verify on DOF Site
         </a>
       </div>
@@ -4321,6 +4321,18 @@ function renderRETaxesTab(contentDiv) {
   </div>`;
 
   contentDiv.innerHTML = html;
+
+  // Build DOF verify link with auto-populated borough/block/lot
+  try {
+    const bbl = (d.bbl || '').split('-');
+    if (bbl.length === 3) {
+      const dofLink = document.getElementById('dofVerifyLink');
+      if (dofLink) {
+        dofLink.href = 'https://a836-pts-access.nyc.gov/care/search/commonsearch.aspx?mode=persprop&boro=' +
+          encodeURIComponent(bbl[0]) + '&block=' + encodeURIComponent(bbl[1]) + '&lot=' + encodeURIComponent(bbl[2]);
+      }
+    }
+  } catch(e) { console.warn('Could not build DOF verify link:', e); }
 
   // Format input displays on load
   _reFmtDollar('re_av');
