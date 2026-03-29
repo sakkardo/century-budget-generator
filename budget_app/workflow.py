@@ -4410,9 +4410,9 @@ function reCalcTaxes() {
 
 // Save RE Taxes overrides to server
 async function saveRETaxes() {
+  // Don't save assessed_value or tax_rate as overrides — those come from
+  // config/DOF (Trans AV). Only save user-adjustable fields.
   const overrides = {
-    assessed_value: _reVal('re_av'),
-    tax_rate: _reVal('re_rate'),
     transitional_av_increase: _reVal('re_trans'),
     est_tax_rate: _reVal('re_est_rate'),
     veteran_growth: _reVal('re_ex_veteran_growth'),
