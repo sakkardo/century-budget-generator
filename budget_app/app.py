@@ -640,12 +640,17 @@ def auto_process():
             file_path = tmp / filename
             file_path.write_bytes(finfo["data"])
 
+            # Detect Open AP first (handles .xls files that openpyxl can't read)
             try:
                 if detect_open_ap_file(str(file_path)):
                     logger.info(f"Auto-upload detection for {filename}: Open AP (Aging) report")
                     open_ap_files.append((file_path, filename))
                     continue
+            except Exception:
+                pass
 
+            # Detect Expense Distribution vs YSL via Row 1
+            try:
                 from openpyxl import load_workbook as _lwb
                 _wb_check = _lwb(str(file_path), data_only=True)
                 _ws_check = _wb_check.active
