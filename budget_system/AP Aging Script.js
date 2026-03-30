@@ -1,33 +1,21 @@
 /**
- * AP Aging (Open AP) Batch Downloader v2 — Full FormData
- * Runs as part of the combined Yardi script (or standalone in console).
+ * AP Aging (Open AP) Batch Downloader v3 — Iframe Postback
  *
- * Fetches APAnalytics.aspx, parses the full form into a virtual DOM,
- * builds FormData from it (capturing ALL inputs/selects/textareas), and
- * POSTs back. This fixes the old approach which only sent hidden fields
- * and caused ASP.NET to ignore ReportType changes.
- *
- * Entities are processed sequentially.
+ * Works from ANY Yardi page. Loads APAnalytics in a hidden iframe,
+ * uses iframe postbacks for ReportType and Property changes, then
+ * fetch with FormData from the iframe for Excel export.
  *
  * BEFORE RUNNING: Edit the settings below
  */
 (async function() {
   'use strict';
 
-  // ╔══════════════════════════════════════════════════╗
-  // ║  EDIT THESE BEFORE EACH RUN                      ║
-  // ╠══════════════════════════════════════════════════╣
-  // ║                                                  ║
   const PERIOD_TO = '03/2026';
-  // ║                                                  ║
   const ENTITIES = [148, 204, 206, 805];
-  // ║                                                  ║
-  // ╚══════════════════════════════════════════════════╝
 
   const BASE = '/03578cms/Pages';
   const PAGE_URL = `${BASE}/APAnalytics.aspx?sMenuSet=iData`;
 
-  // Today's date for Age As Of
   const today = new Date();
   const AGE_AS_OF = `${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}/${today.getFullYear()}`;
 
@@ -37,194 +25,128 @@
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`AP Aging (Open AP) Batch Download v2`);
+  log(`AP Aging Batch Download v3`);
   log(`${ENTITIES.length} buildings, aging as of ${AGE_AS_OF}`);
   log('='.repeat(50));
 
-  // ── Core: parse HTML into a virtual document ───────────────────────────
-  function parseDoc(html) {
-    return new DOMParser().parseFromString(html, 'text/html');
+  // ── Load APAnalytics in a working iframe ──────────────────────────────────
+  log('Loading AP Analytics page in iframe...');
+  const workFrame = document.createElement('iframe');
+  workFrame.name = '_apAgingWork';
+  workFrame.style.display = 'none';
+  workFrame.src = PAGE_URL;
+  document.body.appendChild(workFrame);
+  await new Promise(r => { workFrame.onload = r; });
+  await sleep(1000);
+
+  const wDoc = () => workFrame.contentDocument;
+  const wWin = () => workFrame.contentWindow;
+
+  if (!wDoc()?.querySelector('select[name*="ReportType"]')) {
+    document.body.removeChild(workFrame);
+    throw new Error('Failed to load APAnalytics in iframe (session expired?)');
+  }
+  log('AP Analytics loaded.');
+
+  // ── Helper: postback inside the work iframe ───────────────────────────────
+  async function doPostback(eventTarget) {
+    wWin().__doPostBack(eventTarget, '');
+    await new Promise(r => { workFrame.onload = r; });
+    await sleep(500);
   }
 
-  // ── Core: build full FormData from a parsed document's form ────────────
-  // This captures hidden fields, selects, text inputs, checkboxes — everything.
-  function buildFormData(doc, overrides) {
-    const form = doc.querySelector('form');
-    if (!form) throw new Error('No form found in page');
-
-    const fd = new URLSearchParams();
-
-    // Hidden inputs
-    form.querySelectorAll('input[type="hidden"]').forEach(el => {
-      if (el.name) fd.set(el.name, el.value || '');
-    });
-
-    // Text/password inputs
-    form.querySelectorAll('input[type="text"], input[type="password"]').forEach(el => {
-      if (el.name) fd.set(el.name, el.value || '');
-    });
-
-    // Select elements
-    form.querySelectorAll('select').forEach(el => {
-      if (el.name) fd.set(el.name, el.value || '');
-    });
-
-    // Checkboxes (only send if checked)
-    form.querySelectorAll('input[type="checkbox"]').forEach(el => {
-      if (el.name && el.checked) fd.set(el.name, el.value || 'on');
-    });
-
-    // Radio buttons (only send if checked)
-    form.querySelectorAll('input[type="radio"]').forEach(el => {
-      if (el.name && el.checked) fd.set(el.name, el.value || '');
-    });
-
-    // Textareas
-    form.querySelectorAll('textarea').forEach(el => {
-      if (el.name) fd.set(el.name, el.textContent || '');
-    });
-
-    // Apply overrides
-    if (overrides) {
-      for (const [key, val] of Object.entries(overrides)) {
-        fd.set(key, val);
-      }
-    }
-
-    return fd;
+  // ── Step 1: Set ReportType to 3 (Aging) ───────────────────────────────────
+  const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
+  if (rtSelect && rtSelect.value !== '3') {
+    log('Setting ReportType to Aging...');
+    rtSelect.value = '3';
+    await doPostback('ReportType:DropDownList');
+    log('ReportType set to 3: ' + wDoc().querySelector('select[name*="ReportType"]')?.value);
+  } else {
+    log('ReportType already 3.');
   }
 
-  // ── Core: POST a form and return the response ──────────────────────────
-  async function postPage(doc, eventTarget, overrides) {
-    const allOverrides = {
-      '__EVENTTARGET': eventTarget,
-      '__EVENTARGUMENT': '',
-      ...overrides,
-    };
-    const fd = buildFormData(doc, allOverrides);
-
-    return await fetch(PAGE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: fd.toString(),
-    });
-  }
-
-  // ── Core: POST and parse the HTML response into a new virtual doc ──────
-  async function postAndParse(doc, eventTarget, overrides) {
-    const resp = await postPage(doc, eventTarget, overrides);
-    const html = await resp.text();
-    return parseDoc(html);
-  }
-
-  // ── Core: POST for Excel export and return blob ────────────────────────
-  async function postForExcel(doc, overrides) {
-    const resp = await postPage(doc, 'Excel', overrides);
-
-    const contentType = resp.headers.get('content-type') || '';
-    const contentDisp = resp.headers.get('content-disposition') || '';
-
-    // Direct file response
-    if (contentType.includes('spreadsheet') || contentType.includes('excel') ||
-        contentType.includes('octet-stream') || contentDisp.includes('attachment')) {
-      return await resp.blob();
-    }
-
-    // HTML response — check for shuttle or monitor fallback
-    const respHtml = await resp.text();
-
-    const dlMatch = respHtml.match(/sFileName=([^'"&\s]+)/);
-    if (dlMatch) {
-      const dlResp = await fetch(`${BASE}/SysShuttleDisplayHandler.ashx?sFileName=${dlMatch[1]}`);
-      return await dlResp.blob();
-    }
-
-    const recMatch = respHtml.match(/name="Records"\s+value="([^"]+)"/);
-    if (recMatch) {
-      const recordId = decodeURIComponent(recMatch[1]).split(',')[0].trim();
-      log(`  Queued (${recordId}), polling monitor...`);
-      for (let p = 0; p < 20; p++) {
-        await sleep(3000);
-        const monResp = await fetch(
-          `${BASE}/SysConductorReportMonitor.aspx?Records=${recordId}&FilterInfo=&sDir=0&bMonitor=0`
-        );
-        const monHtml = await monResp.text();
-        const monDl = monHtml.match(/sFileName=([^'"&\s]+)/);
-        if (monDl) {
-          const dlResp = await fetch(`${BASE}/SysShuttleDisplayHandler.ashx?sFileName=${monDl[1]}`);
-          return await dlResp.blob();
-        }
-      }
-      throw new Error('monitor_timeout');
-    }
-
-    throw new Error('unexpected_response (got HTML instead of file)');
-  }
-
-  // ── Step 1: GET the APAnalytics page ───────────────────────────────────
-
-  log('Fetching AP Analytics page...');
-  const getResp = await fetch(PAGE_URL);
-  let doc = parseDoc(await getResp.text());
-
-  const rtSelect = doc.querySelector('select[name*="ReportType"]');
-  if (!rtSelect) throw new Error('ReportType dropdown not found (session expired?)');
-  log('Page loaded.');
-
-  // ── Step 2: Set ReportType to Aging (value=3) ──────────────────────────
-
-  log('Setting ReportType to Aging...');
-  rtSelect.value = '3';
-  doc = await postAndParse(doc, 'ReportType:DropDownList', {
-    'ReportType:DropDownList': '3',
-  });
-  log('ReportType set.');
-
-  // ── Step 3: Process each entity ────────────────────────────────────────
-
+  // ── Step 2: Process each entity ───────────────────────────────────────────
   for (const entity of ENTITIES) {
     try {
-      log(`\n  ${entity}: Validating property...`);
+      log(`\n  ${entity}: Setting property and aging fields...`);
 
-      // POST to validate property lookup
-      doc = await postAndParse(doc, 'PropertyLookup:LookupCode', {
-        'ReportType:DropDownList': '3',
-        'PropertyLookup:LookupCode': String(entity),
-        'PropertyLookup:LookupDesc': '',
-        'APAccountLookup:LookupCode': '2210-0000',
-        'PeriodTo:TextBox': PERIOD_TO,
-        'AgeAsOf:TextBox': AGE_AS_OF,
-        'ShowDetail:CheckBox': 'on',
-        'ShowGrid:CheckBox': 'on',
-      });
+      const setFields = () => {
+        const d = wDoc();
+        const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+        if (p) p.value = String(entity);
+        const ap = d.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+        if (ap) ap.value = '2210-0000';
+        const pt = d.querySelector('input[name*="PeriodTo"]');
+        if (pt) pt.value = PERIOD_TO;
+        const age = d.querySelector('input[name*="AgeAsOf"]');
+        if (age) age.value = AGE_AS_OF;
+        const det = d.querySelector('input[name*="ShowDetail"]');
+        if (det) det.checked = true;
+        const grd = d.querySelector('input[name*="ShowGrid"]');
+        if (grd) grd.checked = true;
+      };
 
+      setFields();
+      await doPostback('PropertyLookup:LookupCode');
       log(`  ${entity}: Property validated, requesting Excel...`);
 
-      // POST to trigger Excel export
-      const blob = await postForExcel(doc, {
-        'ReportType:DropDownList': '3',
-        'PropertyLookup:LookupCode': String(entity),
-        'PropertyLookup:LookupDesc': '',
-        'APAccountLookup:LookupCode': '2210-0000',
-        'PeriodTo:TextBox': PERIOD_TO,
-        'AgeAsOf:TextBox': AGE_AS_OF,
-        'ShowDetail:CheckBox': 'on',
-        'ShowGrid:CheckBox': 'on',
-      });
+      setFields();
 
-      triggerDownload(blob, entity);
+      // Excel via fetch with FormData from iframe's form
+      const form = wDoc().querySelector('form');
+      const fd = new FormData(form);
+      fd.set('__EVENTTARGET', 'Excel');
+      fd.set('__EVENTARGUMENT', '');
+      if (!fd.get('__VIEWSTATE') && fd.get('__VIEWSTATE__')) fd.delete('__VIEWSTATE');
 
-      const sizeKB = (blob.size / 1024).toFixed(0);
-      log(`  ${entity}: OK — ${sizeKB} KB`);
-      results.success.push({ entity, ok: true, size: blob.size });
+      const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
+      const ct = resp.headers.get('content-type') || '';
+      const cd = resp.headers.get('content-disposition') || '';
 
+      let blob = null;
+      if (ct.includes('spreadsheet') || ct.includes('excel') || ct.includes('octet-stream') || cd.includes('attachment')) {
+        blob = await resp.blob();
+      } else {
+        const html = await resp.text();
+        const dlMatch = html.match(/sFileName=([^'"&\s]+)/);
+        if (dlMatch) {
+          blob = await (await fetch(`${BASE}/SysShuttleDisplayHandler.ashx?sFileName=${dlMatch[1]}`)).blob();
+        } else {
+          const recMatch = html.match(/name="Records"\s+value="([^"]+)"/);
+          if (recMatch) {
+            const recordId = decodeURIComponent(recMatch[1]).split(',')[0].trim();
+            log(`  ${entity}: Queued (${recordId}), polling...`);
+            for (let p = 0; p < 20; p++) {
+              await sleep(3000);
+              const monResp = await fetch(`${BASE}/SysConductorReportMonitor.aspx?Records=${recordId}&FilterInfo=&sDir=0&bMonitor=0`);
+              const monHtml = await monResp.text();
+              const monDl = monHtml.match(/sFileName=([^'"&\s]+)/);
+              if (monDl) {
+                blob = await (await fetch(`${BASE}/SysShuttleDisplayHandler.ashx?sFileName=${monDl[1]}`)).blob();
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (blob && blob.size > 0) {
+        triggerDownload(blob, entity);
+        log(`  ✓ ${entity} — ${(blob.size / 1024).toFixed(0)} KB`);
+        results.success.push({ entity, ok: true, size: blob.size });
+      } else {
+        log(`  ✗ ${entity} — no file received`);
+        results.failed.push({ entity, ok: false, reason: 'no_file' });
+      }
     } catch (ex) {
-      log(`  ${entity}: FAILED — ${ex.message}`);
+      log(`  ✗ ${entity} — ${ex.message}`);
       results.failed.push({ entity, ok: false, reason: ex.message });
     }
   }
 
-  // ── triggerDownload ────────────────────────────────────────────────────
+  // Cleanup
+  document.body.removeChild(workFrame);
 
   function triggerDownload(blob, entity) {
     const a = document.createElement('a');
@@ -236,15 +158,10 @@
     URL.revokeObjectURL(a.href);
   }
 
-  // ── Summary ────────────────────────────────────────────────────────────
-
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   log('\n' + '='.repeat(50));
   log(`DONE in ${elapsed}s: ${results.success.length} OK, ${results.failed.length} failed`);
-  if (results.failed.length > 0) {
-    log('Failed entities:');
-    results.failed.forEach(r => log(`  ${r.entity}: ${r.reason}`));
-  }
+  if (results.failed.length) results.failed.forEach(r => log(`  ${r.entity}: ${r.reason}`));
   log('='.repeat(50));
   return results;
 })();
