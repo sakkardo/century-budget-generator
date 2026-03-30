@@ -794,15 +794,6 @@ def create_workflow_blueprint(db):
 
     bp = Blueprint("workflow", __name__)
 
-    @bp.before_request
-    def _ensure_clean_session():
-        """Ensure db session is clean at the start of every request.
-        Prevents poisoned transactions from connection pooling."""
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-
     # ─── Admin Routes ────────────────────────────────────────────────────────
 
     @bp.route("/admin", methods=["GET"])

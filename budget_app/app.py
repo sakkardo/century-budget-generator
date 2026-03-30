@@ -95,6 +95,15 @@ except ImportError:
 fr_bp, fr_models, fr_helpers = create_file_repository_blueprint(db, workflow_models)
 app.register_blueprint(fr_bp)
 
+# Ensure every request starts with a clean DB session.
+# Prevents poisoned PostgreSQL transactions from leaking via connection pool.
+@app.before_request
+def _ensure_clean_db_session():
+    try:
+        db.session.rollback()
+    except Exception:
+        pass
+
 # Resolve all model relationships after ALL blueprints are registered
 try:
     db.configure_mappers()
