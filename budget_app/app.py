@@ -213,11 +213,12 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
 # Console JS script templates — entities/email/period get injected
-CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
-EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
-MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8")
+# Normalize CRLF→LF so string replace patches work on all platforms
+CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
+EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
+MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
 try:
-    AP_AGING_SCRIPT = (BUDGET_SYSTEM / "AP Aging Script.js").read_text(encoding="utf-8")
+    AP_AGING_SCRIPT = (BUDGET_SYSTEM / "AP Aging Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
 except FileNotFoundError:
     AP_AGING_SCRIPT = None
 
