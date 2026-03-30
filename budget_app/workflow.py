@@ -212,14 +212,14 @@ def create_workflow_blueprint(db):
                 "status": self.status,
                 "fa_notes": self.fa_notes,
                 "initiated_by": self.initiated_by,
-                "initiated_at": self.initiated_at.isoformat() if self.initiated_at else None,
+                "initiated_at": (self.initiated_at.isoformat() + "Z") if self.initiated_at else None,
                 "presentation_token": self.presentation_token,
                 "approved_by": self.approved_by,
-                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+                "approved_at": (self.approved_at.isoformat() + "Z") if self.approved_at else None,
                 "increase_pct": self.increase_pct,
                 "effective_date": self.effective_date,
-                "created_at": self.created_at.isoformat() if self.created_at else None,
-                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+                "created_at": (self.created_at.isoformat() + "Z") if self.created_at else None,
+                "updated_at": (self.updated_at.isoformat() + "Z") if self.updated_at else None,
                 "ar_notes": self.ar_notes or ""
             }
 
@@ -292,7 +292,7 @@ def create_workflow_blueprint(db):
                 "proposed_formula": self.proposed_formula,
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
-                "updated_at": self.updated_at.isoformat() if self.updated_at else None
+                "updated_at": (self.updated_at.isoformat() + "Z") if self.updated_at else None
             }
 
 
@@ -1086,6 +1086,24 @@ def create_workflow_blueprint(db):
         db.session.commit()
 
         return jsonify(budget.to_dict())
+
+
+    @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
+    def delete_budget(budget_id):
+        """Delete a draft budget and all its lines/revisions/data sources."""
+        budget = Budget.query.get(budget_id)
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        if budget.status != "draft":
+            return jsonify({"error": f"Cannot delete budget in '{budget.status}' status. Only draft budgets can be deleted."}), 400
+
+        entity = budget.entity_code
+        ver = budget.version or 1
+        db.session.delete(budget)
+        db.session.commit()
+        logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
+        return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": budget_id})
 
 
     @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
@@ -2490,6 +2508,7 @@ function renderBudgets(budgets) {
     let actionHtml = '';
     if (b.status === 'draft') {
       actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
+      actionHtml += `<button class="btn-action" onclick="deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})" style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this draft budget">Del</button>`;
     } else if (b.status === 'fa_review') {
       actionHtml = `
         <button class="btn-action btn-green" onclick="approveStatus('${b.entity_code}')">Approve</button>
@@ -2562,6 +2581,23 @@ async function returnTopm(entity) {
     await loadBudgets();
   } catch (err) {
     showToast('Failed to return budget', 'error');
+    console.error(err);
+  }
+}
+
+async function deleteBudget(budgetId, name, version) {
+  if (!confirm(`Delete draft budget for ${name} (v${version})? This cannot be undone.`)) return;
+  try {
+    const resp = await fetch(`/api/budgets/${budgetId}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (resp.ok) {
+      showToast(data.message, 'success');
+      await loadBudgets();
+    } else {
+      showToast(data.error || 'Failed to delete', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to delete budget', 'error');
     console.error(err);
   }
 }
