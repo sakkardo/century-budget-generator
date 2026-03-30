@@ -62,42 +62,42 @@
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      // Step 2a: First POST — set Report Type to Aging and property filter
-      const lookupPost = {
+      // Step 2a: POST to change ReportType to Aging (value=3)
+      // Must be its own postback — Yardi ignores ReportType if EVENTTARGET is something else
+      const rtPost = {
         ...hidden,
+        '__EVENTTARGET': 'ReportType:DropDownList',
+        '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '3',
+      };
+      const rtBody = Object.entries(rtPost).map(([k, v]) =>
+        encodeURIComponent(k) + '=' + encodeURIComponent(v)
+      ).join('&');
+      const rtResp = await fetch(PAGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: rtBody,
+      });
+      const rtHtml = await rtResp.text();
+      const hidden1b = {};
+      new DOMParser().parseFromString(rtHtml, 'text/html')
+        .querySelectorAll('input[type="hidden"]').forEach(el => {
+          if (el.name) hidden1b[el.name] = el.value || '';
+        });
+
+      log(`  ${entity}: Report type set to Aging`);
+
+      // Step 2b: POST to set property filter and validate lookup
+      const lookupPost = {
+        ...hidden1b,
         '__EVENTTARGET': 'PropertyLookup:LookupCode',
         '__EVENTARGUMENT': '',
-        'ReportType:DropDownList': '3',  // 3 = Aging
+        'ReportType:DropDownList': '3',
         'PropertyLookup:LookupCode': String(entity),
         'PropertyLookup:LookupDesc': '',
         'APAccountLookup:LookupCode': '2210-0000',
-        'PostCodeLookup:LookupCode': '',
-        'ControlNoFrom:TextBox': '',
-        'ControlNoTo:TextBox': '',
-        'BatchNoFrom:TextBox': '',
-        'BatchNoTo:TextBox': '',
-        'PeriodFrom:TextBox': '',
         'PeriodTo:TextBox': PERIOD_TO,
         'AgeAsOf:TextBox': AGE_AS_OF,
-        'DateFrom:TextBox': '',
-        'DateTo:TextBox': '',
-        'DueDateFromText:TextBox': '',
-        'DueDateText:TextBox': '',
-        'CheckNoFrom:TextBox': '',
-        'CheckNoTo:TextBox': '',
-        'CheckPeriodFrom:TextBox': '',
-        'CheckPeriodTo:TextBox': '',
-        'BankLookup:LookupCode': '',
-        'CompanyLookup:LookupCode': '',
-        'VendorLookup:LookupCode': '',
-        'AccountLookup:LookupCode': '',
-        'StateCountryText:TextBox': '',
-        'CityText:TextBox': '',
-        'ZipText:TextBox': '',
-        'WCExpDate:TextBox': '',
-        'LiabInsDate:TextBox': '',
-        'ReferenceText:TextBox': '',
-        'NotesText:TextBox': '',
         'ShowDetail:CheckBox': 'on',
         'ShowGrid:CheckBox': 'on',
       };
@@ -112,52 +112,26 @@
         body: lookupBody,
       });
 
-      // Parse the response to get updated viewstate after lookup validation
       const lookupHtml = await lookupResp.text();
-      const lookupDoc = new DOMParser().parseFromString(lookupHtml, 'text/html');
       const hidden2 = {};
-      lookupDoc.querySelectorAll('input[type="hidden"]').forEach(el => {
-        if (el.name) hidden2[el.name] = el.value || '';
-      });
+      new DOMParser().parseFromString(lookupHtml, 'text/html')
+        .querySelectorAll('input[type="hidden"]').forEach(el => {
+          if (el.name) hidden2[el.name] = el.value || '';
+        });
 
       log(`  ${entity}: Property lookup validated, requesting Excel...`);
 
-      // Step 2b: Second POST to actually get the Excel export
+      // Step 2c: POST to trigger Excel export
       const post = {
         ...hidden2,
         '__EVENTTARGET': 'Excel',
         '__EVENTARGUMENT': '',
-        'ReportType:DropDownList': '3',  // 3 = Aging
+        'ReportType:DropDownList': '3',
         'PropertyLookup:LookupCode': String(entity),
         'PropertyLookup:LookupDesc': '',
         'APAccountLookup:LookupCode': '2210-0000',
-        'PostCodeLookup:LookupCode': '',
-        'ControlNoFrom:TextBox': '',
-        'ControlNoTo:TextBox': '',
-        'BatchNoFrom:TextBox': '',
-        'BatchNoTo:TextBox': '',
-        'PeriodFrom:TextBox': '',
         'PeriodTo:TextBox': PERIOD_TO,
         'AgeAsOf:TextBox': AGE_AS_OF,
-        'DateFrom:TextBox': '',
-        'DateTo:TextBox': '',
-        'DueDateFromText:TextBox': '',
-        'DueDateText:TextBox': '',
-        'CheckNoFrom:TextBox': '',
-        'CheckNoTo:TextBox': '',
-        'CheckPeriodFrom:TextBox': '',
-        'CheckPeriodTo:TextBox': '',
-        'BankLookup:LookupCode': '',
-        'CompanyLookup:LookupCode': '',
-        'VendorLookup:LookupCode': '',
-        'AccountLookup:LookupCode': '',
-        'StateCountryText:TextBox': '',
-        'CityText:TextBox': '',
-        'ZipText:TextBox': '',
-        'WCExpDate:TextBox': '',
-        'LiabInsDate:TextBox': '',
-        'ReferenceText:TextBox': '',
-        'NotesText:TextBox': '',
         'ShowDetail:CheckBox': 'on',
         'ShowGrid:CheckBox': 'on',
       };
