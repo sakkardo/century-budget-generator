@@ -1063,14 +1063,16 @@ def create_workflow_blueprint(db):
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
+                db.session.rollback()
                 has_expenses = False
             # Check confirmed audit exists
             try:
                 has_audit = db.session.execute(
-                    db.text("SELECT 1 FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
+                    db.text("SELECT 1 FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
+                db.session.rollback()
                 has_audit = False
             # Check maintenance proof exists
             try:
@@ -1079,6 +1081,7 @@ def create_workflow_blueprint(db):
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
+                db.session.rollback()
                 has_maint_proof = False
             d["has_expenses"] = has_expenses
             d["has_audit"] = has_audit
@@ -1205,7 +1208,7 @@ def create_workflow_blueprint(db):
         try:
             import json as _json
             audit_rows = db.session.execute(
-                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
+                db.text("SELECT mapped_data, fiscal_year_end FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
                 {"ec": entity_code}
             ).fetchall()
             if audit_rows:
