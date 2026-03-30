@@ -1,10 +1,12 @@
 /**
- * Expense Distribution (Paid Only) Batch Downloader v3
+ * Expense Distribution (Paid Only) Batch Downloader v4
  * Paste into Chrome Console on any Yardi page (must be logged in)
  *
- * Uses fetch()-based approach for reliability and speed.
- * Runs entities in parallel batches (default 5 at a time) for maximum
- * throughput while avoiding Yardi rate limits.
+ * Downloads from APAnalytics.aspx by:
+ *   1. Changing ReportType dropdown to "Expense Distribution (Paid Only)" (value=2)
+ *   2. Scraping the updated form fields (they change per report type)
+ *   3. Setting Property + Period filters
+ *   4. Clicking Excel export
  *
  * BEFORE RUNNING: Edit the settings below ↓↓↓
  */
@@ -34,165 +36,104 @@
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`Expense Distribution Batch Download`);
+  log(`Expense Distribution Batch Download v4`);
   log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}–${PERIOD_TO}`);
   log(`Parallel batch size: ${BATCH_SIZE}`);
   log('='.repeat(50));
+
+  // ── Helper: scrape all form fields from an HTML response ──────────────────
+  function scrapeForm(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const fields = {};
+    doc.querySelectorAll('input').forEach(el => {
+      if (!el.name) return;
+      if (el.type === 'checkbox') {
+        fields[el.name] = el.checked ? 'on' : '';
+      } else {
+        fields[el.name] = el.value || '';
+      }
+    });
+    doc.querySelectorAll('select').forEach(el => {
+      if (el.name) fields[el.name] = el.value || '';
+    });
+    doc.querySelectorAll('textarea').forEach(el => {
+      if (el.name) fields[el.name] = el.value || '';
+    });
+    return fields;
+  }
+
+  function postEncode(obj) {
+    return Object.entries(obj).map(([k, v]) =>
+      encodeURIComponent(k) + '=' + encodeURIComponent(v)
+    ).join('&');
+  }
 
   // ── Download a single entity ──────────────────────────────────────────────
 
   async function downloadEntity(entity) {
     try {
-      // Step 1: GET fresh viewstate
+      // Step 1: GET the page to get initial form state
       const getResp = await fetch(PAGE_URL);
       const html = await getResp.text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
+      let fields = scrapeForm(html);
 
-      const hidden = {};
-      doc.querySelectorAll('input[type="hidden"]').forEach(el => {
-        if (el.name) hidden[el.name] = el.value || '';
-      });
-
-      if (!hidden['__VIEWSTATE'] && !hidden['__VIEWSTATE__']) {
+      if (!fields['__VIEWSTATE']) {
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      // Step 2a: POST to change ReportType to "Expense Distribution (Paid Only)" (value=2)
-      // ASP.NET WebForms requires the dropdown change as its own postback
-      const rtPost = {
-        ...hidden,
-        '__EVENTTARGET': 'ReportType:DropDownList',
-        '__EVENTARGUMENT': '',
-        'ReportType:DropDownList': '2',
-      };
-      const rtBody = Object.entries(rtPost).map(([k, v]) =>
-        encodeURIComponent(k) + '=' + encodeURIComponent(v)
-      ).join('&');
+      // Step 2: POST to change ReportType to Expense Distribution (Paid Only)
+      fields['__EVENTTARGET'] = 'ReportType:DropDownList';
+      fields['__EVENTARGUMENT'] = '';
+      fields['ReportType:DropDownList'] = '2';
+
       const rtResp = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: rtBody,
+        body: postEncode(fields),
       });
       const rtHtml = await rtResp.text();
-      const rtDoc = new DOMParser().parseFromString(rtHtml, 'text/html');
-      const hidden1b = {};
-      rtDoc.querySelectorAll('input[type="hidden"]').forEach(el => {
-        if (el.name) hidden1b[el.name] = el.value || '';
-      });
+      fields = scrapeForm(rtHtml);
 
-      log(`  ${entity}: Report type set to Expense Distribution (Paid Only)`);
+      log(`  ${entity}: Report type changed to Expense Distribution`);
 
-      // Step 2b: POST to set the property filter (trigger lookup validation)
-      const lookupPost = {
-        ...hidden1b,
-        '__EVENTTARGET': 'PropertyLookup:LookupCode',
-        '__EVENTARGUMENT': '',
-        'ReportType:DropDownList': '2',
-        'PropertyLookup:LookupCode': String(entity),
-        'PropertyLookup:LookupDesc': '',
-        'APAccountLookup:LookupCode': '',
-        'PostCodeLookup:LookupCode': '',
-        'ControlNoFrom:TextBox': '',
-        'ControlNoTo:TextBox': '',
-        'BatchNoFrom:TextBox': '',
-        'BatchNoTo:TextBox': '',
-        'PeriodFrom:TextBox': PERIOD_FROM,
-        'PeriodTo:TextBox': PERIOD_TO,
-        'AgeAsOf:TextBox': '',
-        'DateFrom:TextBox': '',
-        'DateTo:TextBox': '',
-        'DueDateFromText:TextBox': '',
-        'DueDateText:TextBox': '',
-        'CheckNoFrom:TextBox': '',
-        'CheckNoTo:TextBox': '',
-        'CheckPeriodFrom:TextBox': '',
-        'CheckPeriodTo:TextBox': '',
-        'BankLookup:LookupCode': '',
-        'CompanyLookup:LookupCode': '',
-        'VendorLookup:LookupCode': '',
-        'AccountLookup:LookupCode': '',
-        'StateCountryText:TextBox': '',
-        'CityText:TextBox': '',
-        'ZipText:TextBox': '',
-        'WCExpDate:TextBox': '',
-        'LiabInsDate:TextBox': '',
-        'ReferenceText:TextBox': '',
-        'NotesText:TextBox': '',
-        'ShowDetail:CheckBox': 'on',
-        'ShowGrid:CheckBox': 'on',
-      };
-
-      const lookupBody = Object.entries(lookupPost).map(([k, v]) =>
-        encodeURIComponent(k) + '=' + encodeURIComponent(v)
-      ).join('&');
+      // Step 3: POST to set Property + Period and trigger property validation
+      fields['__EVENTTARGET'] = 'PropertyLookup:LookupCode';
+      fields['__EVENTARGUMENT'] = '';
+      fields['ReportType:DropDownList'] = '2';
+      fields['PropertyLookup:LookupCode'] = String(entity);
+      fields['PeriodFrom:TextBox'] = PERIOD_FROM;
+      fields['PeriodTo:TextBox'] = PERIOD_TO;
+      // Ensure detail + grid are checked
+      fields['ShowDetail:CheckBox'] = 'on';
+      fields['ShowGrid:CheckBox'] = 'on';
 
       const lookupResp = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: lookupBody,
+        body: postEncode(fields),
       });
-
-      // Parse the response to get updated viewstate after lookup validation
       const lookupHtml = await lookupResp.text();
-      const lookupDoc = new DOMParser().parseFromString(lookupHtml, 'text/html');
-      const hidden2 = {};
-      lookupDoc.querySelectorAll('input[type="hidden"]').forEach(el => {
-        if (el.name) hidden2[el.name] = el.value || '';
-      });
+      fields = scrapeForm(lookupHtml);
 
-      log(`  ${entity}: Property lookup validated, requesting Excel...`);
+      log(`  ${entity}: Property validated, requesting Excel...`);
 
-      // Step 2c: Third POST to actually get the Excel export with validated property
-      const post = {
-        ...hidden2,
-        '__EVENTTARGET': 'Excel',
-        '__EVENTARGUMENT': '',
-        'ReportType:DropDownList': '2',
-        'PropertyLookup:LookupCode': String(entity),
-        'PropertyLookup:LookupDesc': '',
-        'APAccountLookup:LookupCode': '',
-        'PostCodeLookup:LookupCode': '',
-        'ControlNoFrom:TextBox': '',
-        'ControlNoTo:TextBox': '',
-        'BatchNoFrom:TextBox': '',
-        'BatchNoTo:TextBox': '',
-        'PeriodFrom:TextBox': PERIOD_FROM,
-        'PeriodTo:TextBox': PERIOD_TO,
-        'AgeAsOf:TextBox': '',
-        'DateFrom:TextBox': '',
-        'DateTo:TextBox': '',
-        'DueDateFromText:TextBox': '',
-        'DueDateText:TextBox': '',
-        'CheckNoFrom:TextBox': '',
-        'CheckNoTo:TextBox': '',
-        'CheckPeriodFrom:TextBox': '',
-        'CheckPeriodTo:TextBox': '',
-        'BankLookup:LookupCode': '',
-        'CompanyLookup:LookupCode': '',
-        'VendorLookup:LookupCode': '',
-        'AccountLookup:LookupCode': '',
-        'StateCountryText:TextBox': '',
-        'CityText:TextBox': '',
-        'ZipText:TextBox': '',
-        'WCExpDate:TextBox': '',
-        'LiabInsDate:TextBox': '',
-        'ReferenceText:TextBox': '',
-        'NotesText:TextBox': '',
-        'ShowDetail:CheckBox': 'on',
-        'ShowGrid:CheckBox': 'on',
-      };
-
-      const body = Object.entries(post).map(([k, v]) =>
-        encodeURIComponent(k) + '=' + encodeURIComponent(v)
-      ).join('&');
+      // Step 4: POST to trigger Excel export
+      fields['__EVENTTARGET'] = 'Excel';
+      fields['__EVENTARGUMENT'] = '';
+      fields['ReportType:DropDownList'] = '2';
+      fields['PropertyLookup:LookupCode'] = String(entity);
+      fields['PeriodFrom:TextBox'] = PERIOD_FROM;
+      fields['PeriodTo:TextBox'] = PERIOD_TO;
+      fields['ShowDetail:CheckBox'] = 'on';
+      fields['ShowGrid:CheckBox'] = 'on';
 
       const postResp = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
+        body: postEncode(fields),
       });
 
-      // Step 3: Handle response
+      // Step 5: Handle response
       const contentType = postResp.headers.get('content-type') || '';
       const contentDisp = postResp.headers.get('content-disposition') || '';
 
