@@ -1095,8 +1095,8 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        if budget.status != "draft":
-            return jsonify({"error": f"Cannot delete budget in '{budget.status}' status. Only draft budgets can be deleted."}), 400
+        if budget.status == "approved":
+            return jsonify({"error": "Cannot delete an approved budget."}), 400
 
         entity = budget.entity_code
         ver = budget.version or 1
@@ -2508,12 +2508,14 @@ function renderBudgets(budgets) {
     let actionHtml = '';
     if (b.status === 'draft') {
       actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
-      actionHtml += `<button class="btn-action" onclick="deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})" style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this draft budget">Del</button>`;
     } else if (b.status === 'fa_review') {
       actionHtml = `
         <button class="btn-action btn-green" onclick="approveStatus('${b.entity_code}')">Approve</button>
         <button class="btn-action btn-orange" onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px;">Return</button>
       `;
+    }
+    if (b.status !== 'approved') {
+      actionHtml += `<button class="btn-action" onclick="deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})" style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this budget">Del</button>`;
     }
 
     // Format updated_at timestamp
