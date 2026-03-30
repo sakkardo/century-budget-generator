@@ -57,12 +57,13 @@
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      // Step 2a: First POST to set the property filter (trigger lookup validation)
-      // Yardi's LookupCode controls require a postback to validate the value
+      // Step 2a: First POST to set report type + property filter
+      // ReportType 2 = "Expense Distribution (Paid Only)"
       const lookupPost = {
         ...hidden,
         '__EVENTTARGET': 'PropertyLookup:LookupCode',
         '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
         'PropertyLookup:LookupCode': String(entity),
         'PropertyLookup:LookupDesc': '',
         'APAccountLookup:LookupCode': '',
@@ -122,6 +123,7 @@
         ...hidden2,
         '__EVENTTARGET': 'Excel',
         '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
         'PropertyLookup:LookupCode': String(entity),
         'PropertyLookup:LookupDesc': '',
         'APAccountLookup:LookupCode': '',
