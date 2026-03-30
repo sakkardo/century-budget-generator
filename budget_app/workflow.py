@@ -366,7 +366,7 @@ def create_workflow_blueprint(db):
         notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        budget = db.relationship("Budget")
+        budget = db.relationship("Budget", backref=db.backref("presentation_sessions", cascade="all, delete-orphan"))
 
         def to_dict(self):
             return {
@@ -423,7 +423,7 @@ def create_workflow_blueprint(db):
         yardi_confirmation = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False))
+        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False, cascade="all, delete-orphan"))
 
         def to_dict(self):
             return {
@@ -1090,7 +1090,7 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
     def delete_budget(budget_id):
-        """Delete a draft budget and all its lines/revisions/data sources."""
+        """Delete a non-approved budget and all its related records."""
         budget = Budget.query.get(budget_id)
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
@@ -1100,10 +1100,22 @@ def create_workflow_blueprint(db):
 
         entity = budget.entity_code
         ver = budget.version or 1
-        db.session.delete(budget)
-        db.session.commit()
-        logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
-        return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": budget_id})
+
+        try:
+            # Null out budget_line_id FKs in revisions before cascade deletes the lines
+            BudgetRevision.query.filter_by(budget_id=budget_id).update({"budget_line_id": None})
+            # Delete presentation edits that reference this budget's lines
+            line_ids = [l.id for l in budget.lines]
+            if line_ids:
+                PresentationEdit.query.filter(PresentationEdit.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+            db.session.delete(budget)
+            db.session.commit()
+            logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
+            return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": budget_id})
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to delete budget {budget_id}: {e}")
+            return jsonify({"error": f"Failed to delete: {str(e)}"}), 500
 
 
     @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
