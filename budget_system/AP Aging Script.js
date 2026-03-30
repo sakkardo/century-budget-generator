@@ -1,9 +1,12 @@
 /**
- * AP Aging (Open AP) Batch Downloader v3 — Iframe Postback
+ * AP Aging (Open AP) Batch Downloader v4 â Iframe Postback
  *
  * Works from ANY Yardi page. Loads APAnalytics in a hidden iframe,
  * uses iframe postbacks for ReportType and Property changes, then
  * fetch with FormData from the iframe for Excel export.
+ *
+ * v4: Fix ReportType revert â re-set RT=3 after every property postback
+ *     and verify before Excel export. Also fix file extension to .xlsx.
  *
  * BEFORE RUNNING: Edit the settings below
  */
@@ -25,11 +28,11 @@
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`AP Aging Batch Download v3`);
+  log(`AP Aging Batch Download v4`);
   log(`${ENTITIES.length} buildings, aging as of ${AGE_AS_OF}`);
   log('='.repeat(50));
 
-  // ── Load APAnalytics in a working iframe ──────────────────────────────────
+  // ââ Load APAnalytics in a working iframe ââââââââââââââââââââââââââââââââââ
   log('Loading AP Analytics page in iframe...');
   const workFrame = document.createElement('iframe');
   workFrame.name = '_apAgingWork';
@@ -48,25 +51,42 @@
   }
   log('AP Analytics loaded.');
 
-  // ── Helper: postback inside the work iframe ───────────────────────────────
+  // ââ Helper: postback inside the work iframe âââââââââââââââââââââââââââââââ
   async function doPostback(eventTarget) {
     wWin().__doPostBack(eventTarget, '');
     await new Promise(r => { workFrame.onload = r; });
     await sleep(500);
   }
 
-  // ── Step 1: Set ReportType to 3 (Aging) ───────────────────────────────────
-  const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
-  if (rtSelect && rtSelect.value !== '3') {
-    log('Setting ReportType to Aging...');
-    rtSelect.value = '3';
-    await doPostback('ReportType:DropDownList');
-    log('ReportType set to 3: ' + wDoc().querySelector('select[name*="ReportType"]')?.value);
-  } else {
-    log('ReportType already 3.');
+  // ââ Helper: ensure ReportType is 3 (Aging) âââââââââââââââââââââââââââââââ
+  async function ensureAgingRT() {
+    const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
+    if (!rtSelect) {
+      log('  WARNING: ReportType dropdown not found after postback');
+      return false;
+    }
+    if (rtSelect.value !== '3') {
+      log(`  RT was ${rtSelect.value}, resetting to 3 (Aging)...`);
+      rtSelect.value = '3';
+      await doPostback('ReportType:DropDownList');
+      const newVal = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      if (newVal !== '3') {
+        log(`  ERROR: RT still ${newVal} after postback`);
+        return false;
+      }
+      log(`  RT confirmed: ${newVal}`);
+    }
+    return true;
   }
 
-  // ── Step 2: Process each entity ───────────────────────────────────────────
+  // ââ Step 1: Set ReportType to 3 (Aging) âââââââââââââââââââââââââââââââââââ
+  if (!(await ensureAgingRT())) {
+    document.body.removeChild(workFrame);
+    throw new Error('Could not set ReportType to Aging');
+  }
+  log('ReportType confirmed as 3 (Aging).');
+
+  // ââ Step 2: Process each entity âââââââââââââââââââââââââââââââââââââââââââ
   for (const entity of ENTITIES) {
     try {
       log(`\n  ${entity}: Setting property and aging fields...`);
@@ -89,9 +109,26 @@
 
       setFields();
       await doPostback('PropertyLookup:LookupCode');
-      log(`  ${entity}: Property validated, requesting Excel...`);
 
+      // ââ CRITICAL: Re-verify RT=3 after property postback ââ
+      // Property postback can reset ReportType to default (Expense Distribution)
+      if (!(await ensureAgingRT())) {
+        results.failed.push({ entity, ok: false, reason: 'RT reverted after property postback' });
+        continue;
+      }
+
+      log(`  ${entity}: Property validated, RT confirmed, requesting Excel...`);
+
+      // Re-set all fields after postbacks (form innerHTML gets replaced)
       setFields();
+
+      // Final RT verification before export
+      const finalRT = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      if (finalRT !== '3') {
+        log(`  WARNING: RT is ${finalRT} before Excel export! Attempting fix...`);
+        const rtFix = wDoc().querySelector('select[name*="ReportType"]');
+        if (rtFix) rtFix.value = '3';
+      }
 
       // Excel via fetch with FormData from iframe's form
       const form = wDoc().querySelector('form');
@@ -133,14 +170,14 @@
 
       if (blob && blob.size > 0) {
         triggerDownload(blob, entity);
-        log(`  ✓ ${entity} — ${(blob.size / 1024).toFixed(0)} KB`);
+        log(`  â ${entity} â ${(blob.size / 1024).toFixed(0)} KB`);
         results.success.push({ entity, ok: true, size: blob.size });
       } else {
-        log(`  ✗ ${entity} — no file received`);
+        log(`  â ${entity} â no file received`);
         results.failed.push({ entity, ok: false, reason: 'no_file' });
       }
     } catch (ex) {
-      log(`  ✗ ${entity} — ${ex.message}`);
+      log(`  â ${entity} â ${ex.message}`);
       results.failed.push({ entity, ok: false, reason: ex.message });
     }
   }
@@ -151,7 +188,7 @@
   function triggerDownload(blob, entity) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `APAging_${entity}.xls`;
+    a.download = `APAging_${entity}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
