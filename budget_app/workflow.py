@@ -504,6 +504,13 @@ def create_workflow_blueprint(db):
                         line.unpaid_bills = 0.0
                         line.increase_pct = 0.0
                         line.notes = ""
+                        line.reclass_to_gl = None
+                        line.reclass_amount = 0.0
+                        line.reclass_notes = ""
+                        line.estimate_override = None
+                        line.forecast_override = None
+                        line.proposed_budget = 0.0
+                        line.proposed_formula = None
                 else:
                     # Create new line
                     line = BudgetLine(
@@ -568,17 +575,19 @@ def create_workflow_blueprint(db):
     BUDGET_YEAR = datetime.utcnow().year + 1  # YSL is current year, budget is next
 
     def get_active_budget(entity_code):
-        """Return the latest-version budget for an entity (any year, latest version)."""
+        """Return the latest-version budget for an entity (any year, latest version).
+        Uses NULLS LAST so old budgets with NULL version don't sort first."""
         return (Budget.query
                 .filter_by(entity_code=str(entity_code).strip())
-                .order_by(Budget.year.desc(), Budget.version.desc())
+                .order_by(Budget.year.desc(), db.func.coalesce(Budget.version, 1).desc())
                 .first())
 
     def get_budget_for_year(entity_code, year):
-        """Return the latest-version budget for an entity + specific year."""
+        """Return the latest-version budget for an entity + specific year.
+        Uses NULLS LAST so old budgets with NULL version don't sort first."""
         return (Budget.query
                 .filter_by(entity_code=str(entity_code).strip(), year=year)
-                .order_by(Budget.version.desc())
+                .order_by(db.func.coalesce(Budget.version, 1).desc())
                 .first())
 
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
@@ -602,7 +611,7 @@ def create_workflow_blueprint(db):
             if fresh_start:
                 # Create a brand new version — old budget stays untouched
                 existing = get_budget_for_year(entity_code, BUDGET_YEAR)
-                next_ver = (existing.version + 1) if existing else 1
+                next_ver = ((existing.version or 1) + 1) if existing else 1
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
