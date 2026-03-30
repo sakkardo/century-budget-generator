@@ -590,6 +590,29 @@ def create_workflow_blueprint(db):
                 .order_by(db.func.coalesce(Budget.version, 1).desc())
                 .first())
 
+    def _wipe_entity_data(entity_code):
+        """Delete all entity-level supplementary data (expenses, open AP, etc.).
+        Called by fresh_start and budget deletion to ensure a clean slate."""
+        ec = str(entity_code).strip()
+        try:
+            # Expense invoices → then expense reports
+            db.session.execute(
+                db.text("DELETE FROM expense_invoices WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)"),
+                {"ec": ec})
+            db.session.execute(
+                db.text("DELETE FROM expense_reports WHERE entity_code = :ec"),
+                {"ec": ec})
+            # Open AP invoices → then open AP reports
+            db.session.execute(
+                db.text("DELETE FROM open_ap_invoices WHERE report_id IN (SELECT id FROM open_ap_reports WHERE entity_code = :ec)"),
+                {"ec": ec})
+            db.session.execute(
+                db.text("DELETE FROM open_ap_reports WHERE entity_code = :ec"),
+                {"ec": ec})
+            logger.info(f"Wiped entity-level data for {ec}")
+        except Exception as e:
+            logger.warning(f"Could not wipe entity data for {ec}: {e}")
+
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
@@ -623,21 +646,9 @@ def create_workflow_blueprint(db):
                 db.session.add(budget)
                 db.session.flush()
 
-                # Clear invoice reclasses on expense reports for this entity
-                try:
-                    cleared = db.session.execute(
-                        db.text("""
-                            UPDATE expense_invoices SET reclass_to_gl = NULL, reclass_amount = 0,
-                                   reclass_notes = NULL, reclassed_by = NULL, reclassed_at = NULL
-                            WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)
-                              AND reclass_to_gl IS NOT NULL
-                        """),
-                        {"ec": str(entity_code)}
-                    ).rowcount
-                    if cleared:
-                        logger.info(f"Fresh start: cleared {cleared} invoice reclasses for {entity_code}")
-                except Exception as e:
-                    logger.warning(f"Could not clear invoice reclasses for {entity_code}: {e}")
+                # Wipe all entity-level data so it's truly fresh
+                _wipe_entity_data(str(entity_code))
+                logger.info(f"Fresh start: wiped entity-level data for {entity_code}")
             else:
                 # Update existing or create first version
                 budget = get_budget_for_year(entity_code, BUDGET_YEAR)
@@ -1129,6 +1140,8 @@ def create_workflow_blueprint(db):
             ARHandoff.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
             DataSource.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
             BudgetLine.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
+            # Wipe entity-level data (expense reports, open AP, etc.)
+            _wipe_entity_data(entity)
             db.session.delete(budget)
             db.session.commit()
             logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
