@@ -810,6 +810,14 @@ def create_workflow_blueprint(db):
 
     bp = Blueprint("workflow", __name__)
 
+    @bp.before_request
+    def _ensure_clean_session():
+        """Ensure db session is clean at the start of every request.
+        Prevents poisoned transactions from connection pooling."""
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
     # ─── Admin Routes ────────────────────────────────────────────────────────
 
@@ -1129,40 +1137,75 @@ def create_workflow_blueprint(db):
         return jsonify(budget.to_dict())
 
 
+    @bp.route("/api/debug/budget/<int:budget_id>", methods=["GET"])
+    def debug_budget(budget_id):
+        """Debug: check if a budget can be found by various methods."""
+        try:
+            db.session.rollback()  # clear any poisoned state
+        except Exception:
+            pass
+        results = {}
+        try:
+            r1 = db.session.execute(db.text("SELECT id, entity_code, status, version FROM budgets WHERE id = :id"), {"id": budget_id}).fetchone()
+            results["raw_sql"] = dict(zip(["id", "entity_code", "status", "version"], r1)) if r1 else None
+        except Exception as e:
+            results["raw_sql_error"] = str(e)
+        try:
+            r2 = Budget.query.filter_by(id=budget_id).first()
+            results["orm_filter"] = r2.to_dict() if r2 else None
+        except Exception as e:
+            results["orm_filter_error"] = str(e)
+        return jsonify(results)
+
     @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
     def delete_budget(budget_id):
-        """Delete a non-approved budget and all its related records."""
-        budget = db.session.get(Budget, budget_id) or Budget.query.filter_by(id=budget_id).first()
-        if not budget:
+        """Delete a non-approved budget and all its related records.
+        Uses raw SQL to avoid ORM session poisoning issues."""
+        # Always start with a clean session
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+        # Look up budget via raw SQL — immune to session poisoning
+        row = db.session.execute(
+            db.text("SELECT id, entity_code, status, version FROM budgets WHERE id = :id"),
+            {"id": budget_id}
+        ).fetchone()
+        if not row:
             return jsonify({"error": "Budget not found"}), 404
 
-        if budget.status == "approved":
+        bid, entity, status, ver = row[0], row[1], row[2], row[3] or 1
+        if status == "approved":
             return jsonify({"error": "Cannot delete an approved budget."}), 400
 
-        entity = budget.entity_code
-        ver = budget.version or 1
-
         try:
-            line_ids = [l.id for l in budget.lines]
-            # Delete records that reference budget_lines (must go first)
+            # Get line IDs for this budget
+            line_rows = db.session.execute(
+                db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"), {"bid": bid}
+            ).fetchall()
+            line_ids = [r[0] for r in line_rows]
+
+            # Delete in dependency order using raw SQL
             if line_ids:
-                PresentationEdit.query.filter(PresentationEdit.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
-                BudgetRevision.query.filter(BudgetRevision.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
-            # Delete records that reference the budget directly
-            BudgetRevision.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
-            PresentationSession.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
-            ARHandoff.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
-            DataSource.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
-            BudgetLine.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
-            # Wipe entity-level data (expense reports, open AP, etc.)
+                ids_str = ",".join(str(i) for i in line_ids)
+                db.session.execute(db.text(f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})"))
+                db.session.execute(db.text(f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})"))
+            db.session.execute(db.text("DELETE FROM budget_revisions WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM presentation_sessions WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM ar_handoffs WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM data_sources WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM budget_lines WHERE budget_id = :bid"), {"bid": bid})
+            # Wipe entity-level data
             _delete_entity_data(entity)
-            db.session.delete(budget)
+            # Delete the budget itself
+            db.session.execute(db.text("DELETE FROM budgets WHERE id = :bid"), {"bid": bid})
             db.session.commit()
-            logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
-            return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": budget_id})
+            logger.info(f"Deleted budget {bid} (entity {entity}, v{ver})")
+            return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": bid})
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Failed to delete budget {budget_id}: {e}")
+            logger.error(f"Failed to delete budget {bid}: {e}")
             return jsonify({"error": f"Failed to delete: {str(e)}"}), 500
 
 
