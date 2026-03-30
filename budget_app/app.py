@@ -909,29 +909,10 @@ def generate_script():
         f"const ENTITY_CHARGES = {{{mp_mapping_js}}};"
     )
 
-    # Build AP Aging script with user settings (if available)
+    # AP Aging removed from combined script — runs separately to avoid
+    # Yardi session state contamination (RT=2 from Expense Distribution
+    # persists and overrides RT=3 for Aging). See /api/generate-ap-aging-script.
     ap_script_block = ""
-    if AP_AGING_SCRIPT:
-        ap_aging_script = AP_AGING_SCRIPT
-        ap_aging_script = ap_aging_script.replace(
-            "const ENTITIES = [148, 204, 206, 805];",
-            f"const ENTITIES = [{entities_js}];"
-        )
-        ap_aging_script = ap_aging_script.replace(
-            "const PERIOD_TO = '03/2026';",
-            f"const PERIOD_TO = '{period}';"
-        )
-        ap_script_block = f"""
-  // ── Part 4: AP Aging (Open AP) ──
-  console.log('\\n>>> Starting Part 4: AP Aging (Open AP) <<<\\n');
-  try {{
-    _partResults.ap = await {ap_aging_script}
-    console.log('\\n>>> Part 4 (AP Aging) completed successfully <<<\\n');
-  }} catch (_e4) {{
-    console.error('>>> Part 4 (AP Aging) FAILED with error:', _e4.message);
-    console.error(_e4.stack);
-    _partResults.ap = 'ERROR: ' + _e4.message;
-  }}"""
 
     # ── Inject auto-upload into each script's triggerDownload function ──
     # The 3 scripts (Expense, MaintProof, AP Aging) all have a triggerDownload(blob, entity)
@@ -950,23 +931,7 @@ def generate_script():
         "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
     )
 
-    # Patch AP Aging triggerDownload (if available)
-    if AP_AGING_SCRIPT:
-        ap_aging_script = ap_aging_script.replace(
-            "URL.revokeObjectURL(a.href);\n  }",
-            "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
-        )
-        ap_script_block = f"""
-  // ── Part 4: AP Aging (Open AP) ──
-  console.log('\\n>>> Starting Part 4: AP Aging (Open AP) <<<\\n');
-  try {{
-    _partResults.ap = await {ap_aging_script}
-    console.log('\\n>>> Part 4 (AP Aging) completed successfully <<<\\n');
-  }} catch (_e4) {{
-    console.error('>>> Part 4 (AP Aging) FAILED with error:', _e4.message);
-    console.error(_e4.stack);
-    _partResults.ap = 'ERROR: ' + _e4.message;
-  }}"""
+    # AP Aging patching removed — runs as separate standalone script
 
     # Patch YSL inline download (it doesn't use triggerDownload function)
     ysl_script = ysl_script.replace(
@@ -986,8 +951,8 @@ def generate_script():
     # Each part is wrapped in try/catch so errors don't kill subsequent parts
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
- * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof + AP Aging
- * for all selected entities.
+ * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof
+ * for all selected entities. (AP Aging runs separately — use the AP Aging button.)
  * Generated for: {email}
  * Entities: {entities_js}
  * Period: {period}
@@ -1078,7 +1043,7 @@ def generate_script():
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Expense Distribution reports');
   console.log('Part 3: Maintenance Proof reports');
-  console.log('Part 4: AP Aging (Open AP) reports');
+  console.log('(AP Aging runs separately \u2014 use the AP Aging button)');
   console.log('='.repeat(60));
 
   // ── Part 1: YSL Annual Budget ──
@@ -1123,13 +1088,135 @@ def generate_script():
   console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
   console.log('  Part 2 (Exp):', _partResults.exp === null ? 'SKIPPED' : (typeof _partResults.exp === 'string' && _partResults.exp.startsWith('ERROR') ? _partResults.exp : 'OK'));
   console.log('  Part 3 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
-  console.log('  Part 4 (AP): ', _partResults.ap === null ? 'SKIPPED' : (typeof _partResults.ap === 'string' && _partResults.ap.startsWith('ERROR') ? _partResults.ap : 'OK'));
   console.log('  Auto-Upload:', _uploadedFiles.length + ' files sent to server');
+  console.log('');
+  console.log('Now run the AP Aging script (separate button on the Generate page).');
   console.log(_uploadedFiles.length > 0 ? 'Files were auto-processed — check the dashboard!' : 'Files were downloaded locally — upload them via the Generator page.');
   console.log('='.repeat(60));
 }})();"""
 
     return jsonify({"script": combined})
+
+
+@app.route("/api/generate-ap-aging-script", methods=["POST"])
+def generate_ap_aging_script():
+    """Generate a standalone AP Aging script that runs independently.
+
+    Separated from the combined script because Yardi ASP.NET session
+    remembers ReportType=2 (Expense Distribution) and contaminates the
+    AP Aging download when both run in the same browser session.
+    """
+    data = request.json
+    entities = data.get("entities", [])
+    email = data.get("email", "")
+    period = data.get("period", "02/2026")
+
+    if not entities:
+        return jsonify({"error": "No buildings selected"}), 400
+
+    if not AP_AGING_SCRIPT:
+        return jsonify({"error": "AP Aging script not available on server"}), 500
+
+    entities_js = ', '.join(str(e) for e in entities)
+
+    ap_aging_script = AP_AGING_SCRIPT
+    ap_aging_script = ap_aging_script.replace(
+        "const ENTITIES = [148, 204, 206, 805];",
+        f"const ENTITIES = [{entities_js}];"
+    )
+    ap_aging_script = ap_aging_script.replace(
+        "const PERIOD_TO = '03/2026';",
+        f"const PERIOD_TO = '{period}';"
+    )
+
+
+    # Get Railway URL for auto-upload
+    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_url and not railway_url.startswith("http"):
+        railway_url = f"https://{railway_url}"
+    if not railway_url:
+        railway_url = "https://century-budget-generator-production.up.railway.app"
+
+    # Inject auto-upload into triggerDownload
+    ap_aging_script = ap_aging_script.replace(
+        "URL.revokeObjectURL(a.href);\n  }",
+        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
+    )
+
+    standalone = f"""/**
+ * Century Budget \u2014 AP Aging (Open AP) Standalone Script
+ * Run this AFTER the main Yardi script (YSL + Expense + Maint Proof).
+ * Entities: {entities_js}
+ * Period: {period}
+ */
+(async function() {{
+  'use strict';
+  const _uploadedFiles = [];
+  const _SESSION_ID = 'yardi_' + Date.now();
+  const _BUDGET_APP = '{railway_url}';
+
+  async function _autoUpload(blob, filename, entity, fileType) {{
+    try {{
+      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
+        method: 'POST',
+        headers: {{
+          'X-Upload-Session': _SESSION_ID,
+          'X-Entity-Code': String(entity),
+          'X-File-Type': fileType,
+          'X-Filename': filename,
+          'Content-Type': 'application/octet-stream'
+        }},
+        body: blob
+      }});
+      const data = await resp.json();
+      _uploadedFiles.push({{ filename, entity, fileType, ok: resp.ok }});
+      console.log('  \\u2191 Auto-uploaded: ' + filename + ' (' + data.files_in_session + ' files in session)');
+    }} catch (err) {{
+      console.warn('  Auto-upload failed for ' + filename + ':', err.message);
+    }}
+  }}
+
+  async function _autoProcess() {{
+    if (!_uploadedFiles.length) return;
+    console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
+    try {{
+      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ session_id: _SESSION_ID }})
+      }});
+      const data = await resp.json();
+      if (resp.ok) {{
+        console.log('\\u2713 Server processed ' + (data.successes?.length || 0) + ' files successfully!');
+        if (data.successes?.length) console.log('  Successes:', data.successes);
+        if (data.warnings?.length) console.log('  Warnings:', data.warnings);
+        if (data.failures?.length) console.log('  Failures:', data.failures);
+      }}
+    }} catch (err) {{
+      console.error('Auto-process error:', err.message);
+    }}
+  }}
+
+  console.log('='.repeat(60));
+  console.log('AP Aging (Open AP) \\u2014 Standalone Download + Auto-Upload');
+  console.log('='.repeat(60));
+
+  try {{
+    await {ap_aging_script}
+    console.log('\\n>>> AP Aging completed successfully <<<');
+  }} catch (e) {{
+    console.error('>>> AP Aging FAILED:', e.message);
+  }}
+
+  await _autoProcess();
+
+  console.log('\\n' + '='.repeat(60));
+  console.log('AP Aging DONE \\u2014 ' + _uploadedFiles.length + ' files uploaded.');
+  console.log(_uploadedFiles.length > 0 ? 'Check the FA Dashboard for results.' : 'No files uploaded \\u2014 check console for errors.');
+  console.log('='.repeat(60));
+}})();"""
+
+    return jsonify({{"script": standalone}})
 
 
 @app.route("/api/process", methods=["POST"])
@@ -2224,14 +2311,26 @@ GENERATE_TEMPLATE = r"""
       </div>
     </div>
 
-    <button class="btn btn-primary" onclick="generateScript()" id="genBtn">
-      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>
-      Generate Yardi Script
-    </button>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="generateScript()" id="genBtn">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>
+        Generate Yardi Script
+      </button>
+      <button class="btn btn-primary" onclick="generateAPAgingScript()" id="apBtn" style="background:#d97706;">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Download AP Aging
+      </button>
+    </div>
+    <p style="font-size:11px; color:#6b7280; margin-top:6px;">Run the main script first (YSL + Expense + Maint Proof), then run AP Aging separately.</p>
 
     <div class="script-box" id="scriptBox">
       <button class="copy-btn" id="copyBtn" onclick="copyScript()">Copy</button>
       <code id="scriptCode"></code>
+    </div>
+
+    <div class="script-box" id="apScriptBox" style="display:none; border-color:#fde68a;">
+      <button class="copy-btn" id="apCopyBtn" onclick="copyAPScript()">Copy AP Aging</button>
+      <code id="apScriptCode"></code>
     </div>
   </div>
 
@@ -2307,6 +2406,32 @@ function copyScript() {
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+async function generateAPAgingScript() {
+  const entities = getSelected();
+  const email = document.getElementById('email').value;
+  const period = document.getElementById('period').value;
+  if (!entities.length) { alert('Select at least one building'); return; }
+  const resp = await fetch('/api/generate-ap-aging-script', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entities, email, period }),
+  });
+  const data = await resp.json();
+  if (data.error) { alert(data.error); return; }
+  document.getElementById('apScriptCode').textContent = data.script;
+  document.getElementById('apScriptBox').style.display = 'block';
+}
+
+function copyAPScript() {
+  const code = document.getElementById('apScriptCode').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    const btn = document.getElementById('apCopyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy AP Aging'; btn.classList.remove('copied'); }, 2000);
   });
 }
 
