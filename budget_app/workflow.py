@@ -366,7 +366,7 @@ def create_workflow_blueprint(db):
         notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        budget = db.relationship("Budget", backref=db.backref("presentation_sessions", cascade="all, delete-orphan"))
+        budget = db.relationship("Budget")
 
         def to_dict(self):
             return {
@@ -423,7 +423,7 @@ def create_workflow_blueprint(db):
         yardi_confirmation = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False, cascade="all, delete-orphan"))
+        budget = db.relationship("Budget", backref=db.backref("ar_handoff", uselist=False))
 
         def to_dict(self):
             return {
@@ -1102,12 +1102,17 @@ def create_workflow_blueprint(db):
         ver = budget.version or 1
 
         try:
-            # Null out budget_line_id FKs in revisions before cascade deletes the lines
-            BudgetRevision.query.filter_by(budget_id=budget_id).update({"budget_line_id": None})
-            # Delete presentation edits that reference this budget's lines
             line_ids = [l.id for l in budget.lines]
+            # Delete records that reference budget_lines (must go first)
             if line_ids:
                 PresentationEdit.query.filter(PresentationEdit.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+                BudgetRevision.query.filter(BudgetRevision.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+            # Delete records that reference the budget directly
+            BudgetRevision.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
+            PresentationSession.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
+            ARHandoff.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
+            DataSource.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
+            BudgetLine.query.filter_by(budget_id=budget_id).delete(synchronize_session=False)
             db.session.delete(budget)
             db.session.commit()
             logger.info(f"Deleted budget {budget_id} (entity {entity}, v{ver})")
