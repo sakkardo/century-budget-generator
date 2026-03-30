@@ -57,10 +57,34 @@
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
-      // Step 2a: First POST to set report type + property filter
-      // ReportType 2 = "Expense Distribution (Paid Only)"
-      const lookupPost = {
+      // Step 2a: POST to change ReportType to "Expense Distribution (Paid Only)" (value=2)
+      // ASP.NET WebForms requires the dropdown change as its own postback
+      const rtPost = {
         ...hidden,
+        '__EVENTTARGET': 'ReportType:DropDownList',
+        '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
+      };
+      const rtBody = Object.entries(rtPost).map(([k, v]) =>
+        encodeURIComponent(k) + '=' + encodeURIComponent(v)
+      ).join('&');
+      const rtResp = await fetch(PAGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: rtBody,
+      });
+      const rtHtml = await rtResp.text();
+      const rtDoc = new DOMParser().parseFromString(rtHtml, 'text/html');
+      const hidden1b = {};
+      rtDoc.querySelectorAll('input[type="hidden"]').forEach(el => {
+        if (el.name) hidden1b[el.name] = el.value || '';
+      });
+
+      log(`  ${entity}: Report type set to Expense Distribution (Paid Only)`);
+
+      // Step 2b: POST to set the property filter (trigger lookup validation)
+      const lookupPost = {
+        ...hidden1b,
         '__EVENTTARGET': 'PropertyLookup:LookupCode',
         '__EVENTARGUMENT': '',
         'ReportType:DropDownList': '2',
@@ -118,7 +142,7 @@
 
       log(`  ${entity}: Property lookup validated, requesting Excel...`);
 
-      // Step 2b: Second POST to actually get the Excel export with validated property
+      // Step 2c: Third POST to actually get the Excel export with validated property
       const post = {
         ...hidden2,
         '__EVENTTARGET': 'Excel',
