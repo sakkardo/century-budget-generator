@@ -2515,7 +2515,7 @@ function renderBudgets(budgets) {
       `;
     }
     if (b.status !== 'approved') {
-      actionHtml += `<button class="btn-action" onclick="deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})" style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this budget">Del</button>`;
+      actionHtml += `<button class="btn-action" onclick='deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})' style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this budget">Del</button>`;
     }
 
     // Format updated_at timestamp
