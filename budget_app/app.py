@@ -640,7 +640,16 @@ def auto_process():
             file_path = tmp / filename
             file_path.write_bytes(finfo["data"])
 
-            # Detect Open AP first (handles .xls files that openpyxl can't read)
+            # Use upload-time file type hint as primary classifier
+            upload_type = finfo.get("type", "unknown")
+
+            # If upload type is 'ap', route directly to Open AP pipeline
+            if upload_type == "ap":
+                logger.info(f"Auto-upload routed by type hint: {filename} \u2192 Open AP")
+                open_ap_files.append((file_path, filename))
+                continue
+
+            # Detect Open AP from content (fallback for manual uploads)
             try:
                 if detect_open_ap_file(str(file_path)):
                     logger.info(f"Auto-upload detection for {filename}: Open AP (Aging) report")
@@ -649,10 +658,20 @@ def auto_process():
             except Exception:
                 pass
 
+            # Handle .xls files that are actually .xlsx (Yardi naming quirk)
+            # Copy to .xlsx temp file if needed for openpyxl
+            check_path = file_path
+            _tmp_xlsx = None
+            if str(file_path).lower().endswith('.xls') and not str(file_path).lower().endswith('.xlsx'):
+                import shutil as _shutil
+                _tmp_xlsx = tmp / (filename + 'x')  # .xls \u2192 .xlsx
+                _shutil.copy2(str(file_path), str(_tmp_xlsx))
+                check_path = _tmp_xlsx
+
             # Detect Expense Distribution vs YSL via Row 1
             try:
                 from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(file_path), data_only=True)
+                _wb_check = _lwb(str(check_path), data_only=True)
                 _ws_check = _wb_check.active
                 _row1 = str(_ws_check.cell(row=1, column=1).value or "")
                 _row2 = str(_ws_check.cell(row=2, column=1).value or "")
@@ -1162,8 +1181,17 @@ def process_files():
                     open_ap_files.append((file_path, f.filename))
                     continue
 
+                # Handle .xls files that are actually .xlsx (Yardi naming quirk)
+                _tmp_xlsx_manual = None
+                _check_path = file_path
+                if str(file_path).lower().endswith('.xls') and not str(file_path).lower().endswith('.xlsx'):
+                    import shutil as _shutil_m
+                    _tmp_xlsx_manual = tmp / (f.filename + 'x')
+                    _shutil_m.copy2(str(file_path), str(_tmp_xlsx_manual))
+                    _check_path = _tmp_xlsx_manual
+
                 from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(file_path), data_only=True)
+                _wb_check = _lwb(str(_check_path), data_only=True)
                 _ws_check = _wb_check.active
                 _row1 = str(_ws_check.cell(row=1, column=1).value or "")
                 _row2 = str(_ws_check.cell(row=2, column=1).value or "")
