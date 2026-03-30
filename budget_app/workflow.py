@@ -590,41 +590,39 @@ def create_workflow_blueprint(db):
                 .order_by(db.func.coalesce(Budget.version, 1).desc())
                 .first())
 
-    def _safe_sql(sql, params):
-        """Execute SQL safely using a savepoint so failures don't kill the transaction."""
-        try:
-            nested = db.session.begin_nested()
-            result = db.session.execute(db.text(sql), params).rowcount
-            nested.commit()
-            return result
-        except Exception:
-            nested.rollback()
-            return 0
-
     def _clear_entity_customizations(entity_code):
         """Clear PM customizations on entity-level data (reclasses, etc.)
         without deleting the underlying Yardi source data.
         Called by fresh_start to reset user-entered changes."""
         ec = str(entity_code).strip()
-        cleared = _safe_sql("""
-            UPDATE expense_invoices SET reclass_to_gl = NULL,
-                   reclass_notes = NULL, reclassed_by = NULL, reclassed_at = NULL
-            WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)
-              AND reclass_to_gl IS NOT NULL
-        """, {"ec": ec})
-        if cleared:
-            logger.info(f"Cleared {cleared} invoice reclasses for {ec}")
+        try:
+            cleared = db.session.execute(db.text(
+                "UPDATE expense_invoices SET reclass_to_gl = NULL,"
+                " reclass_notes = NULL, reclassed_by = NULL, reclassed_at = NULL"
+                " WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)"
+                " AND reclass_to_gl IS NOT NULL"
+            ), {"ec": ec}).rowcount
+            if cleared:
+                logger.info(f"Cleared {cleared} invoice reclasses for {ec}")
+        except Exception as e:
+            logger.warning(f"Could not clear customizations for {ec}: {e}")
 
     def _delete_entity_data(entity_code):
         """Delete ALL entity-level supplementary data (expenses, open AP, etc.).
         Called by budget deletion to fully remove an entity's data."""
         ec = str(entity_code).strip()
-        # Each table pair wrapped separately so a missing table doesn't poison the transaction
-        _safe_sql("DELETE FROM expense_invoices WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)", {"ec": ec})
-        _safe_sql("DELETE FROM expense_reports WHERE entity_code = :ec", {"ec": ec})
-        _safe_sql("DELETE FROM open_ap_invoices WHERE report_id IN (SELECT id FROM open_ap_reports WHERE entity_code = :ec)", {"ec": ec})
-        _safe_sql("DELETE FROM open_ap_reports WHERE entity_code = :ec", {"ec": ec})
-        logger.info(f"Deleted entity-level data for {ec}")
+        try:
+            db.session.execute(db.text(
+                "DELETE FROM expense_invoices WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)"), {"ec": ec})
+            db.session.execute(db.text(
+                "DELETE FROM expense_reports WHERE entity_code = :ec"), {"ec": ec})
+            db.session.execute(db.text(
+                "DELETE FROM open_ap_invoices WHERE report_id IN (SELECT id FROM open_ap_reports WHERE entity_code = :ec)"), {"ec": ec})
+            db.session.execute(db.text(
+                "DELETE FROM open_ap_reports WHERE entity_code = :ec"), {"ec": ec})
+            logger.info(f"Deleted entity-level data for {ec}")
+        except Exception as e:
+            logger.warning(f"Could not delete entity data for {ec}: {e}")
 
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
         """
@@ -1131,7 +1129,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
     def delete_budget(budget_id):
         """Delete a non-approved budget and all its related records."""
-        budget = Budget.query.get(budget_id)
+        budget = db.session.get(Budget, budget_id) or Budget.query.filter_by(id=budget_id).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
