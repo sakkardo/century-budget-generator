@@ -1,14 +1,14 @@
 /**
- * Expense Distribution (Paid Only) Batch Downloader v4
+ * Expense Distribution (Paid Only) Batch Downloader v5
  * Paste into Chrome Console on any Yardi page (must be logged in)
  *
  * Downloads from APAnalytics.aspx by:
- *   1. Changing ReportType dropdown to "Expense Distribution (Paid Only)" (value=2)
- *   2. Scraping the updated form fields (they change per report type)
- *   3. Setting Property + Period filters
- *   4. Clicking Excel export
+ *   1. GET page for hidden fields (viewstate)
+ *   2. POST to change ReportType to "Expense Distribution (Paid Only)" (value=2)
+ *   3. POST to set Property and validate lookup
+ *   4. POST to trigger Excel export
  *
- * BEFORE RUNNING: Edit the settings below ↓↓↓
+ * BEFORE RUNNING: Edit the settings below
  */
 (async function() {
   'use strict';
@@ -36,30 +36,19 @@
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`Expense Distribution Batch Download v4`);
+  log(`Expense Distribution Batch Download v5`);
   log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}–${PERIOD_TO}`);
   log(`Parallel batch size: ${BATCH_SIZE}`);
   log('='.repeat(50));
 
-  // ── Helper: scrape all form fields from an HTML response ──────────────────
-  function scrapeForm(html) {
+  // ── Helper: get hidden fields only (viewstate, eventvalidation, etc.) ─────
+  function getHiddens(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const fields = {};
-    doc.querySelectorAll('input').forEach(el => {
-      if (!el.name) return;
-      if (el.type === 'checkbox') {
-        fields[el.name] = el.checked ? 'on' : '';
-      } else {
-        fields[el.name] = el.value || '';
-      }
+    const h = {};
+    doc.querySelectorAll('input[type="hidden"]').forEach(el => {
+      if (el.name) h[el.name] = el.value || '';
     });
-    doc.querySelectorAll('select').forEach(el => {
-      if (el.name) fields[el.name] = el.value || '';
-    });
-    doc.querySelectorAll('textarea').forEach(el => {
-      if (el.name) fields[el.name] = el.value || '';
-    });
-    return fields;
+    return h;
   }
 
   function postEncode(obj) {
@@ -72,65 +61,78 @@
 
   async function downloadEntity(entity) {
     try {
-      // Step 1: GET the page to get initial form state
+      // Step 1: GET fresh hidden fields (viewstate etc.)
       const getResp = await fetch(PAGE_URL);
       const html = await getResp.text();
-      let fields = scrapeForm(html);
+      let hidden = getHiddens(html);
 
-      if (!fields['__VIEWSTATE']) {
+      if (!hidden['__VIEWSTATE'] && !hidden['__VIEWSTATE__']) {
         return { entity, ok: false, reason: 'no_viewstate (session expired?)' };
       }
 
       // Step 2: POST to change ReportType to Expense Distribution (Paid Only)
-      fields['__EVENTTARGET'] = 'ReportType:DropDownList';
-      fields['__EVENTARGUMENT'] = '';
-      fields['ReportType:DropDownList'] = '2';
+      const post2 = {
+        ...hidden,
+        '__EVENTTARGET': 'ReportType:DropDownList',
+        '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
+        'PropertyLookup:LookupCode': String(entity),
+        'PeriodFrom:TextBox': PERIOD_FROM,
+        'PeriodTo:TextBox': PERIOD_TO,
+        'ShowDetail:CheckBox': 'on',
+        'ShowGrid:CheckBox': 'on',
+      };
 
-      const rtResp = await fetch(PAGE_URL, {
+      const r2 = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: postEncode(fields),
+        body: postEncode(post2),
       });
-      const rtHtml = await rtResp.text();
-      fields = scrapeForm(rtHtml);
+      hidden = getHiddens(await r2.text());
 
-      log(`  ${entity}: Report type changed to Expense Distribution`);
+      log(`  ${entity}: Report type set to Expense Distribution (Paid Only)`);
 
-      // Step 3: POST to set Property + Period and trigger property validation
-      fields['__EVENTTARGET'] = 'PropertyLookup:LookupCode';
-      fields['__EVENTARGUMENT'] = '';
-      fields['ReportType:DropDownList'] = '2';
-      fields['PropertyLookup:LookupCode'] = String(entity);
-      fields['PeriodFrom:TextBox'] = PERIOD_FROM;
-      fields['PeriodTo:TextBox'] = PERIOD_TO;
-      // Ensure detail + grid are checked
-      fields['ShowDetail:CheckBox'] = 'on';
-      fields['ShowGrid:CheckBox'] = 'on';
+      // Step 3: POST to validate property lookup
+      const post3 = {
+        ...hidden,
+        '__EVENTTARGET': 'PropertyLookup:LookupCode',
+        '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
+        'PropertyLookup:LookupCode': String(entity),
+        'PropertyLookup:LookupDesc': '',
+        'PeriodFrom:TextBox': PERIOD_FROM,
+        'PeriodTo:TextBox': PERIOD_TO,
+        'ShowDetail:CheckBox': 'on',
+        'ShowGrid:CheckBox': 'on',
+      };
 
-      const lookupResp = await fetch(PAGE_URL, {
+      const r3 = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: postEncode(fields),
+        body: postEncode(post3),
       });
-      const lookupHtml = await lookupResp.text();
-      fields = scrapeForm(lookupHtml);
+      hidden = getHiddens(await r3.text());
 
       log(`  ${entity}: Property validated, requesting Excel...`);
 
       // Step 4: POST to trigger Excel export
-      fields['__EVENTTARGET'] = 'Excel';
-      fields['__EVENTARGUMENT'] = '';
-      fields['ReportType:DropDownList'] = '2';
-      fields['PropertyLookup:LookupCode'] = String(entity);
-      fields['PeriodFrom:TextBox'] = PERIOD_FROM;
-      fields['PeriodTo:TextBox'] = PERIOD_TO;
-      fields['ShowDetail:CheckBox'] = 'on';
-      fields['ShowGrid:CheckBox'] = 'on';
+      const post4 = {
+        ...hidden,
+        '__EVENTTARGET': 'Excel',
+        '__EVENTARGUMENT': '',
+        'ReportType:DropDownList': '2',
+        'PropertyLookup:LookupCode': String(entity),
+        'PropertyLookup:LookupDesc': '',
+        'PeriodFrom:TextBox': PERIOD_FROM,
+        'PeriodTo:TextBox': PERIOD_TO,
+        'ShowDetail:CheckBox': 'on',
+        'ShowGrid:CheckBox': 'on',
+      };
 
       const postResp = await fetch(PAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: postEncode(fields),
+        body: postEncode(post4),
       });
 
       // Step 5: Handle response
@@ -207,10 +209,8 @@
     const batch = batches[b];
     log(`\nBatch ${b + 1}/${batches.length}: entities ${batch.join(', ')}`);
 
-    // Run all entities in this batch in parallel
     const batchResults = await Promise.all(batch.map(entity => downloadEntity(entity)));
 
-    // Process results
     batchResults.forEach(r => {
       if (r.ok) {
         log(`  ✓ ${r.entity} — ${(r.size / 1024).toFixed(0)} KB${r.via ? ' (' + r.via + ')' : ''}`);
@@ -221,11 +221,8 @@
       }
     });
 
-    // Brief pause between batches
     if (b < batches.length - 1) await sleep(BATCH_DELAY);
   }
-
-  // ── Summary ───────────────────────────────────────────────────────────────
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   log('\n' + '='.repeat(50));
