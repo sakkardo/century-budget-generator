@@ -2280,9 +2280,13 @@ DASHBOARD_TEMPLATE = r"""
     background: white;
     border-radius: 12px;
     padding: 24px;
-    border: 1px solid var(--gray-200);
+    border: 2px solid var(--gray-200);
     text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
   }
+  .status-card:hover { border-color: var(--blue); background: var(--blue-light); }
+  .status-card.active { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.15); }
   .status-card .count {
     font-size: 32px;
     font-weight: 700;
@@ -2376,6 +2380,28 @@ DASHBOARD_TEMPLATE = r"""
   .btn-blue { background: var(--blue); color: white; }
   .btn-green { background: var(--green); color: white; }
   .btn-orange { background: var(--yellow); color: white; }
+
+  /* Overflow menu */
+  .action-menu { position: relative; display: inline-block; }
+  .action-menu-btn { background: transparent; border: 1px solid var(--gray-300); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 16px; line-height: 1; color: var(--gray-500); }
+  .action-menu-btn:hover { background: var(--gray-100); }
+  .action-menu-items { display: none; position: absolute; right: 0; top: 100%; margin-top: 4px; background: white; border: 1px solid var(--gray-200); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); min-width: 140px; z-index: 10; padding: 4px 0; }
+  .action-menu-items.open { display: block; }
+  .action-menu-items button { display: block; width: 100%; text-align: left; padding: 8px 14px; border: none; background: none; cursor: pointer; font-size: 13px; }
+  .action-menu-items button:hover { background: var(--gray-50); }
+  .action-menu-items .del-item { color: var(--red); }
+  .action-menu-items .del-item:hover { background: var(--red-light); }
+
+  /* Data dots */
+  .data-dots { display: flex; gap: 6px; align-items: center; }
+  .data-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .data-dot.on { background: var(--green); }
+  .data-dot.off { background: transparent; border: 2px solid var(--gray-300); }
+
+  /* Filter indicator */
+  .filter-bar { font-size: 13px; color: var(--gray-500); margin-bottom: 12px; display: none; align-items: center; gap: 8px; }
+  .filter-bar.visible { display: flex; }
+  .filter-bar a { color: var(--blue); cursor: pointer; text-decoration: none; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -2416,6 +2442,7 @@ DASHBOARD_TEMPLATE = r"""
         <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
           style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
       </div>
+      <div class="filter-bar" id="filterBar">Showing: <span id="filterLabel"></span> &mdash; <a onclick="clearStatusFilter()">Show all</a></div>
       <table id="budgets-table">
         <thead>
           <tr>
@@ -2457,6 +2484,7 @@ async function loadBudgets() {
   try {
     const res = await fetch('/api/budgets');
     const budgets = await res.json();
+    _allBudgets = budgets;
     renderBudgets(budgets);
     renderStatusSummary(budgets);
     document.getElementById('loadingState').style.display = 'none';
@@ -2468,6 +2496,9 @@ async function loadBudgets() {
     return [];
   }
 }
+
+let _activeFilter = null;
+let _allBudgets = [];
 
 function renderStatusSummary(budgets) {
   const summary = document.getElementById('status-summary');
@@ -2488,7 +2519,8 @@ function renderStatusSummary(budgets) {
 
   Object.entries(counts).forEach(([status, count]) => {
     const card = document.createElement('div');
-    card.className = 'status-card';
+    card.className = 'status-card' + (_activeFilter === status ? ' active' : '');
+    card.onclick = () => toggleStatusFilter(status);
     card.innerHTML = `
       <div class="count">${count}</div>
       <div class="label">${statusLabels[status]}</div>
@@ -2497,38 +2529,47 @@ function renderStatusSummary(budgets) {
   });
 }
 
+function toggleStatusFilter(status) {
+  _activeFilter = (_activeFilter === status) ? null : status;
+  renderStatusSummary(_allBudgets);
+  renderBudgets(_allBudgets);
+  const bar = document.getElementById('filterBar');
+  if (_activeFilter) {
+    bar.classList.add('visible');
+    document.getElementById('filterLabel').textContent = statusLabels[_activeFilter];
+  } else {
+    bar.classList.remove('visible');
+  }
+}
+
+function clearStatusFilter() {
+  _activeFilter = null;
+  renderStatusSummary(_allBudgets);
+  renderBudgets(_allBudgets);
+  document.getElementById('filterBar').classList.remove('visible');
+}
+
 function renderBudgets(budgets) {
   const tbody = document.querySelector('#budgets-table tbody');
   tbody.innerHTML = '';
 
-  budgets.forEach(b => {
+  const filtered = _activeFilter ? budgets.filter(b => b.status === _activeFilter) : budgets;
+
+  filtered.forEach(b => {
     const tr = document.createElement('tr');
     const statusLabel = statusLabels[b.status] || b.status;
     const statusClass = `pill-${b.status}`;
 
-    // Data completeness indicators — only show green checks for present items, dash for missing
-    const budgetIcon = '<span style="color:var(--green); font-weight:600;" title="Budget data loaded">&#10003; Budget</span>';
-    const expenseIcon = b.has_expenses
-      ? '<span style="color:var(--green); font-weight:600;" title="Expenses uploaded">&#10003; Expenses</span>'
-      : '<span style="color:var(--gray-400);" title="No expenses">&mdash; Expenses</span>';
-    const auditIcon = b.has_audit
-      ? '<span style="color:var(--green); font-weight:600;" title="Audit confirmed">&#10003; Audit</span>'
-      : '<span style="color:var(--gray-400);" title="No audit">&mdash; Audit</span>';
-    const maintIcon = b.has_maint_proof
-      ? '<span style="color:var(--green); font-weight:600;" title="Maint Proof uploaded">&#10003; Maint</span>'
-      : '<span style="color:var(--gray-400);" title="No maint proof">&mdash; Maint</span>';
+    // Data completeness: colored dots with tooltips
+    const dot = (on, label) => `<span class="data-dot ${on ? 'on' : 'off'}" title="${label}"></span>`;
+    const dataHtml = dot(true, 'Budget') + dot(b.has_expenses, 'Expenses') + dot(b.has_audit, 'Audit') + dot(b.has_maint_proof, 'Maint Proof');
 
-    // PM review status pill — uses distinct styling from workflow Status column
+    // PM review status pill
     const pmStatusMap = {
-      'draft': 'Not Sent',
-      'pm_pending': 'Sent to PM',
-      'pm_in_progress': 'PM Working',
-      'fa_review': 'Submitted',
-      'approved': 'Approved',
-      'returned': 'Returned'
+      'draft': 'Not Sent', 'pm_pending': 'Sent to PM', 'pm_in_progress': 'PM Working',
+      'fa_review': 'Submitted', 'approved': 'Approved', 'returned': 'Returned'
     };
     const pmLabel = pmStatusMap[b.status] || b.status;
-    // PM column: outline style to visually distinguish from solid Status pills
     const pmPillStyle = {
       'draft': 'background:transparent; color:var(--gray-500); border:1.5px solid var(--gray-300);',
       'pm_pending': 'background:transparent; color:#a16207; border:1.5px solid #f59e0b;',
@@ -2538,6 +2579,7 @@ function renderBudgets(budgets) {
       'returned': 'background:transparent; color:var(--red); border:1.5px solid var(--red);'
     }[b.status] || '';
 
+    // Action buttons + overflow menu for delete
     let actionHtml = '';
     if (b.status === 'draft') {
       actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
@@ -2548,11 +2590,15 @@ function renderBudgets(budgets) {
       `;
     }
     if (b.status !== 'approved') {
-      actionHtml += `<button class="btn-action" onclick='deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})' style="margin-left:4px; background:transparent; color:var(--red); border:1px solid var(--red); font-size:11px; padding:3px 8px;" title="Delete this budget">Del</button>`;
+      actionHtml += `<div class="action-menu" style="display:inline-block; margin-left:4px;">` +
+        `<button class="action-menu-btn" onclick="toggleMenu(this)">&#8943;</button>` +
+        `<div class="action-menu-items">` +
+        `<button class="del-item" onclick='deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})'>Delete budget</button>` +
+        `</div></div>`;
     }
 
-    // Format updated_at timestamp
-    let updatedStr = '—';
+    // Format timestamp
+    let updatedStr = '\u2014';
     const ts = b.updated_at || b.created_at;
     if (ts) {
       const d = new Date(ts);
@@ -2564,14 +2610,26 @@ function renderBudgets(budgets) {
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a>${verBadge}</td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${updatedStr}</td>
-      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}<br>${maintIcon}</td>
+      <td><div class="data-dots">${dataHtml}</div></td>
       <td><span class="pill" style="${pmPillStyle}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
-      <td>${actionHtml}</td>
+      <td style="white-space:nowrap;">${actionHtml}</td>
     `;
     tbody.appendChild(tr);
   });
 }
+
+function toggleMenu(btn) {
+  const menu = btn.nextElementSibling;
+  // Close any other open menus
+  document.querySelectorAll('.action-menu-items.open').forEach(m => { if (m !== menu) m.classList.remove('open'); });
+  menu.classList.toggle('open');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.action-menu')) {
+    document.querySelectorAll('.action-menu-items.open').forEach(m => m.classList.remove('open'));
+  }
+});
 
 function filterBudgetTable() {
   const query = document.getElementById('budgetSearch').value.toLowerCase();
