@@ -622,6 +622,22 @@ def create_workflow_blueprint(db):
                 )
                 db.session.add(budget)
                 db.session.flush()
+
+                # Clear invoice reclasses on expense reports for this entity
+                try:
+                    cleared = db.session.execute(
+                        db.text("""
+                            UPDATE expense_invoices SET reclass_to_gl = NULL, reclass_amount = 0,
+                                   reclass_notes = NULL, reclassed_by = NULL, reclassed_at = NULL
+                            WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)
+                              AND reclass_to_gl IS NOT NULL
+                        """),
+                        {"ec": str(entity_code)}
+                    ).rowcount
+                    if cleared:
+                        logger.info(f"Fresh start: cleared {cleared} invoice reclasses for {entity_code}")
+                except Exception as e:
+                    logger.warning(f"Could not clear invoice reclasses for {entity_code}: {e}")
             else:
                 # Update existing or create first version
                 budget = get_budget_for_year(entity_code, BUDGET_YEAR)
