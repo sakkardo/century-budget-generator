@@ -1100,12 +1100,7 @@ def generate_script():
 
 @app.route("/api/generate-ap-aging-script", methods=["POST"])
 def generate_ap_aging_script():
-    """Generate a standalone AP Aging script that runs independently.
-
-    Separated from the combined script because Yardi ASP.NET session
-    remembers ReportType=2 (Expense Distribution) and contaminates the
-    AP Aging download when both run in the same browser session.
-    """
+    """Generate a standalone AP Aging script (runs independently from combined script)."""
     data = request.json
     entities = data.get("entities", [])
     email = data.get("email", "")
@@ -1122,102 +1117,103 @@ def generate_ap_aging_script():
     ap_aging_script = AP_AGING_SCRIPT
     ap_aging_script = ap_aging_script.replace(
         "const ENTITIES = [148, 204, 206, 805];",
-        f"const ENTITIES = [{entities_js}];"
+        "const ENTITIES = [" + entities_js + "];"
     )
     ap_aging_script = ap_aging_script.replace(
         "const PERIOD_TO = '03/2026';",
-        f"const PERIOD_TO = '{period}';"
+        "const PERIOD_TO = '" + period + "';"
     )
 
-
-    # Get Railway URL for auto-upload
     railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
     if railway_url and not railway_url.startswith("http"):
-        railway_url = f"https://{railway_url}"
+        railway_url = "https://" + railway_url
     if not railway_url:
         railway_url = "https://century-budget-generator-production.up.railway.app"
 
-    # Inject auto-upload into triggerDownload
     ap_aging_script = ap_aging_script.replace(
         "URL.revokeObjectURL(a.href);\n  }",
         "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
     )
 
-    standalone = f"""/**
- * Century Budget \u2014 AP Aging (Open AP) Standalone Script
- * Run this AFTER the main Yardi script (YSL + Expense + Maint Proof).
- * Entities: {entities_js}
- * Period: {period}
- */
-(async function() {{
-  'use strict';
-  const _uploadedFiles = [];
-  const _SESSION_ID = 'yardi_' + Date.now();
-  const _BUDGET_APP = '{railway_url}';
+    # Build standalone script via string concatenation (avoids f-string brace issues)
+    parts = []
+    parts.append("/**")
+    parts.append(" * Century Budget -- AP Aging (Open AP) Standalone Script")
+    parts.append(" * Run AFTER the main script (YSL + Expense + Maint Proof).")
+    parts.append(" * Entities: " + entities_js)
+    parts.append(" * Period: " + period)
+    parts.append(" */")
+    parts.append("(async function() {")
+    parts.append("  'use strict';")
+    parts.append("  const _uploadedFiles = [];")
+    parts.append("  const _SESSION_ID = 'yardi_' + Date.now();")
+    parts.append("  const _BUDGET_APP = '" + railway_url + "';")
+    parts.append("")
+    parts.append("  async function _autoUpload(blob, filename, entity, fileType) {")
+    parts.append("    try {")
+    parts.append("      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {")
+    parts.append("        method: 'POST',")
+    parts.append("        headers: {")
+    parts.append("          'X-Upload-Session': _SESSION_ID,")
+    parts.append("          'X-Entity-Code': String(entity),")
+    parts.append("          'X-File-Type': fileType,")
+    parts.append("          'X-Filename': filename,")
+    parts.append("          'Content-Type': 'application/octet-stream'")
+    parts.append("        },")
+    parts.append("        body: blob")
+    parts.append("      });")
+    parts.append("      const data = await resp.json();")
+    parts.append("      _uploadedFiles.push({ filename, entity, fileType, ok: resp.ok });")
+    parts.append("      console.log('  \u2191 Auto-uploaded: ' + filename + ' (' + data.files_in_session + ' files in session)');")
+    parts.append("    } catch (err) {")
+    parts.append("      console.warn('  Auto-upload failed for ' + filename + ':', err.message);")
+    parts.append("    }")
+    parts.append("  }")
+    parts.append("")
+    parts.append("  async function _autoProcess() {")
+    parts.append("    if (!_uploadedFiles.length) return;")
+    parts.append("    console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');")
+    parts.append("    try {")
+    parts.append("      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {")
+    parts.append("        method: 'POST',")
+    parts.append("        headers: { 'Content-Type': 'application/json' },")
+    parts.append("        body: JSON.stringify({ session_id: _SESSION_ID })")
+    parts.append("      });")
+    parts.append("      const data = await resp.json();")
+    parts.append("      if (resp.ok) {")
+    parts.append("        console.log('\u2713 Server processed ' + (data.successes?.length || 0) + ' files!');")
+    parts.append("        if (data.successes?.length) console.log('  Successes:', data.successes);")
+    parts.append("        if (data.warnings?.length) console.log('  Warnings:', data.warnings);")
+    parts.append("        if (data.failures?.length) console.log('  Failures:', data.failures);")
+    parts.append("      }")
+    parts.append("    } catch (err) {")
+    parts.append("      console.error('Auto-process error:', err.message);")
+    parts.append("    }")
+    parts.append("  }")
+    parts.append("")
+    parts.append("  console.log('='.repeat(60));")
+    parts.append("  console.log('AP Aging (Open AP) -- Standalone Download + Auto-Upload');")
+    parts.append("  console.log('Target: ' + _BUDGET_APP);")
+    parts.append("  console.log('='.repeat(60));")
+    parts.append("")
+    parts.append("  try {")
+    parts.append("    await " + "PLACEHOLDER_SCRIPT")
+    parts.append("    console.log('\\n>>> AP Aging completed successfully <<<');")
+    parts.append("  } catch (e) {")
+    parts.append("    console.error('>>> AP Aging FAILED:', e.message);")
+    parts.append("  }")
+    parts.append("")
+    parts.append("  await _autoProcess();")
+    parts.append("")
+    parts.append("  console.log('\\n' + '='.repeat(60));")
+    parts.append("  console.log('AP Aging DONE -- ' + _uploadedFiles.length + ' files uploaded.');")
+    parts.append("  console.log(_uploadedFiles.length > 0 ? 'Check the FA Dashboard!' : 'No files -- check console.');")
+    parts.append("  console.log('='.repeat(60));")
+    parts.append("})();")
+    standalone = "\n".join(parts)
+    standalone = standalone.replace("PLACEHOLDER_SCRIPT", ap_aging_script)
 
-  async function _autoUpload(blob, filename, entity, fileType) {{
-    try {{
-      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
-        method: 'POST',
-        headers: {{
-          'X-Upload-Session': _SESSION_ID,
-          'X-Entity-Code': String(entity),
-          'X-File-Type': fileType,
-          'X-Filename': filename,
-          'Content-Type': 'application/octet-stream'
-        }},
-        body: blob
-      }});
-      const data = await resp.json();
-      _uploadedFiles.push({{ filename, entity, fileType, ok: resp.ok }});
-      console.log('  \\u2191 Auto-uploaded: ' + filename + ' (' + data.files_in_session + ' files in session)');
-    }} catch (err) {{
-      console.warn('  Auto-upload failed for ' + filename + ':', err.message);
-    }}
-  }}
-
-  async function _autoProcess() {{
-    if (!_uploadedFiles.length) return;
-    console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
-    try {{
-      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ session_id: _SESSION_ID }})
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        console.log('\\u2713 Server processed ' + (data.successes?.length || 0) + ' files successfully!');
-        if (data.successes?.length) console.log('  Successes:', data.successes);
-        if (data.warnings?.length) console.log('  Warnings:', data.warnings);
-        if (data.failures?.length) console.log('  Failures:', data.failures);
-      }}
-    }} catch (err) {{
-      console.error('Auto-process error:', err.message);
-    }}
-  }}
-
-  console.log('='.repeat(60));
-  console.log('AP Aging (Open AP) \\u2014 Standalone Download + Auto-Upload');
-  console.log('='.repeat(60));
-
-  try {{
-    await {ap_aging_script}
-    console.log('\\n>>> AP Aging completed successfully <<<');
-  }} catch (e) {{
-    console.error('>>> AP Aging FAILED:', e.message);
-  }}
-
-  await _autoProcess();
-
-  console.log('\\n' + '='.repeat(60));
-  console.log('AP Aging DONE \\u2014 ' + _uploadedFiles.length + ' files uploaded.');
-  console.log(_uploadedFiles.length > 0 ? 'Check the FA Dashboard for results.' : 'No files uploaded \\u2014 check console for errors.');
-  console.log('='.repeat(60));
-}})();"""
-
-    return jsonify({{"script": standalone}})
-
+    return jsonify({"script": standalone})
 
 @app.route("/api/process", methods=["POST"])
 def process_files():
