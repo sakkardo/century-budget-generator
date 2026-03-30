@@ -591,11 +591,14 @@ def create_workflow_blueprint(db):
                 .first())
 
     def _safe_sql(sql, params):
-        """Execute SQL safely — rollback and continue if table doesn't exist."""
+        """Execute SQL safely using a savepoint so failures don't kill the transaction."""
         try:
-            return db.session.execute(db.text(sql), params).rowcount
+            nested = db.session.begin_nested()
+            result = db.session.execute(db.text(sql), params).rowcount
+            nested.commit()
+            return result
         except Exception:
-            db.session.rollback()
+            nested.rollback()
             return 0
 
     def _clear_entity_customizations(entity_code):
