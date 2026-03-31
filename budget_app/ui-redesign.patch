@@ -1,0 +1,658 @@
+From 65532dde7593ac1f7ac39a4505fcba260d2c9994 Mon Sep 17 00:00:00 2001
+From: Jacob Sirotkin <jake.sirotkin@gmail.com>
+Date: Thu, 26 Mar 2026 06:01:41 -0400
+Subject: [PATCH 1/2] feat: hide zero-value rows with toggle button across all
+ budget views
+
+Rows where all numeric columns are zero are now hidden by default.
+A "Show X Hidden Zero Rows" button appears in each view's toolbar
+to reveal them. Applies to PM Edit, FA Workbook, and Expense Report.
+Totals always include all rows regardless of visibility.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ budget_app/expense_distribution.py | 37 +++++++++++++++++-
+ budget_app/workflow.py             | 61 +++++++++++++++++++++++++++++-
+ 2 files changed, 95 insertions(+), 3 deletions(-)
+
+diff --git a/budget_app/expense_distribution.py b/budget_app/expense_distribution.py
+index 2ae3e98..22f9b59 100644
+--- a/budget_app/expense_distribution.py
++++ b/budget_app/expense_distribution.py
+@@ -651,6 +651,9 @@ PM_EXPENSE_TEMPLATE = """
+ 
+   <div class="grid-wrapper">
+     <div class="grid-container">
++      <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
++        <button id="expZeroToggle" onclick="expToggleZeroRows()" style="font-size:12px; padding:5px 14px; background:#e1effe; color:#1a56db; border:1px solid #1a56db; border-radius:6px; cursor:pointer;"></button>
++      </div>
+       <table id="expenseTable">
+         <thead>
+           <tr>
+@@ -739,6 +742,7 @@ async function loadReport() {
+     reportData = await resp.json();
+     renderSummaryCards();
+     renderTable();
++    expUpdateZeroToggle();
+   } catch(e) {
+     console.error('Failed to load report:', e);
+   }
+@@ -754,6 +758,34 @@ function renderSummaryCards() {
+   document.getElementById('cardTotal').textContent = fmt(r.total_amount);
+ }
+ 
++// ── Zero-row toggle ──────────────────────────────────────────────────────────
++
++let _expShowZeroRows = false;
++
++function expCountZeroRows() {
++  return document.querySelectorAll('#expenseBody .zero-row').length;
++}
++
++function expUpdateZeroToggle() {
++  const btn = document.getElementById('expZeroToggle');
++  if (!btn) return;
++  const count = expCountZeroRows();
++  if (count === 0) { btn.style.display = 'none'; return; }
++  btn.style.display = '';
++  btn.textContent = _expShowZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Zero Rows';
++  btn.style.background = _expShowZeroRows ? '#f3f4f6' : '#e1effe';
++  btn.style.color = _expShowZeroRows ? '#6b7280' : '#1a56db';
++  btn.style.borderColor = _expShowZeroRows ? '#d1d5db' : '#1a56db';
++}
++
++function expToggleZeroRows() {
++  _expShowZeroRows = !_expShowZeroRows;
++  document.querySelectorAll('#expenseBody .zero-row').forEach(row => {
++    row.style.display = _expShowZeroRows ? '' : 'none';
++  });
++  expUpdateZeroToggle();
++}
++
+ // ── Render Table ────────────────────────────────────────────────────────────
+ 
+ function renderTable() {
+@@ -791,9 +823,11 @@ function renderTable() {
+     const pctVariance = currentBudget ? (overUnder / currentBudget * 100) : 0;
+ 
+     // GL summary row
++    const isZero = !adj.original && !adj.reclass_in && !adj.reclass_out && !currentBudget;
+     const tr = document.createElement('tr');
+-    tr.className = 'gl-row' + (expandedGLs.has(gl) ? ' expanded' : '');
++    tr.className = 'gl-row' + (expandedGLs.has(gl) ? ' expanded' : '') + (isZero ? ' zero-row' : '');
+     tr.dataset.gl = gl;
++    if (isZero && !_expShowZeroRows) tr.style.display = 'none';
+     tr.onclick = () => toggleGL(gl);
+     tr.innerHTML = `
+       <td><strong>${gl}</strong></td>
+@@ -840,6 +874,7 @@ function toggleGL(gl) {
+   if (expandedGLs.has(gl)) expandedGLs.delete(gl);
+   else expandedGLs.add(gl);
+   renderTable();
++  expUpdateZeroToggle();
+ }
+ 
+ // ── Reclass Modal ───────────────────────────────────────────────────────────
+diff --git a/budget_app/workflow.py b/budget_app/workflow.py
+index 276d436..b26e340 100644
+--- a/budget_app/workflow.py
++++ b/budget_app/workflow.py
+@@ -3280,6 +3280,7 @@ function renderSheet(sheetName, sheetLines, tabEl) {
+ 
+   // All sheets are editable for the FA — this is the budget workbench
+   renderEditableSheet(sheetName, sheetLines, contentDiv);
++  setTimeout(faUpdateZeroToggle, 50);
+ }
+ 
+ function renderBudgetSummary(contentDiv) {
+@@ -3409,6 +3410,29 @@ function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
+   contentDiv.innerHTML = html;
+ }
+ 
++// ── FA Zero-row toggle ───────────────────────────────────────────────
++let _faShowZeroRows = false;
++
++function faUpdateZeroToggle() {
++  const btn = document.getElementById('faZeroToggle');
++  if (!btn) return;
++  const count = document.querySelectorAll('.fa-grid .zero-row').length;
++  if (count === 0) { btn.style.display = 'none'; return; }
++  btn.style.display = '';
++  btn.textContent = _faShowZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Rows';
++  btn.style.background = _faShowZeroRows ? 'var(--gray-200)' : 'var(--blue-light, #dbeafe)';
++  btn.style.color = _faShowZeroRows ? 'var(--gray-600)' : 'var(--blue)';
++  btn.style.borderColor = _faShowZeroRows ? 'var(--gray-300)' : 'var(--blue)';
++}
++
++function faToggleZeroRows() {
++  _faShowZeroRows = !_faShowZeroRows;
++  document.querySelectorAll('.fa-grid .zero-row').forEach(row => {
++    row.style.display = _faShowZeroRows ? '' : 'none';
++  });
++  faUpdateZeroToggle();
++}
++
+ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+   const NC = 15;
+   const estLbl = estimateLabel();
+@@ -3449,7 +3473,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+     '<span><span class="fa-legend-dot" style="background:#fffff0;"></span>Editable</span>' +
+     '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated</span>' +
+     '<span>Click <span class="fa-fx">fx</span> to see formula</span>' +
+-    '</div><button onclick="toggleAllFormulas()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">Show All Formulas</button></div>';
++    '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button><button onclick="toggleAllFormulas()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;">Show All Formulas</button></div></div>';
+ 
+   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
+     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
+@@ -3471,6 +3495,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+     const unpaid = l.unpaid_bills || 0;
+     const ytdBudget = l.ytd_budget || 0;
+     const budget = l.current_budget || 0;
++    const isZero = !prior && !ytd && !accrual && !unpaid && !ytdBudget && !budget && !(l.increase_pct);
+     const estimate = faComputeEstimate(l);
+     const forecast = faComputeForecast(l);
+     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+@@ -3494,7 +3519,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+         '<div class="fa-popover">' + formula + '</div></td>';
+     }
+ 
+-    return '<tr data-gl="' + gl + '">' +
++    return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
+       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
+       '<td style="font-size:12px;">' + l.description + '</td>' +
+       '<td><input type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+@@ -4092,6 +4117,7 @@ PM_EDIT_TEMPLATE = """
+       <span id="saveIndicator" class="save-indicator"></span>
+     </div>
+     <div style="display:flex; gap:12px; align-items:center;">
++      <button id="zeroToggle" onclick="toggleZeroRows()" class="btn" style="background:var(--gray-200); color:var(--gray-600); font-size:12px; padding:6px 14px; border:1px solid var(--gray-300); border-radius:6px; cursor:pointer;"></button>
+       <a href="/pm/{{ entity_code }}/expenses" class="btn" style="background:var(--gray-500); text-decoration:none;">View Expense Report</a>
+       <button class="btn btn-green" id="submitBtn" onclick="submitForReview()">Submit for FA Review</button>
+     </div>
+@@ -4221,7 +4247,9 @@ function renderTable() {
+ 
+             const reclassBadge = line.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">Reclass</span>' : '';
+ 
++            const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.ytd_budget || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
+             const tr = document.createElement('tr');
++            if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
+             tr.innerHTML = `
+                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
+                 <td>${line.description}</td>
+@@ -4287,6 +4315,33 @@ function renderTable() {
+     tbody.appendChild(grandRow);
+ }
+ 
++// ── Zero-row toggle ──────────────────────────────────────────────────
++let _showZeroRows = false;
++
++function countZeroRows() {
++    return document.querySelectorAll('#linesBody .zero-row').length;
++}
++
++function updateZeroToggle() {
++    const btn = document.getElementById('zeroToggle');
++    if (!btn) return;
++    const count = countZeroRows();
++    if (count === 0) { btn.style.display = 'none'; return; }
++    btn.style.display = '';
++    btn.textContent = _showZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Zero Rows';
++    btn.style.background = _showZeroRows ? 'var(--gray-200)' : 'var(--blue-light, #e1effe)';
++    btn.style.color = _showZeroRows ? 'var(--gray-600)' : 'var(--blue)';
++    btn.style.borderColor = _showZeroRows ? 'var(--gray-300)' : 'var(--blue)';
++}
++
++function toggleZeroRows() {
++    _showZeroRows = !_showZeroRows;
++    document.querySelectorAll('#linesBody .zero-row').forEach(row => {
++        row.style.display = _showZeroRows ? '' : 'none';
++    });
++    updateZeroToggle();
++}
++
+ // Expense distribution drill-down
+ let _expenseCache = null;
+ 
+@@ -4501,6 +4556,7 @@ async function saveReclass(glCode) {
+             line.reclass_notes = notes;
+         }
+         renderTable();
++        updateZeroToggle();
+     } else {
+         alert('Error saving reclass suggestion');
+     }
+@@ -4513,6 +4569,7 @@ if (!CAN_EDIT) {
+ }
+ 
+ renderTable();
++updateZeroToggle();
+ </script>
+ </body>
+ </html>
+-- 
+2.34.1
+
+
+From a53c6f93555fd859d6f2031ce3dc7f2aeed61549 Mon Sep 17 00:00:00 2001
+From: Jacob Sirotkin <jake.sirotkin@gmail.com>
+Date: Thu, 26 Mar 2026 06:20:24 -0400
+Subject: [PATCH 2/2] feat: inline GL drill-down, reclass, formula UX, visual
+ consistency
+
+Phase 1: Zero-row hiding with toggle button (PM Edit, FA Workbook, Expense Report)
+Phase 2: Inline GL expense drill-down with reclass in PM Edit and FA Workbook
+  - Click description to expand invoices inline
+  - Reclass via inline dropdown (no modal)
+  - Undo reclass with one click
+Phase 3: Visual consistency and formula UX
+  - Expense report header now blue (was purple)
+  - PM Edit computed cells (Estimate, Forecast, Proposed) show formula on click
+  - fx badges on column headers for computed columns
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ budget_app/expense_distribution.py |   2 +-
+ budget_app/workflow.py             | 280 ++++++++++++++++++++++++++---
+ 2 files changed, 258 insertions(+), 24 deletions(-)
+
+diff --git a/budget_app/expense_distribution.py b/budget_app/expense_distribution.py
+index 22f9b59..b1893b8 100644
+--- a/budget_app/expense_distribution.py
++++ b/budget_app/expense_distribution.py
+@@ -540,7 +540,7 @@ PM_EXPENSE_TEMPLATE = """
+   }
+   * { box-sizing: border-box; margin: 0; padding: 0; }
+   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+-  header { background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%); color: white; padding: 24px 20px; }
++  header { background: linear-gradient(135deg, #1a56db 0%, #1e429f 100%); color: white; padding: 24px 20px; }
+   header h1 { font-size: 24px; margin-bottom: 4px; }
+   header p { opacity: 0.9; font-size: 14px; }
+   .back-link { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 14px; }
+diff --git a/budget_app/workflow.py b/budget_app/workflow.py
+index b26e340..0c5bafd 100644
+--- a/budget_app/workflow.py
++++ b/budget_app/workflow.py
+@@ -2795,6 +2795,7 @@ function renderDetail(data) {
+       const tab = document.createElement('button');
+       tab.textContent = sheetName;
+       tab.className = 'sheet-tab' + (i === 0 ? ' active' : '');
++      tab.dataset.sheet = sheetName;
+       tab.onclick = () => renderSheet(sheetName, sheets[sheetName], tab);
+       tabsDiv.appendChild(tab);
+     });
+@@ -3410,6 +3411,124 @@ function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
+   contentDiv.innerHTML = html;
+ }
+ 
++// ── FA Expense drill-down ────────────────────────────────────────────
++let _faExpenseCache = null;
++
++async function faFetchExpenseData() {
++  if (_faExpenseCache !== null) return _faExpenseCache;
++  try {
++    const res = await fetch('/api/expense-dist/' + entityCode);
++    if (!res.ok) { _faExpenseCache = false; return null; }
++    _faExpenseCache = await res.json();
++    return _faExpenseCache;
++  } catch { _faExpenseCache = false; return null; }
++}
++
++async function faToggleInvoices(glCode, el) {
++  const row = el.closest('tr');
++  const next = row.nextElementSibling;
++  if (next && next.classList.contains('fa-invoice-detail')) {
++    next.remove();
++    row.querySelectorAll('.fa-drill-arrow').forEach(a => a.textContent = '▶');
++    return;
++  }
++  row.querySelectorAll('.fa-drill-arrow').forEach(a => a.textContent = '▼');
++
++  const data = await faFetchExpenseData();
++  if (!data || !data.gl_groups) {
++    const noData = document.createElement('tr');
++    noData.className = 'fa-invoice-detail';
++    noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense data uploaded yet.</td>';
++    row.after(noData);
++    return;
++  }
++
++  const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
++  if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
++    const noInv = document.createElement('tr');
++    noInv.className = 'fa-invoice-detail';
++    noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices for ' + glCode + '</td>';
++    row.after(noInv);
++    return;
++  }
++
++  // Build all GL codes for reclass dropdown from current sheet
++  const currentSheet = document.querySelector('.sheet-tab.active');
++  const sheetName = currentSheet ? currentSheet.dataset.sheet : '';
++  const sheetLines = allSheets[sheetName] || [];
++  const allGLs = sheetLines.map(l => l.gl_code).filter(g => g !== glCode);
++
++  const detailRow = document.createElement('tr');
++  detailRow.className = 'fa-invoice-detail';
++  let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
++  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
++  html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
++  html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
++  html += '</div>';
++  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
++  html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
++  html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
++
++  glGroup.invoices.forEach(inv => {
++    const isReclassed = !!inv.reclass_to_gl;
++    html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
++    html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
++    html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
++    html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
++    html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
++    html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
++    html += '<td style="padding:6px 10px; text-align:right;">';
++    if (isReclassed) {
++      html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
++      html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
++    } else {
++      html += '<select id="fa_reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
++      html += '<option value="">Reclass to…</option>';
++      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
++      html += '</select> ';
++      html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
++    }
++    html += '</td></tr>';
++  });
++  html += '</table></div></td>';
++  detailRow.innerHTML = html;
++  row.after(detailRow);
++}
++
++async function faInlineReclass(invoiceId, fromGL) {
++  const select = document.getElementById('fa_reclass_gl_' + invoiceId);
++  if (!select || !select.value) { alert('Select a target GL code'); return; }
++  try {
++    const resp = await fetch('/api/expense-dist/reclass/' + invoiceId, {
++      method: 'POST',
++      headers: {'Content-Type': 'application/json'},
++      body: JSON.stringify({ reclass_to_gl: select.value, reclass_notes: 'Reclassed from FA workbook' })
++    });
++    if (resp.ok) {
++      _faExpenseCache = null;
++      const el = document.querySelector('a[onclick*="faToggleInvoices"][onclick*="' + fromGL + '"]');
++      if (el) { faToggleInvoices(fromGL, el); setTimeout(() => faToggleInvoices(fromGL, el), 100); }
++      showToast('Reclassified to ' + select.value, 'success');
++    } else { showToast('Reclass failed', 'error'); }
++  } catch(e) { showToast('Error: ' + e.message, 'error'); }
++}
++
++async function faUndoReclass(invoiceId, fromGL) {
++  try {
++    const resp = await fetch('/api/expense-dist/reclass/' + invoiceId, {
++      method: 'POST',
++      headers: {'Content-Type': 'application/json'},
++      body: JSON.stringify({ reclass_to_gl: '' })
++    });
++    if (resp.ok) {
++      _faExpenseCache = null;
++      const el = document.querySelector('a[onclick*="faToggleInvoices"][onclick*="' + fromGL + '"]');
++      if (el) { faToggleInvoices(fromGL, el); setTimeout(() => faToggleInvoices(fromGL, el), 100); }
++      showToast('Reclass undone', 'success');
++    } else { showToast('Undo failed', 'error'); }
++  } catch(e) { showToast('Error: ' + e.message, 'error'); }
++}
++
+ // ── FA Zero-row toggle ───────────────────────────────────────────────
+ let _faShowZeroRows = false;
+ 
+@@ -3460,6 +3579,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+       .fa-grid input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
+       .fa-popover { display:none; position:absolute; bottom:100%; left:0; right:0; background:white; border:1px solid var(--blue); border-radius:6px; padding:6px 10px; font-size:11px; color:var(--gray-700); box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:50; white-space:nowrap; min-width:200px; }
+       .fa-popover.visible { display:block; }
++      .fa-invoice-detail td { padding:0 !important; }
++      .fa-invoice-detail:hover { background:transparent !important; }
+       .fa-popover input { width:100%; margin-top:4px; padding:4px 6px; border:1px solid var(--gray-300); border-radius:3px; font-size:12px; text-align:right; }
+       .fa-fx { cursor:pointer; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; margin-right:4px; vertical-align:middle; user-select:none; }
+       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
+@@ -3521,7 +3642,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+ 
+     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
+       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
+-      '<td style="font-size:12px;">' + l.description + '</td>' +
++      '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
+       '<td><input type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+       '<td class="num">' + numInput('pr_'+gl, 'prior_year', prior, '85px') + '</td>' +
+       '<td class="num">' + numInput('ytd_'+gl, 'ytd_actual', ytd, '85px') + '</td>' +
+@@ -4081,6 +4202,9 @@ PM_EDIT_TEMPLATE = """
+   .btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+   .btn-green { background: var(--green); }
+   .btn-green:hover { background: #046c4e; }
++
++  .invoice-detail-row td { padding: 0 !important; }
++  .invoice-detail-row:hover { background: transparent !important; }
+ </style>
+ </head>
+ <body>
+@@ -4136,11 +4260,11 @@ PM_EDIT_TEMPLATE = """
+             <th class="number">Accrual<br>Adj</th>
+             <th class="number">Unpaid<br>Bills</th>
+             <th class="number">YTD<br>Budget</th>
+-            <th class="number">{{ estimate_label }}<br>Estimate</th>
+-            <th class="number">12 Month<br>Forecast</th>
++            <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
++            <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+             <th class="number">Current<br>Budget</th>
+             <th class="number">Increase<br>%</th>
+-            <th class="number">Proposed<br>Budget</th>
++            <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+             <th class="number">$<br>Variance</th>
+             <th class="number">%<br>Change</th>
+           </tr>
+@@ -4252,18 +4376,18 @@ function renderTable() {
+             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
+             tr.innerHTML = `
+                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
+-                <td>${line.description}</td>
++                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
+                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
+                 <td class="number">${fmt(line.prior_year)}</td>
+                 <td class="number">${fmt(line.ytd_actual)}</td>
+                 <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                 <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                 <td class="number">${fmt(line.ytd_budget)}</td>
+-                <td class="number" id="est_${line.gl_code}">${fmt(estimate)}</td>
+-                <td class="number" id="fc_${line.gl_code}">${fmt(forecast)}</td>
++                <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
++                <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
+                 <td class="number">${fmt(line.current_budget)}</td>
+                 <td class="number"><input type="number" step="0.1" value="${((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${line.gl_code}" data-field="increase_pct" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="width:70px;"></td>
+-                <td class="number" id="pb_${line.gl_code}">${fmt(proposed)}</td>
++                <td class="number" id="pb_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'pb', '${line.gl_code}')" title="Click to see formula">${fmt(proposed)}</td>
+                 <td class="number" id="var_${line.gl_code}" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(variance)}</td>
+                 <td class="number" id="pct_${line.gl_code}">${(pctChange * 100).toFixed(1)}%</td>
+             `;
+@@ -4342,6 +4466,56 @@ function toggleZeroRows() {
+     updateZeroToggle();
+ }
+ 
++// ── PM Formula popover ───────────────────────────────────────────────
++let _activePmPopover = null;
++
++function showPmFormula(cell, type, gl) {
++    // Close any existing popover
++    if (_activePmPopover) { _activePmPopover.remove(); _activePmPopover = null; }
++
++    const line = LINES.find(l => l.gl_code === gl);
++    if (!line) return;
++
++    const ytd = line.ytd_actual || 0;
++    const accrual = line.accrual_adj || 0;
++    const unpaid = line.unpaid_bills || 0;
++    const base = ytd + accrual + unpaid;
++    const prior = line.prior_year || 0;
++    const est = computeEstimate(line);
++    const fc = computeForecast(line);
++    const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
++
++    let formula = '';
++    if (type === 'est') {
++        if (base >= prior && prior > 0) {
++            formula = `(YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)}) / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
++        } else {
++            formula = `max(Prior ${fmt(prior)} − Base ${fmt(base)}, 0) = ${fmt(est)}`;
++        }
++    } else if (type === 'fc') {
++        formula = `YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)} + Est ${fmt(est)} = ${fmt(fc)}`;
++    } else if (type === 'pb') {
++        formula = `Forecast ${fmt(fc)} × (1 + ${incPct}%) = ${fmt(computeProposed(line))}`;
++    }
++
++    const pop = document.createElement('div');
++    pop.style.cssText = 'position:absolute; bottom:100%; left:0; right:0; background:white; border:1px solid var(--blue); border-radius:6px; padding:8px 12px; font-size:11px; color:var(--gray-700); box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:50; white-space:nowrap; min-width:220px;';
++    pop.innerHTML = '<div style="font-weight:600; color:var(--blue); margin-bottom:2px; font-size:10px; text-transform:uppercase;">Formula</div>' + formula;
++    cell.appendChild(pop);
++    _activePmPopover = pop;
++
++    // Close on click outside
++    setTimeout(() => {
++        document.addEventListener('click', function closePop(e) {
++            if (!pop.contains(e.target) && e.target !== cell) {
++                pop.remove();
++                _activePmPopover = null;
++                document.removeEventListener('click', closePop);
++            }
++        });
++    }, 10);
++}
++
+ // Expense distribution drill-down
+ let _expenseCache = null;
+ 
+@@ -4360,49 +4534,109 @@ async function toggleInvoices(glCode, linkEl) {
+     const existingDetail = row.nextElementSibling;
+     if (existingDetail && existingDetail.classList.contains('invoice-detail-row')) {
+         existingDetail.remove();
++        // Reset arrow indicators
++        row.querySelectorAll('.drill-arrow').forEach(a => a.textContent = '▶');
+         return;
+     }
+ 
++    // Set arrow to expanded
++    row.querySelectorAll('.drill-arrow').forEach(a => a.textContent = '▼');
++
+     const data = await fetchExpenseData();
+     if (!data || !data.gl_groups) {
+         const noData = document.createElement('tr');
+         noData.className = 'invoice-detail-row';
+-        noData.innerHTML = '<td colspan="10" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet.</td>';
++        noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet. <a href="/pm/' + ENTITY + '/expenses" style="color:var(--blue);">Upload here</a></td>';
+         row.after(noData);
+         return;
+     }
+ 
+-    // Find invoices for this GL code — gl_groups is an array of {gl_code, gl_name, invoices, total}
+     const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
+     if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
+         const noInv = document.createElement('tr');
+         noInv.className = 'invoice-detail-row';
+-        noInv.innerHTML = '<td colspan="10" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
++        noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
+         row.after(noInv);
+         return;
+     }
+ 
++    // Build all GL codes for reclass dropdown
++    const allGLs = LINES.map(l => l.gl_code).filter(g => g !== glCode);
++
+     const detailRow = document.createElement('tr');
+     detailRow.className = 'invoice-detail-row';
+-    let invoiceHtml = '<td colspan="10" style="padding:0;"><div style="padding:8px 24px; background:var(--gray-50); border-left:3px solid var(--blue);">' +
+-        '<table style="width:100%; font-size:12px; border-collapse:collapse;">' +
+-        '<tr style="color:var(--gray-500); font-weight:600;"><td style="padding:4px 8px;">Payee</td><td style="padding:4px 8px;">Invoice #</td><td style="padding:4px 8px;">Date</td><td style="padding:4px 8px; text-align:right;">Amount</td></tr>';
++    let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
++    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
++    html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
++    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
++    html += '</div>';
++
++    html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
++    html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
++    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
+ 
+     glGroup.invoices.forEach(inv => {
+-        invoiceHtml += '<tr style="border-top:1px solid var(--gray-200);">' +
+-            '<td style="padding:4px 8px;">' + (inv.payee_name || inv.payee_code || '') + '</td>' +
+-            '<td style="padding:4px 8px;">' + (inv.invoice_num || '') + '</td>' +
+-            '<td style="padding:4px 8px;">' + (inv.invoice_date || '') + '</td>' +
+-            '<td style="padding:4px 8px; text-align:right;">' + fmt(inv.amount) + '</td></tr>';
++        const isReclassed = !!inv.reclass_to_gl;
++        html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
++        html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
++        html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
++        html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
++        html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
++        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.amount) + '</td>';
++        html += '<td style="padding:6px 10px; text-align:right;">';
++        if (isReclassed) {
++            html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
++            html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
++        } else {
++            html += '<select id="reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
++            html += '<option value="">Reclass to…</option>';
++            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
++            html += '</select> ';
++            html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
++        }
++        html += '</td></tr>';
+     });
+ 
+-    invoiceHtml += '<tr style="border-top:2px solid var(--gray-300); font-weight:700;"><td colspan="3" style="padding:4px 8px;">Total (' + glGroup.invoices.length + ' invoices)</td>' +
+-        '<td style="padding:4px 8px; text-align:right;">' + fmt(glGroup.total || 0) + '</td></tr>';
+-    invoiceHtml += '</table></div></td>';
+-    detailRow.innerHTML = invoiceHtml;
++    html += '</table></div></td>';
++    detailRow.innerHTML = html;
+     row.after(detailRow);
+ }
+ 
++async function inlineReclass(invoiceId, fromGL) {
++    const select = document.getElementById('reclass_gl_' + invoiceId);
++    if (!select || !select.value) { alert('Select a target GL code'); return; }
++    try {
++        const resp = await fetch('/api/expense-dist/reclass/' + invoiceId, {
++            method: 'POST',
++            headers: {'Content-Type': 'application/json'},
++            body: JSON.stringify({ reclass_to_gl: select.value, reclass_notes: 'Reclassed from PM budget review' })
++        });
++        if (resp.ok) {
++            _expenseCache = null; // Clear cache to refresh
++            // Re-toggle to refresh the detail view
++            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
++            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
++            showToast('Invoice reclassified to ' + select.value, 'success');
++        } else { showToast('Reclass failed', 'error'); }
++    } catch(e) { showToast('Reclass error: ' + e.message, 'error'); }
++}
++
++async function inlineUndoReclass(invoiceId, fromGL) {
++    try {
++        const resp = await fetch('/api/expense-dist/reclass/' + invoiceId, {
++            method: 'POST',
++            headers: {'Content-Type': 'application/json'},
++            body: JSON.stringify({ reclass_to_gl: '' })
++        });
++        if (resp.ok) {
++            _expenseCache = null;
++            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
++            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
++            showToast('Reclass undone', 'success');
++        } else { showToast('Undo failed', 'error'); }
++    } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
++}
++
+ function onInput(el) {
+     const gl = el.dataset.gl;
+     const field = el.dataset.field;
+-- 
+2.34.1
+

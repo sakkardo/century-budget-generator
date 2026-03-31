@@ -79,8 +79,8 @@ def detect_open_ap_file(file_path):
                         return True
         wb.close()
         return False
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"detect_open_ap_file openpyxl failed for {file_path}: {e}")
 
     # Try pandas HTML reader (Yardi .xls is sometimes HTML)
     try:
@@ -95,8 +95,8 @@ def detect_open_ap_file(file_path):
                     row_text = " ".join(str(v).lower() for v in row.values if v is not None)
                     if "payee code" in row_text and "current owed" in row_text:
                         return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"detect_open_ap_file pandas failed for {file_path}: {e}")
 
     # Try by filename pattern
     fname = str(file_path).lower()
@@ -707,6 +707,12 @@ def create_open_ap_blueprint(db, workflow_models):
                 logger.info(f"Open AP GL {gl} ({gl_totals[gl]:,.2f}) has no matching BudgetLine — skipped")
 
         # Zero out unpaid_bills for GL codes NOT in Open AP (clear stale data)
+        # Only zero if we actually have invoice data — prevents wiping on empty/failed parse
+        if not gl_totals:
+            logger.warning(f"No GL totals for entity {entity_code} — skipping zeroization to protect existing data")
+            db.session.commit()
+            return {"applied": applied, "gl_totals": gl_totals}
+
         for line in lines:
             if line.gl_code not in gl_totals and float(line.unpaid_bills or 0) != 0:
                 old_val = float(line.unpaid_bills or 0)

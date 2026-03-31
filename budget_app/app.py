@@ -838,8 +838,10 @@ def auto_process():
                 unpaid_result = {"applied": 0, "gl_totals": {}}
                 try:
                     unpaid_result = oa_helpers["apply_unpaid_bills"](target_entity)
+                    logger.info(f"Applied unpaid bills: {unpaid_result['applied']} GL lines for entity {target_entity}")
                 except Exception as unpaid_err:
-                    results["warnings"].append(f"Unpaid bills failed for {target_entity}: {str(unpaid_err)}")
+                    logger.error(f"CRITICAL: apply_unpaid_bills failed for {target_entity}: {unpaid_err}")
+                    results["warnings"].append(f"Unpaid bills FAILED for {target_entity}: {str(unpaid_err)}")
 
                 unpaid_msg = f", {unpaid_result['applied']} GL lines updated" if unpaid_result["applied"] > 0 else ""
                 results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
