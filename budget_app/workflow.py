@@ -5105,7 +5105,7 @@ async function faToggleInvoices(glCode, el) {
   html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-invoice-detail\').remove(); return false;" title="Close">×</button></div>';
   html += '<div class="drill-panel-body"><table>';
   html += '<thead><tr>';
-  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:right; min-width:200px;">Reclass To</td></tr></thead>';
+  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px;">Reclass To</td></tr></thead>';
   html += '<tbody>';
 
   // Shared datalist
@@ -5120,7 +5120,7 @@ async function faToggleInvoices(glCode, el) {
     html += '<td style="white-space:nowrap;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
     html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
     html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="text-align:right; white-space:nowrap;">';
+    html += '<td style="text-align:left; white-space:nowrap;">';
     if (isReclassed) {
       html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
@@ -6122,6 +6122,41 @@ PM_EDIT_TEMPLATE = r"""
 
   .invoice-detail-row td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
+  .pm-unpaid-detail td { padding: 0 !important; }
+  .pm-unpaid-detail:hover { background: transparent !important; }
+  .pm-accrual-detail td { padding: 0 !important; }
+  .pm-accrual-detail:hover { background: transparent !important; }
+
+  /* Shared drill-panel component */
+  .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  .drill-panel-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; font-size:13px; font-weight:600; }
+  .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:2px 6px; line-height:1; border-radius:4px; transition:all 0.15s; }
+  .drill-panel-header .drill-close:hover { color:var(--gray-700); background:var(--gray-100); }
+  .drill-panel-body { max-height:360px; overflow-y:auto; }
+  .drill-panel-body table { width:100%; border-collapse:collapse; font-size:12px; }
+  .drill-panel-body thead { position:sticky; top:0; z-index:2; }
+  .drill-panel-body thead td, .drill-panel-body thead th { padding:8px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
+  .drill-panel-body tbody tr { transition:background 0.1s; }
+  .drill-panel-body tbody tr:hover { background:var(--gray-50, #f9fafb); }
+  .drill-panel-body tbody td { padding:8px 12px; border-bottom:1px solid var(--gray-100); font-size:12px; }
+  .drill-panel-footer { padding:8px 16px; font-size:11px; border-top:1px solid var(--gray-200); }
+  /* Blue variant */
+  .drill-panel--blue { border-color:#bfdbfe; }
+  .drill-panel--blue .drill-panel-header { background:linear-gradient(135deg, #eff6ff, #dbeafe); color:#1e40af; }
+  .drill-panel--blue .drill-panel-body thead td, .drill-panel--blue .drill-panel-body thead th { background:#eff6ff; color:#1e40af; }
+  /* Amber variant */
+  .drill-panel--amber { border-color:#fde68a; }
+  .drill-panel--amber .drill-panel-header { background:linear-gradient(135deg, #fffbeb, #fef3c7); color:#92400e; }
+  .drill-panel--amber .drill-panel-body thead td, .drill-panel--amber .drill-panel-body thead th { background:#fffbeb; color:#92400e; }
+  /* Reclass search bar */
+  .drill-panel .reclass-wrap { display:inline-flex; align-items:center; gap:4px; }
+  .drill-panel .reclass-search { position:relative; display:inline-flex; align-items:center; }
+  .drill-panel .reclass-search::before { content:'\\1F50D'; position:absolute; left:6px; font-size:10px; pointer-events:none; opacity:0.4; }
+  .drill-panel .reclass-input { font-size:11px; padding:4px 8px 4px 22px; border:1px solid var(--gray-300); border-radius:6px; width:150px; transition:border-color 0.15s; background:white; font-family:inherit; }
+  .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); width:180px; }
+  .drill-panel .reclass-btn { font-size:11px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; transition:all 0.15s; font-family:inherit; }
+  .drill-panel .reclass-btn--primary { background:var(--blue); color:white; }
+  .drill-panel .reclass-btn--undo { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
 </style>
 </head>
 <body>
@@ -6473,28 +6508,28 @@ async function pmToggleUnpaidDrill(glCode, linkEl) {
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'pm-unpaid-detail';
-    let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
-    html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
-    html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 10px;">Vendor</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px; text-align:right;">Amount</td></tr></thead>';
+    let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--amber">';
+    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.pm-unpaid-detail\').remove(); return false;" title="Close">×</button></div>';
+    html += '<div class="drill-panel-body"><table>';
+    html += '<thead><tr>';
+    html += '<td style="text-align:left;">Vendor</td><td>Invoice #</td><td>Date</td><td>Description</td><td style="text-align:right;">Amount</td></tr></thead>';
+    html += '<tbody>';
 
     glGroup.invoices.forEach(inv => {
-        html += '<tr style="border-top:1px solid var(--gray-100);">';
-        html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="padding:5px 10px; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:5px 10px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-        html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
+        html += '<tr>';
+        html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+        html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
         html += '</tr>';
     });
 
-    // Total row
-    html += '<tr style="border-top:2px solid #f59e0b; background:#fef3c7;">';
-    html += '<td colspan="4" style="padding:6px 10px; font-weight:700; color:#92400e; font-size:12px;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' → ' + glCode + ' ' + (glGroup.gl_name || '') + '</td>';
-    html += '<td style="padding:6px 10px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; color:#92400e; font-size:13px;">' + fmt(glGroup.total || 0) + '</td>';
-    html += '</tr>';
-
-    html += '</table></div></td>';
+    html += '</tbody></table></div>';
+    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
+    html += '<span>' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span>';
+    html += '<span style="font-size:13px;">' + fmt(glGroup.total || 0) + '</span>';
+    html += '</div></div></td>';
     detailRow.innerHTML = html;
     row.after(detailRow);
 }
@@ -6556,17 +6591,22 @@ async function pmToggleAccrualDrill(glCode, el) {
     const drillRow = document.createElement('tr');
     drillRow.className = 'pm-accrual-detail';
     const nc = row.querySelectorAll('td').length;
-    let html = '<td colspan="' + nc + '" style="padding:0; background:#fef3c7;"><div style="padding:10px 14px;">' +
-      '<div style="font-size:11px; font-weight:600; color:#92400e; margin-bottom:6px;">Prior-Year Invoices (before ' + (data.cutoff || '?') + ') — Total: ' + fmt(data.total) + '</div>' +
-      '<table style="width:100%; font-size:11px; border-collapse:collapse;">' +
-      '<tr style="background:#fde68a; font-size:10px;"><th style="text-align:left; padding:3px 6px;">Payee</th><th style="padding:3px 6px;">Invoice #</th><th style="padding:3px 6px;">Date</th><th style="text-align:right; padding:3px 6px;">Amount</th></tr>';
+    let html = '<td colspan="' + nc + '" style="padding:0;"><div class="drill-panel drill-panel--amber">';
+    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Prior-Year Invoices</span><span style="font-weight:400; font-size:12px; opacity:0.7;">before ' + (data.cutoff || '?') + ' · ' + data.invoices.length + ' invoice' + (data.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.pm-accrual-detail\').remove(); return false;" title="Close">×</button></div>';
+    html += '<div class="drill-panel-body"><table>';
+    html += '<thead><tr><th style="text-align:left;">Payee</th><th>Invoice #</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>';
+    html += '<tbody>';
     data.invoices.forEach(inv => {
-      html += '<tr style="border-bottom:1px solid #fde68a;"><td style="padding:3px 6px;">' + (inv.payee_name || '—') + '</td>' +
-        '<td style="padding:3px 6px;">' + (inv.invoice_num || '—') + '</td>' +
-        '<td style="padding:3px 6px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
-        '<td style="text-align:right; padding:3px 6px;">' + fmt(inv.amount) + '</td></tr>';
+      html += '<tr><td>' + (inv.payee_name || '—') + '</td>' +
+        '<td>' + (inv.invoice_num || '—') + '</td>' +
+        '<td>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
+        '<td style="text-align:right;">' + fmt(inv.amount) + '</td></tr>';
     });
-    html += '</table></div></td>';
+    html += '</tbody></table></div>';
+    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
+    html += '<span>Accrual Adjustment (negative)</span>';
+    html += '<span style="color:var(--red);">' + fmt(data.total) + '</span>';
+    html += '</div></div></td>';
     drillRow.innerHTML = html;
     row.after(drillRow);
   } catch(e) { el.textContent = '▼'; }
@@ -6610,55 +6650,52 @@ async function toggleInvoices(glCode, linkEl) {
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
-    let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
-    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
-    html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
-    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
-    html += '</div>';
+    let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--blue">';
+    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span></div><button class="drill-close" onclick="this.closest(\'.invoice-detail-row\').remove(); return false;" title="Close">×</button></div>';
 
     // Build datalist options once (shared)
     let dlOptions = '';
     allGLs.forEach(g => { dlOptions += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
 
-    html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
-    html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 6px; width:28px;"><input type="checkbox" id="batch_all_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" onchange="toggleBatchAll(this,\'' + glCode + '\')" title="Select all"></td>';
-    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
+    html += '<div class="drill-panel-body"><table>';
+    html += '<thead><tr>';
+    html += '<td style="width:28px;"><input type="checkbox" id="batch_all_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" onchange="toggleBatchAll(this,\'' + glCode + '\')" title="Select all"></td>';
+    html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px;">Reclass To</td></tr></thead>';
+    html += '<tbody>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
-        html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-        html += '<td style="padding:6px 6px;">';
+        html += '<tr' + (isReclassed ? ' style="opacity:0.5;"' : '') + '>';
+        html += '<td>';
         if (!isReclassed) {
             html += '<input type="checkbox" class="batch-cb" data-inv-id="' + inv.id + '" data-gl="' + glCode + '" data-amt="' + inv.amount + '" onchange="updateBatchBar(\'' + glCode + '\')">';
         }
         html += '</td>';
-        html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.amount) + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right;">';
+        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="font-family:monospace; font-size:11px;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
+        html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + fmt(inv.amount) + '</td>';
+        html += '<td style="text-align:left; white-space:nowrap;">';
         if (isReclassed) {
-            html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
-            html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
+            html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
+            html += '<button class="reclass-btn reclass-btn--undo" onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
         } else {
-            html += '<input id="reclass_gl_' + inv.id + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
-            html += ' <button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
+            html += '<span class="reclass-wrap"><span class="reclass-search"><input id="reclass_gl_' + inv.id + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..."></span>';
+            html += '<button class="reclass-btn reclass-btn--primary" onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')">Reclass</button></span>';
         }
         html += '</td></tr>';
     });
-    // Shared datalist (one per GL)
-    html += '</table>';
+    html += '</tbody></table></div>';
     html += '<datalist id="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '">' + dlOptions + '</datalist>';
 
     // Batch reclass bar (hidden by default)
-    html += '<div id="batch_bar_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="display:none; margin-top:8px; padding:8px 12px; background:#dbeafe; border:1px solid #2563eb; border-radius:6px; font-size:12px;">';
+    html += '<div id="batch_bar_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="display:none; margin:0 16px 8px; padding:8px 12px; background:#dbeafe; border:1px solid #2563eb; border-radius:6px; font-size:12px; font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">';
     html += '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
     html += '<span id="batch_count_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="font-weight:600; color:#2563eb;">0 selected ($0)</span>';
     html += '<span>→ Reclass to:</span>';
-    html += '<input id="batch_target_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" placeholder="Search GL..." style="font-size:11px; padding:3px 8px; border:1px solid #2563eb; border-radius:4px; width:220px;">';
-    html += '<button onclick="batchReclass(\'' + glCode + '\')" style="font-size:11px; padding:4px 12px; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Reclass Selected</button>';
+    html += '<span class="reclass-search"><input id="batch_target_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..." style="width:180px;"></span>';
+    html += '<button class="reclass-btn reclass-btn--primary" onclick="batchReclass(\'' + glCode + '\')">Reclass Selected</button>';
     html += '</div></div>';
 
     html += '</div></td>';
