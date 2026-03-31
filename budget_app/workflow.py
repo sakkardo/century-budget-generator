@@ -205,10 +205,16 @@ def create_workflow_blueprint(db):
         # Assumptions snapshot (JSON — merged portfolio + building overrides)
         assumptions_json = db.Column(db.Text, default="{}")
 
+        # Building type (coop, condo, rental) for charge mapping
+        building_type = db.Column(db.String(50), default="")
+
+        # Versioning
+        version = db.Column(db.Integer, default=1)
+
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
-        __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
+        __table_args__ = (db.UniqueConstraint("entity_code", "year", "version", name="uq_entity_year_ver"),)
 
         def to_dict(self):
             return {
@@ -227,7 +233,9 @@ def create_workflow_blueprint(db):
                 "effective_date": self.effective_date,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-                "ar_notes": self.ar_notes or ""
+                "ar_notes": self.ar_notes or "",
+                "version": self.version or 1,
+                "building_type": self.building_type or ""
             }
 
 
@@ -267,6 +275,7 @@ def create_workflow_blueprint(db):
 
         # Proposed budget (computed or manually entered)
         proposed_budget = db.Column(db.Float, default=0.0)
+        proposed_formula = db.Column(db.Text, nullable=True)  # e.g. "=3462.12*1.04*12"
 
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
