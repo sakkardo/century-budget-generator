@@ -1,18 +1,20 @@
 /**
- * AP Aging (Open AP) Batch Downloader v4 — Iframe Postback
+ * AP Aging (Open AP) Batch Downloader v5 — Simplified Flow
  *
- * Works from ANY Yardi page. Loads APAnalytics in a hidden iframe,
- * uses iframe postbacks for ReportType and Property changes, then
- * fetch with FormData from the iframe for Excel export.
+ * KEY FIX: v4 did property postback THEN re-set RT=3, which caused
+ * the server to generate RT=2 data during the property postback.
+ * v5 reverses the order: set property FIRST via postback (while RT=2
+ * is default — doesn't matter), THEN switch RT to 3 and immediately
+ * export. This means the LAST server state before Excel is RT=3.
  *
- * v4: Fix ReportType revert — re-set RT=3 after every property postback
- *     and verify before Excel export. Also fix file extension to .xlsx.
+ * Also adds PeriodFrom (was missing in v4).
  *
  * BEFORE RUNNING: Edit the settings below
  */
 (async function() {
   'use strict';
 
+  const PERIOD_FROM = '01/2026';
   const PERIOD_TO = '03/2026';
   const ENTITIES = [148, 204, 206, 805];
 
@@ -28,8 +30,8 @@
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`AP Aging Batch Download v4`);
-  log(`${ENTITIES.length} buildings, aging as of ${AGE_AS_OF}`);
+  log('AP Aging Batch Download v5');
+  log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}-${PERIOD_TO}, aging as of ${AGE_AS_OF}`);
   log('='.repeat(50));
 
   // ── Load APAnalytics in a working iframe ──────────────────────────────────
@@ -58,98 +60,124 @@
     await sleep(500);
   }
 
-  // ── Helper: ensure ReportType is 3 (Aging) ───────────────────────────────
-  async function ensureAgingRT() {
-    const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
-    if (!rtSelect) {
-      log('  WARNING: ReportType dropdown not found after postback');
-      return false;
-    }
-    if (rtSelect.value !== '3') {
-      log(`  RT was ${rtSelect.value}, resetting to 3 (Aging)...`);
-      rtSelect.value = '3';
-      await doPostback('ReportType:DropDownList');
-      const newVal = wDoc().querySelector('select[name*="ReportType"]')?.value;
-      if (newVal !== '3') {
-        log(`  ERROR: RT still ${newVal} after postback`);
-        return false;
-      }
-      log(`  RT confirmed: ${newVal}`);
-    }
-    return true;
+  // ── Helper: set all form fields ───────────────────────────────────────────
+  function setAllFields(entity) {
+    const d = wDoc();
+    const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+    if (p) p.value = String(entity);
+    const ap = d.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+    if (ap) ap.value = '2210-0000';
+    const pf = d.querySelector('input[name*="PeriodFrom"]');
+    if (pf) pf.value = PERIOD_FROM;
+    const pt = d.querySelector('input[name*="PeriodTo"]');
+    if (pt) pt.value = PERIOD_TO;
+    const age = d.querySelector('input[name*="AgeAsOf"]');
+    if (age) age.value = AGE_AS_OF;
+    const det = d.querySelector('input[name*="ShowDetail"]');
+    if (det) det.checked = true;
+    const grd = d.querySelector('input[name*="ShowGrid"]');
+    if (grd) grd.checked = true;
+
+    // Force RT dropdown to 3
+    const rt = d.querySelector('select[name*="ReportType"]');
+    if (rt) rt.value = '3';
   }
 
-  // ── Step 1: Set ReportType to 3 (Aging) ───────────────────────────────────
-  if (!(await ensureAgingRT())) {
-    document.body.removeChild(workFrame);
-    throw new Error('Could not set ReportType to Aging');
+  // ── Helper: log all form fields for debugging ─────────────────────────────
+  function logFormState(label) {
+    const d = wDoc();
+    const rt = d.querySelector('select[name*="ReportType"]');
+    const prop = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+    const pf = d.querySelector('input[name*="PeriodFrom"]');
+    const pt = d.querySelector('input[name*="PeriodTo"]');
+    const age = d.querySelector('input[name*="AgeAsOf"]');
+    log(`  [${label}] RT=${rt?.value} Prop=${prop?.value} From=${pf?.value} To=${pt?.value} Age=${age?.value}`);
   }
-  log('ReportType confirmed as 3 (Aging).');
 
-  // ── Step 2: Process each entity ───────────────────────────────────────────
+  // ── Process each entity ───────────────────────────────────────────────────
   for (const entity of ENTITIES) {
     try {
-      log(`\n  ${entity}: Setting property and aging fields...`);
+      log(`\n── ${entity}: Starting ──`);
 
-      const setFields = () => {
-        const d = wDoc();
-        const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
-        if (p) p.value = String(entity);
-        const ap = d.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
-        if (ap) ap.value = '2210-0000';
-        const pt = d.querySelector('input[name*="PeriodTo"]');
-        if (pt) pt.value = PERIOD_TO;
-        const age = d.querySelector('input[name*="AgeAsOf"]');
-        if (age) age.value = AGE_AS_OF;
-        const det = d.querySelector('input[name*="ShowDetail"]');
-        if (det) det.checked = true;
-        const grd = d.querySelector('input[name*="ShowGrid"]');
-        if (grd) grd.checked = true;
-      };
+      // STEP 1: Reload fresh iframe for each entity to avoid state pollution
+      workFrame.src = PAGE_URL;
+      await new Promise(r => { workFrame.onload = r; });
+      await sleep(1000);
 
-      setFields();
-      await doPostback('PropertyLookup:LookupCode');
+      logFormState('Fresh load');
 
-      // ── CRITICAL: Re-verify RT=3 after property postback ──
-      // Property postback can reset ReportType to default (Expense Distribution)
-      if (!(await ensureAgingRT())) {
-        results.failed.push({ entity, ok: false, reason: 'RT reverted after property postback' });
+      // STEP 2: Switch to Aging (RT=3) FIRST, before anything else
+      const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
+      if (!rtSelect) {
+        results.failed.push({ entity, ok: false, reason: 'No ReportType dropdown' });
+        continue;
+      }
+      rtSelect.value = '3';
+      log(`  Setting RT=3 and posting back...`);
+      await doPostback('ReportType:DropDownList');
+
+      // Verify RT stuck
+      const rtAfter = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      log(`  RT after postback: ${rtAfter}`);
+      if (rtAfter !== '3') {
+        results.failed.push({ entity, ok: false, reason: `RT is ${rtAfter} after postback, expected 3` });
         continue;
       }
 
-      log(`  ${entity}: Property validated, RT confirmed, requesting Excel...`);
+      // STEP 3: Now set ALL fields including property (on the RT=3 page)
+      setAllFields(entity);
+      logFormState('Fields set');
 
-      // Re-set all fields after postbacks (form innerHTML gets replaced)
-      setFields();
+      // STEP 4: Do property postback ON THE RT=3 PAGE
+      // This validates the property while RT=3 is the current server state
+      log(`  Property postback...`);
+      await doPostback('PropertyLookup:LookupCode');
+      logFormState('After prop postback');
 
-      // Final RT verification before export
-      const finalRT = wDoc().querySelector('select[name*="ReportType"]')?.value;
-      if (finalRT !== '3') {
-        log(`  WARNING: RT is ${finalRT} before Excel export! Attempting fix...`);
+      // STEP 5: Check if RT reverted. If so, fix it and postback again
+      const rtAfterProp = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      if (rtAfterProp !== '3') {
+        log(`  RT reverted to ${rtAfterProp} after property postback! Re-setting...`);
         const rtFix = wDoc().querySelector('select[name*="ReportType"]');
-        if (rtFix) rtFix.value = '3';
+        rtFix.value = '3';
+        await doPostback('ReportType:DropDownList');
+        const rtFixed = wDoc().querySelector('select[name*="ReportType"]')?.value;
+        log(`  RT after re-fix: ${rtFixed}`);
+        if (rtFixed !== '3') {
+          results.failed.push({ entity, ok: false, reason: `RT won't stick: ${rtFixed}` });
+          continue;
+        }
       }
 
-      // Excel via fetch with FormData from iframe's form
+      // STEP 6: Re-set ALL fields (postback replaces form HTML)
+      setAllFields(entity);
+      logFormState('Pre-export');
+
+      // STEP 7: Excel export via FormData
       const form = wDoc().querySelector('form');
       const fd = new FormData(form);
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
-      if (!fd.get('__VIEWSTATE') && fd.get('__VIEWSTATE__')) fd.delete('__VIEWSTATE');
 
-      // ── CRITICAL: Force ReportType=3 in FormData ──
-      // ASP.NET ViewState may override DOM dropdown value, so we
-      // explicitly set every ReportType field in the FormData to "3"
+      // Log and force all ReportType fields in FormData
+      let rtFieldCount = 0;
       for (const [key, val] of [...fd.entries()]) {
         if (key.toLowerCase().includes('reporttype')) {
-          log(`  FormData ${key} was "${val}", forcing to "3"`);
+          log(`  FormData: ${key} = "${val}" → forcing "3"`);
           fd.set(key, '3');
+          rtFieldCount++;
         }
       }
+      log(`  Forced ${rtFieldCount} RT field(s) to "3" in FormData`);
+
+      // Also log ViewState length for debugging
+      const vs = fd.get('__VIEWSTATE') || fd.get('__VIEWSTATE__') || '';
+      log(`  ViewState length: ${vs.length}`);
 
       const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
       const ct = resp.headers.get('content-type') || '';
       const cd = resp.headers.get('content-disposition') || '';
+      log(`  Response: ${resp.status} ct=${ct.substring(0, 50)} cd=${cd.substring(0, 50)}`);
 
       let blob = null;
       if (ct.includes('spreadsheet') || ct.includes('excel') || ct.includes('octet-stream') || cd.includes('attachment')) {
