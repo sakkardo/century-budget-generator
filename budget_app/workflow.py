@@ -4988,28 +4988,28 @@ async function faToggleUnpaidDrill(glCode, el) {
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-unpaid-detail';
   detailRow.dataset.gl = glCode;
-  let html = '<td colspan="15" style="padding:0;"><div style="padding:10px 16px 10px 40px; background:linear-gradient(to right, #fef3c7, #fffbeb); border-left:3px solid #f59e0b; border-bottom:1px solid var(--gray-200);">';
-  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
-  html += '<thead><tr style="background:#fef3c7; color:#92400e; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:6px 10px;">Vendor</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px; text-align:right;">Amount</td></tr></thead>';
+  let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--amber">';
+  html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-unpaid-detail\').remove(); return false;" title="Close">×</button></div>';
+  html += '<div class="drill-panel-body"><table>';
+  html += '<thead><tr>';
+  html += '<td style="text-align:left;">Vendor</td><td>Invoice #</td><td>Date</td><td>Description</td><td style="text-align:right;">Amount</td></tr></thead>';
+  html += '<tbody>';
 
   glGroup.invoices.forEach(inv => {
-    html += '<tr style="border-top:1px solid var(--gray-100);">';
-    html += '<td style="padding:5px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="padding:5px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="padding:5px 10px; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:5px 10px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-    html += '<td style="padding:5px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
+    html += '<tr>';
+    html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
+    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
     html += '</tr>';
   });
 
-  // Total row — makes the sum obvious
-  html += '<tr style="border-top:2px solid #f59e0b; background:#fef3c7;">';
-  html += '<td colspan="4" style="padding:6px 10px; font-weight:700; color:#92400e; font-size:12px;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' → ' + glCode + ' ' + (glGroup.gl_name || '') + '</td>';
-  html += '<td style="padding:6px 10px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; color:#92400e; font-size:13px;">' + fmt(glGroup.total || 0) + '</td>';
-  html += '</tr>';
-
-  html += '</table></div></td>';
+  html += '</tbody></table></div>';
+  html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
+  html += '<span>' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span>';
+  html += '<span style="font-size:13px;">' + fmt(glGroup.total || 0) + '</span>';
+  html += '</div></div></td>';
   detailRow.innerHTML = html;
   row.after(detailRow);
 }
@@ -5039,23 +5039,25 @@ async function faToggleAccrualDrill(glCode, el) {
     const drillRow = document.createElement('tr');
     drillRow.className = 'fa-accrual-detail';
     const nc = row.querySelectorAll('td').length;
-    let html = '<td colspan="' + nc + '" style="padding:0; background:#fef3c7;">' +
-      '<div style="padding:12px 16px;">' +
-      '<div style="font-size:12px; font-weight:600; color:#92400e; margin-bottom:8px;">Prior-Year Invoices (before ' + (data.cutoff || '?') + ') — ' + data.invoices.length + ' invoice(s), Total: ' + fmt(data.total) + '</div>' +
-      '<table style="width:100%; font-size:12px; border-collapse:collapse;">' +
-      '<tr style="background:#fde68a; font-size:10px; text-transform:uppercase;"><th style="text-align:left; padding:4px 8px;">Payee</th><th style="padding:4px 8px;">Invoice #</th><th style="padding:4px 8px;">Invoice Date</th><th style="text-align:right; padding:4px 8px;">Amount</th></tr>';
+    let html = '<td colspan="' + nc + '" style="padding:0;"><div class="drill-panel drill-panel--amber">';
+    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Prior-Year Invoices</span><span style="font-weight:400; font-size:12px; opacity:0.7;">before ' + (data.cutoff || '?') + ' · ' + data.invoices.length + ' invoice' + (data.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-accrual-detail\').remove(); return false;" title="Close">×</button></div>';
+    html += '<div class="drill-panel-body"><table>';
+    html += '<thead><tr><th style="text-align:left;">Payee</th><th>Invoice #</th><th>Invoice Date</th><th style="text-align:right;">Amount</th></tr></thead>';
+    html += '<tbody>';
 
     data.invoices.forEach(inv => {
-      html += '<tr style="border-bottom:1px solid #fde68a;">' +
-        '<td style="padding:4px 8px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>' +
-        '<td style="padding:4px 8px;">' + (inv.invoice_num || '—') + '</td>' +
-        '<td style="padding:4px 8px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
-        '<td style="text-align:right; padding:4px 8px;">' + fmt(inv.amount) + '</td></tr>';
+      html += '<tr>' +
+        '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>' +
+        '<td>' + (inv.invoice_num || '—') + '</td>' +
+        '<td>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
+        '<td style="text-align:right;">' + fmt(inv.amount) + '</td></tr>';
     });
 
-    html += '<tr style="font-weight:700; background:#fde68a;"><td colspan="3" style="padding:4px 8px;">Accrual Adjustment (negative)</td>' +
-      '<td style="text-align:right; padding:4px 8px; color:var(--red);">' + fmt(data.total) + '</td></tr>';
-    html += '</table></div></td>';
+    html += '</tbody></table></div>';
+    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
+    html += '<span>Accrual Adjustment (negative)</span>';
+    html += '<span style="color:var(--red);">' + fmt(data.total) + '</span>';
+    html += '</div></div></td>';
     drillRow.innerHTML = html;
     row.after(drillRow);
   } catch(e) {
@@ -5099,37 +5101,38 @@ async function faToggleInvoices(glCode, el) {
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
-  let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
-  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
-  html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
-  html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
-  html += '</div>';
-  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
-  html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
+  let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--blue">';
+  html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-invoice-detail\').remove(); return false;" title="Close">×</button></div>';
+  html += '<div class="drill-panel-body"><table>';
+  html += '<thead><tr>';
+  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:right; min-width:170px;">Reclass</td></tr></thead>';
+  html += '<tbody>';
+
+  // Shared datalist
+  let dlOptions = '';
+  allGLs.forEach(g => { dlOptions += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
-    html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-    html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
-    html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="padding:6px 10px; text-align:right;">';
+    html += '<tr' + (isReclassed ? ' style="opacity:0.5; text-decoration:line-through;"' : '') + '>';
+    html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td>' + (inv.check_num || '—') + '</td>';
+    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
+    html += '<td style="text-align:right; white-space:nowrap;">';
     if (isReclassed) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
-      html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
+      html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button>';
     } else {
-      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_reclass_list_' + inv.id + '" placeholder="Search GL..." style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:200px;">';
-      html += '<datalist id="fa_reclass_list_' + inv.id + '">';
-      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
-      html += '</datalist> ';
-      html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
+      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="GL...">';
+      html += ' <button class="reclass-btn reclass-btn--primary" onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')">Go</button>';
     }
     html += '</td></tr>';
   });
-  html += '</table></div></td>';
+  html += '</tbody></table></div>';
+  html += '<datalist id="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '">' + dlOptions + '</datalist>';
+  html += '</div></td>';
   detailRow.innerHTML = html;
   row.after(detailRow);
 }
@@ -5196,9 +5199,9 @@ async function faToggleMaintProof(glCode, el) {
   newRow.innerHTML = '<td colspan="15" style="padding:0;">';
 
   if (!chargeCode) {
-    newRow.innerHTML += '<div style="padding:12px 16px; background:#f3f4f6; color:var(--gray-500); font-size:12px;">No proof data for this income line</div>';
+    newRow.innerHTML += '<div class="drill-panel drill-panel--gray"><div class="drill-panel-header"><span>No proof data for this income line</span><button class="drill-close" onclick="this.closest(\'.fa-maint-detail\').remove(); return false;" title="Close">×</button></div></div>';
   } else {
-    newRow.innerHTML += '<div style="padding:16px; background:#f3f4f6; min-height:100px;"><p style="font-size:12px; color:var(--gray-600); margin-bottom:8px;">Loading maint proof data...</p></div>';
+    newRow.innerHTML += '<div style="padding:16px; min-height:60px;"><p style="font-size:12px; color:var(--gray-600); margin-bottom:8px;">Loading unit proof data...</p></div>';
   }
 
   newRow.innerHTML += '</td>';
@@ -5230,25 +5233,25 @@ async function faToggleMaintProof(glCode, el) {
       const units = unitsData.units || [];
 
       // Build unit table
-      let html = '<div style="padding:16px; background:#f3f4f6;">';
-      html += '<div style="margin-bottom:12px; font-weight:600; font-size:13px; color:var(--gray-700);">' + chargeCode.toUpperCase() + ' Unit Proof</div>';
-      html += '<table style="width:100%; border-collapse:collapse; font-size:12px; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
-      html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-      html += '<td style="padding:6px 10px;">Unit Code</td><td style="padding:6px 10px;">Shares</td><td style="padding:6px 10px;">Status</td><td style="padding:6px 10px; text-align:right;">Monthly</td><td style="padding:6px 10px; text-align:right;">Annual</td></tr></thead>';
+      let html = '<div class="drill-panel drill-panel--gray">';
+      html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + chargeCode.toUpperCase() + ' Unit Proof</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + units.length + ' units</span></div><button class="drill-close" onclick="this.closest(\'.fa-maint-detail\').remove(); return false;" title="Close">×</button></div>';
+      html += '<div class="drill-panel-body"><table>';
+      html += '<thead><tr>';
+      html += '<td style="text-align:left;">Unit Code</td><td>Shares</td><td>Status</td><td style="text-align:right;">Monthly</td><td style="text-align:right;">Annual</td></tr></thead>';
       html += '<tbody>';
 
       units.forEach(u => {
-        html += '<tr style="border-top:1px solid var(--gray-200);">';
-        html += '<td style="padding:6px 10px;">' + (u.unit_code || '—') + '</td>';
-        html += '<td style="padding:6px 10px;">' + (u.shares || '—') + '</td>';
-        html += '<td style="padding:6px 10px;">' + (u.status || '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right;">$' + (u.monthly ? Math.round(u.monthly).toLocaleString() : '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right;">$' + (u.annual ? Math.round(u.annual).toLocaleString() : '—') + '</td>';
+        html += '<tr>';
+        html += '<td>' + (u.unit_code || '—') + '</td>';
+        html += '<td>' + (u.shares || '—') + '</td>';
+        html += '<td>' + (u.status || '—') + '</td>';
+        html += '<td style="text-align:right;">$' + (u.monthly ? Math.round(u.monthly).toLocaleString() : '—') + '</td>';
+        html += '<td style="text-align:right;">$' + (u.annual ? Math.round(u.annual).toLocaleString() : '—') + '</td>';
         html += '</tr>';
       });
 
-      html += '</tbody></table>';
-      html += '<div style="margin-top:10px; font-size:11px; color:var(--gray-500);">Total: ' + units.length + ' units · ' + (charge.count || '—') + ' records</div>';
+      html += '</tbody></table></div>';
+      html += '<div class="drill-panel-footer">' + units.length + ' units · ' + (charge.count || '—') + ' records</div>';
       html += '</div>';
 
       newRow.querySelector('div').innerHTML = html;
@@ -5323,8 +5326,40 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { width:60px; }
       .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
-      .fa-invoice-detail td { padding:0 !important; }
-      .fa-invoice-detail:hover { background:transparent !important; }
+      .fa-invoice-detail td, .fa-unpaid-detail td, .fa-accrual-detail td, .fa-maint-detail td { padding:0 !important; }
+      .fa-invoice-detail:hover, .fa-unpaid-detail:hover, .fa-accrual-detail:hover, .fa-maint-detail:hover { background:transparent !important; }
+      /* ── Drill-down panel redesign ── */
+      .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+      .drill-panel-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; font-size:13px; font-weight:600; }
+      .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:0 4px; line-height:1; border-radius:4px; transition:all 0.15s; }
+      .drill-panel-header .drill-close:hover { color:var(--gray-700); background:var(--gray-100); }
+      .drill-panel-body { max-height:320px; overflow-y:auto; }
+      .drill-panel-body table { width:100%; border-collapse:collapse; font-size:12px; }
+      .drill-panel-body thead { position:sticky; top:0; z-index:2; }
+      .drill-panel-body thead td, .drill-panel-body thead th { padding:7px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
+      .drill-panel-body tbody tr { transition:background 0.1s; }
+      .drill-panel-body tbody tr:hover { background:var(--gray-50, #f9fafb); }
+      .drill-panel-body tbody td { padding:7px 12px; border-bottom:1px solid var(--gray-100); }
+      .drill-panel-footer { padding:8px 16px; font-size:11px; border-top:1px solid var(--gray-200); }
+      /* Type variants */
+      .drill-panel--blue { border-color:#bfdbfe; }
+      .drill-panel--blue .drill-panel-header { background:linear-gradient(135deg, #eff6ff, #dbeafe); color:#1e40af; }
+      .drill-panel--blue .drill-panel-body thead td, .drill-panel--blue .drill-panel-body thead th { background:#eff6ff; color:#1e40af; }
+      .drill-panel--blue .drill-panel-footer { background:#f0f7ff; color:#1e40af; }
+      .drill-panel--amber { border-color:#fde68a; }
+      .drill-panel--amber .drill-panel-header { background:linear-gradient(135deg, #fffbeb, #fef3c7); color:#92400e; }
+      .drill-panel--amber .drill-panel-body thead td, .drill-panel--amber .drill-panel-body thead th { background:#fffbeb; color:#92400e; }
+      .drill-panel--amber .drill-panel-footer { background:#fffbeb; color:#92400e; }
+      .drill-panel--gray { border-color:var(--gray-200); }
+      .drill-panel--gray .drill-panel-header { background:var(--gray-50, #f9fafb); color:var(--gray-700); }
+      .drill-panel--gray .drill-panel-body thead td, .drill-panel--gray .drill-panel-body thead th { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
+      .drill-panel--gray .drill-panel-footer { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
+      .drill-panel .reclass-input { font-size:11px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:5px; width:140px; transition:border-color 0.15s; }
+      .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); }
+      .drill-panel .reclass-btn { font-size:11px; padding:3px 10px; border:none; border-radius:5px; cursor:pointer; font-weight:500; transition:opacity 0.15s; }
+      .drill-panel .reclass-btn:hover { opacity:0.85; }
+      .drill-panel .reclass-btn--primary { background:var(--blue); color:white; }
+      .drill-panel .reclass-btn--undo { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
