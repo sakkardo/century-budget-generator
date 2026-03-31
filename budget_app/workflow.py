@@ -5105,7 +5105,7 @@ async function faToggleInvoices(glCode, el) {
   html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-invoice-detail\').remove(); return false;" title="Close">×</button></div>';
   html += '<div class="drill-panel-body"><table>';
   html += '<thead><tr>';
-  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:right; min-width:170px;">Reclass</td></tr></thead>';
+  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:right; min-width:200px;">Reclass To</td></tr></thead>';
   html += '<tbody>';
 
   // Shared datalist
@@ -5114,19 +5114,19 @@ async function faToggleInvoices(glCode, el) {
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
-    html += '<tr' + (isReclassed ? ' style="opacity:0.5; text-decoration:line-through;"' : '') + '>';
-    html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td>' + (inv.check_num || '—') + '</td>';
-    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
+    html += '<tr' + (isReclassed ? ' style="opacity:0.5;"' : '') + '>';
+    html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="font-family:monospace; font-size:11px;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="white-space:nowrap;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
+    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">$' + Math.round(inv.amount).toLocaleString() + '</td>';
     html += '<td style="text-align:right; white-space:nowrap;">';
     if (isReclassed) {
-      html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
-      html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button>';
+      html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
+      html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
     } else {
-      html += '<input id="fa_reclass_gl_' + inv.id + '" list="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="GL...">';
-      html += ' <button class="reclass-btn reclass-btn--primary" onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')">Go</button>';
+      html += '<span class="reclass-wrap"><span class="reclass-search"><input id="fa_reclass_gl_' + inv.id + '" list="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..."></span>';
+      html += '<button class="reclass-btn reclass-btn--primary" onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')">Reclass</button></span>';
     }
     html += '</td></tr>';
   });
@@ -5329,17 +5329,17 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-invoice-detail td, .fa-unpaid-detail td, .fa-accrual-detail td, .fa-maint-detail td { padding:0 !important; }
       .fa-invoice-detail:hover, .fa-unpaid-detail:hover, .fa-accrual-detail:hover, .fa-maint-detail:hover { background:transparent !important; }
       /* ── Drill-down panel redesign ── */
-      .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+      .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
       .drill-panel-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; font-size:13px; font-weight:600; }
-      .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:0 4px; line-height:1; border-radius:4px; transition:all 0.15s; }
+      .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:2px 6px; line-height:1; border-radius:4px; transition:all 0.15s; }
       .drill-panel-header .drill-close:hover { color:var(--gray-700); background:var(--gray-100); }
-      .drill-panel-body { max-height:320px; overflow-y:auto; }
+      .drill-panel-body { max-height:360px; overflow-y:auto; }
       .drill-panel-body table { width:100%; border-collapse:collapse; font-size:12px; }
       .drill-panel-body thead { position:sticky; top:0; z-index:2; }
-      .drill-panel-body thead td, .drill-panel-body thead th { padding:7px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
+      .drill-panel-body thead td, .drill-panel-body thead th { padding:8px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
       .drill-panel-body tbody tr { transition:background 0.1s; }
       .drill-panel-body tbody tr:hover { background:var(--gray-50, #f9fafb); }
-      .drill-panel-body tbody td { padding:7px 12px; border-bottom:1px solid var(--gray-100); }
+      .drill-panel-body tbody td { padding:8px 12px; border-bottom:1px solid var(--gray-100); font-size:12px; }
       .drill-panel-footer { padding:8px 16px; font-size:11px; border-top:1px solid var(--gray-200); }
       /* Type variants */
       .drill-panel--blue { border-color:#bfdbfe; }
@@ -5354,10 +5354,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .drill-panel--gray .drill-panel-header { background:var(--gray-50, #f9fafb); color:var(--gray-700); }
       .drill-panel--gray .drill-panel-body thead td, .drill-panel--gray .drill-panel-body thead th { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
       .drill-panel--gray .drill-panel-footer { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
-      .drill-panel .reclass-input { font-size:11px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:5px; width:140px; transition:border-color 0.15s; }
-      .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); }
-      .drill-panel .reclass-btn { font-size:11px; padding:3px 10px; border:none; border-radius:5px; cursor:pointer; font-weight:500; transition:opacity 0.15s; }
-      .drill-panel .reclass-btn:hover { opacity:0.85; }
+      .drill-panel .reclass-wrap { display:inline-flex; align-items:center; gap:4px; }
+      .drill-panel .reclass-search { position:relative; display:inline-flex; align-items:center; }
+      .drill-panel .reclass-search::before { content:'\\1F50D'; position:absolute; left:6px; font-size:10px; pointer-events:none; opacity:0.4; }
+      .drill-panel .reclass-input { font-size:11px; padding:4px 8px 4px 22px; border:1px solid var(--gray-300); border-radius:6px; width:150px; transition:border-color 0.15s; background:white; font-family:inherit; }
+      .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); width:180px; }
+      .drill-panel .reclass-btn { font-size:11px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; transition:all 0.15s; font-family:inherit; }
+      .drill-panel .reclass-btn:hover { opacity:0.85; transform:translateY(-1px); }
       .drill-panel .reclass-btn--primary { background:var(--blue); color:white; }
       .drill-panel .reclass-btn--undo { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
