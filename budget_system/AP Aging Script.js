@@ -1,11 +1,11 @@
 /**
- * AP Aging (Open AP) Batch Downloader v4 â Iframe Postback
+ * AP Aging (Open AP) Batch Downloader v4 — Iframe Postback
  *
  * Works from ANY Yardi page. Loads APAnalytics in a hidden iframe,
  * uses iframe postbacks for ReportType and Property changes, then
  * fetch with FormData from the iframe for Excel export.
  *
- * v4: Fix ReportType revert â re-set RT=3 after every property postback
+ * v4: Fix ReportType revert — re-set RT=3 after every property postback
  *     and verify before Excel export. Also fix file extension to .xlsx.
  *
  * BEFORE RUNNING: Edit the settings below
@@ -32,7 +32,7 @@
   log(`${ENTITIES.length} buildings, aging as of ${AGE_AS_OF}`);
   log('='.repeat(50));
 
-  // ââ Load APAnalytics in a working iframe ââââââââââââââââââââââââââââââââââ
+  // ── Load APAnalytics in a working iframe ──────────────────────────────────
   log('Loading AP Analytics page in iframe...');
   const workFrame = document.createElement('iframe');
   workFrame.name = '_apAgingWork';
@@ -51,14 +51,14 @@
   }
   log('AP Analytics loaded.');
 
-  // ââ Helper: postback inside the work iframe âââââââââââââââââââââââââââââââ
+  // ── Helper: postback inside the work iframe ───────────────────────────────
   async function doPostback(eventTarget) {
     wWin().__doPostBack(eventTarget, '');
     await new Promise(r => { workFrame.onload = r; });
     await sleep(500);
   }
 
-  // ââ Helper: ensure ReportType is 3 (Aging) âââââââââââââââââââââââââââââââ
+  // ── Helper: ensure ReportType is 3 (Aging) ───────────────────────────────
   async function ensureAgingRT() {
     const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
     if (!rtSelect) {
@@ -79,14 +79,14 @@
     return true;
   }
 
-  // ââ Step 1: Set ReportType to 3 (Aging) âââââââââââââââââââââââââââââââââââ
+  // ── Step 1: Set ReportType to 3 (Aging) ───────────────────────────────────
   if (!(await ensureAgingRT())) {
     document.body.removeChild(workFrame);
     throw new Error('Could not set ReportType to Aging');
   }
   log('ReportType confirmed as 3 (Aging).');
 
-  // ââ Step 2: Process each entity âââââââââââââââââââââââââââââââââââââââââââ
+  // ── Step 2: Process each entity ───────────────────────────────────────────
   for (const entity of ENTITIES) {
     try {
       log(`\n  ${entity}: Setting property and aging fields...`);
@@ -110,7 +110,7 @@
       setFields();
       await doPostback('PropertyLookup:LookupCode');
 
-      // ââ CRITICAL: Re-verify RT=3 after property postback ââ
+      // ── CRITICAL: Re-verify RT=3 after property postback ──
       // Property postback can reset ReportType to default (Expense Distribution)
       if (!(await ensureAgingRT())) {
         results.failed.push({ entity, ok: false, reason: 'RT reverted after property postback' });
@@ -136,6 +136,16 @@
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
       if (!fd.get('__VIEWSTATE') && fd.get('__VIEWSTATE__')) fd.delete('__VIEWSTATE');
+
+      // ── CRITICAL: Force ReportType=3 in FormData ──
+      // ASP.NET ViewState may override DOM dropdown value, so we
+      // explicitly set every ReportType field in the FormData to "3"
+      for (const [key, val] of [...fd.entries()]) {
+        if (key.toLowerCase().includes('reporttype')) {
+          log(`  FormData ${key} was "${val}", forcing to "3"`);
+          fd.set(key, '3');
+        }
+      }
 
       const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
       const ct = resp.headers.get('content-type') || '';
@@ -170,14 +180,14 @@
 
       if (blob && blob.size > 0) {
         triggerDownload(blob, entity);
-        log(`  â ${entity} â ${(blob.size / 1024).toFixed(0)} KB`);
+        log(`  ✓ ${entity} — ${(blob.size / 1024).toFixed(0)} KB`);
         results.success.push({ entity, ok: true, size: blob.size });
       } else {
-        log(`  â ${entity} â no file received`);
+        log(`  ✗ ${entity} — no file received`);
         results.failed.push({ entity, ok: false, reason: 'no_file' });
       }
     } catch (ex) {
-      log(`  â ${entity} â ${ex.message}`);
+      log(`  ✗ ${entity} — ${ex.message}`);
       results.failed.push({ entity, ok: false, reason: ex.message });
     }
   }
