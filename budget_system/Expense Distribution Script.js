@@ -1,16 +1,14 @@
 /**
- * Expense Distribution Batch Downloader v6 — Direct Page Approach
+ * Expense Distribution Batch Downloader v7 — Direct Page + Frame Search
  *
- * PREREQUISITE: User must be on APAnalytics.aspx with "Expense Distribution"
- * already selected in the ReportType dropdown. This script does NOT change
- * the report type — it trusts the page state and just fills in property/period
- * fields and exports.
+ * PREREQUISITE: User must be on APAnalytics.aspx with "Expense Distribution
+ * (Paid Only)" selected (RT=2). This script does NOT change the report type
+ * — it trusts the page state.
  *
- * This avoids the ASP.NET ViewState issue where RT=1 reverts to RT=3 during
- * postbacks. By running directly on the page (no iframe), the server state
- * is whatever the user already set.
+ * Automatically finds the correct frame containing the APAnalytics form,
+ * even when Yardi loads the page inside nested frames.
  *
- * BEFORE RUNNING: Select "Expense Distribution" in the Report Type dropdown
+ * BEFORE RUNNING: Select "Expense Distribution (Paid Only)" in the dropdown
  */
 (async function() {
   'use strict';
@@ -27,19 +25,63 @@
   const results = { success: [], failed: [] };
   const startTime = Date.now();
 
-  // ── Verify we're on the right page with RT=1 ─────────────────────────────
-  const rtCheck = document.querySelector('select[name*="ReportType"]');
-  if (!rtCheck) {
-    throw new Error('Not on APAnalytics page — no ReportType dropdown found. Navigate to AP Analytics first.');
+  // ── Find the document containing the APAnalytics form ─────────────────
+  // Yardi loads pages in nested frames. Search all frames for the RT dropdown.
+  function findAPDoc() {
+    // Check top document first
+    if (document.querySelector('select[name*="ReportType"]')) return document;
+    // Search child frames
+    for (let i = 0; i < window.frames.length; i++) {
+      try {
+        const fd = window.frames[i].document;
+        if (fd.querySelector('select[name*="ReportType"]')) return fd;
+        // Check nested frames
+        for (let j = 0; j < window.frames[i].frames.length; j++) {
+          try {
+            const fd2 = window.frames[i].frames[j].document;
+            if (fd2.querySelector('select[name*="ReportType"]')) return fd2;
+          } catch(e) {}
+        }
+      } catch(e) {}
+    }
+    return null;
   }
-  if (rtCheck.value !== '1') {
-    throw new Error(`ReportType is "${rtCheck.value}" — please select "Expense Distribution" from the dropdown before running this script.`);
+
+  function findAPWin() {
+    if (document.querySelector('select[name*="ReportType"]')) return window;
+    for (let i = 0; i < window.frames.length; i++) {
+      try {
+        const fd = window.frames[i].document;
+        if (fd.querySelector('select[name*="ReportType"]')) return window.frames[i];
+        for (let j = 0; j < window.frames[i].frames.length; j++) {
+          try {
+            const fd2 = window.frames[i].frames[j].document;
+            if (fd2.querySelector('select[name*="ReportType"]')) return window.frames[i].frames[j];
+          } catch(e) {}
+        }
+      } catch(e) {}
+    }
+    return null;
+  }
+
+  let doc = findAPDoc();
+  let win = findAPWin();
+
+  if (!doc) {
+    throw new Error('Cannot find APAnalytics form in any frame. Make sure you are on the Payable Analytics page in Yardi.');
+  }
+
+  const rtCheck = doc.querySelector('select[name*="ReportType"]');
+  log(`Found APAnalytics form. Current RT value: ${rtCheck.value} ("${rtCheck.options[rtCheck.selectedIndex]?.text}")`);
+
+  if (rtCheck.value !== '2') {
+    throw new Error(`ReportType is "${rtCheck.options[rtCheck.selectedIndex]?.text}" (value=${rtCheck.value}). Please select "Expense Distribution (Paid Only)" from the dropdown and try again.`);
   }
 
   log('='.repeat(50));
-  log('Expense Distribution Batch Download v6 — Direct Page');
+  log('Expense Distribution Batch Download v7 — Direct Page');
   log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}–${PERIOD_TO}`);
-  log('RT verified as 1 (Expense Distribution)');
+  log('RT verified as 2 (Expense Distribution — Paid Only)');
   log('='.repeat(50));
 
   // ── Process each entity ──────────────────────────────────────────────────
@@ -47,75 +89,85 @@
     try {
       log(`\n── ${entity}: Starting ──`);
 
+      // Re-find doc after postbacks (frame may have reloaded)
+      doc = findAPDoc();
+      win = findAPWin();
+      if (!doc) {
+        results.failed.push({ entity, ok: false, reason: 'Lost frame after postback' });
+        continue;
+      }
+
       // Set property
-      const prop = document.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+      const prop = doc.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
       if (prop) prop.value = String(entity);
 
       // Set periods
-      const pf = document.querySelector('input[name*="PeriodFrom"]');
+      const pf = doc.querySelector('input[name*="PeriodFrom"]');
       if (pf) pf.value = PERIOD_FROM;
-      const pt = document.querySelector('input[name*="PeriodTo"]');
+      const pt = doc.querySelector('input[name*="PeriodTo"]');
       if (pt) pt.value = PERIOD_TO;
 
       // Set AP Account (blank for all)
-      const ap = document.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+      const ap = doc.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
       if (ap) ap.value = '';
 
       // Checkboxes
-      const det = document.querySelector('input[name*="ShowDetail"]');
+      const det = doc.querySelector('input[name*="ShowDetail"]');
       if (det) det.checked = true;
-      const grd = document.querySelector('input[name*="ShowGrid"]');
+      const grd = doc.querySelector('input[name*="ShowGrid"]');
       if (grd) grd.checked = true;
 
       // Property postback to validate entity
       log(`  Property postback for ${entity}...`);
-      __doPostBack('PropertyLookup:LookupCode', '');
-      await new Promise(r => {
-        const check = setInterval(() => {
-          // Wait for page to settle after postback
-          if (document.readyState === 'complete') {
-            clearInterval(check);
-            r();
-          }
-        }, 200);
-      });
-      await sleep(1500);
+      win.__doPostBack('PropertyLookup:LookupCode', '');
+
+      // Wait for frame to reload after postback
+      await sleep(3000);
+
+      // Re-find doc after postback
+      doc = findAPDoc();
+      win = findAPWin();
+      if (!doc) {
+        results.failed.push({ entity, ok: false, reason: 'Lost frame after property postback' });
+        continue;
+      }
 
       // Verify RT is still 1 after property postback
-      const rtAfterProp = document.querySelector('select[name*="ReportType"]')?.value;
+      const rtAfterProp = doc.querySelector('select[name*="ReportType"]')?.value;
       log(`  RT after property postback: ${rtAfterProp}`);
-      if (rtAfterProp !== '1') {
-        log(`  WARNING: RT changed to ${rtAfterProp} — re-selecting Expense Distribution`);
-        const rtFix = document.querySelector('select[name*="ReportType"]');
+      if (rtAfterProp !== '2') {
+        log(`  WARNING: RT changed to ${rtAfterProp} — re-selecting Expense Distribution (Paid Only)`);
+        const rtFix = doc.querySelector('select[name*="ReportType"]');
         if (rtFix) {
-          rtFix.value = '1';
+          rtFix.value = '2';
           rtFix.dispatchEvent(new Event('change', { bubbles: true }));
-          __doPostBack('ReportType:DropDownList', '');
-          await new Promise(r => {
-            const check = setInterval(() => {
-              if (document.readyState === 'complete') { clearInterval(check); r(); }
-            }, 200);
-          });
-          await sleep(1000);
+          win.__doPostBack('ReportType:DropDownList', '');
+          await sleep(2000);
+          doc = findAPDoc();
+          win = findAPWin();
+          if (!doc) {
+            results.failed.push({ entity, ok: false, reason: 'Lost frame after RT fix' });
+            continue;
+          }
         }
       }
 
-      // Re-set fields after postback (ASP.NET may have reset them)
-      const prop2 = document.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+      // Re-set fields after postback (ASP.NET replaces form HTML)
+      const prop2 = doc.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
       if (prop2) prop2.value = String(entity);
-      const pf2 = document.querySelector('input[name*="PeriodFrom"]');
+      const pf2 = doc.querySelector('input[name*="PeriodFrom"]');
       if (pf2) pf2.value = PERIOD_FROM;
-      const pt2 = document.querySelector('input[name*="PeriodTo"]');
+      const pt2 = doc.querySelector('input[name*="PeriodTo"]');
       if (pt2) pt2.value = PERIOD_TO;
-      const ap2 = document.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+      const ap2 = doc.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
       if (ap2) ap2.value = '';
-      const det2 = document.querySelector('input[name*="ShowDetail"]');
+      const det2 = doc.querySelector('input[name*="ShowDetail"]');
       if (det2) det2.checked = true;
-      const grd2 = document.querySelector('input[name*="ShowGrid"]');
+      const grd2 = doc.querySelector('input[name*="ShowGrid"]');
       if (grd2) grd2.checked = true;
 
       // Excel export via FormData
-      const form = document.querySelector('form');
+      const form = doc.querySelector('form');
       const fd = new FormData(form);
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
@@ -123,11 +175,11 @@
       // Force RT in FormData
       for (const [key] of [...fd.entries()]) {
         if (key.toLowerCase().includes('reporttype')) {
-          fd.set(key, '1');
+          fd.set(key, '2');
         }
       }
 
-      const rtFinal = document.querySelector('select[name*="ReportType"]')?.value;
+      const rtFinal = doc.querySelector('select[name*="ReportType"]')?.value;
       log(`  Exporting... RT=${rtFinal} Prop=${prop2?.value} From=${pf2?.value} To=${pt2?.value}`);
 
       const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
