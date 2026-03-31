@@ -547,6 +547,25 @@ def create_workflow_blueprint(db):
         "Gen & Admin": "gen_admin",
     }
 
+    def _delete_entity_data(entity_code):
+        """Delete ALL entity-level supplementary data (expenses, open AP, etc.).
+        Called by budget deletion to fully remove an entity's data.
+        Each table is deleted in its own try/except with rollback to prevent
+        one failure from poisoning the entire transaction."""
+        ec = str(entity_code).strip()
+        for sql in [
+            "DELETE FROM expense_invoices WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)",
+            "DELETE FROM expense_reports WHERE entity_code = :ec",
+            "DELETE FROM open_ap_invoices WHERE report_id IN (SELECT id FROM open_ap_reports WHERE entity_code = :ec)",
+            "DELETE FROM open_ap_reports WHERE entity_code = :ec",
+        ]:
+            try:
+                db.session.execute(db.text(sql), {"ec": ec})
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"_delete_entity_data skip: {e}")
+        logger.info(f"Deleted entity-level data for {ec}")
+
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
@@ -1025,6 +1044,58 @@ def create_workflow_blueprint(db):
         db.session.commit()
 
         return jsonify(budget.to_dict())
+
+
+    @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
+    def delete_budget(budget_id):
+        """Delete a non-approved budget and all its related records.
+        Uses raw SQL to avoid ORM session poisoning issues."""
+        # Always start with a clean session
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+        # Look up budget via raw SQL — immune to session poisoning
+        row = db.session.execute(
+            db.text("SELECT id, entity_code, status, version FROM budgets WHERE id = :id"),
+            {"id": budget_id}
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Budget not found"}), 404
+
+        bid, entity, status, ver = row[0], row[1], row[2], row[3] or 1
+        if status == "approved":
+            return jsonify({"error": "Cannot delete an approved budget."}), 400
+
+        try:
+            # Get line IDs for this budget
+            line_rows = db.session.execute(
+                db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"), {"bid": bid}
+            ).fetchall()
+            line_ids = [r[0] for r in line_rows]
+
+            # Delete in dependency order using raw SQL
+            if line_ids:
+                ids_str = ",".join(str(i) for i in line_ids)
+                db.session.execute(db.text(f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})"))
+                db.session.execute(db.text(f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})"))
+            db.session.execute(db.text("DELETE FROM budget_revisions WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM presentation_sessions WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM ar_handoffs WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM data_sources WHERE budget_id = :bid"), {"bid": bid})
+            db.session.execute(db.text("DELETE FROM budget_lines WHERE budget_id = :bid"), {"bid": bid})
+            # Wipe entity-level data
+            _delete_entity_data(entity)
+            # Delete the budget itself
+            db.session.execute(db.text("DELETE FROM budgets WHERE id = :bid"), {"bid": bid})
+            db.session.commit()
+            logger.info(f"Deleted budget {bid} (entity {entity}, v{ver})")
+            return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": bid})
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to delete budget {bid}: {e}")
+            return jsonify({"error": f"Failed to delete: {str(e)}"}), 500
 
 
     @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
@@ -2192,6 +2263,14 @@ DASHBOARD_TEMPLATE = r"""
   .btn-blue { background: var(--blue); color: white; }
   .btn-green { background: var(--green); color: white; }
   .btn-orange { background: var(--yellow); color: white; }
+  .action-menu { position: relative; display: inline-block; }
+  .action-menu-btn { background: transparent; border: 1px solid var(--gray-300); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 16px; line-height: 1; color: var(--gray-500); }
+  .action-menu-btn:hover { background: var(--gray-100); }
+  .action-menu-items { display: none; position: absolute; right: 0; top: 100%; margin-top: 4px; background: white; border: 1px solid var(--gray-200); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); min-width: 140px; z-index: 10; padding: 4px 0; }
+  .action-menu-items button { display: block; width: 100%; text-align: left; padding: 8px 14px; border: none; background: none; cursor: pointer; font-size: 13px; }
+  .action-menu-items button:hover { background: var(--gray-50); }
+  .action-menu-items .del-item { color: var(--red); }
+  .action-menu-items .del-item:hover { background: var(--red-light); }
 </style>
 </head>
 <body>
@@ -2349,6 +2428,13 @@ function renderBudgets(budgets) {
         <button class="btn-action btn-orange" onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px;">Return</button>
       `;
     }
+    if (b.status !== 'approved') {
+      actionHtml += `<div class="action-menu" style="display:inline-block; margin-left:4px;">` +
+        `<button class="action-menu-btn" onclick="toggleMenu(this)">&#8943;</button>` +
+        `<div class="action-menu-items">` +
+        `<button class="del-item" onclick='deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})'>Delete budget</button>` +
+        `</div></div>`;
+    }
 
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
@@ -2405,6 +2491,32 @@ async function returnTopm(entity) {
     await loadBudgets();
   } catch (err) {
     showToast('Failed to return budget', 'error');
+    console.error(err);
+  }
+}
+
+function toggleMenu(btn) {
+  const menu = btn.nextElementSibling;
+  document.querySelectorAll('.action-menu-items').forEach(m => { if (m !== menu) m.style.display = 'none'; });
+  menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.action-menu')) document.querySelectorAll('.action-menu-items').forEach(m => m.style.display = 'none');
+});
+
+async function deleteBudget(budgetId, name, version) {
+  if (!confirm(`Delete draft budget for ${name} (v${version})? This cannot be undone.`)) return;
+  try {
+    const resp = await fetch(`/api/budgets/${budgetId}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (resp.ok) {
+      showToast(data.message, 'success');
+      await loadBudgets();
+    } else {
+      showToast(data.error || 'Failed to delete', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to delete budget', 'error');
     console.error(err);
   }
 }
