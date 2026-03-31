@@ -958,15 +958,16 @@ def generate_script():
     # YSL has inline download code — we handle that separately.
 
     # Patch Expense Distribution triggerDownload
+    # Note: triggerDownload body is indented 4 spaces, closing brace 2 spaces
     exp_script = exp_script.replace(
-        "URL.revokeObjectURL(a.href);\n  }",
-        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'expense');\n  }"
+        "    URL.revokeObjectURL(a.href);\n  }",
+        "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'expense');\n  }"
     )
 
     # Patch Maintenance Proof triggerDownload
     mp_script = mp_script.replace(
-        "URL.revokeObjectURL(a.href);\n  }",
-        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
+        "    URL.revokeObjectURL(a.href);\n  }",
+        "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
     )
 
     # AP Aging patching removed — runs as separate standalone script
