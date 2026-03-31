@@ -629,6 +629,7 @@ def auto_process():
         ysl_entities = set()
         expense_files = []
         open_ap_files = []
+        maint_proof_files = []
 
         # Pass 1: Save all files, classify, process YSL first
         for finfo in file_list:
@@ -647,6 +648,12 @@ def auto_process():
             if upload_type == "ap":
                 logger.info(f"Auto-upload routed by type hint: {filename} → Open AP")
                 open_ap_files.append((file_path, filename))
+                continue
+
+            # If upload type is 'maint', route to Maintenance Proof pipeline
+            if upload_type == "maint":
+                logger.info(f"Auto-upload routed by type hint: {filename} → Maintenance Proof")
+                maint_proof_files.append((file_path, filename))
                 continue
 
             # Detect Open AP from content (fallback for manual uploads)
@@ -682,6 +689,12 @@ def auto_process():
 
                 if is_expense:
                     expense_files.append((file_path, filename))
+                    continue
+
+                is_maint = "maintenance proof" in _row1.lower() or "adhoc_amp" in _row1.lower()
+                if is_maint:
+                    logger.info(f"Auto-upload detection for {filename}: Maintenance Proof report")
+                    maint_proof_files.append((file_path, filename))
                     continue
             except Exception as detect_err:
                 logger.error(f"Auto-upload detection error for {filename}: {detect_err}")
@@ -832,6 +845,31 @@ def auto_process():
                 results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
             except Exception as ap_err:
                 results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
+
+        # Pass 4: Maintenance Proof
+        for mp_path, mp_filename in maint_proof_files:
+            try:
+                report_title, units, total_shares = mp_helpers["parse_maintenance_proof"](str(mp_path))
+                if not units:
+                    results["warnings"].append(f"Maintenance Proof file {mp_filename}: no units found")
+                    continue
+
+                import re as _re
+                fname_match = _re.search(r'(?:Adhoc_AMP|MaintProof|MP)[_-]?(\d+)', mp_filename, _re.IGNORECASE)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = fname_entity
+                if not target_entity and ysl_entities:
+                    target_entity = next(iter(ysl_entities))
+
+                if not target_entity:
+                    results["warnings"].append(f"Maintenance Proof file {mp_filename}: could not determine entity code")
+                    continue
+
+                report = mp_helpers["store_maintenance_proof"](target_entity, report_title, units, total_shares, mp_filename)
+                results["success"].append(f"Maintenance Proof: {target_entity} ({len(units)} units, {report_title})")
+            except Exception as mp_err:
+                results["warnings"].append(f"Maintenance Proof file {mp_filename} error: {str(mp_err)}")
 
         return jsonify({"message": f"Auto-processed {len(file_list)} files", **results}), 200
 
@@ -1253,6 +1291,7 @@ def process_files():
         ysl_entities = set()  # entity codes found in YSL files
         expense_files = []  # (path, filename) for expense files to process after YSL
         open_ap_files = []  # (path, filename) for AP Aging files to process after YSL
+        maint_proof_files = []  # (path, filename) for Maintenance Proof files
 
         # Pass 1: Save all files, classify them, process YSL files first
         for f in files:
@@ -1291,6 +1330,12 @@ def process_files():
 
                 if is_expense:
                     expense_files.append((file_path, f.filename))
+                    continue
+
+                is_maint = "maintenance proof" in _row1.lower() or "adhoc_amp" in _row1.lower()
+                if is_maint:
+                    logger.info(f"File detection for {f.filename}: Maintenance Proof report")
+                    maint_proof_files.append((file_path, f.filename))
                     continue
             except Exception as detect_err:
                 logger.error(f"File detection error for {f.filename}: {detect_err}")
@@ -1506,6 +1551,33 @@ def process_files():
             except Exception as ap_err:
                 logger.error(f"Open AP parse error for {ap_filename}: {ap_err}")
                 results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
+
+        # Pass 4: Process Maintenance Proof files
+        for mp_path, mp_filename in maint_proof_files:
+            try:
+                report_title, units, total_shares = mp_helpers["parse_maintenance_proof"](str(mp_path))
+                if not units:
+                    results["warnings"].append(f"Maintenance Proof file {mp_filename}: no units found")
+                    continue
+
+                import re as _re
+                fname_match = _re.search(r'(?:Adhoc_AMP|MaintProof|MP)[_-]?(\d+)', mp_filename, _re.IGNORECASE)
+                fname_entity = fname_match.group(1) if fname_match else None
+
+                target_entity = fname_entity
+                if not target_entity and ysl_entities:
+                    target_entity = next(iter(ysl_entities))
+
+                if not target_entity:
+                    results["warnings"].append(f"Maintenance Proof file {mp_filename}: could not determine entity code")
+                    continue
+
+                report = mp_helpers["store_maintenance_proof"](target_entity, report_title, units, total_shares, mp_filename)
+                results["success"].append(f"Maintenance Proof: {target_entity} ({len(units)} units, {report_title})")
+                logger.info(f"Maintenance proof stored for entity {target_entity}")
+            except Exception as mp_err:
+                logger.error(f"Maintenance proof parse error for {mp_filename}: {mp_err}")
+                results["warnings"].append(f"Maintenance Proof file {mp_filename} error: {str(mp_err)}")
 
         if not output_files:
             # If expense files were processed successfully, return 200
