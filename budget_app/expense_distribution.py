@@ -145,7 +145,6 @@ def create_expense_distribution_blueprint(db, workflow_models):
 
     Budget = workflow_models["Budget"]
     BudgetLine = workflow_models["BudgetLine"]
-    BudgetRevision = workflow_models["BudgetRevision"]
 
     # ─── Models ───────────────────────────────────────────────────────────────
 
@@ -279,106 +278,6 @@ def create_expense_distribution_blueprint(db, workflow_models):
         logger.info(f"Stored {len(invoices)} invoices for entity {entity_code} ({period_from}-{period_to})")
         return report
 
-    # ─── Helper: Compute and apply accrual adjustments ──────────────────────
-
-    def compute_accrual_adjustments(report_id, period_from):
-        """
-        Identify prior-year invoices and compute accrual adjustments per GL.
-
-        Any invoice whose invoice_date is BEFORE the report's period_from start
-        is considered a prior-year accrual. These amounts are summed per GL code
-        and returned as NEGATIVE values (they inflate YTD and must be backed out).
-
-        Args:
-            report_id: The expense report ID
-            period_from: String like "01/2026" — the start of the reporting period
-
-        Returns:
-            dict: {gl_code: {"accrual_amount": float (negative), "invoices": [list of invoice dicts]}}
-        """
-        from datetime import datetime
-
-        # Parse the period_from into a cutoff date (first day of that month)
-        try:
-            cutoff = datetime.strptime(period_from, "%m/%Y")
-        except (ValueError, TypeError):
-            logger.warning(f"Could not parse period_from '{period_from}', skipping accrual calc")
-            return {}
-
-        invoices = ExpenseInvoice.query.filter_by(report_id=report_id).all()
-        accruals = {}  # {gl_code: {"amount": float, "invoices": [...]}}
-
-        for inv in invoices:
-            # Parse invoice_date — could be "2025-12-15", "12/15/2025", etc.
-            inv_date = None
-            for date_fmt in ["%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S", "%m/%d/%y"]:
-                try:
-                    inv_date = datetime.strptime(str(inv.invoice_date or "").strip()[:10], date_fmt)
-                    break
-                except (ValueError, TypeError):
-                    continue
-
-            if inv_date is None:
-                continue  # Can't parse date, skip
-
-            # Check if invoice is prior-year (before the report period start)
-            if inv_date < cutoff:
-                gl = inv.reclass_to_gl or inv.gl_code  # Use reclassed GL if applicable
-                if gl not in accruals:
-                    accruals[gl] = {"amount": 0, "invoices": []}
-                accruals[gl]["amount"] += inv.amount
-                accruals[gl]["invoices"].append(inv.to_dict())
-
-        # Make amounts negative (prior-year expenses that need to be backed out of YTD)
-        for gl in accruals:
-            accruals[gl]["amount"] = -abs(accruals[gl]["amount"])
-
-        return accruals
-
-    def apply_accrual_adjustments(entity_code, report_id, period_from):
-        """
-        Compute accrual adjustments from prior-year invoices and apply them
-        to matching BudgetLine records.
-
-        Returns:
-            dict: {"applied": int, "accruals": {gl: amount}}
-        """
-        accruals = compute_accrual_adjustments(report_id, period_from)
-        if not accruals:
-            return {"applied": 0, "accruals": {}}
-
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
-        if not budget:
-            logger.warning(f"No budget found for entity {entity_code}, cannot apply accruals")
-            return {"applied": 0, "accruals": {}}
-
-        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
-        gl_to_line = {line.gl_code: line for line in lines}
-
-        applied = 0
-        accrual_summary = {}
-        for gl, data in accruals.items():
-            if gl in gl_to_line:
-                line = gl_to_line[gl]
-                old_val = float(line.accrual_adj or 0)
-                line.accrual_adj = round(data["amount"], 2)
-                accrual_summary[gl] = round(data["amount"], 2)
-
-                # Log the change
-                db.session.add(BudgetRevision(
-                    budget_id=budget.id, action="update",
-                    field_name="accrual_adj",
-                    old_value=str(old_val),
-                    new_value=str(round(data["amount"], 2)),
-                    notes=f"GL {gl}: auto-accrual from {len(data['invoices'])} prior-year invoices",
-                    source="accrual_auto"
-                ))
-                applied += 1
-
-        db.session.commit()
-        logger.info(f"Applied accrual adjustments to {applied} GL lines for entity {entity_code}")
-        return {"applied": applied, "accruals": accrual_summary}
-
     # ─── Helper: Get adjusted GL totals (after reclass) ───────────────────────
 
     def get_adjusted_gl_totals(entity_code):
@@ -427,76 +326,32 @@ def create_expense_distribution_blueprint(db, workflow_models):
         if not file.filename.endswith(".xlsx"):
             return jsonify({"error": "File must be .xlsx"}), 400
 
-        # Allow caller to override entity code (Yardi sometimes embeds wrong entity)
-        override_entity = request.form.get("entity_code", "").strip()
-
         import tempfile, os
         tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
         file.save(tmp.name)
         tmp.close()
 
         try:
-            file_entity, period_from, period_to, invoices = parse_expense_distribution(tmp.name)
-
-            # Use override entity if provided, otherwise fall back to file contents
-            entity_code = override_entity or file_entity
+            entity_code, period_from, period_to, invoices = parse_expense_distribution(tmp.name)
 
             if not entity_code:
                 return jsonify({"error": "Could not detect entity code from report"}), 400
 
-            if override_entity and file_entity and override_entity != file_entity:
-                logger.warning(f"Entity override: file contains {file_entity}, storing under {override_entity}")
-
             report = store_expense_report(
                 entity_code, period_from, period_to, invoices, file.filename
             )
-
-            # Auto-compute and apply accrual adjustments from prior-year invoices
-            accrual_result = {"applied": 0, "accruals": {}}
-            if period_from:
-                try:
-                    accrual_result = apply_accrual_adjustments(entity_code, report.id, period_from)
-                    if accrual_result["applied"] > 0:
-                        logger.info(f"Auto-applied accrual adjustments to {accrual_result['applied']} GL lines")
-                except Exception as e:
-                    logger.error(f"Failed to apply accrual adjustments: {e}")
 
             return jsonify({
                 "status": "ok",
                 "report": report.to_dict(),
                 "gl_codes_found": len(set(inv["gl_code"] for inv in invoices)),
                 "invoices_parsed": len(invoices),
-                "accruals_applied": accrual_result["applied"],
-                "accrual_details": accrual_result.get("accruals", {}),
             })
         except Exception as e:
             logger.error(f"Failed to parse expense distribution: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             os.unlink(tmp.name)
-
-    @bp.route("/api/accrual-invoices/<entity_code>/<gl_code>", methods=["GET"])
-    def get_accrual_invoices(entity_code, gl_code):
-        """Get prior-year invoices that contribute to accrual adjustment for a GL code."""
-        report = ExpenseReport.query.filter_by(entity_code=entity_code)\
-            .order_by(ExpenseReport.uploaded_at.desc()).first()
-        if not report:
-            return jsonify({"invoices": [], "total": 0, "cutoff": None})
-
-        period_from = report.period_from
-        if not period_from:
-            return jsonify({"invoices": [], "total": 0, "cutoff": None})
-
-        accruals = compute_accrual_adjustments(report.id, period_from)
-        gl_data = accruals.get(gl_code, {"amount": 0, "invoices": []})
-
-        return jsonify({
-            "gl_code": gl_code,
-            "invoices": gl_data.get("invoices", []),
-            "total": gl_data.get("amount", 0),
-            "cutoff": period_from,
-            "invoice_count": len(gl_data.get("invoices", [])),
-        })
 
     @bp.route("/api/expense-dist/<entity_code>", methods=["GET"])
     def get_expense_dist(entity_code):
@@ -572,39 +427,6 @@ def create_expense_distribution_blueprint(db, workflow_models):
 
         return jsonify({"status": "ok", "invoice": inv.to_dict()})
 
-    @bp.route("/api/expense-dist/reclass-batch", methods=["POST"])
-    def reclass_batch():
-        """Reclassify multiple invoices to a target GL code."""
-        data = request.get_json()
-        invoice_ids = data.get("invoice_ids", [])
-        target_gl = data.get("reclass_to_gl", "").strip()
-        notes = data.get("reclass_notes", "").strip()
-        user = data.get("user", "PM")
-
-        if not invoice_ids:
-            return jsonify({"error": "No invoices specified"}), 400
-        if not target_gl:
-            return jsonify({"error": "No target GL specified"}), 400
-
-        results = []
-        errors = []
-        for inv_id in invoice_ids:
-            inv = ExpenseInvoice.query.get(inv_id)
-            if not inv:
-                errors.append({"id": inv_id, "error": "Not found"})
-                continue
-            if target_gl == inv.gl_code:
-                errors.append({"id": inv_id, "error": "Same GL"})
-                continue
-            inv.reclass_to_gl = target_gl
-            inv.reclass_notes = notes
-            inv.reclassed_by = user
-            inv.reclassed_at = datetime.utcnow()
-            results.append(inv.to_dict())
-
-        db.session.commit()
-        return jsonify({"status": "ok", "reclassed": len(results), "errors": errors, "invoices": results})
-
     @bp.route("/api/expense-dist/<entity_code>/summary", methods=["GET"])
     def gl_summary(entity_code):
         """
@@ -614,7 +436,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         adjusted = get_adjusted_gl_totals(entity_code)
 
         # Get YSL budget data from BudgetLine
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         budget_lines = {}
         if budget:
             for line in BudgetLine.query.filter_by(budget_id=budget.id).all():
@@ -664,7 +486,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         all_gl_codes.update({k: v[0] for k, v in GA_GL_MAP.items()})
 
         # Get budget data for variance display
-        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         building_name = budget.building_name if budget else f"Entity {entity_code}"
         budget_lines = {}
         if budget:
@@ -692,7 +514,6 @@ def create_expense_distribution_blueprint(db, workflow_models):
     helpers = {
         "parse_expense_distribution": parse_expense_distribution,
         "store_expense_report": store_expense_report,
-        "apply_accrual_adjustments": apply_accrual_adjustments,
         "get_adjusted_gl_totals": get_adjusted_gl_totals,
     }
 
@@ -709,17 +530,18 @@ PM_EXPENSE_TEMPLATE = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Expense Review — {{ building_name }} — Century Management</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db; --blue-light: #e1effe;
+    --blue: #5a4a3f; --blue-light: #f5efe7;
     --green: #057a55; --green-light: #def7ec;
     --orange: #d97706; --orange-light: #fef3c7;
     --red: #e02424; --red-light: #fde8e8;
-    --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
-    --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827;
+    --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
-  header { background: linear-gradient(135deg, #1a56db 0%, #1e429f 100%); color: white; padding: 24px 20px; }
+  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+  header { background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%); color: white; padding: 24px 20px; }
   header h1 { font-size: 24px; margin-bottom: 4px; }
   header p { opacity: 0.9; font-size: 14px; }
   .back-link { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 14px; }
@@ -777,7 +599,7 @@ PM_EXPENSE_TEMPLATE = """
   .btn-reclass:hover { background: #fde68a; }
   .btn-undo { background: var(--gray-100); color: var(--gray-700); }
   .btn-upload { background: var(--blue); color: white; padding: 8px 20px; font-size: 14px; border-radius: 6px; }
-  .btn-upload:hover { background: #1542b8; }
+  .btn-upload:hover { background: #3d322a; }
 
   /* Reclass modal */
   .modal-overlay {
@@ -800,7 +622,7 @@ PM_EXPENSE_TEMPLATE = """
   .modal-actions .btn { padding: 8px 20px; font-size: 14px; border-radius: 6px; }
   .btn-cancel { background: var(--gray-100); color: var(--gray-700); }
   .btn-save { background: var(--blue); color: white; }
-  .btn-save:hover { background: #1542b8; }
+  .btn-save:hover { background: #3d322a; }
 
   .no-data { text-align: center; padding: 60px 20px; color: var(--gray-500); }
   .no-data p { margin-bottom: 16px; }
@@ -831,7 +653,7 @@ PM_EXPENSE_TEMPLATE = """
   <div class="grid-wrapper">
     <div class="grid-container">
       <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
-        <button id="expZeroToggle" onclick="expToggleZeroRows()" style="font-size:12px; padding:5px 14px; background:#e1effe; color:#1a56db; border:1px solid #1a56db; border-radius:6px; cursor:pointer;"></button>
+        <button id="expZeroToggle" onclick="expToggleZeroRows()" style="font-size:12px; padding:5px 14px; background:#f5efe7; color:#5a4a3f; border:1px solid #5a4a3f; border-radius:6px; cursor:pointer;"></button>
       </div>
       <table id="expenseTable">
         <thead>
@@ -897,7 +719,6 @@ async function uploadFile() {
   status.textContent = 'Uploading...';
   const form = new FormData();
   form.append('file', fileInput.files[0]);
-  form.append('entity_code', ENTITY);
 
   try {
     const resp = await fetch('/api/expense-dist/upload', { method: 'POST', body: form });
@@ -953,9 +774,9 @@ function expUpdateZeroToggle() {
   if (count === 0) { btn.style.display = 'none'; return; }
   btn.style.display = '';
   btn.textContent = _expShowZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Zero Rows';
-  btn.style.background = _expShowZeroRows ? '#f3f4f6' : '#e1effe';
-  btn.style.color = _expShowZeroRows ? '#6b7280' : '#1a56db';
-  btn.style.borderColor = _expShowZeroRows ? '#d1d5db' : '#1a56db';
+  btn.style.background = _expShowZeroRows ? '#ede9e1' : '#f5efe7';
+  btn.style.color = _expShowZeroRows ? '#8a7e72' : '#5a4a3f';
+  btn.style.borderColor = _expShowZeroRows ? '#d5cfc5' : '#5a4a3f';
 }
 
 function expToggleZeroRows() {

@@ -455,61 +455,47 @@ Be precise with numbers. Include all line items found.
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Audited Financials - Century Management</title>
     <style>
-        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-400: #9ca3af; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
-        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
-        header a { color: rgba(255,255,255,0.85); text-decoration: none; font-size: 13px; display: inline-block; margin-bottom: 6px; }
-        header a:hover { color: white; text-decoration: underline; }
-        header h1 { font-size: 26px; font-weight: 700; }
-        header p { font-size: 14px; opacity: 0.75; margin-top: 2px; }
-        .container { max-width: 1280px; margin: 0 auto; padding: 28px 20px; }
-        .section { background: white; border-radius: 12px; padding: 24px 28px; margin-bottom: 20px; border: 1px solid var(--gray-200); }
-        .section h2 { font-size: 17px; font-weight: 600; margin-bottom: 18px; color: var(--blue); }
-        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
-        .form-group { margin-bottom: 0; }
-        label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.3px; }
-        input, select { width: 100%; padding: 9px 12px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 14px; background: white; }
+        body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%); color: white; padding: 30px 20px; }
+        header a { color: white; text-decoration: none; font-size: 14px; }
+        header a:hover { text-decoration: underline; }
+        header h1 { font-size: 28px; font-weight: 700; }
+        header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 32px 20px; }
+        .section { background: white; border-radius: 12px; padding: 28px; margin-bottom: 24px; border: 1px solid var(--gray-200); }
+        .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--gray-700); }
+        input, select { width: 100%; padding: 10px 12px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 14px; }
         input:focus, select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-light); }
-        input[type="file"] { padding: 8px 10px; font-size: 13px; background: var(--gray-50); cursor: pointer; }
         button { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
         button:hover { background: #1542b8; }
         .btn-green { background: var(--green); }
         .btn-green:hover { background: #046c4e; }
-        .btn-small { padding: 5px 10px; font-size: 12px; border-radius: 5px; font-weight: 600; }
-        .btn-delete { background: #e02424; margin-left: 4px; }
-        .btn-delete:hover { background: #c81e1e; }
-        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        th { background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 2px solid var(--gray-200); }
-        td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 13px; vertical-align: middle; }
-        tbody tr:hover { background: var(--gray-50); }
-        .col-entity { width: 60px; }
-        .col-building { width: 28%; }
-        .col-auditor { width: 10%; }
-        .col-year { width: 55px; }
-        .col-status { width: auto; }
-        .col-actions { width: 140px; text-align: right; }
-        .status-tracker { display: flex; align-items: center; gap: 1px; font-size: 10px; white-space: nowrap; }
-        .status-step { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; }
-        .status-step.done { color: #059669; }
-        .status-step.done .step-dot { background: #059669; border-color: #059669; color: white; }
-        .status-step.current { color: #1e40af; font-weight: 700; }
-        .status-step.current .step-dot { background: #3b82f6; border-color: #3b82f6; color: white; animation: pulse-dot 2s infinite; }
-        .status-step.future { color: var(--gray-300); }
-        .status-step.future .step-dot { background: white; border-color: var(--gray-300); color: var(--gray-300); }
-        .step-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid; display: inline-flex; align-items: center; justify-content: center; font-size: 8px; flex-shrink: 0; line-height: 1; }
-        .step-arrow { color: var(--gray-300); font-size: 9px; margin: 0 1px; }
-        @keyframes pulse-dot { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); } 50% { box-shadow: 0 0 0 3px rgba(59,130,246,0); } }
+        .btn-small { padding: 6px 12px; font-size: 12px; }
+        .btn-delete { background: #e02424; margin-left: 6px; }
+        .btn-delete:hover { background: #d01f1f; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+        td { padding: 10px 12px; border-bottom: 1px solid var(--gray-200); font-size: 14px; }
+        tr:hover { background: var(--gray-50); }
+        .status-pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .status-uploaded { background: #fef3c7; color: #92400e; }
+        .status-extracted { background: #dbeafe; color: #1e40af; }
+        .status-mapped { background: #d1fae5; color: #065f46; }
+        .status-confirmed { background: #c7d2fe; color: #3730a3; }
         .alert { padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
         .alert-info { background: #fef3c7; color: #92400e; }
         .alert-success { background: var(--green-light); color: #065f46; }
         .alert-error { background: #fde8e8; color: #9b1c1c; }
-        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .header-row h2 { margin-bottom: 0; }
-        .profiles-link { color: var(--blue); text-decoration: none; font-size: 13px; font-weight: 600; }
+        .profiles-link { color: var(--blue); text-decoration: none; font-size: 14px; font-weight: 600; }
         .profiles-link:hover { text-decoration: underline; }
-        .empty-state { text-align: center; padding: 40px 20px; color: var(--gray-400); }
-        .empty-state p { font-size: 14px; margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -550,7 +536,7 @@ Be precise with numbers. Include all line items found.
                 <input type="file" id="pdfFile" accept=".pdf" />
             </div>
         </div>
-        <button class="btn-green" onclick="uploadPDF()" style="margin-top:8px;">Upload & Extract</button>
+        <button class="btn-green" onclick="uploadPDF()">Upload & Extract</button>
         <div id="uploadStatus"></div>
     </div>
 
@@ -629,7 +615,7 @@ Be precise with numbers. Include all line items found.
 
     function deleteUpload(uploadId) {
         if (!confirm('Delete this upload? This cannot be undone.')) return;
-        fetch('/api/af/uploads/' + uploadId + '/delete', { method: 'POST' })
+        fetch('/api/af/uploads/' + uploadId, { method: 'DELETE' })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
@@ -659,60 +645,36 @@ Be precise with numbers. Include all line items found.
         ])
 
         # Build uploads table
-        status_order = ["uploaded", "extracted", "mapped", "confirmed"]
-        status_labels = {"uploaded": "Uploaded", "extracted": "Extracted", "mapped": "Mapped", "confirmed": "Confirmed"}
-
-        def build_status_tracker(current_status):
-            idx = status_order.index(current_status) if current_status in status_order else 0
-            steps = []
-            for i, s in enumerate(status_order):
-                if i < idx:
-                    cls = "done"
-                    dot = "&#10003;"
-                elif i == idx:
-                    cls = "current"
-                    dot = str(i + 1)
-                else:
-                    cls = "future"
-                    dot = str(i + 1)
-                steps.append(f'<span class="status-step {cls}"><span class="step-dot">{dot}</span>{status_labels[s]}</span>')
-                if i < len(status_order) - 1:
-                    arrow_color = "#059669" if i < idx else "var(--gray-300)"
-                    steps.append(f'<span class="step-arrow" style="color:{arrow_color};">›</span>')
-            return '<div class="status-tracker">' + ''.join(steps) + '</div>'
-
         rows = []
         for u in uploads:
             delete_btn = f'<button class="btn-small btn-delete" onclick="deleteUpload({u.id})">Delete</button>'
-            tracker = build_status_tracker(u.status)
             rows.append(f"""
                 <tr id="upload-row-{u.id}">
-                    <td style="font-weight:600; font-variant-numeric:tabular-nums;">{u.entity_code}</td>
-                    <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{u.building_name}</td>
-                    <td>{u.profile.name if u.profile else '<span style="color:var(--gray-300);">—</span>'}</td>
+                    <td style="font-weight:600;">{u.entity_code}</td>
+                    <td>{u.building_name}</td>
+                    <td>{u.profile.name if u.profile else "—"}</td>
                     <td>{u.fiscal_year_end}</td>
-                    <td>{tracker}</td>
-                    <td style="white-space:nowrap; text-align:right;">
+                    <td><span class="status-pill status-{u.status}">{u.status.title()}</span></td>
+                    <td style="white-space:nowrap;">
                         <button class="btn-small" onclick="reviewUpload({u.id})">Review</button>
                         {delete_btn}
                     </td>
                 </tr>
             """)
-        empty_msg = '<tr><td colspan="6"><div class="empty-state"><p>No uploads yet — upload a PDF above to get started</p></div></td></tr>'
         uploads_table = f"""
             <table>
                 <thead>
                 <tr>
-                    <th class="col-entity">Entity</th>
-                    <th class="col-building">Building</th>
-                    <th class="col-auditor">Auditor</th>
-                    <th class="col-year">Year</th>
-                    <th class="col-status">Status</th>
-                    <th class="col-actions">Actions</th>
+                    <th>Entity</th>
+                    <th>Building</th>
+                    <th>Auditor</th>
+                    <th>Year</th>
+                    <th>Status</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody>
-                {"".join(rows) if rows else empty_msg}
+                {"".join(rows) if rows else "<tr><td colspan='6' style='text-align: center; padding: 30px; color: var(--gray-500);'>No uploads yet</td></tr>"}
                 </tbody>
             </table>
         """
@@ -737,10 +699,11 @@ Be precise with numbers. Include all line items found.
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Auditor Profiles - Century Management</title>
     <style>
-        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
-        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
+        body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%); color: white; padding: 30px 20px; }
         header a { color: white; text-decoration: none; font-size: 14px; }
         header a:hover { text-decoration: underline; }
         header h1 { font-size: 28px; font-weight: 700; }
@@ -836,7 +799,7 @@ Be precise with numbers. Include all line items found.
 
         function deleteProfile(profileId) {
             if (!confirm('Delete this profile and all its rules?')) return;
-            fetch('/api/af/profiles/' + profileId + '/delete', { method: 'POST' })
+            fetch('/api/af/profiles/' + profileId, { method: 'DELETE' })
             .then(r => r.json())
             .then(data => {
                 if (data.success) location.reload();
@@ -993,10 +956,11 @@ Be precise with numbers. Include all line items found.
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Review - {{ building_name }} - Century Management</title>
     <style>
-        :root { --blue: #1a56db; --blue-light: #e1effe; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; --gray-900: #111827; }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
-        header { background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%); color: white; padding: 30px 20px; }
+        body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+        header { background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%); color: white; padding: 30px 20px; }
         header a { color: white; text-decoration: none; font-size: 14px; }
         header a:hover { text-decoration: underline; }
         header h1 { font-size: 24px; font-weight: 700; }
@@ -1335,7 +1299,7 @@ Be precise with numbers. Include all line items found.
         })
 
 
-    @bp.route("/api/af/profiles/<int:profile_id>/delete", methods=["POST"])
+    @bp.route("/api/af/profiles/<int:profile_id>", methods=["DELETE"])
     def api_delete_profile(profile_id):
         """Delete auditor profile."""
         profile = AuditorProfile.query.get(profile_id)
@@ -1583,21 +1547,21 @@ Be precise with numbers. Include all line items found.
             "upload": data
         })
 
-    @bp.route("/api/af/uploads/<int:upload_id>/delete", methods=["POST"])
+    @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
     def api_delete_upload(upload_id):
-        """Delete an upload."""
+        """Delete an upload that hasn't been confirmed."""
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
 
-        # Delete the PDF file if it exists on disk
-        try:
-            import os
-            pdf_path = getattr(upload, 'pdf_filename', None)
-            if pdf_path and os.path.exists(pdf_path):
-                os.remove(pdf_path)
-        except Exception:
-            pass  # File cleanup is best-effort
+        # Delete the PDF file if it exists
+        if upload.file_path:
+            try:
+                import os
+                if os.path.exists(upload.file_path):
+                    os.remove(upload.file_path)
+            except Exception:
+                pass  # File cleanup is best-effort
 
         db.session.delete(upload)
         db.session.commit()

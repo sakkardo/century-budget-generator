@@ -12,9 +12,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 from io import BytesIO
-from flask import Flask, render_template_string, request, jsonify, send_file, make_response
+from flask import Flask, render_template_string, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
-from functools import wraps
 
 # Detect cloud deployment (Railway sets PORT env var)
 IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
@@ -22,10 +21,6 @@ IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
 # Add budget_system to path for pipeline imports
 BUDGET_SYSTEM = Path(__file__).parent.parent / "budget_system"
 sys.path.insert(0, str(BUDGET_SYSTEM))
-
-# Add budget_app to path so workflow.py can import sibling modules (e.g. dof_taxes)
-BUDGET_APP = Path(__file__).parent
-sys.path.insert(0, str(BUDGET_APP))
 
 from ysl_parser import parse_ysl_file
 from template_populator import populate_template, apply_assumptions, apply_pm_projections
@@ -71,39 +66,6 @@ except ImportError:
 ed_bp, ed_models, ed_helpers = create_expense_distribution_blueprint(db, workflow_models)
 app.register_blueprint(ed_bp)
 
-# Register maintenance proof blueprint
-try:
-    from maintenance_proof import create_maintenance_proof_blueprint
-except ImportError:
-    from budget_app.maintenance_proof import create_maintenance_proof_blueprint
-mp_bp, mp_models, mp_helpers = create_maintenance_proof_blueprint(db, workflow_models)
-app.register_blueprint(mp_bp)
-
-# Register open AP (aging) blueprint
-try:
-    from open_ap import create_open_ap_blueprint, detect_open_ap_file, parse_open_ap_report
-except ImportError:
-    from budget_app.open_ap import create_open_ap_blueprint, detect_open_ap_file, parse_open_ap_report
-oa_bp, oa_models, oa_helpers = create_open_ap_blueprint(db, workflow_models)
-app.register_blueprint(oa_bp)
-
-# Register file repository blueprint
-try:
-    from file_repository import create_file_repository_blueprint
-except ImportError:
-    from budget_app.file_repository import create_file_repository_blueprint
-fr_bp, fr_models, fr_helpers = create_file_repository_blueprint(db, workflow_models)
-app.register_blueprint(fr_bp)
-
-# Ensure every request starts with a clean DB session.
-# Prevents poisoned PostgreSQL transactions from leaking via connection pool.
-@app.before_request
-def _ensure_clean_db_session():
-    try:
-        db.session.rollback()
-    except Exception:
-        pass
-
 # Resolve all model relationships after ALL blueprints are registered
 try:
     db.configure_mappers()
@@ -135,12 +97,6 @@ with app.app_context():
             ("budget_lines", "reclass_notes", "TEXT DEFAULT ''"),
             ("budget_lines", "proposed_budget", "FLOAT DEFAULT 0"),
             ("budgets", "assumptions_json", "TEXT DEFAULT '{}'"),
-            ("budget_lines", "estimate_override", "FLOAT"),
-            ("budget_lines", "forecast_override", "FLOAT"),
-            ("budget_lines", "accrual_adj", "FLOAT DEFAULT 0"),
-            ("budgets", "building_type", "VARCHAR(50) DEFAULT ''"),
-            ("budget_lines", "proposed_formula", "TEXT"),
-            ("budgets", "version", "INTEGER DEFAULT 1"),
         ]
         for table, col, col_type in _migrations:
             try:
@@ -149,49 +105,6 @@ with app.app_context():
                 logger.info(f"Added column {table}.{col}")
             except Exception:
                 db.session.rollback()  # Column already exists, skip
-
-        # Migrate unique constraint: drop old, add new with version
-        try:
-            db.session.execute(db.text("ALTER TABLE budgets DROP CONSTRAINT IF EXISTS uq_entity_year"))
-            db.session.commit()
-            logger.info("Dropped old uq_entity_year constraint")
-        except Exception:
-            db.session.rollback()
-        try:
-            db.session.execute(db.text("ALTER TABLE budgets ADD CONSTRAINT uq_entity_year_ver UNIQUE (entity_code, year, version)"))
-            db.session.commit()
-            logger.info("Added new uq_entity_year_ver constraint")
-        except Exception:
-            db.session.rollback()
-
-        # Backfill building_type on existing budgets from buildings.csv
-        try:
-            import csv as _csv
-            _csv_path = BUDGET_SYSTEM / "buildings.csv"
-            _type_map = {}
-            if _csv_path.exists():
-                with open(_csv_path, newline="", encoding="utf-8") as _f:
-                    for _r in _csv.DictReader(_f):
-                        ec = str(_r.get("entity_code", "")).strip()
-                        bt = (_r.get("type", "") or "").strip()
-                        if ec and bt:
-                            _type_map[ec] = bt
-            empty_bt = db.session.execute(
-                db.text("SELECT id, entity_code FROM budgets WHERE building_type IS NULL OR building_type = ''")
-            ).fetchall()
-            if empty_bt and _type_map:
-                for row in empty_bt:
-                    bt = _type_map.get(str(row[1]).strip(), "")
-                    if bt:
-                        db.session.execute(
-                            db.text("UPDATE budgets SET building_type = :bt WHERE id = :id"),
-                            {"bt": bt, "id": row[0]}
-                        )
-                db.session.commit()
-                logger.info(f"Backfilled building_type on {len(empty_bt)} budgets")
-        except Exception as e:
-            db.session.rollback()
-            logger.warning(f"Building type backfill skipped: {e}")
 
 # Health check for Railway
 @app.route("/healthz")
@@ -213,14 +126,8 @@ BUILDING_ASSUMPTIONS_FILE = DATA_DIR / "building_assumptions.json"
 DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 
 # Console JS script templates — entities/email/period get injected
-# Normalize CRLF→LF so string replace patches work on all platforms
-CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
-EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
-MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
-try:
-    AP_AGING_SCRIPT = (BUDGET_SYSTEM / "AP Aging Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
-except FileNotFoundError:
-    AP_AGING_SCRIPT = None
+CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8")
+EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8")
 
 # Default portfolio values
 DEFAULT_PORTFOLIO = {
@@ -477,363 +384,30 @@ def buildings_api():
     return jsonify(new_building), 201
 
 
-@app.route("/api/buildings/<entity_code>", methods=["PUT"])
+@app.route("/api/buildings/<entity_code>", methods=["PUT", "DELETE"])
 def manage_building(entity_code):
-    """Edit a building."""
+    """Edit or delete a building."""
     buildings = load_buildings()
     building_idx = next((i for i, b in enumerate(buildings) if b["entity_code"] == entity_code), None)
 
     if building_idx is None:
         return jsonify({"error": "Building not found"}), 404
 
-    data = request.json
-    building = buildings[building_idx]
-    # Update allowed fields
-    for field in ["building_name", "address", "city", "zip", "type", "units"]:
-        if field in data:
-            building[field] = data[field]
-    buildings[building_idx] = building
-    save_buildings(buildings)
-    return jsonify(building), 200
+    if request.method == "DELETE":
+        buildings.pop(building_idx)
+        save_buildings(buildings)
+        return jsonify({"message": "Building deleted"}), 200
 
-
-@app.route("/api/buildings/<entity_code>/delete", methods=["POST"])
-def delete_building(entity_code):
-    """Delete a building."""
-    buildings = load_buildings()
-    building_idx = next((i for i, b in enumerate(buildings) if b["entity_code"] == entity_code), None)
-
-    if building_idx is None:
-        return jsonify({"error": "Building not found"}), 404
-
-    buildings.pop(building_idx)
-    save_buildings(buildings)
-    return jsonify({"message": "Building deleted"}), 200
-
-
-# ─── CORS Helper for Yardi Auto-Upload ────────────────────────────────────
-def cors_headers(f):
-    """Decorator to add CORS headers for cross-origin Yardi→Railway requests."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method == "OPTIONS":
-            resp = make_response()
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Upload-Session, X-Entity-Code, X-File-Type, X-Filename"
-            resp.headers["Access-Control-Max-Age"] = "3600"
-            return resp
-        result = f(*args, **kwargs)
-        if isinstance(result, tuple):
-            resp = make_response(result[0], result[1])
-        else:
-            resp = make_response(result)
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        return resp
-    return decorated
-
-
-# ─── Auto-Upload: Yardi → Budget App (no manual file upload needed) ───────
-_upload_sessions = {}  # session_id → {files: [{name, data, type}], entities: [], period: str}
-
-@app.route("/api/auto-upload", methods=["POST", "OPTIONS"])
-@cors_headers
-def auto_upload_file():
-    """Accept a single file blob from the Yardi console script.
-
-    The Yardi script POSTs each downloaded report here as it completes.
-    Files accumulate in a server-side session until /api/auto-process is called.
-    """
-    if request.method == "OPTIONS":
-        return make_response(""), 200
-
-    session_id = request.headers.get("X-Upload-Session", "default")
-    entity_code = request.headers.get("X-Entity-Code", "")
-    file_type = request.headers.get("X-File-Type", "unknown")  # ysl, expense, maint, ap
-
-    if session_id not in _upload_sessions:
-        _upload_sessions[session_id] = {"files": [], "entities": set(), "period": ""}
-
-    sess = _upload_sessions[session_id]
-
-    # Accept the file from the request body
-    if request.content_type and "multipart" in request.content_type:
-        f = request.files.get("file")
-        if not f:
-            return jsonify({"error": "No file in request"}), 400
-        filename = f.filename or f"upload_{entity_code}_{file_type}.xls"
-        file_data = f.read()
-    else:
-        # Raw binary body
-        file_data = request.get_data()
-        filename = request.headers.get("X-Filename", f"upload_{entity_code}_{file_type}.xls")
-
-    if not file_data:
-        return jsonify({"error": "Empty file"}), 400
-
-    sess["files"].append({
-        "name": filename,
-        "data": file_data,
-        "type": file_type,
-        "entity": entity_code,
-    })
-    if entity_code:
-        sess["entities"].add(entity_code)
-
-    logger.info(f"Auto-upload: received {filename} ({len(file_data)} bytes) for entity {entity_code}, session {session_id}")
-
-    return jsonify({
-        "status": "received",
-        "filename": filename,
-        "size": len(file_data),
-        "total_files": len(sess["files"]),
-    })
-
-
-@app.route("/api/auto-process", methods=["POST", "OPTIONS"])
-@cors_headers
-def auto_process():
-    """Trigger processing of all files accumulated via auto-upload.
-
-    Called by the Yardi script after all downloads complete.
-    Reuses the same processing logic as /api/process.
-    """
-    if request.method == "OPTIONS":
-        return make_response(""), 200
-
-    data = request.get_json(silent=True) or {}
-    session_id = data.get("session_id", request.headers.get("X-Upload-Session", "default"))
-    period = data.get("period", "02/2026")
-
-    if session_id not in _upload_sessions or not _upload_sessions[session_id]["files"]:
-        return jsonify({"error": "No files in session. Upload files first via /api/auto-upload"}), 400
-
-    sess = _upload_sessions.pop(session_id)
-    file_list = sess["files"]
-
-    logger.info(f"Auto-process: session {session_id}, {len(file_list)} files, entities: {sess['entities']}")
-
-    # Save files to a temp dir and reuse the existing /api/process logic
-    # by writing them as real files and processing them
-    save_dir_str = load_settings().get("save_dir", DEFAULT_SAVE_DIR)
-    save_dir = Path(save_dir_str)
-    ysl_archive = BUDGET_SYSTEM / "ysl_downloads"
-    ysl_archive.mkdir(exist_ok=True)
-
-    results = {"success": [], "failed": [], "warnings": [], "save_dir": str(save_dir), "auto_upload": True}
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        output_files = []
-        saved_files = []
-        ysl_entities = set()
-        expense_files = []
-        open_ap_files = []
-
-        # Pass 1: Save all files, classify, process YSL first
-        for finfo in file_list:
-            filename = finfo["name"]
-            if not filename.endswith((".xlsx", ".xls")):
-                results["warnings"].append(f"Skipped non-Excel: {filename}")
-                continue
-
-            file_path = tmp / filename
-            file_path.write_bytes(finfo["data"])
-
-            # Use upload-time file type hint as primary classifier
-            upload_type = finfo.get("type", "unknown")
-
-            # If upload type is 'ap', route directly to Open AP pipeline
-            if upload_type == "ap":
-                logger.info(f"Auto-upload routed by type hint: {filename} → Open AP")
-                open_ap_files.append((file_path, filename))
-                continue
-
-            # Detect Open AP from content (fallback for manual uploads)
-            try:
-                if detect_open_ap_file(str(file_path)):
-                    logger.info(f"Auto-upload detection for {filename}: Open AP (Aging) report")
-                    open_ap_files.append((file_path, filename))
-                    continue
-            except Exception:
-                pass
-
-            # Handle .xls files that are actually .xlsx (Yardi naming quirk)
-            # Copy to .xlsx temp file if needed for openpyxl
-            check_path = file_path
-            _tmp_xlsx = None
-            if str(file_path).lower().endswith('.xls') and not str(file_path).lower().endswith('.xlsx'):
-                import shutil as _shutil
-                _tmp_xlsx = tmp / (filename + 'x')  # .xls → .xlsx
-                _shutil.copy2(str(file_path), str(_tmp_xlsx))
-                check_path = _tmp_xlsx
-
-            # Detect Expense Distribution vs YSL via Row 1
-            try:
-                from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(check_path), data_only=True)
-                _ws_check = _wb_check.active
-                _row1 = str(_ws_check.cell(row=1, column=1).value or "")
-                _row2 = str(_ws_check.cell(row=2, column=1).value or "")
-                _wb_check.close()
-
-                is_expense = "expense distribution" in _row1.lower() or "expense dist" in _row1.lower()
-                logger.info(f"Auto-upload detection for {filename}: Row1='{_row1}', is_expense={is_expense}")
-
-                if is_expense:
-                    expense_files.append((file_path, filename))
-                    continue
-            except Exception as detect_err:
-                logger.error(f"Auto-upload detection error for {filename}: {detect_err}")
-                results["warnings"].append(f"Could not read {filename}: {str(detect_err)}")
-                continue
-
-            # Process YSL file
-            try:
-                gl_data, property_info = parse_ysl_file(file_path)
-                entity = property_info.get("property_code", "unknown")
-                name = property_info.get("property_name", f"Entity_{entity}")
-                ysl_entities.add(str(entity))
-
-                building_folder_name = f"{entity} - {name}"
-                building_dir = save_dir / building_folder_name
-                building_dir.mkdir(parents=True, exist_ok=True)
-
-                output_name = f"{entity}_{name}_2027_Budget.xlsx"
-                output_path = building_dir / output_name
-
-                _gen_ytd = 2
-                try:
-                    _gen_ytd = int(period.split("/")[0])
-                except Exception:
-                    pass
-
-                success = populate_template(
-                    template_path=TEMPLATE_PATH,
-                    gl_data=gl_data,
-                    property_info=property_info,
-                    output_path=output_path,
-                    ytd_months=_gen_ytd,
-                    remaining_months=12 - _gen_ytd,
-                )
-
-                if success and output_path.exists():
-                    merged = None
-                    try:
-                        merged = merge_assumptions(entity)
-                    except Exception:
-                        pass
-
-                    try:
-                        fresh = data.get("fresh_start", False)
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged, fresh_start=fresh)
-                    except Exception as wfe:
-                        logger.warning(f"Could not store GL data for {entity}: {wfe}")
-
-                    try:
-                        if merged:
-                            apply_assumptions(output_path, merged)
-                    except Exception as ae:
-                        logger.warning(f"Could not apply assumptions for {entity}: {ae}")
-
-                    try:
-                        pm_proj = workflow_helpers["get_pm_projections"](entity)
-                        if pm_proj:
-                            apply_pm_projections(output_path, pm_proj)
-                    except Exception as pe:
-                        logger.warning(f"Could not apply PM projections for {entity}: {pe}")
-
-                    output_files.append((output_name, output_path))
-                    shutil.copy2(file_path, ysl_archive / filename)
-                    yardi_drops = building_dir / "yardi_drops"
-                    yardi_drops.mkdir(exist_ok=True)
-                    shutil.copy2(file_path, yardi_drops / filename)
-
-                    results["success"].append({
-                        "entity": entity, "name": name, "file": output_name,
-                        "size_kb": round(output_path.stat().st_size / 1024),
-                        "saved_to": str(building_dir),
-                    })
-                else:
-                    results["failed"].append({"entity": entity, "file": filename, "reason": "Pipeline returned failure"})
-            except Exception as e:
-                logger.exception(f"Auto-upload error processing {filename}")
-                results["failed"].append({"file": filename, "reason": str(e)})
-
-        # Pass 2: Expense Distribution
-        for exp_path, exp_filename in expense_files:
-            try:
-                from expense_distribution import parse_expense_distribution
-            except ImportError:
-                from budget_app.expense_distribution import parse_expense_distribution
-            try:
-                exp_entity, exp_from, exp_to, exp_invoices = parse_expense_distribution(str(exp_path))
-                if not exp_invoices:
-                    results["warnings"].append(f"Expense file {exp_filename}: no invoices found")
-                    continue
-
-                import re as _re
-                fname_match = _re.search(r'ExpenseDistribution[_-]?(\d+)', exp_filename)
-                fname_entity = fname_match.group(1) if fname_match else None
-
-                target_entity = exp_entity
-                if fname_entity and fname_entity != exp_entity:
-                    if fname_entity in ysl_entities:
-                        target_entity = fname_entity
-                    elif not ysl_entities:
-                        target_entity = fname_entity
-
-                report = ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
-                accrual_result = {"applied": 0, "accruals": {}}
-                if exp_from:
-                    try:
-                        accrual_result = ed_helpers["apply_accrual_adjustments"](target_entity, report.id, exp_from)
-                    except Exception as accrual_err:
-                        results["warnings"].append(f"Accrual adjustments failed for {target_entity}: {str(accrual_err)}")
-
-                accrual_msg = f", {accrual_result['applied']} accrual adj" if accrual_result["applied"] > 0 else ""
-                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices{accrual_msg})")
-            except Exception as exp_err:
-                results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
-
-        # Pass 3: Open AP
-        for ap_path, ap_filename in open_ap_files:
-            try:
-                ap_entity, ap_invoices = parse_open_ap_report(str(ap_path))
-                if not ap_invoices:
-                    results["warnings"].append(f"Open AP file {ap_filename}: no invoices found")
-                    continue
-
-                import re as _re
-                fname_match = _re.search(r'(?:Aging|OpenAP|AP)[_-]?(\d+)', ap_filename, _re.IGNORECASE)
-                fname_entity = fname_match.group(1) if fname_match else None
-
-                target_entity = ap_entity
-                if fname_entity and fname_entity != ap_entity:
-                    if fname_entity in ysl_entities:
-                        target_entity = fname_entity
-                    elif not ysl_entities:
-                        target_entity = fname_entity
-                elif not target_entity and fname_entity:
-                    target_entity = fname_entity
-
-                if not target_entity:
-                    results["warnings"].append(f"Open AP file {ap_filename}: could not determine entity code")
-                    continue
-
-                report = oa_helpers["store_open_ap_report"](target_entity, ap_invoices, ap_filename)
-                unpaid_result = {"applied": 0, "gl_totals": {}}
-                try:
-                    unpaid_result = oa_helpers["apply_unpaid_bills"](target_entity)
-                except Exception as unpaid_err:
-                    results["warnings"].append(f"Unpaid bills failed for {target_entity}: {str(unpaid_err)}")
-
-                unpaid_msg = f", {unpaid_result['applied']} GL lines updated" if unpaid_result["applied"] > 0 else ""
-                results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
-            except Exception as ap_err:
-                results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
-
-        return jsonify({"message": f"Auto-processed {len(file_list)} files", **results}), 200
+    if request.method == "PUT":
+        data = request.json
+        building = buildings[building_idx]
+        # Update allowed fields
+        for field in ["building_name", "address", "city", "zip", "type", "units"]:
+            if field in data:
+                building[field] = data[field]
+        buildings[building_idx] = building
+        save_buildings(buildings)
+        return jsonify(building), 200
 
 
 @app.route("/api/generate-script", methods=["POST"])
@@ -883,342 +457,37 @@ def generate_script():
         f"const PERIOD_TO   = '{period}';"
     )
 
-    # Build Maintenance Proof script with user settings
-    # Map entity → charge code based on building type from CSV
-    building_charges = {}
-    try:
-        with open(BUILDINGS_CSV, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                ec = str(row.get("entity_code", "")).strip()
-                btype = (row.get("type", "") or "").strip().lower()
-                if btype in ("coop", "cond-op"):
-                    building_charges[ec] = "maint"
-                elif btype == "condo":
-                    building_charges[ec] = "common"
-                # Rental, Mitchell Lama, Comm/Retail → skip (no maint proof)
-    except Exception:
-        pass
-
-    # Only include entities that need a maintenance proof
-    mp_entities = [e for e in entities if str(e) in building_charges]
-    mp_mapping_js = ", ".join(f"{e}: '{building_charges[str(e)]}'" for e in mp_entities)
-
-    mp_script = MAINT_PROOF_SCRIPT
-    mp_script = mp_script.replace(
-        "const ENTITY_CHARGES = {204: 'maint', 206: 'common', 148: 'maint', 805: 'maint'};",
-        f"const ENTITY_CHARGES = {{{mp_mapping_js}}};"
-    )
-
-    # AP Aging removed from combined script — runs separately to avoid
-    # Yardi session state contamination (RT=2 from Expense Distribution
-    # persists and overrides RT=3 for Aging). See /api/generate-ap-aging-script.
-    ap_script_block = ""
-
-    # ── Inject auto-upload into each script's triggerDownload function ──
-    # The 3 scripts (Expense, MaintProof, AP Aging) all have a triggerDownload(blob, entity)
-    # function. We inject a call to the global _autoUpload helper after the local download.
-    # YSL has inline download code — we handle that separately.
-
-    # Patch Expense Distribution triggerDownload
-    exp_script = exp_script.replace(
-        "URL.revokeObjectURL(a.href);\n  }",
-        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'expense');\n  }"
-    )
-
-    # Patch Maintenance Proof triggerDownload
-    mp_script = mp_script.replace(
-        "URL.revokeObjectURL(a.href);\n  }",
-        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
-    )
-
-    # AP Aging patching removed — runs as separate standalone script
-
-    # Patch YSL inline download (it doesn't use triggerDownload function)
-    ysl_script = ysl_script.replace(
-        "URL.revokeObjectURL(a.href);",
-        "URL.revokeObjectURL(a.href);\n          if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ysl');"
-    )
-
-    # Get the Railway app URL for auto-upload target
-    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if railway_url and not railway_url.startswith("http"):
-        railway_url = f"https://{railway_url}"
-    if not railway_url:
-        # Fallback to known production URL
-        railway_url = "https://century-budget-generator-production.up.railway.app"
-
-    # Combine into one script that runs all four sequentially
-    # Each part is wrapped in try/catch so errors don't kill subsequent parts
+    # Combine into one script that runs both sequentially
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
- * Downloads YSL Annual Budget + Expense Distribution + Maintenance Proof
- * for all selected entities. (AP Aging runs separately — use the AP Aging button.)
+ * Downloads YSL Annual Budget + Expense Distribution for all selected entities.
  * Generated for: {email}
  * Entities: {entities_js}
  * Period: {period}
- *
- * AUTO-UPLOAD: Files are automatically sent to the budget app for processing.
- * Local downloads are also saved as backup.
  */
 (async function() {{
   'use strict';
-  const _partResults = {{ysl: null, exp: null, mp: null, ap: null}};
-  const _uploadedFiles = [];
-  const _SESSION_ID = 'yardi_' + Date.now();
-  const _BUDGET_APP = '{railway_url}';
-  const _PERIOD = '{period}';
-  const _FRESH_START = {str(data.get('fresh_start', False)).lower()};
-
-  // ── Auto-Upload Helper ──
-  // Sends each downloaded blob to the budget app in the background
-  async function _autoUpload(blob, filename, entity, fileType) {{
-    try {{
-      const formData = new FormData();
-      formData.append('file', blob, filename);
-      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
-        method: 'POST',
-        headers: {{
-          'X-Upload-Session': _SESSION_ID,
-          'X-Entity-Code': String(entity),
-          'X-File-Type': fileType,
-          'X-Filename': filename,
-        }},
-        body: formData,
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        _uploadedFiles.push(filename);
-        console.log('  ↑ Auto-uploaded: ' + filename + ' (' + data.total_files + ' files in session)');
-      }} else {{
-        console.warn('  ↑ Upload failed for ' + filename + ': ' + (data.error || resp.status));
-      }}
-    }} catch (err) {{
-      console.warn('  ↑ Upload error for ' + filename + ': ' + err.message);
-    }}
-  }}
-
-  // ── Auto-Process: triggers server-side processing after all downloads ──
-  async function _autoProcess() {{
-    if (_uploadedFiles.length === 0) {{
-      console.log('No files uploaded — skipping auto-process.');
-      return;
-    }}
-    try {{
-      console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
-      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ session_id: _SESSION_ID, period: _PERIOD, fresh_start: _FRESH_START }}),
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        console.log('✓ Server processed ' + _uploadedFiles.length + ' files successfully!');
-        if (data.success) console.log('  Successes:', data.success);
-        if (data.warnings && data.warnings.length) console.log('  Warnings:', data.warnings);
-        if (data.failed && data.failed.length) console.log('  Failures:', data.failed);
-        // Show a Done banner with link to FA Dashboard
-        const banner = document.createElement('div');
-        banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;background:#065f46;color:white;padding:16px 24px;border-radius:12px;font-family:system-ui;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);display:flex;flex-direction:column;gap:10px;max-width:360px;';
-        banner.innerHTML = '<div style="font-weight:700;font-size:16px;">✓ Budget data updated</div>'
-          + '<div style="font-size:13px;opacity:0.9;">' + _uploadedFiles.length + ' files processed'
-          + (data.warnings && data.warnings.length ? ' · ' + data.warnings.length + ' warning(s)' : '')
-          + '</div>'
-          + '<a href="' + _BUDGET_APP + '/dashboard" target="_blank" style="display:inline-block;background:white;color:#065f46;padding:8px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;text-align:center;margin-top:4px;">Open FA Dashboard →</a>';
-        document.body.appendChild(banner);
-        // Auto-dismiss after 30s
-        setTimeout(() => banner.remove(), 30000);
-      }} else {{
-        console.error('✗ Server processing failed:', data.error || resp.status);
-      }}
-    }} catch (err) {{
-      console.error('✗ Auto-process error:', err.message);
-      console.log('Files were downloaded locally — you can upload them manually via the Generator page.');
-    }}
-  }}
-
   console.log('='.repeat(60));
-  console.log('Century Budget — Combined Download + Auto-Upload');
-  console.log('Target: ' + _BUDGET_APP);
-  console.log('Session: ' + _SESSION_ID);
+  console.log('Century Budget — Combined Download');
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Expense Distribution reports');
-  console.log('Part 3: Maintenance Proof reports');
-  console.log('(AP Aging runs separately — use the AP Aging button)');
   console.log('='.repeat(60));
 
   // ── Part 1: YSL Annual Budget ──
   console.log('\\n>>> Starting Part 1: YSL Annual Budget <<<\\n');
-  try {{
-    _partResults.ysl = await {ysl_script}
-    console.log('\\n>>> Part 1 (YSL) completed successfully <<<\\n');
-  }} catch (_e1) {{
-    console.error('>>> Part 1 (YSL) FAILED with error:', _e1.message);
-    console.error(_e1.stack);
-    _partResults.ysl = 'ERROR: ' + _e1.message;
-  }}
+  await {ysl_script}
 
-  // ── Part 2: Expense Distribution ──
   console.log('\\n>>> Starting Part 2: Expense Distribution <<<\\n');
-  try {{
-    _partResults.exp = await {exp_script}
-    console.log('\\n>>> Part 2 (Expense Distribution) completed successfully <<<\\n');
-  }} catch (_e2) {{
-    console.error('>>> Part 2 (Expense Distribution) FAILED with error:', _e2.message);
-    console.error(_e2.stack);
-    _partResults.exp = 'ERROR: ' + _e2.message;
-  }}
-
-  // ── Part 3: Maintenance Proof ({len(mp_entities)} of {len(entities)} buildings — coops/condos only) ──
-  console.log('\\n>>> Starting Part 3: Maintenance Proof ({len(mp_entities)} of {len(entities)} buildings — coops/condos only) <<<\\n');
-  try {{
-    _partResults.mp = await {mp_script}
-    console.log('\\n>>> Part 3 (Maintenance Proof) completed successfully <<<\\n');
-  }} catch (_e3) {{
-    console.error('>>> Part 3 (Maintenance Proof) FAILED with error:', _e3.message);
-    console.error(_e3.stack);
-    _partResults.mp = 'ERROR: ' + _e3.message;
-  }}
-{ap_script_block}
-
-  // ── Auto-Process all uploaded files ──
-  await _autoProcess();
+  // ── Part 2: Expense Distribution ──
+  await {exp_script}
 
   console.log('\\n' + '='.repeat(60));
-  console.log('ALL DONE — Summary:');
-  console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
-  console.log('  Part 2 (Exp):', _partResults.exp === null ? 'SKIPPED' : (typeof _partResults.exp === 'string' && _partResults.exp.startsWith('ERROR') ? _partResults.exp : 'OK'));
-  console.log('  Part 3 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
-  console.log('  Auto-Upload:', _uploadedFiles.length + ' files sent to server');
-  console.log(_uploadedFiles.length > 0 ? 'Files were auto-processed — check the dashboard!' : 'Files were downloaded locally — upload them via the Generator page.');
-  console.log('');
-  console.log('Now run the AP Aging script (separate button on the Generate page).');
+  console.log('ALL DONE — Both YSL and Expense Distribution downloads complete.');
+  console.log('Drag all downloaded .xlsx files into the budget generator to process.');
   console.log('='.repeat(60));
 }})();"""
 
     return jsonify({"script": combined})
-
-
-@app.route("/api/generate-ap-aging-script", methods=["POST"])
-def generate_ap_aging_script():
-    """Generate a standalone AP Aging script that runs independently.
-
-    Separated from the combined script because Yardi's ASP.NET session
-    remembers ReportType=2 (Expense Distribution) and contaminates the
-    AP Aging download when both run in the same browser session.
-    Running AP Aging standalone avoids this session state issue.
-    """
-    data = request.json
-    entities = data.get("entities", [])
-    email = data.get("email", "")
-    period = data.get("period", "02/2026")
-
-    if not entities:
-        return jsonify({"error": "No buildings selected"}), 400
-
-    if not AP_AGING_SCRIPT:
-        return jsonify({"error": "AP Aging script not available on server"}), 500
-
-    entities_js = ', '.join(str(e) for e in entities)
-
-    ap_aging_script = AP_AGING_SCRIPT
-    ap_aging_script = ap_aging_script.replace(
-        "const ENTITIES = [148, 204, 206, 805];",
-        f"const ENTITIES = [{entities_js}];"
-    )
-    ap_aging_script = ap_aging_script.replace(
-        "const PERIOD_TO = '03/2026';",
-        f"const PERIOD_TO = '{period}';"
-    )
-
-    # Get the Railway app URL for auto-upload target
-    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if railway_url and not railway_url.startswith("http"):
-        railway_url = f"https://{railway_url}"
-    if not railway_url:
-        railway_url = "https://century-budget-generator-production.up.railway.app"
-
-    # Inject auto-upload into triggerDownload
-    ap_aging_script = ap_aging_script.replace(
-        "URL.revokeObjectURL(a.href);\n  }",
-        "URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
-    )
-
-    # Wrap with auto-upload helper and auto-process
-    standalone = f"""/**
- * Century Budget — AP Aging (Open AP) Standalone Script
- * Run this AFTER the main Yardi script (YSL + Expense + Maint Proof).
- * Entities: {entities_js}
- * Period: {period}
- */
-(async function() {{
-  'use strict';
-  const _uploadedFiles = [];
-  const _SESSION_ID = 'yardi_' + Date.now();
-  const _BUDGET_APP = '{railway_url}';
-
-  async function _autoUpload(blob, filename, entity, fileType) {{
-    try {{
-      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
-        method: 'POST',
-        headers: {{
-          'X-Upload-Session': _SESSION_ID,
-          'X-Entity-Code': String(entity),
-          'X-File-Type': fileType,
-          'X-Filename': filename,
-          'Content-Type': 'application/octet-stream'
-        }},
-        body: blob
-      }});
-      const data = await resp.json();
-      _uploadedFiles.push({{ filename, entity, fileType, ok: resp.ok }});
-      console.log('  \\u2191 Auto-uploaded: ' + filename + ' (' + data.files_in_session + ' files in session)');
-    }} catch (err) {{
-      console.warn('  Auto-upload failed for ' + filename + ':', err.message);
-    }}
-  }}
-
-  async function _autoProcess() {{
-    if (!_uploadedFiles.length) return;
-    console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
-    try {{
-      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ session_id: _SESSION_ID }})
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        console.log('\\u2713 Server processed ' + (data.successes?.length || 0) + ' files successfully!');
-        if (data.successes?.length) console.log('  Successes:', data.successes);
-        if (data.warnings?.length) console.log('  Warnings:', data.warnings);
-        if (data.failures?.length) console.log('  Failures:', data.failures);
-      }}
-    }} catch (err) {{
-      console.error('Auto-process error:', err.message);
-    }}
-  }}
-
-  console.log('='.repeat(60));
-  console.log('AP Aging (Open AP) — Standalone Download + Auto-Upload');
-  console.log('Target: ' + _BUDGET_APP);
-  console.log('='.repeat(60));
-
-  try {{
-    await {ap_aging_script}
-    console.log('\\n>>> AP Aging completed successfully <<<');
-  }} catch (e) {{
-    console.error('>>> AP Aging FAILED:', e.message);
-  }}
-
-  await _autoProcess();
-
-  console.log('\\n' + '='.repeat(60));
-  console.log('AP Aging DONE — ' + _uploadedFiles.length + ' files uploaded.');
-  console.log(_uploadedFiles.length > 0 ? 'Check the FA Dashboard for results.' : 'No files uploaded — check console for errors.');
-  console.log('='.repeat(60));
-}})();"""
-
-    return jsonify({"script": standalone})
 
 
 @app.route("/api/process", methods=["POST"])
@@ -1237,6 +506,9 @@ def process_files():
         save_dir_str = load_settings().get("save_dir", DEFAULT_SAVE_DIR)
     save_dir = Path(save_dir_str)
 
+    # Fresh start: wipe all customizations and start clean
+    fresh_start = request.form.get("fresh_start", "0") == "1"
+
     # Also archive YSLs to the central ysl_downloads folder
     ysl_archive = BUDGET_SYSTEM / "ysl_downloads"
     ysl_archive.mkdir(exist_ok=True)
@@ -1247,40 +519,24 @@ def process_files():
         tmp = Path(tmpdir)
         output_files = []
 
-        # Multi-pass approach: separate file types so we process in correct order
-        # Order: YSL first (creates BudgetLines), then Expense Dist, then Open AP
+        # Two-pass approach: separate YSL files from Expense Distribution files
+        # so we can determine entity codes from YSL first
         saved_files = []  # (path, filename, file_type, row1, row2)
         ysl_entities = set()  # entity codes found in YSL files
         expense_files = []  # (path, filename) for expense files to process after YSL
-        open_ap_files = []  # (path, filename) for AP Aging files to process after YSL
 
         # Pass 1: Save all files, classify them, process YSL files first
         for f in files:
-            if not f.filename or not f.filename.endswith((".xlsx", ".xls")):
-                results["warnings"].append(f"Skipped non-Excel: {f.filename}")
+            if not f.filename or not f.filename.endswith(".xlsx"):
+                results["warnings"].append(f"Skipped non-xlsx: {f.filename}")
                 continue
 
             file_path = tmp / f.filename
             f.save(str(file_path))
 
             try:
-                # Check if it's an Open AP (Aging) file first (uses robust detection)
-                if detect_open_ap_file(str(file_path)):
-                    logger.info(f"File detection for {f.filename}: Open AP (Aging) report")
-                    open_ap_files.append((file_path, f.filename))
-                    continue
-
-                # Handle .xls files that are actually .xlsx (Yardi naming quirk)
-                _check_path = file_path
-                _tmp_xlsx_manual = None
-                if str(file_path).lower().endswith('.xls') and not str(file_path).lower().endswith('.xlsx'):
-                    import shutil as _shutil_m
-                    _tmp_xlsx_manual = tmp / (f.filename + 'x')
-                    _shutil_m.copy2(str(file_path), str(_tmp_xlsx_manual))
-                    _check_path = _tmp_xlsx_manual
-
                 from openpyxl import load_workbook as _lwb
-                _wb_check = _lwb(str(_check_path), data_only=True)
+                _wb_check = _lwb(str(file_path), data_only=True)
                 _ws_check = _wb_check.active
                 _row1 = str(_ws_check.cell(row=1, column=1).value or "")
                 _row2 = str(_ws_check.cell(row=2, column=1).value or "")
@@ -1341,9 +597,8 @@ def process_files():
 
                     # Store ALL GL data in database for budget review workflow
                     try:
-                        fresh = request.form.get("fresh_start", "").lower() in ("true", "1", "yes")
-                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged, fresh_start=fresh)
-                        logger.info(f"All GL data stored for entity {entity} (fresh_start={fresh})")
+                        workflow_helpers["store_all_lines"](entity, name, gl_data, TEMPLATE_PATH, assumptions=merged, fresh_start=fresh_start)
+                        logger.info(f"All GL data stored for entity {entity}")
                     except Exception as wfe:
                         logger.warning(f"Could not store GL data for {entity}: {wfe}")
 
@@ -1436,76 +691,12 @@ def process_files():
                         # Filename doesn't match any YSL entity — log warning but store as-is
                         logger.warning(f"Yardi entity mismatch: file says {exp_entity}, filename says {fname_entity}. Neither matches YSL entities {ysl_entities}. Using file entity {exp_entity}.")
 
-                report = ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
+                ed_helpers["store_expense_report"](target_entity, exp_from, exp_to, exp_invoices, exp_filename)
+                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices)")
                 logger.info(f"Expense distribution stored for entity {target_entity}")
-
-                # Apply accrual adjustments (prior-year invoices backed out of YTD)
-                accrual_result = {"applied": 0, "accruals": {}}
-                if exp_from:
-                    try:
-                        accrual_result = ed_helpers["apply_accrual_adjustments"](target_entity, report.id, exp_from)
-                        if accrual_result["applied"] > 0:
-                            logger.info(f"Auto-applied accrual adjustments to {accrual_result['applied']} GL lines for entity {target_entity}")
-                    except Exception as accrual_err:
-                        logger.error(f"Accrual adjustment failed for {target_entity}: {accrual_err}")
-                        results["warnings"].append(f"Accrual adjustments failed for {target_entity}: {str(accrual_err)}")
-
-                accrual_msg = f", {accrual_result['applied']} accrual adj" if accrual_result["applied"] > 0 else ""
-                results["success"].append(f"Expense Distribution: {target_entity} ({len(exp_invoices)} invoices{accrual_msg})")
             except Exception as exp_err:
                 logger.error(f"Expense parse error for {exp_filename}: {exp_err}")
                 results["warnings"].append(f"Expense file {exp_filename} error: {str(exp_err)}")
-
-        # Pass 3: Process Open AP (Aging) files
-        # These provide unpaid invoice data that populates BudgetLine.unpaid_bills
-        for ap_path, ap_filename in open_ap_files:
-            try:
-                ap_entity, ap_invoices = parse_open_ap_report(str(ap_path))
-                logger.info(f"Open AP parse: file={ap_filename}, entity={ap_entity}, invoices={len(ap_invoices) if ap_invoices else 0}")
-
-                if not ap_invoices:
-                    results["warnings"].append(f"Open AP file {ap_filename}: no invoices found")
-                    continue
-
-                # Determine correct entity code
-                # 1. Try to extract from filename (e.g., APAging_204.xlsx or OpenAP_204.xlsx)
-                import re as _re
-                fname_match = _re.search(r'(?:Aging|OpenAP|AP)[_-]?(\d+)', ap_filename, _re.IGNORECASE)
-                fname_entity = fname_match.group(1) if fname_match else None
-
-                target_entity = ap_entity  # default: from file data
-                if fname_entity and fname_entity != ap_entity:
-                    if fname_entity in ysl_entities:
-                        target_entity = fname_entity
-                        logger.warning(f"Open AP entity mismatch: data says {ap_entity}, filename says {fname_entity}. Using {fname_entity}")
-                    elif not ysl_entities:
-                        target_entity = fname_entity
-                elif not target_entity and fname_entity:
-                    target_entity = fname_entity
-
-                if not target_entity:
-                    results["warnings"].append(f"Open AP file {ap_filename}: could not determine entity code")
-                    continue
-
-                # Store parsed invoices
-                report = oa_helpers["store_open_ap_report"](target_entity, ap_invoices, ap_filename)
-                logger.info(f"Open AP stored for entity {target_entity}: {len(ap_invoices)} invoices, ${report.total_amount:,.2f}")
-
-                # Auto-apply unpaid bills to BudgetLines
-                unpaid_result = {"applied": 0, "gl_totals": {}}
-                try:
-                    unpaid_result = oa_helpers["apply_unpaid_bills"](target_entity)
-                    if unpaid_result["applied"] > 0:
-                        logger.info(f"Auto-applied unpaid bills to {unpaid_result['applied']} GL lines for entity {target_entity}")
-                except Exception as unpaid_err:
-                    logger.error(f"Unpaid bills application failed for {target_entity}: {unpaid_err}")
-                    results["warnings"].append(f"Unpaid bills failed for {target_entity}: {str(unpaid_err)}")
-
-                unpaid_msg = f", {unpaid_result['applied']} GL lines updated" if unpaid_result["applied"] > 0 else ""
-                results["success"].append(f"Open AP: {target_entity} ({len(ap_invoices)} invoices, ${report.total_amount:,.2f}{unpaid_msg})")
-            except Exception as ap_err:
-                logger.error(f"Open AP parse error for {ap_filename}: {ap_err}")
-                results["warnings"].append(f"Open AP file {ap_filename} error: {str(ap_err)}")
 
         if not output_files:
             # If expense files were processed successfully, return 200
@@ -1819,10 +1010,11 @@ HOME_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Century Management Budget System</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f9fafb; }
+  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f1eb; }
   header {
-    background: linear-gradient(135deg, #1a56db 0%, #1e429f 100%);
+    background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%);
     color: white;
     padding: 60px 20px;
     text-align: center;
@@ -1851,35 +1043,35 @@ HOME_TEMPLATE = r"""
     background: white;
     border-radius: 12px;
     padding: 28px 24px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #e5e0d5;
     text-decoration: none;
-    color: #111827;
+    color: #1a1714;
     transition: all 0.3s;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     display: flex;
     flex-direction: column;
   }
   .nav-card:hover {
-    border-color: #1a56db;
-    box-shadow: 0 10px 25px rgba(26, 86, 219, 0.15);
+    border-color: #5a4a3f;
+    box-shadow: 0 10px 25px rgba(90, 74, 63, 0.15);
     transform: translateY(-4px);
   }
   .nav-card h2 {
     font-size: 18px;
-    color: #1a56db;
+    color: #5a4a3f;
     margin-bottom: 8px;
     font-weight: 600;
   }
   .nav-card p {
     font-size: 13px;
-    color: #6b7280;
+    color: #8a7e72;
     line-height: 1.5;
     flex-grow: 1;
     margin-bottom: 12px;
   }
   .nav-card .arrow {
     display: inline-block;
-    color: #1a56db;
+    color: #5a4a3f;
     font-weight: 600;
     font-size: 16px;
   }
@@ -1889,12 +1081,12 @@ HOME_TEMPLATE = r"""
     margin-bottom: 8px;
   }
   /* ── Global Nav ── */
-  .top-nav { background: white; border-bottom: 1px solid #e5e7eb; padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
-  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: #1a56db; text-decoration: none; margin-right: 32px; }
+  .top-nav { background: white; border-bottom: 1px solid #e5e0d5; padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: #5a4a3f; text-decoration: none; margin-right: 32px; }
   .top-nav .nav-links { display: flex; gap: 4px; }
-  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: #6b7280; text-decoration: none; border-radius: 6px; transition: all 0.15s; }
-  .top-nav .nav-link:hover { background: #f3f4f6; color: #111827; }
-  .top-nav .nav-link.active { background: #e1effe; color: #1a56db; }
+  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: #8a7e72; text-decoration: none; border-radius: 6px; transition: all 0.15s; }
+  .top-nav .nav-link:hover { background: #ede9e1; color: #1a1714; }
+  .top-nav .nav-link.active { background: #f5efe7; color: #5a4a3f; }
 </style>
 </head>
 <body>
@@ -1907,7 +1099,6 @@ HOME_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
   <header>
@@ -1978,12 +1169,6 @@ HOME_TEMPLATE = r"""
           <p>Extract and map audited financial data into budget templates.</p>
           <span class="arrow">→</span>
         </a>
-        <a href="/files" class="nav-card">
-          <div class="icon">📁</div>
-          <h2>File Repository</h2>
-          <p>Upload, browse, and manage supporting documents — maint proofs, YSL exports, GL detail, and more.</p>
-          <span class="arrow">→</span>
-        </a>
       </div>
     </div>
   </div>
@@ -1999,25 +1184,26 @@ GENERATE_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Budget Generator — Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
     --red-light: #fde8e8;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
     --radius: 8px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -2133,7 +1319,7 @@ GENERATE_TEMPLATE = r"""
   .script-box {
     position: relative;
     background: var(--gray-900);
-    color: #e5e7eb;
+    color: #e5e0d5;
     border-radius: var(--radius);
     padding: 16px;
     font-family: 'SF Mono', Monaco, Consolas, monospace;
@@ -2202,7 +1388,7 @@ GENERATE_TEMPLATE = r"""
     transition: all 0.15s;
   }
   .btn-primary { background: var(--blue); color: white; }
-  .btn-primary:hover { background: #1e429f; }
+  .btn-primary:hover { background: #3d322a; }
   .btn-primary:disabled { background: var(--gray-300); cursor: not-allowed; }
   .btn-green { background: var(--green); color: white; }
   .btn-green:hover { background: #046c4e; }
@@ -2253,7 +1439,7 @@ GENERATE_TEMPLATE = r"""
     font-weight: 600;
   }
   .page-header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%);
     color: white;
     padding: 30px 20px;
     margin-bottom: 0;
@@ -2276,9 +1462,9 @@ GENERATE_TEMPLATE = r"""
   <div class="step">
     <div class="step-header">
       <div class="step-num">1</div>
-      <div class="step-title">Select Buildings & Run from Yardi</div>
+      <div class="step-title">Select Buildings & Download from Yardi</div>
     </div>
-    <p class="step-desc">Pick buildings, copy the script into your Yardi Console (F12). Reports download locally and auto-upload to the budget system.</p>
+    <p class="step-desc">Pick the buildings you want budgets for, then copy the script into your Yardi Console.</p>
 
     <input type="text" class="search-box" id="buildingSearch" placeholder="Search buildings..." oninput="filterBuildings()">
     <div class="select-actions">
@@ -2304,46 +1490,69 @@ GENERATE_TEMPLATE = r"""
         <label>Budget Period</label>
         <input type="text" id="period" value="02/2026" placeholder="MM/YYYY">
       </div>
-      <div class="setting">
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" id="freshStart" style="width:16px; height:16px;">
-          <span>Fresh Start</span>
-        </label>
-        <span style="font-size:11px; color:var(--gray-500);">Creates a brand new budget version. Existing budget stays untouched.</span>
-      </div>
     </div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button class="btn btn-primary" onclick="generateScript()" id="genBtn">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>
-        Generate Yardi Script
-      </button>
-      <button class="btn btn-primary" onclick="generateAPAgingScript()" id="apBtn" style="background:var(--amber-600, #d97706);">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-        Download AP Aging
-      </button>
-    </div>
-    <p style="font-size:11px; color:var(--gray-500); margin-top:6px;">Run the main script first (YSL + Expense + Maint Proof), then run AP Aging separately.</p>
+    <button class="btn btn-primary" onclick="generateScript()" id="genBtn">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>
+      Generate Yardi Script
+    </button>
 
     <div class="script-box" id="scriptBox">
       <button class="copy-btn" id="copyBtn" onclick="copyScript()">Copy</button>
       <code id="scriptCode"></code>
     </div>
-
-    <div class="script-box" id="apScriptBox" style="display:none; border-color:var(--amber-200, #fde68a);">
-      <button class="copy-btn" id="apCopyBtn" onclick="copyAPScript()">Copy AP Aging</button>
-      <code id="apScriptCode"></code>
-    </div>
   </div>
 
-  <!-- Auto-upload status (populated by Yardi script) -->
-  <div id="autoStatus" style="display:none; margin-top:16px; padding:16px; background:#f0fdf4; border:1px solid #86efac; border-radius:8px;">
-    <p style="margin:0; font-weight:600; color:#166534;">Files auto-uploaded and processed. Check the FA Dashboard for results.</p>
+  <!-- STEP 2 -->
+  <div class="step">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">Upload YSL Files & Generate Budgets</div>
+    </div>
+    <p class="step-desc">After downloading from Yardi, drag the YSL files here.</p>
+
+    <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <svg width="40" height="40" fill="none" stroke="#9ca3af" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2"/></svg>
+      <p class="upload-text"><strong>Click to browse</strong> or drag & drop YSL files here</p>
+      <p class="upload-text" style="font-size:12px; margin-top:4px;">Accepts .xlsx files named YSL_Annual_Budget_*.xlsx</p>
+    </div>
+    <input type="file" id="fileInput" multiple accept=".xlsx" style="display:none" onchange="handleFiles(this.files)">
+    <div class="file-list" id="fileList"></div>
+
+    <div class="settings-row" style="margin-top: 16px;">
+      <div class="setting" style="flex: 3;">
+        <label>Save Location</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="saveDir" value="{{ save_dir }}" placeholder="Path to save completed budgets" style="flex:1;">
+          <button class="btn btn-primary" style="padding: 8px 14px; font-size: 12px; white-space: nowrap;" onclick="updateSaveDir()">Set</button>
+        </div>
+        <p style="font-size: 11px; color: var(--gray-500); margin-top: 4px;">
+          Budgets save to subfolders here (e.g., /148 - Building Name/). YSL sources also archived.
+        </p>
+      </div>
+    </div>
+
+    <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
+      <input type="checkbox" id="freshStart" style="accent-color:var(--red); width:16px; height:16px;">
+      <span style="font-size:14px; font-weight:600;">Fresh Start</span>
+      <span style="font-size:12px; color:var(--gray-500);">&mdash; Wipe all PM notes, reclasses, overrides, and start clean</span>
+    </label>
+
+    <div style="margin-top: 12px;">
+      <button class="btn btn-green" id="processBtn" onclick="processFiles()" disabled>
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        Generate Budgets
+      </button>
+    </div>
+
+    <div class="progress-bar" id="progressBar"><div class="fill"></div></div>
+
+    <div class="results" id="results"></div>
   </div>
 </div>
 
 <script>
-// Auto-upload: no manual file management needed
+let uploadedFiles = [];
 
 function getSelected() {
   return [...document.querySelectorAll('#buildingGrid input:checked')].map(c => parseInt(c.value));
@@ -2387,11 +1596,10 @@ async function generateScript() {
   if (!entities.length) { alert('Select at least one building'); return; }
   if (!email) { alert('Enter your email'); return; }
 
-  const freshStart = document.getElementById('freshStart').checked;
   const resp = await fetch('/api/generate-script', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, email, period, fresh_start: freshStart }),
+    body: JSON.stringify({ entities, email, period }),
   });
 
   const data = await resp.json();
@@ -2411,37 +1619,136 @@ function copyScript() {
   });
 }
 
-async function generateAPAgingScript() {
-  const entities = getSelected();
-  const email = document.getElementById('email').value;
-  const period = document.getElementById('period').value;
+// Drag & drop
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
 
-  if (!entities.length) { alert('Select at least one building'); return; }
+function handleFiles(fileListObj) {
+  for (const f of fileListObj) {
+    if (f.name.endsWith('.xlsx') && !uploadedFiles.find(u => u.name === f.name)) {
+      uploadedFiles.push(f);
+    }
+  }
+  renderFileList();
+}
 
-  const resp = await fetch('/api/generate-ap-aging-script', {
+function removeFile(idx) {
+  uploadedFiles.splice(idx, 1);
+  renderFileList();
+}
+
+function renderFileList() {
+  const el = document.getElementById('fileList');
+  el.innerHTML = uploadedFiles.map((f, i) =>
+    `<div class="file-item">
+      <span>📄 ${f.name} (${(f.size/1024).toFixed(0)} KB)</span>
+      <button class="remove" onclick="removeFile(${i})">✕</button>
+    </div>`
+  ).join('');
+  document.getElementById('processBtn').disabled = !uploadedFiles.length;
+}
+
+async function updateSaveDir() {
+  const dir = document.getElementById('saveDir').value.trim();
+  if (!dir) { alert('Enter a save path'); return; }
+  const resp = await fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, email, period }),
+    body: JSON.stringify({ save_dir: dir }),
   });
-
   const data = await resp.json();
   if (data.error) { alert(data.error); return; }
-
-  document.getElementById('apScriptCode').textContent = data.script;
-  document.getElementById('apScriptBox').style.display = 'block';
+  document.getElementById('saveDir').value = data.save_dir;
+  // Brief visual confirmation
+  const btn = event.target;
+  btn.textContent = 'Saved!';
+  btn.style.background = '#057a55';
+  setTimeout(() => { btn.textContent = 'Set'; btn.style.background = ''; }, 1500);
 }
 
-function copyAPScript() {
-  const code = document.getElementById('apScriptCode').textContent;
-  navigator.clipboard.writeText(code).then(() => {
-    const btn = document.getElementById('apCopyBtn');
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = 'Copy AP Aging'; btn.classList.remove('copied'); }, 2000);
-  });
-}
+async function processFiles() {
+  const btn = document.getElementById('processBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+  document.getElementById('progressBar').style.display = 'block';
+  document.getElementById('results').style.display = 'none';
 
-// Upload section removed — files auto-upload from Yardi script
+  const fd = new FormData();
+  uploadedFiles.forEach(f => fd.append('files', f));
+  fd.append('save_dir', document.getElementById('saveDir').value.trim());
+  fd.append('fresh_start', document.getElementById('freshStart').checked ? '1' : '0');
+
+  try {
+    const resp = await fetch('/api/process', { method: 'POST', body: fd });
+
+    if (resp.ok) {
+      // Download the file
+      const blob = await resp.blob();
+      const cd = resp.headers.get('content-disposition') || '';
+      const match = cd.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1].trim() : 'Budget_Output.xlsx';
+
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+
+      // Parse results from header
+      let results = null;
+      try { results = JSON.parse(resp.headers.get('X-Budget-Results')); } catch(e) {}
+
+      document.getElementById('results').style.display = 'block';
+      if (results && results.success) {
+        let html = '';
+        results.success.forEach(s => {
+          html += `<div class="result-card success">
+            <div class="result-info">
+              <span>✅ <strong>${s.entity}</strong> — ${s.name} (${s.size_kb} KB)</span>
+            </div>
+            <span style="font-size:12px; color:var(--gray-500);">Saved to ${s.saved_to}</span>
+          </div>`;
+        });
+        if (results.failed) results.failed.forEach(f => {
+          html += `<div class="result-card failed"><div class="result-info">❌ ${f.file || f.entity} — ${f.reason}</div></div>`;
+        });
+        document.getElementById('results').innerHTML = html;
+      } else {
+        document.getElementById('results').innerHTML =
+          `<div class="result-card success">
+            <div class="result-info">✅ <strong>Success!</strong> ${uploadedFiles.length} budget(s) generated, saved, and downloading.</div>
+          </div>`;
+      }
+    } else {
+      const data = await resp.json();
+      document.getElementById('results').style.display = 'block';
+      let html = '';
+      if (data.success) data.success.forEach(s =>
+        html += `<div class="result-card success"><div class="result-info">✅ ${s.entity} — ${s.name} (${s.size_kb} KB) → ${s.saved_to}</div></div>`
+      );
+      if (data.failed) data.failed.forEach(f =>
+        html += `<div class="result-card failed"><div class="result-info">❌ ${f.file || f.entity} — ${f.reason}</div></div>`
+      );
+      document.getElementById('results').innerHTML = html || `<div class="result-card failed"><div class="result-info">❌ ${data.error}</div></div>`;
+    }
+  } catch (err) {
+    document.getElementById('results').style.display = 'block';
+    document.getElementById('results').innerHTML =
+      `<div class="result-card failed"><div class="result-info">❌ Error: ${err.message}</div></div>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Generate Budgets';
+  document.getElementById('progressBar').style.display = 'none';
+}
 </script>
 </body>
 </html>
@@ -2457,25 +1764,26 @@ _MANAGE_REMOVED = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Manage Buildings — Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
     --red-light: #fde8e8;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
     --radius: 8px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -2587,7 +1895,7 @@ _MANAGE_REMOVED = """
     transition: all 0.15s;
   }
   .btn-primary { background: var(--blue); color: white; }
-  .btn-primary:hover { background: #1e429f; }
+  .btn-primary:hover { background: #3d322a; }
   .btn-primary:disabled { background: var(--gray-300); cursor: not-allowed; }
   .btn-sm {
     padding: 6px 12px;
@@ -2604,7 +1912,7 @@ _MANAGE_REMOVED = """
     cursor: pointer;
     transition: all 0.15s;
   }
-  .btn-edit:hover { background: #1e429f; }
+  .btn-edit:hover { background: #3d322a; }
   .btn-delete {
     background: var(--red);
     color: white;
@@ -2942,7 +2250,7 @@ async function deleteBuilding(code) {
   const building = buildings.find(b => b.entity_code === code);
   if (!confirm(`Are you sure you want to delete "${building.building_name}"?`)) return;
 
-  const resp = await fetch(`/api/buildings/${code}/delete`, { method: 'POST' });
+  const resp = await fetch(`/api/buildings/${code}`, { method: 'DELETE' });
 
   if (resp.ok) {
     await loadBuildings();
@@ -2975,24 +2283,25 @@ ASSUMPTIONS_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Portfolio Defaults</title>
     <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
-        header { background: #1a56db; color: white; padding: 24px; }
+        body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f4f1eb; }
+        header { background: #5a4a3f; color: white; padding: 24px; }
         header h1 { font-size: 24px; font-weight: 600; }
         .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
-        .back-link { display: inline-block; margin-bottom: 24px; color: #1a56db; text-decoration: none; font-size: 14px; }
+        .back-link { display: inline-block; margin-bottom: 24px; color: #5a4a3f; text-decoration: none; font-size: 14px; }
         .back-link:hover { text-decoration: underline; }
         .section { background: white; border-radius: 8px; padding: 24px; margin-bottom: 24px; border: 1px solid #e0e0e0; }
-        .section h2 { font-size: 18px; color: #1a56db; margin-bottom: 16px; font-weight: 600; }
+        .section h2 { font-size: 18px; color: #5a4a3f; margin-bottom: 16px; font-weight: 600; }
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { font-size: 13px; font-weight: 500; color: #333; margin-bottom: 6px; }
         .form-group input, .form-group select { padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #1a56db; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #5a4a3f; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
         .form-group input[type="number"] { font-family: 'Courier New', monospace; }
         .button-row { display: flex; gap: 12px; margin-top: 24px; }
         button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
-        .btn-primary { background: #1a56db; color: white; }
+        .btn-primary { background: #5a4a3f; color: white; }
         .btn-primary:hover { background: #0f1f38; }
         .toast { position: fixed; bottom: 20px; right: 20px; background: #4caf50; color: white; padding: 16px 20px; border-radius: 4px; display: none; z-index: 1000; }
         .toast.show { display: block; animation: slideIn 0.3s ease; }
@@ -3306,9 +2615,10 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Building Assumptions</title>
     <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
-        header { background: #1a56db; color: white; padding: 24px; }
+        body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f4f1eb; }
+        header { background: #5a4a3f; color: white; padding: 24px; }
         header h1 { font-size: 24px; font-weight: 600; }
         .main { display: flex; height: calc(100vh - 80px); }
         .sidebar {
@@ -3330,16 +2640,16 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
             font-size: 13px;
             background: white;
         }
-        .building-item:hover { background: #f9f9f9; border-color: #1a56db; }
-        .building-item.active { background: #1a56db; color: white; border-color: #1a56db; }
+        .building-item:hover { background: #f9f9f9; border-color: #5a4a3f; }
+        .building-item.active { background: #5a4a3f; color: white; border-color: #5a4a3f; }
         .content {
             flex: 1;
             padding: 40px;
             overflow-y: auto;
         }
-        .back-link { display: inline-block; margin-bottom: 24px; color: #1a56db; text-decoration: none; font-size: 14px; }
+        .back-link { display: inline-block; margin-bottom: 24px; color: #5a4a3f; text-decoration: none; font-size: 14px; }
         .back-link:hover { text-decoration: underline; }
-        .building-title { font-size: 24px; color: #1a56db; margin-bottom: 8px; font-weight: 600; }
+        .building-title { font-size: 24px; color: #5a4a3f; margin-bottom: 8px; font-weight: 600; }
         .building-code { font-size: 13px; color: #999; margin-bottom: 24px; }
         .tabs {
             display: flex;
@@ -3357,24 +2667,24 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
             color: #666;
             border-bottom: 2px solid transparent;
         }
-        .tab:hover { color: #1a56db; }
-        .tab.active { color: #1a56db; border-bottom-color: #1a56db; }
+        .tab:hover { color: #5a4a3f; }
+        .tab.active { color: #5a4a3f; border-bottom-color: #5a4a3f; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .section { background: white; border-radius: 8px; padding: 24px; border: 1px solid #e0e0e0; margin-bottom: 24px; }
-        .section h3 { font-size: 16px; color: #1a56db; margin-bottom: 16px; font-weight: 600; }
+        .section h3 { font-size: 16px; color: #5a4a3f; margin-bottom: 16px; font-weight: 600; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th { background: #f5f5f5; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 1px solid #e0e0e0; }
+        th { background: #f4f1eb; padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 1px solid #e0e0e0; }
         td { padding: 12px; border-bottom: 1px solid #e0e0e0; }
         input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
         input[type="number"] { font-family: 'Courier New', monospace; text-align: right; }
-        input:focus { outline: none; border-color: #1a56db; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
+        input:focus { outline: none; border-color: #5a4a3f; box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.1); }
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { font-size: 13px; font-weight: 500; color: #333; margin-bottom: 6px; }
         .button-row { display: flex; gap: 12px; margin-top: 24px; }
         button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 14px; font-weight: 500; cursor: pointer; }
-        .btn-primary { background: #1a56db; color: white; }
+        .btn-primary { background: #5a4a3f; color: white; }
         .btn-primary:hover { background: #0f1f38; }
         .btn-secondary { background: #e0e0e0; color: #333; }
         .btn-secondary:hover { background: #d0d0d0; }

@@ -13,7 +13,6 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from decimal import Decimal
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +169,7 @@ def create_workflow_blueprint(db):
         id = db.Column(db.Integer, primary_key=True)
         entity_code = db.Column(db.String(50), nullable=False, index=True)
         building_name = db.Column(db.String(255), nullable=False)
-        building_type = db.Column(db.String(50), default="")
-        year = db.Column(db.Integer, nullable=False)
-        version = db.Column(db.Integer, default=1)
+        year = db.Column(db.Integer, default=2027)
         status = db.Column(db.String(20), default="not_started")
         fa_notes = db.Column(db.Text, default="")
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -199,27 +196,25 @@ def create_workflow_blueprint(db):
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
-        __table_args__ = (db.UniqueConstraint("entity_code", "year", "version", name="uq_entity_year_ver"),)
+        __table_args__ = (db.UniqueConstraint("entity_code", "year", name="uq_entity_year"),)
 
         def to_dict(self):
             return {
                 "id": self.id,
                 "entity_code": self.entity_code,
                 "building_name": self.building_name,
-                "building_type": self.building_type or "",
                 "year": self.year,
-                "version": self.version or 1,
                 "status": self.status,
                 "fa_notes": self.fa_notes,
                 "initiated_by": self.initiated_by,
-                "initiated_at": (self.initiated_at.isoformat() + "Z") if self.initiated_at else None,
+                "initiated_at": self.initiated_at.isoformat() if self.initiated_at else None,
                 "presentation_token": self.presentation_token,
                 "approved_by": self.approved_by,
-                "approved_at": (self.approved_at.isoformat() + "Z") if self.approved_at else None,
+                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
                 "increase_pct": self.increase_pct,
                 "effective_date": self.effective_date,
-                "created_at": (self.created_at.isoformat() + "Z") if self.created_at else None,
-                "updated_at": (self.updated_at.isoformat() + "Z") if self.updated_at else None,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
                 "ar_notes": self.ar_notes or ""
             }
 
@@ -260,7 +255,6 @@ def create_workflow_blueprint(db):
 
         # Proposed budget (computed or manually entered)
         proposed_budget = db.Column(db.Float, default=0.0)
-        proposed_formula = db.Column(db.Text, nullable=True)  # e.g. "=3462.12*1.04*12"
 
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -289,10 +283,9 @@ def create_workflow_blueprint(db):
                 "reclass_amount": float(self.reclass_amount or 0),
                 "reclass_notes": self.reclass_notes or "",
                 "proposed_budget": float(self.proposed_budget or 0),
-                "proposed_formula": self.proposed_formula,
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
-                "updated_at": (self.updated_at.isoformat() + "Z") if self.updated_at else None
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
 
@@ -462,14 +455,13 @@ def create_workflow_blueprint(db):
         If status is anything else, only updates YSL columns (doesn't overwrite PM inputs).
         """
         try:
-            # Get or create budget (latest version for budget year)
-            budget = get_budget_for_year(entity_code, BUDGET_YEAR)
+            # Get or create budget
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
             if not budget:
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
-                    year=BUDGET_YEAR,
-                    version=1,
+                    year=2027,
                     status="draft"
                 )
                 db.session.add(budget)
@@ -510,7 +502,6 @@ def create_workflow_blueprint(db):
                         line.estimate_override = None
                         line.forecast_override = None
                         line.proposed_budget = 0.0
-                        line.proposed_formula = None
                 else:
                     # Create new line
                     line = BudgetLine(
@@ -544,76 +535,12 @@ def create_workflow_blueprint(db):
         "Gen & Admin": "gen_admin",
     }
 
-    # ── Building type lookup (from CSV, synced from Monday.com) ──────────────
-    _building_type_cache = {}
-
-    def _load_building_types():
-        """Load entity→building_type mapping from buildings.csv (once, cached)."""
-        if _building_type_cache:
-            return _building_type_cache
-        import csv as _csv
-        csv_path = os.path.join(os.path.dirname(__file__), "budget_system", "buildings.csv")
-        if not os.path.exists(csv_path):
-            csv_path = os.path.join(os.path.dirname(__file__), "..", "budget_system", "buildings.csv")
-        try:
-            with open(csv_path, newline="", encoding="utf-8") as f:
-                for row in _csv.DictReader(f):
-                    ec = str(row.get("entity_code", "")).strip()
-                    btype = (row.get("type", "") or "").strip()
-                    if ec:
-                        _building_type_cache[ec] = btype
-        except Exception as e:
-            logger.warning(f"Could not load building types from CSV: {e}")
-        return _building_type_cache
-
-    def _lookup_building_type(entity_code):
-        """Return building type (Coop/Condo/etc.) for an entity code."""
-        types = _load_building_types()
-        return types.get(str(entity_code).strip(), "")
-
-    # ── Budget year + version helpers ────────────────────────────────────
-    BUDGET_YEAR = datetime.utcnow().year + 1  # YSL is current year, budget is next
-
-    def get_active_budget(entity_code):
-        """Return the latest-version budget for an entity (any year, latest version).
-        Uses NULLS LAST so old budgets with NULL version don't sort first."""
-        return (Budget.query
-                .filter_by(entity_code=str(entity_code).strip())
-                .order_by(Budget.year.desc(), db.func.coalesce(Budget.version, 1).desc())
-                .first())
-
-    def get_budget_for_year(entity_code, year):
-        """Return the latest-version budget for an entity + specific year.
-        Uses NULLS LAST so old budgets with NULL version don't sort first."""
-        return (Budget.query
-                .filter_by(entity_code=str(entity_code).strip(), year=year)
-                .order_by(db.func.coalesce(Budget.version, 1).desc())
-                .first())
-
-    def _delete_entity_data(entity_code):
-        """Delete ALL entity-level supplementary data (expenses, open AP, etc.).
-        Called by budget deletion to fully remove an entity's data.
-        Each table is deleted in its own try/except with rollback to prevent
-        one failure from poisoning the entire transaction."""
-        ec = str(entity_code).strip()
-        for sql in [
-            "DELETE FROM expense_invoices WHERE report_id IN (SELECT id FROM expense_reports WHERE entity_code = :ec)",
-            "DELETE FROM expense_reports WHERE entity_code = :ec",
-            "DELETE FROM open_ap_invoices WHERE report_id IN (SELECT id FROM open_ap_reports WHERE entity_code = :ec)",
-            "DELETE FROM open_ap_reports WHERE entity_code = :ec",
-        ]:
-            try:
-                db.session.execute(db.text(sql), {"ec": ec})
-            except Exception as e:
-                db.session.rollback()
-                logger.warning(f"_delete_entity_data skip: {e}")
-        logger.info(f"Deleted entity-level data for {ec}")
-
     def store_all_lines(entity_code, building_name, gl_data, template_path, assumptions=None, fresh_start=False):
         """
         Store ALL GL codes from YSL data into budget_lines (not just R&M).
         Uses GLMapper to get sheet/row/description for every GL code.
         Optionally stores merged assumptions snapshot on the Budget record.
+        If fresh_start=True, deletes all existing lines and resets to draft.
         """
         try:
             from gl_mapper import build_gl_mapping_with_descriptions
@@ -627,39 +554,23 @@ def create_workflow_blueprint(db):
             gl_mapping = {}
 
         try:
-            if fresh_start:
-                # Create a brand new version — old budget stays untouched
-                existing = get_budget_for_year(entity_code, BUDGET_YEAR)
-                next_ver = ((existing.version or 1) + 1) if existing else 1
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+            if not budget:
                 budget = Budget(
                     entity_code=entity_code,
                     building_name=building_name,
-                    building_type=_lookup_building_type(entity_code),
-                    year=BUDGET_YEAR,
-                    version=next_ver,
+                    year=2027,
                     status="draft"
                 )
                 db.session.add(budget)
                 db.session.flush()
-                logger.info(f"Fresh start: created new budget v{next_ver} for {entity_code}")
-                # Note: no need to clear expense reclasses here — the Yardi script
-                # re-uploads a fresh expense file which replaces the old report entirely.
-            else:
-                # Update existing or create first version
-                budget = get_budget_for_year(entity_code, BUDGET_YEAR)
-                if not budget:
-                    budget = Budget(
-                        entity_code=entity_code,
-                        building_name=building_name,
-                        building_type=_lookup_building_type(entity_code),
-                        year=BUDGET_YEAR,
-                        version=1,
-                        status="draft"
-                    )
-                    db.session.add(budget)
-                    db.session.flush()
-                elif not budget.building_type:
-                    budget.building_type = _lookup_building_type(entity_code)
+
+            # Fresh start: wipe all existing lines and reset to draft
+            if fresh_start and budget.id:
+                deleted = BudgetLine.query.filter_by(budget_id=budget.id).delete()
+                budget.status = "draft"
+                db.session.flush()
+                logger.info(f"Fresh start: deleted {deleted} lines for {entity_code}")
 
             # Store assumptions snapshot if provided
             if assumptions:
@@ -702,7 +613,6 @@ def create_workflow_blueprint(db):
                     line.category = category
                     line.pm_editable = pm_editable
                     if is_draft:
-                        # Clear ALL customizations on regeneration
                         line.accrual_adj = 0.0
                         line.unpaid_bills = 0.0
                         line.increase_pct = 0.0
@@ -713,7 +623,6 @@ def create_workflow_blueprint(db):
                         line.estimate_override = None
                         line.forecast_override = None
                         line.proposed_budget = 0.0
-                        line.proposed_formula = None
                 else:
                     line = BudgetLine(
                         budget_id=budget.id,
@@ -746,7 +655,7 @@ def create_workflow_blueprint(db):
 
         Returns: {gl_code: {accrual_adj, unpaid_bills, increase_pct, notes}}
         """
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return {}
 
@@ -762,27 +671,32 @@ def create_workflow_blueprint(db):
         return result
 
 
-    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year=0, ytd_months=2):
+    def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year, ytd_months=2):
         """
         Compute 12-month forecast.
 
         Formula: ytd_actual + accrual_adj + unpaid_bills + estimate
-        where estimate = (ytd_actual / ytd_months) * remaining_months
-        Estimate annualizes only YTD Actual; accrual and unpaid are added separately.
+        where estimate = IF(ytd_total >= prior_year,
+                            annualize: (ytd_total / ytd_months) * remaining_months,
+                            prior_year_adj: prior_year - ytd_total)
         """
+        ytd_total = ytd_actual + accrual_adj + unpaid_bills
         remaining = 12 - ytd_months
 
-        if ytd_months > 0 and ytd_actual > 0:
-            estimate = (ytd_actual / ytd_months) * remaining
+        if ytd_total >= prior_year and prior_year > 0 and ytd_months > 0:
+            estimate = (ytd_total / ytd_months) * remaining
         else:
-            estimate = 0
+            estimate = max(prior_year - ytd_total, 0)
 
-        return ytd_actual + accrual_adj + unpaid_bills + estimate
+        return ytd_total + estimate
 
 
-    def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year=0):
+    def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year):
         """Return the forecast method label for display purposes."""
-        return 'Annualized'
+        ytd_total = ytd_actual + accrual_adj + unpaid_bills
+        if ytd_total >= prior_year and prior_year > 0:
+            return 'Annualized'
+        return 'Prior Year Adjusted'
 
 
     def compute_proposed_budget(forecast, increase_pct):
@@ -793,6 +707,7 @@ def create_workflow_blueprint(db):
     # ─── Blueprint Creation ──────────────────────────────────────────────────
 
     bp = Blueprint("workflow", __name__)
+
 
     # ─── Admin Routes ────────────────────────────────────────────────────────
 
@@ -830,7 +745,7 @@ def create_workflow_blueprint(db):
     @bp.route("/dashboard/<entity_code>", methods=["GET"])
     def building_detail(entity_code):
         """FA Building Detail - combined view of budget, expenses, audit."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return "No budget found for this building", 404
         return render_template_string(BUILDING_DETAIL_TEMPLATE, entity_code=entity_code)
@@ -858,7 +773,7 @@ def create_workflow_blueprint(db):
     @bp.route("/pm/<entity_code>", methods=["GET"])
     def pm_edit(entity_code):
         """PM Edit Page - spreadsheet-style R&M grid."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
 
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
@@ -957,7 +872,7 @@ def create_workflow_blueprint(db):
         return jsonify(user.to_dict())
 
 
-    @bp.route("/api/users/<int:user_id>/delete", methods=["POST"])
+    @bp.route("/api/users/<int:user_id>", methods=["DELETE"])
     def delete_user(user_id):
         """Delete a user."""
         user = User.query.get(user_id)
@@ -967,7 +882,7 @@ def create_workflow_blueprint(db):
         db.session.delete(user)
         db.session.commit()
 
-        return jsonify({"status": "deleted"})
+        return jsonify({"status": "deleted"}), 204
 
 
     # ─── API Routes: Assignments ─────────────────────────────────────────────
@@ -1017,7 +932,7 @@ def create_workflow_blueprint(db):
         return jsonify(assignment.to_dict()), 201
 
 
-    @bp.route("/api/assignments/<int:assignment_id>/delete", methods=["POST"])
+    @bp.route("/api/assignments/<int:assignment_id>", methods=["DELETE"])
     def delete_assignment(assignment_id):
         """Delete an assignment."""
         assignment = BuildingAssignment.query.get(assignment_id)
@@ -1027,7 +942,7 @@ def create_workflow_blueprint(db):
         db.session.delete(assignment)
         db.session.commit()
 
-        return jsonify({"status": "deleted"})
+        return jsonify({"status": "deleted"}), 204
 
 
     # ─── API Routes: Budgets ─────────────────────────────────────────────────
@@ -1046,29 +961,17 @@ def create_workflow_blueprint(db):
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
-                db.session.rollback()
                 has_expenses = False
             # Check confirmed audit exists
             try:
                 has_audit = db.session.execute(
-                    db.text("SELECT 1 FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
+                    db.text("SELECT 1 FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
                     {"ec": b.entity_code}
                 ).fetchone() is not None
             except Exception:
-                db.session.rollback()
                 has_audit = False
-            # Check maintenance proof exists
-            try:
-                has_maint_proof = db.session.execute(
-                    db.text("SELECT 1 FROM maint_proof_reports WHERE entity_code = :ec LIMIT 1"),
-                    {"ec": b.entity_code}
-                ).fetchone() is not None
-            except Exception:
-                db.session.rollback()
-                has_maint_proof = False
             d["has_expenses"] = has_expenses
             d["has_audit"] = has_audit
-            d["has_maint_proof"] = has_maint_proof
             result.append(d)
         return jsonify(result)
 
@@ -1082,7 +985,7 @@ def create_workflow_blueprint(db):
         if new_status not in BUDGET_STATUSES:
             return jsonify({"error": f"Invalid status. Must be one of {BUDGET_STATUSES}"}), 400
 
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1112,82 +1015,10 @@ def create_workflow_blueprint(db):
         return jsonify(budget.to_dict())
 
 
-    @bp.route("/api/debug/budget/<int:budget_id>", methods=["GET"])
-    def debug_budget(budget_id):
-        """Debug: check if a budget can be found by various methods."""
-        try:
-            db.session.rollback()  # clear any poisoned state
-        except Exception:
-            pass
-        results = {}
-        try:
-            r1 = db.session.execute(db.text("SELECT id, entity_code, status, version FROM budgets WHERE id = :id"), {"id": budget_id}).fetchone()
-            results["raw_sql"] = dict(zip(["id", "entity_code", "status", "version"], r1)) if r1 else None
-        except Exception as e:
-            results["raw_sql_error"] = str(e)
-        try:
-            r2 = Budget.query.filter_by(id=budget_id).first()
-            results["orm_filter"] = r2.to_dict() if r2 else None
-        except Exception as e:
-            results["orm_filter_error"] = str(e)
-        return jsonify(results)
-
-    @bp.route("/api/budgets/<int:budget_id>", methods=["DELETE"])
-    def delete_budget(budget_id):
-        """Delete a non-approved budget and all its related records.
-        Uses raw SQL to avoid ORM session poisoning issues."""
-        # Always start with a clean session
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-
-        # Look up budget via raw SQL — immune to session poisoning
-        row = db.session.execute(
-            db.text("SELECT id, entity_code, status, version FROM budgets WHERE id = :id"),
-            {"id": budget_id}
-        ).fetchone()
-        if not row:
-            return jsonify({"error": "Budget not found"}), 404
-
-        bid, entity, status, ver = row[0], row[1], row[2], row[3] or 1
-        if status == "approved":
-            return jsonify({"error": "Cannot delete an approved budget."}), 400
-
-        try:
-            # Get line IDs for this budget
-            line_rows = db.session.execute(
-                db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"), {"bid": bid}
-            ).fetchall()
-            line_ids = [r[0] for r in line_rows]
-
-            # Delete in dependency order using raw SQL
-            if line_ids:
-                ids_str = ",".join(str(i) for i in line_ids)
-                db.session.execute(db.text(f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})"))
-                db.session.execute(db.text(f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})"))
-            db.session.execute(db.text("DELETE FROM budget_revisions WHERE budget_id = :bid"), {"bid": bid})
-            db.session.execute(db.text("DELETE FROM presentation_sessions WHERE budget_id = :bid"), {"bid": bid})
-            db.session.execute(db.text("DELETE FROM ar_handoffs WHERE budget_id = :bid"), {"bid": bid})
-            db.session.execute(db.text("DELETE FROM data_sources WHERE budget_id = :bid"), {"bid": bid})
-            db.session.execute(db.text("DELETE FROM budget_lines WHERE budget_id = :bid"), {"bid": bid})
-            # Wipe entity-level data
-            _delete_entity_data(entity)
-            # Delete the budget itself
-            db.session.execute(db.text("DELETE FROM budgets WHERE id = :bid"), {"bid": bid})
-            db.session.commit()
-            logger.info(f"Deleted budget {bid} (entity {entity}, v{ver})")
-            return jsonify({"message": f"Budget v{ver} for {entity} deleted", "id": bid})
-        except Exception as e:
-            db.session.rollback()
-            logger.error(f"Failed to delete budget {bid}: {e}")
-            return jsonify({"error": f"Failed to delete: {str(e)}"}), 500
-
-
     @bp.route("/api/dashboard/<entity_code>", methods=["GET"])
     def api_building_detail(entity_code):
         """Get combined budget data for building detail view."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1212,21 +1043,20 @@ def create_workflow_blueprint(db):
                 ).fetchone()[0]
                 expense_data = {
                     "exists": True,
-                    "report_id": row[0],
                     "period_from": row[1],
                     "period_to": row[2],
                     "total_amount": float(row[3]) if row[3] else 0,
                     "invoice_count": invoice_count
                 }
         except Exception:
-            db.session.rollback()
+            pass
 
         # Check audit data — fetch ALL confirmed uploads for multi-year comparison
         audit_data = {"exists": False, "years": {}}
         try:
             import json as _json
             audit_rows = db.session.execute(
-                db.text("SELECT mapped_data, fiscal_year_end FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
+                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
                 {"ec": entity_code}
             ).fetchall()
             if audit_rows:
@@ -1254,71 +1084,7 @@ def create_workflow_blueprint(db):
                         "category_mapping": BUDGET_CAT_TO_CENTURY
                     }
         except Exception:
-            db.session.rollback()
-
-        # Check maintenance proof data
-        maint_proof_data = {"exists": False}
-        try:
-            mp_row = db.session.execute(
-                db.text("SELECT id, building_type, charge_label, total_units, total_shares, total_monthly, total_annual, file_name FROM maint_proof_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
-                {"ec": entity_code}
-            ).fetchone()
-            if mp_row:
-                maint_proof_data = {
-                    "exists": True,
-                    "building_type": mp_row[1] or "",
-                    "charge_label": mp_row[2] or "Maintenance",
-                    "total_units": mp_row[3] or 0,
-                    "total_shares": float(mp_row[4] or 0),
-                    "total_monthly": float(mp_row[5] or 0),
-                    "total_annual": float(mp_row[6] or 0),
-                    "file_name": mp_row[7] or "",
-                }
-        except Exception:
-            db.session.rollback()
-
-        # Check building type for this entity (from CSV cache)
-        btype = _lookup_building_type(entity_code)
-        if btype:
-            charge_label = "Common Charges" if btype.lower() == "condo" else "Maintenance"
-            building_type_info = {
-                "building_type": btype,
-                "charge_label": charge_label,
-                "needs_maint_proof": btype.lower() in ["coop", "condo", "cond-op"],
-            }
-        else:
-            building_type_info = {"building_type": "", "charge_label": "Maintenance", "needs_maint_proof": False}
-
-        # Compute expense invoice reclass adjustments per GL
-        expense_reclass_adj = {}  # {gl_code: net_ytd_adjustment}
-        reclass_summary_items = []  # for FA summary panel
-        try:
-            exp_report_id = expense_data.get("report_id")
-            if exp_report_id:
-                reclassed_invoices = db.session.execute(
-                    db.text("SELECT gl_code, reclass_to_gl, amount, payee_name, invoice_num, reclassed_by, reclassed_at, reclass_notes FROM expense_invoices WHERE report_id = :rid AND reclass_to_gl IS NOT NULL AND reclass_to_gl != ''"),
-                    {"rid": exp_report_id}
-                ).fetchall()
-                for inv in reclassed_invoices:
-                    src_gl = inv[0]
-                    tgt_gl = inv[1]
-                    amt = float(inv[2] or 0)
-                    expense_reclass_adj[src_gl] = expense_reclass_adj.get(src_gl, 0) - amt
-                    expense_reclass_adj[tgt_gl] = expense_reclass_adj.get(tgt_gl, 0) + amt
-                    reclass_summary_items.append({
-                        "from_gl": src_gl,
-                        "to_gl": tgt_gl,
-                        "amount": round(amt, 2),
-                        "vendor": inv[3] or "",
-                        "invoice_num": inv[4] or "",
-                        "reclassed_by": inv[5] or "PM",
-                        "reclassed_at": str(inv[6]) if inv[6] else "",
-                        "notes": inv[7] or ""
-                    })
-                if reclassed_invoices:
-                    logger.info(f"Expense reclass for {entity_code}: {len(reclassed_invoices)} reclassed invoices, adj={expense_reclass_adj}")
-        except Exception as e:
-            logger.warning(f"Could not compute expense reclass adjustments: {e}")
+            pass
 
         # Group lines by sheet for tabbed view
         sheets = {}
@@ -1326,14 +1092,7 @@ def create_workflow_blueprint(db):
             sn = l.sheet_name or "Unmapped"
             if sn not in sheets:
                 sheets[sn] = []
-            ld = l.to_dict()
-            # Attach reclass adjustment info
-            adj = expense_reclass_adj.get(l.gl_code, 0)
-            if adj:
-                ld["_reclass_ytd_adj"] = round(adj, 2)
-                ld["_orig_ytd"] = ld["ytd_actual"]
-                ld["ytd_actual"] = round(ld["ytd_actual"] + adj, 2)
-            sheets[sn].append(ld)
+            sheets[sn].append(l.to_dict())
 
         # Ordered sheet tab names
         sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Unmapped"]
@@ -1365,31 +1124,17 @@ def create_workflow_blueprint(db):
             import logging
             logging.getLogger(__name__).warning(f"RE Taxes fetch failed for {entity_code}: {e}")
 
-        # Build lines list with reclass adjustments applied
-        lines_with_adj = []
-        for l in lines:
-            ld = l.to_dict()
-            adj = expense_reclass_adj.get(l.gl_code, 0)
-            if adj:
-                ld["_reclass_ytd_adj"] = round(adj, 2)
-                ld["_orig_ytd"] = ld["ytd_actual"]
-                ld["ytd_actual"] = round(ld["ytd_actual"] + adj, 2)
-            lines_with_adj.append(ld)
-
         return jsonify({
             "budget": budget.to_dict(),
-            "lines": lines_with_adj,
+            "lines": [l.to_dict() for l in lines],
             "sheets": sheets,
             "sheet_order": [s for s in sheet_order if s in sheets or (s == "RE Taxes" and re_taxes_data)],
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data,
-            "maint_proof": maint_proof_data,
-            "building_type_info": building_type_info,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
             "remaining_months": remaining_months,
-            "reclass_summary": reclass_summary_items,
             "re_taxes": re_taxes_data
         })
 
@@ -1400,7 +1145,7 @@ def create_workflow_blueprint(db):
     def get_budget_assumptions(entity_code):
         """Get assumptions for a budget."""
         import json as _json
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
         try:
@@ -1413,7 +1158,7 @@ def create_workflow_blueprint(db):
     def update_budget_assumptions(entity_code):
         """Update assumptions for a budget and recalculate affected lines."""
         import json as _json
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1517,14 +1262,16 @@ def create_workflow_blueprint(db):
         # Recompute proposed_budget for all affected lines
         for line in lines:
             if line.increase_pct:
+                prior = float(line.prior_year or 0)
                 ytd = float(line.ytd_actual or 0)
                 accrual = float(line.accrual_adj or 0)
                 unpaid = float(line.unpaid_bills or 0)
-                if ytd > 0 and _ytd_months > 0:
-                    estimate = (ytd / _ytd_months) * _remaining
+                base = ytd + accrual + unpaid
+                if base >= prior and prior > 0:
+                    estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
                 else:
-                    estimate = 0
-                forecast = ytd + accrual + unpaid + estimate
+                    estimate = max(prior - base, 0)
+                forecast = base + estimate
                 line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
 
         db.session.commit()
@@ -1532,15 +1279,18 @@ def create_workflow_blueprint(db):
 
         return jsonify({"status": "saved", "assumptions": current, "recalculated": recalc_count})
 
+
+    # ─── API Routes: RE Taxes (NYC DOF) ─────────────────────────────────────
+
     @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
     def get_re_taxes(entity_code):
         """Get RE Taxes calculation for a co-op property, pulling from NYC DOF."""
         try:
             from dof_taxes import is_coop, compute_re_taxes
             if not is_coop(entity_code):
-                return jsonify({"error": "Not a co-op", "is_coop": False}), 200
+                return jsonify({"error": "Not a co-op — condos do not have building-level RE taxes", "is_coop": False}), 200
             import json as _json
-            budget = get_active_budget(entity_code)
+            budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
             overrides = None
             if budget and budget.assumptions_json:
                 try:
@@ -1557,7 +1307,7 @@ def create_workflow_blueprint(db):
     def update_re_taxes(entity_code):
         """Save RE Taxes overrides (exemptions, transitional increase, etc.)."""
         import json as _json
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
         data = request.get_json()
@@ -1569,10 +1319,13 @@ def create_workflow_blueprint(db):
             current = {}
         current["re_taxes_overrides"] = data
         budget.assumptions_json = _json.dumps(current)
+        # Also update the Gen & Admin GL lines that reference RE Taxes
         try:
             from dof_taxes import compute_re_taxes
             result = compute_re_taxes(entity_code, data)
+            # Update GL 6315-0000 (Gross Tax) proposed budget
             _update_gl_line(budget.id, "6315-0000", result["gross_tax"])
+            # Update exemption lines (negated — they reduce tax)
             _update_gl_line(budget.id, "6315-0010", -result["exemptions"]["coop_abatement"]["budget_year"])
             _update_gl_line(budget.id, "6315-0020", -result["exemptions"]["star"]["budget_year"])
             _update_gl_line(budget.id, "6315-0025", -result["exemptions"]["veteran"]["budget_year"])
@@ -1586,14 +1339,14 @@ def create_workflow_blueprint(db):
         """Update the proposed_budget for a specific GL line."""
         line = BudgetLine.query.filter_by(budget_id=budget_id, gl_code=gl_code).first()
         if line:
-            line.proposed_budget = value
+            line.proposed_budget = round(value, 2)
 
     # ─── API Routes: Lines ───────────────────────────────────────────────────
 
     @bp.route("/api/lines/<entity_code>", methods=["GET"])
     def get_lines(entity_code):
         """Get all R&M lines for a building."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1606,7 +1359,7 @@ def create_workflow_blueprint(db):
         """Update R&M lines for a building (PM data entry)."""
         data = request.get_json()
 
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1650,7 +1403,7 @@ def create_workflow_blueprint(db):
     def update_fa_lines(entity_code):
         """FA edits to any budget line (all sheets, not just R&M)."""
         data = request.get_json()
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1664,33 +1417,20 @@ def create_workflow_blueprint(db):
             changes = []
             editable_float_fields = [
                 "increase_pct", "proposed_budget", "accrual_adj", "unpaid_bills",
-                "prior_year", "ytd_actual", "ytd_budget", "current_budget",
-                "estimate_override", "forecast_override"
+                "prior_year", "ytd_actual", "ytd_budget", "current_budget"
             ]
-            nullable_fields = {"estimate_override", "forecast_override"}
             for fname in editable_float_fields:
                 if fname in line_data:
-                    raw = line_data[fname]
-                    if fname in nullable_fields and raw is None:
-                        new_val = None
-                    else:
-                        new_val = float(raw or 0)
-                    old_val = getattr(line, fname, None)
-                    old_cmp = old_val if old_val is None else float(old_val or 0)
-                    if old_cmp != new_val:
-                        changes.append((fname, str(old_cmp), str(new_val)))
+                    new_val = float(line_data[fname] or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
                     setattr(line, fname, new_val)
             if "notes" in line_data:
                 new_val = line_data["notes"]
                 if (line.notes or "") != new_val:
                     changes.append(("notes", line.notes or "", new_val))
                 line.notes = new_val
-            if "proposed_formula" in line_data:
-                new_val = line_data["proposed_formula"]  # string or None
-                old_val = line.proposed_formula or ""
-                if old_val != (new_val or ""):
-                    changes.append(("proposed_formula", old_val, new_val or ""))
-                line.proposed_formula = new_val or None
 
             for field, old_v, new_v in changes:
                 db.session.add(BudgetRevision(
@@ -1707,7 +1447,7 @@ def create_workflow_blueprint(db):
     def update_reclass(entity_code):
         """PM suggests reclassifying a GL line (FA acts on it)."""
         data = request.get_json()
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1726,7 +1466,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
     def get_budget_history(entity_code):
         """Get change history (revisions) for a budget."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1750,7 +1490,7 @@ def create_workflow_blueprint(db):
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
     def download_budget(entity_code):
         """Regenerate and download budget Excel from DB data."""
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1778,7 +1518,7 @@ def create_workflow_blueprint(db):
         from flask import send_file as _send_file
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = _Path(tmpdir) / f"{entity_code}_{budget.building_name}_{budget.year}_Budget.xlsx"
+            output_path = _Path(tmpdir) / f"{entity_code}_{budget.building_name}_2027_Budget.xlsx"
             template_path = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
 
             property_info = {
@@ -1823,7 +1563,7 @@ def create_workflow_blueprint(db):
     def generate_presentation_link(entity_code):
         """Generate a shareable presentation token for a budget."""
         import secrets
-        budget = get_active_budget(entity_code)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
@@ -1881,7 +1621,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
@@ -1897,29 +1637,30 @@ ADMIN_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>User Management - Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
   }
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, #1e429f 100%);
+    background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%);
     color: white;
     padding: 30px 20px;
   }
@@ -2223,10 +1964,11 @@ DASHBOARD_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FA Dashboard - Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-dark: #1e429f;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
@@ -2235,17 +1977,17 @@ DASHBOARD_TEMPLATE = r"""
     --yellow-light: #fef3c7;
     --orange: #f97316;
     --orange-light: #fed7aa;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -2325,13 +2067,9 @@ DASHBOARD_TEMPLATE = r"""
     background: white;
     border-radius: 12px;
     padding: 24px;
-    border: 2px solid var(--gray-200);
+    border: 1px solid var(--gray-200);
     text-align: center;
-    cursor: pointer;
-    transition: all 0.15s;
   }
-  .status-card:hover { border-color: var(--blue); background: var(--blue-light); }
-  .status-card.active { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(26,86,219,0.15); }
   .status-card .count {
     font-size: 32px;
     font-weight: 700;
@@ -2425,28 +2163,6 @@ DASHBOARD_TEMPLATE = r"""
   .btn-blue { background: var(--blue); color: white; }
   .btn-green { background: var(--green); color: white; }
   .btn-orange { background: var(--yellow); color: white; }
-
-  /* Overflow menu */
-  .action-menu { position: relative; display: inline-block; }
-  .action-menu-btn { background: transparent; border: 1px solid var(--gray-300); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 16px; line-height: 1; color: var(--gray-500); }
-  .action-menu-btn:hover { background: var(--gray-100); }
-  .action-menu-items { display: none; position: absolute; right: 0; top: 100%; margin-top: 4px; background: white; border: 1px solid var(--gray-200); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); min-width: 140px; z-index: 10; padding: 4px 0; }
-  .action-menu-items.open { display: block; }
-  .action-menu-items button { display: block; width: 100%; text-align: left; padding: 8px 14px; border: none; background: none; cursor: pointer; font-size: 13px; }
-  .action-menu-items button:hover { background: var(--gray-50); }
-  .action-menu-items .del-item { color: var(--red); }
-  .action-menu-items .del-item:hover { background: var(--red-light); }
-
-  /* Data dots */
-  .data-dots { display: flex; gap: 6px; align-items: center; }
-  .data-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .data-dot.on { background: var(--green); }
-  .data-dot.off { background: transparent; border: 2px solid var(--gray-300); }
-
-  /* Filter indicator */
-  .filter-bar { font-size: 13px; color: var(--gray-500); margin-bottom: 12px; display: none; align-items: center; gap: 8px; }
-  .filter-bar.visible { display: flex; }
-  .filter-bar a { color: var(--blue); cursor: pointer; text-decoration: none; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -2460,7 +2176,6 @@ DASHBOARD_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 
@@ -2487,13 +2202,11 @@ DASHBOARD_TEMPLATE = r"""
         <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
           style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
       </div>
-      <div class="filter-bar" id="filterBar">Showing: <span id="filterLabel"></span> &mdash; <a onclick="clearStatusFilter()">Show all</a></div>
       <table id="budgets-table">
         <thead>
           <tr>
             <th>Building</th>
             <th>Entity</th>
-            <th>Last Updated</th>
             <th>Data</th>
             <th>PM Review</th>
             <th>Status</th>
@@ -2529,7 +2242,6 @@ async function loadBudgets() {
   try {
     const res = await fetch('/api/budgets');
     const budgets = await res.json();
-    _allBudgets = budgets;
     renderBudgets(budgets);
     renderStatusSummary(budgets);
     document.getElementById('loadingState').style.display = 'none';
@@ -2541,9 +2253,6 @@ async function loadBudgets() {
     return [];
   }
 }
-
-let _activeFilter = null;
-let _allBudgets = [];
 
 function renderStatusSummary(budgets) {
   const summary = document.getElementById('status-summary');
@@ -2564,8 +2273,7 @@ function renderStatusSummary(budgets) {
 
   Object.entries(counts).forEach(([status, count]) => {
     const card = document.createElement('div');
-    card.className = 'status-card' + (_activeFilter === status ? ' active' : '');
-    card.onclick = () => toggleStatusFilter(status);
+    card.className = 'status-card';
     card.innerHTML = `
       <div class="count">${count}</div>
       <div class="label">${statusLabels[status]}</div>
@@ -2574,57 +2282,35 @@ function renderStatusSummary(budgets) {
   });
 }
 
-function toggleStatusFilter(status) {
-  _activeFilter = (_activeFilter === status) ? null : status;
-  renderStatusSummary(_allBudgets);
-  renderBudgets(_allBudgets);
-  const bar = document.getElementById('filterBar');
-  if (_activeFilter) {
-    bar.classList.add('visible');
-    document.getElementById('filterLabel').textContent = statusLabels[_activeFilter];
-  } else {
-    bar.classList.remove('visible');
-  }
-}
-
-function clearStatusFilter() {
-  _activeFilter = null;
-  renderStatusSummary(_allBudgets);
-  renderBudgets(_allBudgets);
-  document.getElementById('filterBar').classList.remove('visible');
-}
-
 function renderBudgets(budgets) {
   const tbody = document.querySelector('#budgets-table tbody');
   tbody.innerHTML = '';
 
-  const filtered = _activeFilter ? budgets.filter(b => b.status === _activeFilter) : budgets;
-
-  filtered.forEach(b => {
+  budgets.forEach(b => {
     const tr = document.createElement('tr');
     const statusLabel = statusLabels[b.status] || b.status;
     const statusClass = `pill-${b.status}`;
 
-    // Data completeness: colored dots with tooltips
-    const dot = (on, label) => `<span class="data-dot ${on ? 'on' : 'off'}" title="${label}"></span>`;
-    const dataHtml = dot(true, 'Budget') + dot(b.has_expenses, 'Expenses') + dot(b.has_audit, 'Audit') + dot(b.has_maint_proof, 'Maint Proof');
+    // Data completeness indicators
+    const budgetIcon = '<span style="color:var(--green);" title="Budget">&#10003; Budget</span>';
+    const expenseIcon = b.has_expenses
+      ? '<span style="color:var(--green);" title="Expenses uploaded">&#10003; Expenses</span>'
+      : '<span style="color:var(--gray-300);" title="No expenses">&#10007; Expenses</span>';
+    const auditIcon = b.has_audit
+      ? '<span style="color:var(--green);" title="Audit confirmed">&#10003; Audit</span>'
+      : '<span style="color:var(--gray-300);" title="No audit">&#10007; Audit</span>';
 
     // PM review status pill
     const pmStatusMap = {
-      'draft': 'Not Sent', 'pm_pending': 'Sent to PM', 'pm_in_progress': 'PM Working',
-      'fa_review': 'Submitted', 'approved': 'Approved', 'returned': 'Returned'
+      'draft': 'Not Sent',
+      'pm_pending': 'Sent to PM',
+      'pm_in_progress': 'PM Working',
+      'fa_review': 'Submitted',
+      'approved': 'Approved',
+      'returned': 'Returned'
     };
     const pmLabel = pmStatusMap[b.status] || b.status;
-    const pmPillStyle = {
-      'draft': 'background:transparent; color:var(--gray-500); border:1.5px solid var(--gray-300);',
-      'pm_pending': 'background:transparent; color:#a16207; border:1.5px solid #f59e0b;',
-      'pm_in_progress': 'background:transparent; color:var(--blue); border:1.5px solid var(--blue);',
-      'fa_review': 'background:transparent; color:var(--orange); border:1.5px solid var(--orange);',
-      'approved': 'background:transparent; color:var(--green); border:1.5px solid var(--green);',
-      'returned': 'background:transparent; color:var(--red); border:1.5px solid var(--red);'
-    }[b.status] || '';
 
-    // Action buttons + overflow menu for delete
     let actionHtml = '';
     if (b.status === 'draft') {
       actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
@@ -2634,47 +2320,18 @@ function renderBudgets(budgets) {
         <button class="btn-action btn-orange" onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px;">Return</button>
       `;
     }
-    if (b.status !== 'approved') {
-      actionHtml += `<div class="action-menu" style="display:inline-block; margin-left:4px;">` +
-        `<button class="action-menu-btn" onclick="toggleMenu(this)">&#8943;</button>` +
-        `<div class="action-menu-items">` +
-        `<button class="del-item" onclick='deleteBudget(${b.id}, ${JSON.stringify(b.building_name)}, ${b.version || 1})'>Delete budget</button>` +
-        `</div></div>`;
-    }
 
-    // Format timestamp
-    let updatedStr = '\u2014';
-    const ts = b.updated_at || b.created_at;
-    if (ts) {
-      const d = new Date(ts);
-      updatedStr = d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-    }
-
-    const verBadge = (b.version && b.version > 1) ? `<span style="background:#dbeafe; color:var(--blue); font-size:10px; padding:1px 5px; border-radius:8px; margin-left:4px;">v${b.version}</span>` : '';
     tr.innerHTML = `
-      <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a>${verBadge}</td>
+      <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
-      <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${updatedStr}</td>
-      <td><div class="data-dots">${dataHtml}</div></td>
-      <td><span class="pill" style="${pmPillStyle}">${pmLabel}</span></td>
+      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
+      <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
-      <td style="white-space:nowrap;">${actionHtml}</td>
+      <td>${actionHtml}</td>
     `;
     tbody.appendChild(tr);
   });
 }
-
-function toggleMenu(btn) {
-  const menu = btn.nextElementSibling;
-  // Close any other open menus
-  document.querySelectorAll('.action-menu-items.open').forEach(m => { if (m !== menu) m.classList.remove('open'); });
-  menu.classList.toggle('open');
-}
-document.addEventListener('click', e => {
-  if (!e.target.closest('.action-menu')) {
-    document.querySelectorAll('.action-menu-items.open').forEach(m => m.classList.remove('open'));
-  }
-});
 
 function filterBudgetTable() {
   const query = document.getElementById('budgetSearch').value.toLowerCase();
@@ -2723,23 +2380,6 @@ async function returnTopm(entity) {
   }
 }
 
-async function deleteBudget(budgetId, name, version) {
-  if (!confirm(`Delete draft budget for ${name} (v${version})? This cannot be undone.`)) return;
-  try {
-    const resp = await fetch(`/api/budgets/${budgetId}`, { method: 'DELETE' });
-    const data = await resp.json();
-    if (resp.ok) {
-      showToast(data.message, 'success');
-      await loadBudgets();
-    } else {
-      showToast(data.error || 'Failed to delete', 'error');
-    }
-  } catch (err) {
-    showToast('Failed to delete budget', 'error');
-    console.error(err);
-  }
-}
-
 // Initialize on page load
 (async () => {
   await loadBudgets();
@@ -2757,10 +2397,11 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Building Detail - Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-dark: #1e429f;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --red: #e02424;
@@ -2769,17 +2410,17 @@ BUILDING_DETAIL_TEMPLATE = r"""
     --yellow-light: #fef3c7;
     --orange: #f97316;
     --orange-light: #fed7aa;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -2834,6 +2475,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   }
   .card-value { font-size: 26px; font-weight: 700; color: var(--blue); }
   .card-label { font-size: 12px; color: var(--gray-500); text-transform: uppercase; font-weight: 600; margin-top: 4px; }
+  /* ── Context Strip (collapsible panels side by side) ── */
   .context-strip {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2866,6 +2508,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .panel-body { padding: 0 20px 16px; display: none; }
   .panel-body.open { display: block; }
   .panel-summary { font-size: 12px; color: var(--gray-500); margin-left: 8px; }
+  /* ── Checklist items ── */
   .checklist-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--gray-100); }
   .checklist-item:last-child { border-bottom: none; }
   .check-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0; margin-top: 1px; }
@@ -2881,6 +2524,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     margin-bottom: 28px;
   }
   .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
+  /* ── Promoted Budget Workbook ── */
   .workbook-section {
     background: white;
     border: 2px solid var(--blue);
@@ -2977,7 +2621,6 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
   </div>
   <div class="breadcrumb">
     <a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span>
@@ -3004,8 +2647,9 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <div class="status-pipeline" id="statusPipeline"></div>
 
   <!-- Summary Cards -->
-  <!-- summary cards removed -->
+  <div class="summary-cards" id="summaryCards"></div>
 
+  <!-- Context Strip: PM Review + FA Checklist as collapsible panels -->
   <div class="context-strip">
     <div class="panel" id="pmPanel">
       <div class="panel-header" onclick="togglePanel(this)">
@@ -3031,6 +2675,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
+  <!-- Historical Actuals (from Audited Financials) — collapsible -->
   <div class="panel" id="auditActualsSection" style="display:none; margin-bottom:16px;">
     <div class="panel-header" onclick="togglePanel(this)">
       <div style="display:flex; align-items:center; gap:8px;">
@@ -3047,8 +2692,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Maintenance Proof: upload moved to /files repository -->
-
+  <!-- Reclass Suggestions — compact collapsible panel -->
   <div class="panel" id="reclassSuggestions" style="display:none; margin-bottom:16px;">
     <div class="panel-header" onclick="togglePanel(this)">
       <div style="display:flex; align-items:center; gap:8px;">
@@ -3065,32 +2709,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Invoice Reclass Summary Panel -->
-  <div class="section" id="reclassSummarySection" style="display:none;">
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; cursor:pointer;" onclick="document.getElementById('reclassSummaryBody').style.display = document.getElementById('reclassSummaryBody').style.display === 'none' ? '' : 'none'; this.querySelector('.toggle-arrow').textContent = document.getElementById('reclassSummaryBody').style.display === 'none' ? '▶' : '▼';">
-      <h2 style="margin:0;">Invoice Reclasses</h2>
-      <span class="toggle-arrow" style="font-size:12px; color:var(--gray-400);">▼</span>
-      <span id="reclassSummaryBadge" style="font-size:12px; font-weight:600; padding:2px 10px; border-radius:12px; background:#fef3c7; color:#d97706;"></span>
-    </div>
-    <div id="reclassSummaryBody">
-      <div id="reclassSummaryStats" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;"></div>
-      <div style="overflow-x:auto;">
-        <table style="width:100%; font-size:12px; border-collapse:collapse;" id="reclassSummaryTable">
-          <thead><tr style="background:var(--gray-50); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px; color:var(--gray-500);">
-            <th style="padding:6px 10px; text-align:left;">Invoice</th>
-            <th style="padding:6px 10px; text-align:left;">Vendor</th>
-            <th style="padding:6px 10px; text-align:right;">Amount</th>
-            <th style="padding:6px 10px; text-align:left;">From GL</th>
-            <th style="padding:6px 10px; text-align:left;">To GL</th>
-            <th style="padding:6px 10px; text-align:left;">By</th>
-            <th style="padding:6px 10px; text-align:left;">Notes</th>
-          </tr></thead>
-          <tbody id="reclassSummaryTableBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
+  <!-- Budget Workbook (PROMOTED — blue border, primary visual element) -->
   <div class="workbook-section">
     <div class="workbook-header">
       <h2>Budget Workbook</h2>
@@ -3117,7 +2736,6 @@ function togglePanel(header) {
   chevron.classList.toggle('open');
 }
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
-let allAssumptions = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
 let REMAINING_MONTHS = 10;  // updated from API response
 
@@ -3185,9 +2803,7 @@ function renderDetail(data) {
   document.getElementById('buildingName').textContent = b.building_name;
   document.getElementById('breadcrumbName').textContent = b.building_name;
   document.title = b.building_name + ' - Century Management';
-  let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget' + (b.version > 1 ? ' (v' + b.version + ')' : '');
-  if (b.created_at) meta += ' | Generated ' + new Date(b.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.created_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  if (b.updated_at && b.updated_at !== b.created_at) meta += ' | Updated ' + new Date(b.updated_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' ' + new Date(b.updated_at).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  let meta = 'Entity ' + b.entity_code + ' | ' + b.year + ' Budget';
   if (data.assignments.fa) meta += ' | FA: ' + data.assignments.fa;
   if (data.assignments.pm) meta += ' | PM: ' + data.assignments.pm;
   document.getElementById('buildingMeta').textContent = meta;
@@ -3195,9 +2811,37 @@ function renderDetail(data) {
   // Status Pipeline
   renderStatusPipeline(b.status);
 
+  // Summary cards
   const lines = data.lines;
+  let totalPrior = 0, totalBudget = 0, totalPM = 0;
+  lines.forEach(l => {
+    totalPrior += l.prior_year || 0;
+    totalBudget += l.current_budget || 0;
+    const forecast = computeForecast(l);
+    const proposed = forecast * (1 + (l.increase_pct || 0));
+    totalPM += proposed;
+  });
 
-  // PM Track
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalPrior)}</div>
+      <div class="card-label">Prior Year</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalBudget)}</div>
+      <div class="card-label">Current Budget</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${fmt(totalBudget - totalPrior)}</div>
+      <div class="card-label">Variance</div>
+    </div>
+    <div class="summary-card">
+      <div class="card-value">${totalPrior ? ((totalBudget - totalPrior) / totalPrior * 100).toFixed(1) + '%' : '\u2014'}</div>
+      <div class="card-label">% Change</div>
+    </div>
+  `;
+
+  // PM Track — collapsible panel with badge
   const statusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
   const pmStatus = statusLabels[b.status] || b.status;
   const pmBadgeClass = ['fa_review','approved'].includes(b.status) ? 'badge-green' : ['pm_pending','pm_in_progress'].includes(b.status) ? 'badge-amber' : 'badge-gray';
@@ -3216,34 +2860,11 @@ function renderDetail(data) {
     pmActions += '<div style="margin-top:12px; padding:10px; background:#fef3c7; border-radius:6px; font-size:13px;"><strong>FA Notes:</strong> ' + b.fa_notes + '</div>';
   }
 
-  // Gather PM notes and reclasses from budget lines
-  const pmNoteLines = lines.filter(l => l.notes && l.notes.trim());
-  const reclassedLines = lines.filter(l => l.reclass_to_gl);
-  let pmExtra = '';
-  if (pmNoteLines.length > 0) {
-    pmExtra += '<div style="margin-top:16px;"><h4 style="font-size:13px; font-weight:600; color:var(--gray-700); margin-bottom:8px;">PM Notes (' + pmNoteLines.length + ')</h4>';
-    pmExtra += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--gray-200); border-radius:8px; background:white;">';
-    pmExtra += '<table style="width:100%; font-size:12px; border-collapse:collapse;">';
-    pmNoteLines.forEach(l => {
-      pmExtra += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="padding:6px 10px; font-family:monospace; white-space:nowrap; color:var(--blue); width:90px;">' + l.gl_code + '</td><td style="padding:6px 10px; color:var(--gray-500);">' + (l.description || '') + '</td><td style="padding:6px 10px;">' + l.notes + '</td></tr>';
-    });
-    pmExtra += '</table></div></div>';
-  }
-  if (reclassedLines.length > 0) {
-    pmExtra += '<div style="margin-top:16px;"><h4 style="font-size:13px; font-weight:600; color:var(--orange); margin-bottom:8px;">Reclass Suggestions (' + reclassedLines.length + ')</h4>';
-    pmExtra += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--gray-200); border-radius:8px; background:white;">';
-    pmExtra += '<table style="width:100%; font-size:12px; border-collapse:collapse;">';
-    reclassedLines.forEach(l => {
-      pmExtra += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="padding:6px 10px; font-family:monospace; white-space:nowrap; width:90px;">' + l.gl_code + '</td><td style="padding:6px 10px;">→</td><td style="padding:6px 10px; font-family:monospace;">' + l.reclass_to_gl + '</td><td style="padding:6px 10px; text-align:right;">' + fmt(l.reclass_amount) + '</td><td style="padding:6px 10px; color:var(--gray-500);">' + (l.reclass_notes || '') + '</td></tr>';
-    });
-    pmExtra += '</table></div></div>';
-  }
-
   document.getElementById('pmTrackContent').innerHTML =
     '<div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">' +
       '<span class="pill pill-' + b.status + '">' + pmStatus + '</span>' +
       (data.assignments.pm ? '<span style="font-size:13px; color:var(--gray-500);">Assigned to: ' + data.assignments.pm + '</span>' : '') +
-    '</div>' + pmActions + pmExtra;
+    '</div>' + pmActions;
 
   // FA Completion Checklist — guided workflow
   const assumptions = data.assumptions || {};
@@ -3263,7 +2884,6 @@ function renderDetail(data) {
     { label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
     { label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
     { label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
-    { label: data.building_type_info.charge_label + ' Proof', done: data.maint_proof.exists, detail: data.maint_proof.exists ? data.maint_proof.total_units + ' units, ' + fmt(data.maint_proof.total_monthly) + '/mo (' + data.maint_proof.charge_label + ')' : (data.building_type_info.needs_maint_proof ? 'Upload via Data Collection' : 'N/A — ' + (data.building_type_info.building_type || 'Rental') + ' building') },
     { label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
     { label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values' },
     { label: 'Final Approval', done: b.status === 'approved', detail: b.status === 'approved' ? 'Budget approved' : 'Complete all steps above first' }
@@ -3273,6 +2893,7 @@ function renderDetail(data) {
   const pct = Math.round(doneCount / checks.length * 100);
   const barColor = pct === 100 ? 'var(--green)' : pct >= 60 ? 'var(--blue)' : 'var(--yellow)';
 
+  // Set FA badge and summary
   const faBadgeClass = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-blue' : 'badge-amber';
   document.getElementById('faBadge').className = 'badge ' + faBadgeClass;
   document.getElementById('faBadge').textContent = doneCount + ' / ' + checks.length;
@@ -3284,7 +2905,7 @@ function renderDetail(data) {
 
   checks.forEach((c, i) => {
     const iconClass = c.done ? 'check-done' : 'check-pending';
-    const iconChar = c.done ? '\u2713' : '';
+    const iconChar = c.done ? '✓' : '';
     const actionBtn = c.action ? ' <button onclick="' + c.action + '()" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; margin-left:8px;">Go</button>' : '';
     assemblyHtml += '<div class="checklist-item">' +
       '<div class="check-icon ' + iconClass + '">' + iconChar + '</div>' +
@@ -3293,47 +2914,6 @@ function renderDetail(data) {
   });
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
-
-  // Invoice Reclass Summary Panel
-  const reclassSummary = data.reclass_summary || [];
-  if (reclassSummary.length > 0) {
-    document.getElementById('reclassSummarySection').style.display = '';
-    const totalDollars = reclassSummary.reduce((s, r) => s + r.amount, 0);
-    const glsAffected = new Set();
-    reclassSummary.forEach(r => { glsAffected.add(r.from_gl); glsAffected.add(r.to_gl); });
-
-    document.getElementById('reclassSummaryBadge').textContent = reclassSummary.length + ' invoice' + (reclassSummary.length !== 1 ? 's' : '') + ' · ' + fmt(totalDollars) + ' moved';
-
-    document.getElementById('reclassSummaryStats').innerHTML =
-      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
-        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + reclassSummary.length + '</div>' +
-        '<div style="font-size:11px; color:var(--gray-500);">Invoices Reclassed</div></div>' +
-      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
-        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + fmt(totalDollars) + '</div>' +
-        '<div style="font-size:11px; color:var(--gray-500);">Total Dollars Moved</div></div>' +
-      '<div style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:12px; text-align:center;">' +
-        '<div style="font-size:22px; font-weight:700; color:var(--blue);">' + glsAffected.size + '</div>' +
-        '<div style="font-size:11px; color:var(--gray-500);">GL Lines Affected</div></div>';
-
-    const tbody = document.getElementById('reclassSummaryTableBody');
-    tbody.innerHTML = '';
-    // Find GL descriptions from budget lines
-    const glDescMap = {};
-    lines.forEach(l => { if (l.gl_code) glDescMap[l.gl_code] = l.description || ''; });
-    reclassSummary.forEach(r => {
-      const tr = document.createElement('tr');
-      tr.style.borderBottom = '1px solid var(--gray-100)';
-      tr.innerHTML =
-        '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">#' + (r.invoice_num || '—') + '</td>' +
-        '<td style="padding:6px 10px;">' + (r.vendor || '—') + '</td>' +
-        '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(r.amount) + '</td>' +
-        '<td style="padding:6px 10px; color:var(--red);">' + r.from_gl + ' <span style="font-size:10px; color:var(--gray-400);">' + (glDescMap[r.from_gl] || '') + '</span></td>' +
-        '<td style="padding:6px 10px; color:var(--green);">' + r.to_gl + ' <span style="font-size:10px; color:var(--gray-400);">' + (glDescMap[r.to_gl] || '') + '</span></td>' +
-        '<td style="padding:6px 10px; font-size:11px;">' + (r.reclassed_by || 'PM') + '</td>' +
-        '<td style="padding:6px 10px; font-size:11px; color:var(--gray-500);">' + (r.notes || '') + '</td>';
-      tbody.appendChild(tr);
-    });
-  }
 
   // Historical Actuals Panel (from audited financials)
   const auditYears = data.audit.exists ? data.audit.years : {};
@@ -3379,7 +2959,7 @@ function renderDetail(data) {
   if (reclassLines.length > 0) {
     document.getElementById('reclassSuggestions').style.display = '';
     const totalReclass = reclassLines.reduce((s, l) => s + Math.abs(l.reclass_amount || 0), 0);
-    document.getElementById('reclassBadge').textContent = reclassLines.length + ' items \u00b7 ' + fmt(totalReclass);
+    document.getElementById('reclassBadge').textContent = reclassLines.length + ' items · ' + fmt(totalReclass);
     const reclassBody = document.getElementById('reclassBody');
     reclassBody.innerHTML = '';
     reclassLines.forEach(l => {
@@ -3400,7 +2980,6 @@ function renderDetail(data) {
   // Budget Workbook Tabs
   allSheets = data.sheets || {};  // global for Budget Summary access
   window._reTaxesData = data.re_taxes || null;  // RE Taxes tab data for co-ops
-  allAssumptions = data.assumptions || {};  // global for Budget Summary access
   const sheets = allSheets;
   const sheetOrder = data.sheet_order || Object.keys(sheets);
   const tabsDiv = document.getElementById('sheetTabs');
@@ -3458,8 +3037,6 @@ function renderDetail(data) {
 
     renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
   }
-
-  // Maintenance proof upload moved to /files repository
 }
 
 // ── Checklist Action Helpers ──
@@ -3524,21 +3101,6 @@ function assumAutoSave(section, field, value) {
     }
     setTimeout(() => { indicator.textContent = ''; }, 3000);
   }, 800);
-}
-
-function recalcPayrollEstimate() {
-  const hc = parseFloat(document.getElementById('ps_headcount')?.value) || 0;
-  const rate = parseFloat(document.getElementById('ps_avg_rate')?.value) || 0;
-  const hrs = parseFloat(document.getElementById('ps_hrs_wk')?.value) || 40;
-  const wks = parseFloat(document.getElementById('ps_wks_yr')?.value) || 52;
-  const benPct = (parseFloat(document.getElementById('ps_ben_pct')?.value) || 0) / 100;
-  const baseWages = hc * rate * hrs * wks;
-  const benefits = baseWages * benPct;
-  const total = baseWages + benefits;
-  const el = id => document.getElementById(id);
-  if (el('ps_base_wages')) el('ps_base_wages').textContent = fmt(baseWages);
-  if (el('ps_benefits')) el('ps_benefits').textContent = fmt(benefits);
-  if (el('ps_total')) el('ps_total').textContent = fmt(total);
 }
 
 function renderAssumptionsTab(assumptions, contentDiv) {
@@ -3627,65 +3189,6 @@ function renderAssumptionsTab(assumptions, contentDiv) {
     item('Rate Increase %', field('water_sewer','rate_increase', pctVal(ws.rate_increase), pctStyle, '%'))
   );
 
-  // Payroll Staffing (assumptions-driven estimator)
-  const ps = a.payroll_staffing || {};
-  const psHeadcount = numVal(ps.headcount) || 0;
-  const psAvgRate = numVal(ps.avg_hourly_rate) || 0;
-  const psHrsWk = numVal(ps.hours_per_week) || 40;
-  const psWeeksYr = numVal(ps.weeks_per_year) || 52;
-  const psBenefitsPct = ps.benefits_pct !== undefined ? ps.benefits_pct : 0;
-  const psBaseWages = psHeadcount * psAvgRate * psHrsWk * psWeeksYr;
-  const psBenefits = psBaseWages * psBenefitsPct;
-  const psTotalPayroll = psBaseWages + psBenefits;
-
-  html += '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:20px 24px; margin-bottom:16px;">' +
-    '<h3 style="font-size:16px; color:var(--blue); margin-bottom:4px; font-weight:600;">Payroll Staffing Estimator</h3>' +
-    '<p style="font-size:11px; color:var(--gray-400); margin-bottom:16px;">Estimates total payroll from staffing inputs. Use as a reference when budgeting payroll GL lines.</p>' +
-    '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">' +
-    item('Union Contract', '<input type="text" value="' + (ps.union_contract || '32BJ') + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'union_contract\', this.value); recalcPayrollEstimate();">') +
-    item('Total Headcount', '<input type="number" step="1" id="ps_headcount" value="' + psHeadcount + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'headcount\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
-    item('Avg Hourly Rate ($)', '<input type="number" step="0.01" id="ps_avg_rate" value="' + psAvgRate + '" style="' + dollarStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'avg_hourly_rate\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
-    item('Hours / Week', '<input type="number" step="1" id="ps_hrs_wk" value="' + psHrsWk + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'hours_per_week\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
-    item('Weeks / Year', '<input type="number" step="1" id="ps_wks_yr" value="' + psWeeksYr + '" style="' + inputStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'weeks_per_year\', parseFloat(this.value)||0); recalcPayrollEstimate();">') +
-    item('Benefits %', '<input type="number" step="0.1" id="ps_ben_pct" value="' + (psBenefitsPct * 100).toFixed(1) + '" style="' + pctStyle + '" onchange="assumAutoSave(\'payroll_staffing\',\'benefits_pct\', this.value/100); recalcPayrollEstimate();">%') +
-    '</div>' +
-    '<div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--gray-200); display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center;">' +
-    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Base Wages</div><div id="ps_base_wages" style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(psBaseWages) + '</div></div>' +
-    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Benefits</div><div id="ps_benefits" style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(psBenefits) + '</div></div>' +
-    '<div><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Est. Total Payroll</div><div id="ps_total" style="font-size:20px; font-weight:700; color:var(--primary); margin-top:4px;">' + fmt(psTotalPayroll) + '</div></div>' +
-    '</div></div>';
-
-  // Non-Operating Items
-  const no = a.non_operating || {};
-  const noI = no.income || {};
-  const noE = no.expense || {};
-
-  function noField(subSection, key, val) {
-    return '<input type="number" step="1" value="' + (val || 0) + '" style="' + dollarStyle + '" ' +
-      'onchange="assumAutoSave(\'non_operating\', \'' + subSection + '\', Object.assign({}, (allAssumptions.non_operating||{}).' + subSection + ' || {}, {' + key + ': parseFloat(this.value)||0})); allAssumptions.non_operating = allAssumptions.non_operating || {}; allAssumptions.non_operating.' + subSection + ' = allAssumptions.non_operating.' + subSection + ' || {}; allAssumptions.non_operating.' + subSection + '.' + key + ' = parseFloat(this.value)||0;">';
-  }
-
-  html += section('Non-Operating Income',
-    item('Capital Assessment', noField('income','capital_assessment', noI.capital_assessment)) +
-    item('Special Assessment', noField('income','special_assessment', noI.special_assessment)) +
-    item('Interest Income', noField('income','interest_income', noI.interest_income)) +
-    item('Insurance Proceeds', noField('income','insurance_proceeds', noI.insurance_proceeds)) +
-    item('Other Non-Op Income', noField('income','other_non_op_income', noI.other_non_op_income))
-  );
-
-  html += section('Non-Operating Expenses',
-    item('Capital Expenses', noField('expense','capital_expenses', noE.capital_expenses)) +
-    item('Cert Fee (Tax Reduction)', noField('expense','cert_fee_tax_reduction', noE.cert_fee_tax_reduction)) +
-    item('Other Non-Op Expense', noField('expense','other_non_op_expense', noE.other_non_op_expense))
-  );
-
-  // Capital Reserve
-  const cr = a.capital_reserve || {};
-  html += section('Capital Reserve',
-    item('Reserve Balance ($)', '<input type="number" step="1" value="' + numVal(cr.reserve_balance) + '" style="' + dollarStyle + '" onchange="assumAutoSave(\'capital_reserve\',\'reserve_balance\', parseFloat(this.value)||0)">') +
-    item('Reserve Note', '<input type="text" value="' + (cr.note || '') + '" style="' + inputStyle + ' width:200px;" onchange="assumAutoSave(\'capital_reserve\',\'note\', this.value)">')
-  );
-
   html += '</div>';
   contentDiv.innerHTML = html;
 }
@@ -3768,286 +3271,23 @@ function cellBlur(el) {
   faLineChanged(gl, field, raw);
 }
 
-// Track the currently selected formula cell
-let _activeFxCell = null;
-let _formulaBarOriginal = '';  // track original value to detect changes
-
-// ── Safe math evaluator (no eval) ──────────────────────────────────────
-function safeEvalFormula(expr) {
-  // Strip leading = sign
-  let s = expr.trim();
-  if (s.startsWith('=')) s = s.substring(1);
-  // Handle percentage: 4% → 0.04
-  s = s.replace(/([\d.]+)\s*%/g, '($1/100)');
-  // Only allow: digits, operators, parens, decimal, whitespace
-  if (!/^[\d\s+\-*\/().]+$/.test(s)) return null;
-  try {
-    const result = new Function('return (' + s + ')')();
-    if (typeof result !== 'number' || !isFinite(result)) return null;
-    return result;
-  } catch (e) { return null; }
-}
-
-// ── Show/hide formula bar buttons ──────────────────────────────────────
-function _showFormulaButtons(show, hasFormula) {
-  const ids = ['faFormulaPreview','faFormulaAccept','faFormulaCancel'];
-  ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = show ? 'inline-block' : 'none'; });
-  const clearBtn = document.getElementById('faFormulaClear');
-  if (clearBtn) clearBtn.style.display = (show && hasFormula) ? 'inline-block' : 'none';
-}
-
-// ── fxCellFocus: populate the formula bar when clicking a formula cell ─
-function fxCellFocus(el) {
-  _activeFxCell = el;
-  const bar = document.getElementById('faFormulaBar');
-  const label = document.getElementById('faFormulaLabel');
-  if (!bar || !label) return;
-
-  const field = el.dataset.field;
-  const fieldLabel = field === 'proposed_budget' ? 'Proposed Budget' :
-                     field === 'estimate_override' ? 'Estimate' :
-                     field === 'forecast_override' ? 'Forecast' : field;
-  label.textContent = el.dataset.gl + ' / ' + fieldLabel;
-  label.style.display = 'inline';
-  bar.style.display = 'block';
-
-  // All formula cells show =formula with live preview and buttons
-  if (field === 'proposed_budget' && el.dataset.proposedFormula) {
-    bar.value = el.dataset.proposedFormula;
-  } else if (el.dataset.override === 'true') {
-    bar.value = el.dataset.raw || '';
-  } else {
-    bar.value = el.dataset.formula || '';
-  }
-  _formulaBarOriginal = bar.value;
-  const hasStoredFormula = !!(el.dataset.proposedFormula);
-  _showFormulaButtons(true, hasStoredFormula);
-  formulaBarPreview();
-
-  // Highlight the active cell
-  el.style.border = '2px solid var(--blue)';
-  el.style.borderRadius = '4px';
-  el.style.background = '#ecfdf5';
-
-  // Focus the formula bar for editing — do NOT select all (user needs to edit within formula)
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
-}
-
-// fxCellBlur: just restore visual styling (editing now happens via Accept)
+// fxCellBlur: user finished editing a formula cell
+// If the value looks like a number (user typed an override), use that number.
+// If it still matches the formula text, keep the calculated value.
 function fxCellBlur(el) {
-  // Only restore styling if this cell is no longer the active formula cell
-  // (clicking formula bar would blur the cell, but we don't want to deselect)
-  setTimeout(() => {
-    const bar = document.getElementById('faFormulaBar');
-    if (document.activeElement === bar) return;  // user clicked into formula bar
-    if (_activeFxCell === el) {
-      el.style.border = '';
-      el.style.borderRadius = '';
-      el.style.background = '';
-    }
-  }, 100);
-}
-
-// ── Formula bar live preview ───────────────────────────────────────────
-function formulaBarPreview() {
-  const bar = document.getElementById('faFormulaBar');
-  const preview = document.getElementById('faFormulaPreview');
-  if (!bar || !preview || !_activeFxCell) return;
-
-  const typed = bar.value.trim();
-  if (!typed) {
-    preview.style.display = 'none';
-    // Keep buttons visible if cell had a formula (so user can Clear)
-    const hadFormula = !!_activeFxCell.dataset.proposedFormula;
-    _showFormulaButtons(hadFormula, hadFormula);
-    return;
-  }
-
-  // Always evaluate and show live preview for any content in the bar
-  const result = safeEvalFormula(typed);
-  const isChanged = typed !== _formulaBarOriginal;
-  if (result !== null) {
-    preview.textContent = '= ' + fmt(result);
-    preview.style.color = isChanged ? '#059669' : 'var(--green)';  // darker green when changed
-  } else if (/^[\d$,.\-\s]+$/.test(typed)) {
-    const num = parseDollar(typed);
-    preview.textContent = '= ' + fmt(num);
-    preview.style.color = isChanged ? '#2563eb' : 'var(--blue)';
-  } else {
-    preview.textContent = 'Invalid formula';
-    preview.style.color = 'var(--red)';
-  }
-  preview.style.display = 'inline-block';
-
-  // Always show Accept/Cancel when there's content; show Clear if cell has stored formula
-  const hasStoredFormula = !!_activeFxCell.dataset.proposedFormula;
-  _showFormulaButtons(true, hasStoredFormula || isChanged);
-}
-
-// ── Accept: commit formula/value to cell and save ──────────────────────
-function formulaBarAccept() {
-  const bar = document.getElementById('faFormulaBar');
-  if (!bar || !_activeFxCell) return;
-
-  const el = _activeFxCell;
-  const typed = bar.value.trim();
   const gl = el.dataset.gl, field = el.dataset.field;
-
-  if (field === 'proposed_budget') {
-    // Proposed Budget: support formulas
-    const formulaResult = safeEvalFormula(typed);
-    if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
-      // It's a formula — store both the result and the formula
-      const rounded = Math.round(formulaResult);
-      el.dataset.raw = rounded;
-      el.dataset.proposedFormula = typed.startsWith('=') ? typed : '=' + typed;
-      el.dataset.override = 'true';
-      el.value = fmt(formulaResult);
-      // Update badge to show formula indicator
-      const badge = el.parentElement.querySelector('.fa-fx');
-      if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
-      faAutoSave(gl, 'proposed_budget', rounded);
-      faAutoSave(gl, 'proposed_formula', el.dataset.proposedFormula);
-      faUpdateSheetTotals();
-    } else {
-      // Plain number
-      const num = parseDollar(typed);
-      if (!isNaN(num)) {
-        el.dataset.raw = Math.round(num);
-        el.dataset.override = 'true';
-        el.dataset.proposedFormula = '';
-        el.value = fmt(num);
-        const badge = el.parentElement.querySelector('.fa-fx');
-        if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
-        faAutoSave(gl, 'proposed_budget', Math.round(num));
-        faAutoSave(gl, 'proposed_formula', null);
-        faUpdateSheetTotals();
-      }
-    }
+  const typed = el.value.trim();
+  const formula = el.dataset.formula || '';
+  const numericVal = parseDollar(typed);
+  const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
+  if (isNumber) {
+    el.dataset.raw = Math.round(numericVal);
+    el.value = fmt(numericVal);
+    faLineChanged(gl, field, numericVal);
   } else {
-    // Estimate/Forecast override: formula, plain number, or revert
-    const formulaResult = safeEvalFormula(typed);
-    const numericVal = parseDollar(typed);
-    if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
-      // User typed a formula — evaluate it and save the result as override
-      const rounded = Math.round(formulaResult);
-      el.dataset.raw = rounded;
-      el.dataset.override = 'true';
-      el.value = fmt(formulaResult);
-      // Update bar to show the formula still (so they can re-edit)
-      el.dataset.formula = typed.startsWith('=') ? typed : '=' + typed;
-      const badge = el.parentElement.querySelector('.fa-fx');
-      if (badge) { badge.textContent = 'fx✎'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
-      faLineChanged(gl, field, formulaResult);
-      faAutoSave(gl, field, rounded);
-    } else if (typed !== '' && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed)) {
-      el.dataset.raw = Math.round(numericVal);
-      el.dataset.override = 'true';
-      el.value = fmt(numericVal);
-      const badge = el.parentElement.querySelector('.fa-fx');
-      if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
-      faLineChanged(gl, field, numericVal);
-      faAutoSave(gl, field, Math.round(numericVal));
-    } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
-      el.dataset.override = 'false';
-      const badge = el.parentElement.querySelector('.fa-fx');
-      if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
-      faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
-                         field === 'forecast_override' ? '__recalc_forecast' : field, null);
-      faAutoSave(gl, field, null);
-    }
-  }
-
-  // Success feedback: flash the cell green, update bar, hide buttons
-  el.style.border = '2px solid var(--green)';
-  el.style.background = '#ecfdf5';
-  const preview = document.getElementById('faFormulaPreview');
-  if (preview) {
-    preview.textContent = '✓ Accepted';
-    preview.style.color = 'var(--green)';
-    preview.style.display = 'inline-block';
-  }
-  _showFormulaButtons(false, false);
-  // Update _formulaBarOriginal so further edits start from new value
-  _formulaBarOriginal = bar.value.trim();
-  setTimeout(() => {
-    el.style.border = '';
-    el.style.borderRadius = '';
-    el.style.background = '';
-    if (preview) preview.style.display = 'none';
-  }, 1200);
-}
-
-// ── Cancel: revert formula bar to original ─────────────────────────────
-function formulaBarCancel() {
-  const bar = document.getElementById('faFormulaBar');
-  if (bar) bar.value = _formulaBarOriginal;
-  _showFormulaButtons(false, false);
-  const preview = document.getElementById('faFormulaPreview');
-  if (preview) preview.style.display = 'none';
-  if (_activeFxCell) {
-    _activeFxCell.style.border = '';
-    _activeFxCell.style.borderRadius = '';
-    _activeFxCell.style.background = '';
-  }
-}
-
-// ── Clear: remove formula, revert to auto-calc ─────────────────────────
-function formulaBarClear() {
-  if (!_activeFxCell) return;
-  const el = _activeFxCell;
-  const gl = el.dataset.gl, field = el.dataset.field;
-
-  if (field === 'proposed_budget') {
-    el.dataset.proposedFormula = '';
-    el.dataset.override = 'false';
-    const badge = el.parentElement.querySelector('.fa-fx');
-    if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
-    // Revert to auto-calc: forecast × (1 + increase%)
-    faLineChanged(gl, '__recalc_proposed', null);
-    faAutoSave(gl, 'proposed_formula', null);
-  } else {
-    el.dataset.override = 'false';
-    const badge = el.parentElement.querySelector('.fa-fx');
-    if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
+    el.value = fmt(parseFloat(el.dataset.raw) || 0);
     faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
                        field === 'forecast_override' ? '__recalc_forecast' : field, null);
-    faAutoSave(gl, field, null);
-  }
-
-  const bar = document.getElementById('faFormulaBar');
-  if (bar) bar.value = '';
-  _showFormulaButtons(false, false);
-  el.style.border = '';
-  el.style.borderRadius = '';
-  el.style.background = '';
-}
-
-// formulaBarKeydown: Enter = Accept, Escape = Cancel
-function formulaBarKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    formulaBarAccept();
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    formulaBarCancel();
-  }
-}
-
-// fxCellKeydown: Enter/Tab applies, Escape reverts
-function fxCellKeydown(el, e) {
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    e.preventDefault();
-    el.blur(); // triggers fxCellBlur
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    el.value = fmt(parseFloat(el.dataset.raw) || 0);
-    el.readOnly = true;
-    el.style.pointerEvents = 'none';
-    el.style.background = '';
-    el.style.border = '';
-    el.style.borderRadius = '';
   }
 }
 
@@ -4069,10 +3309,9 @@ function faLineChanged(gl, field, value) {
 
   if (field === 'increase_pct') {
     faAutoSave(gl, 'increase_pct', (parseFloat(value) || 0) / 100);
-  } else if (field === '__recalc_estimate' || field === '__recalc_forecast' || field === '__recalc_proposed') {
-    // Recalc triggers — no save needed, just recalculate below
-  } else if (field === 'estimate_override' || field === 'forecast_override') {
-    // Override saved by formulaBarAccept; just recalculate downstream here
+  } else if (field === 'estimate_override' || field === 'forecast_override' ||
+             field === '__recalc_estimate' || field === '__recalc_forecast') {
+    // Formula cells: overrides get saved via proposed; recalcs skip save
   } else if (field && value !== null && value !== undefined) {
     faAutoSave(gl, field, Math.round(parseDollar(value)));
   }
@@ -4080,10 +3319,10 @@ function faLineChanged(gl, field, value) {
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
   if (!row) return;
 
+  const prior = getRaw('pr_' + gl);
   const ytd = getRaw('ytd_' + gl);
   const accrual = getRaw('acc_' + gl);
   const unpaid = getRaw('unp_' + gl);
-  const budget = getRaw('bud_' + gl);
   const incRaw = parseFloat(document.getElementById('inc_' + gl)?.dataset.raw) || 0;
   const incPct = incRaw / 100;
 
@@ -4095,134 +3334,46 @@ function faLineChanged(gl, field, value) {
     forecast = parseFloat(value) || 0;
     estimate = forecast - (ytd + accrual + unpaid);
   } else {
-    if (ytd > 0 && YTD_MONTHS > 0) {
-      estimate = (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+    const base = ytd + accrual + unpaid;
+    if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+      estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
     } else {
-      estimate = 0;
+      estimate = Math.max(prior - base, 0);
     }
     forecast = ytd + accrual + unpaid + estimate;
   }
 
-  // Check if proposed has a user formula — if so, don't auto-recalc it
-  const propEl = document.getElementById('prop_' + gl);
-  const hasUserFormula = propEl && propEl.dataset.proposedFormula;
-  let proposed;
-  if (hasUserFormula && field !== '__recalc_proposed') {
-    // Re-evaluate the stored formula (it doesn't change with forecast)
-    const evalResult = safeEvalFormula(propEl.dataset.proposedFormula);
-    proposed = evalResult !== null ? evalResult : parseFloat(propEl.dataset.raw) || 0;
-  } else {
-    proposed = forecast * (1 + incPct);
-  }
+  const proposed = forecast * (1 + incPct);
 
-  const updateCell = (id, val, newFormula) => {
+  const updateCell = (id, val) => {
     const el = document.getElementById(id);
-    if (el) {
-      el.dataset.raw = Math.round(val);
-      el.value = fmt(val);
-      if (newFormula && el.dataset.override !== 'true') el.dataset.formula = newFormula;
-    }
+    if (el) { el.dataset.raw = Math.round(val); el.value = fmt(val); }
   };
-  // Build updated formula strings (real =formulas matching faGetFormulaTooltip)
-  const estFormula = (ytd > 0 && YTD_MONTHS > 0) ? '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '=0';
-  const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
-  const fcstFormula = '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
-  const propFormula = hasUserFormula && field !== '__recalc_proposed'
-    ? propEl.dataset.proposedFormula
-    : '=(' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + '))*(1+' + incPct.toFixed(4) + ')';
+  if (field !== 'estimate_override') updateCell('est_' + gl, estimate);
+  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast);
+  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed);
 
-  if (field !== 'estimate_override') updateCell('est_' + gl, estimate, estFormula);
-  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, fcstFormula);
-  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed, propFormula);
+  faAutoSave(gl, 'proposed_budget', Math.round(proposed));
 
-  // Only auto-save proposed if there's no user formula (formula saves handled by Accept)
-  if (!hasUserFormula || field === '__recalc_proposed') {
-    faAutoSave(gl, 'proposed_budget', Math.round(proposed));
-  }
-
-  const variance = proposed - forecast;
+  const variance = proposed - prior;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (forecast ? ((proposed / forecast - 1) * 100).toFixed(1) : '0.0') + '%';
-
-  // Recalculate sheet totals from live cell values
-  faUpdateSheetTotals();
-}
-
-function faUpdateSheetTotals() {
-  const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
-
-  function sumGLs(glCodes) {
-    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
-    glCodes.forEach(gl => {
-      const row = document.querySelector('tr[data-gl="' + gl + '"]');
-      if (row && row.style.display === 'none') return;
-      t.ytd += raw('ytd_' + gl);
-      t.accrual += raw('acc_' + gl);
-      t.unpaid += raw('unp_' + gl);
-      t.estimate += raw('est_' + gl);
-      t.forecast += raw('fcst_' + gl);
-      t.budget += raw('bud_' + gl);
-      t.proposed += raw('prop_' + gl);
-    });
-    return t;
-  }
-
-  function updateTotalRow(rowEl, t) {
-    if (!rowEl) return;
-    const v = t.proposed - t.forecast;
-    const p = t.forecast ? (t.proposed / t.forecast - 1) : 0;
-    const cells = rowEl.querySelectorAll('td');
-    if (cells.length >= 11) {
-      cells[1].textContent = fmt(t.ytd);
-      cells[2].textContent = fmt(t.accrual);
-      cells[3].textContent = fmt(t.unpaid);
-      cells[4].textContent = fmt(t.estimate);
-      cells[5].textContent = fmt(t.forecast);
-      cells[6].textContent = fmt(t.budget);
-      cells[7].textContent = '';
-      cells[8].textContent = fmt(t.proposed);
-      cells[9].textContent = fmt(v);
-      cells[9].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-      cells[10].textContent = (p * 100).toFixed(1) + '%';
-    }
-  }
-
-  // Update category subtotal rows
-  const groups = window._catGroupGLs || {};
-  Object.keys(groups).forEach(key => {
-    const subRow = document.getElementById('subtotal_' + key);
-    if (subRow) updateTotalRow(subRow, sumGLs(groups[key]));
-  });
-
-  // Update sheet total row (all visible GL rows)
-  const allGLs = [];
-  document.querySelectorAll('tr[data-gl]').forEach(row => {
-    if (row.style.display !== 'none') allGLs.push(row.dataset.gl);
-  });
-  updateTotalRow(document.getElementById('faSheetTotal'), sumGLs(allGLs));
+  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
 }
 
 let _faSaveTimer = null;
-const _faSavePending = {};  // accumulate fields before debounced save
 function faAutoSave(gl, field, value) {
-  if (!_faSavePending[gl]) _faSavePending[gl] = {};
-  _faSavePending[gl][field] = value;
   clearTimeout(_faSaveTimer);
   _faSaveTimer = setTimeout(async () => {
     const indicator = document.getElementById('faSaveIndicator');
     indicator.textContent = 'Saving...';
-    const lines = [];
-    for (const [glCode, fields] of Object.entries(_faSavePending)) {
-      lines.push(Object.assign({gl_code: glCode}, fields));
-    }
-    // Clear pending
-    for (const k in _faSavePending) delete _faSavePending[k];
+    const lineData = {gl_code: gl};
+    lineData[field] = value;
     await fetch('/api/fa-lines/' + entityCode, {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({lines: lines})
+      body: JSON.stringify({lines: [lineData]})
     });
     indicator.textContent = 'Saved';
     setTimeout(() => { indicator.textContent = ''; }, 2000);
@@ -4240,12 +3391,6 @@ async function dismissReclass(glCode) {
 
 // Category grouping definitions per sheet
 const SHEET_CATEGORIES = {
-  'Income': {
-    groups: [
-      {key: 'recurring', label: 'Recurring Income', match: l => l.gl_code >= '4000' && l.gl_code < '4700'},
-      {key: 'non_recurring', label: 'Non-Recurring Income', match: l => l.gl_code >= '4700' && l.gl_code < '5000'}
-    ]
-  },
   'Repairs & Supplies': {
     groups: [
       {key: 'supplies', label: 'Supplies', match: l => l.category === 'supplies'},
@@ -4279,16 +3424,16 @@ const SUMMARY_ROWS = [
 ];
 
 function faComputeEstimate(l) {
-  // Use override if FA set one
-  if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
   const ytd = l.ytd_actual || 0;
-  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
-  return 0;
+  const accrual = l.accrual_adj || 0;
+  const unpaid = l.unpaid_bills || 0;
+  const prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  if (base >= prior && prior > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return Math.max(prior - base, 0);
 }
 
 function faComputeForecast(l) {
-  // Use override if FA set one
-  if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
 
@@ -4296,25 +3441,25 @@ function faGetFormulaTooltip(l, field) {
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
+  const prior = l.prior_year || 0;
   const base = ytd + accrual + unpaid;
   const estimate = faComputeEstimate(l);
   const forecast = faComputeForecast(l);
   const incPct = l.increase_pct || 0;
 
   if (field === 'estimate') {
-    if (ytd > 0 && YTD_MONTHS > 0) return '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
-    return '=0';
+    if (base >= prior && prior > 0) {
+      return 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
+    } else {
+      return 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
+    }
   }
   if (field === 'forecast') {
-    // Use exact estimate expression to avoid rounding mismatch
-    const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
-    return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
+    return fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
   }
   if (field === 'proposed') {
-    if (l.proposed_formula) return l.proposed_formula;
-    // Use exact forecast expression to avoid rounding
-    const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
-    return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
+    const proposed = l.proposed_budget || (forecast * (1 + incPct));
+    return fmt(forecast) + ' × (1 + ' + (incPct * 100).toFixed(1) + '%) = ' + fmt(proposed);
   }
   return '';
 }
@@ -4347,229 +3492,7 @@ function renderSheet(sheetName, sheetLines, tabEl) {
   setTimeout(faUpdateZeroToggle, 50);
 }
 
-function renderBudgetSummary(contentDiv) {
-  const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
-  let html = '<div style="margin-bottom:8px; display:flex; align-items:center; gap:12px;">' +
-    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span></div>';
-  html += '<table style="width:100%; border-collapse:collapse; font-size:14px;">' +
-    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-    '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
-    '<th style="' + thStyle + '">Current<br>Budget</th>' +
-    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
-    '<th style="' + thStyle + '">$ V.<br>Forecast</th>' +
-    '<th style="' + thStyle + '">%<br>Change</th>' +
-    '</tr></thead><tbody>';
-
-  let totalIncome = {budget:0, proposed:0, forecast:0};
-  let totalExpense = {budget:0, proposed:0, forecast:0};
-
-  SUMMARY_ROWS.forEach((sr, idx) => {
-    const sheetLines = allSheets[sr.sheet] || [];
-    let lines = sheetLines;
-    if (sr.rowRange) {
-      lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
-    }
-    let budget = 0, proposed = 0, fcTotal = 0;
-    lines.forEach(l => {
-      budget += l.current_budget || 0;
-      const forecast = faComputeForecast(l);
-      fcTotal += forecast;
-      proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    });
-
-    const variance = proposed - fcTotal;
-    const pctChange = fcTotal ? (proposed / fcTotal - 1) : 0;
-    const varColor = sr.type === 'income'
-      ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
-      : (variance >= 0 ? 'var(--red)' : 'var(--green)');
-
-    if (sr.type === 'income') { totalIncome.budget += budget; totalIncome.proposed += proposed; totalIncome.forecast += fcTotal; }
-    else { totalExpense.budget += budget; totalExpense.proposed += proposed; totalExpense.forecast += fcTotal; }
-
-    // Bold for income row, normal for expense detail
-    const isIncomeRow = idx === 0;
-    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-50, #eff6ff);' : '';
-    html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
-      '<td style="padding:10px 12px;">' + sr.label + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
-
-    // After last expense row, add totals
-    if (idx === SUMMARY_ROWS.length - 1) {
-      const teBudget = totalExpense.budget, teProposed = totalExpense.proposed, teForecast = totalExpense.forecast;
-      const teVar = teProposed - teForecast;
-      const tePct = teForecast ? (teProposed / teForecast - 1) : 0;
-      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
-
-      // NOI
-      const noiForecast = totalIncome.forecast - teForecast;
-      const noiProposed = totalIncome.proposed - teProposed;
-      const noiVar = noiProposed - noiForecast;
-      const noiPct = noiForecast ? (noiProposed / noiForecast - 1) : 0;
-      const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
-      html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(totalIncome.budget - teBudget) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + (noiPct * 100).toFixed(1) + '%</td></tr>';
-    }
-  });
-
-  html += '</tbody></table>';
-
-  // ── Deficit Calculator + Maintenance Increase ─────────────────────
-  const deficit = totalIncome.proposed - totalExpense.proposed;
-  const isDeficit = deficit < 0;
-  const deficitColor = isDeficit ? 'var(--red)' : 'var(--green)';
-  const deficitLabel = isDeficit ? '<Deficit>' : 'Surplus';
-  const maintIncrease = (isDeficit && totalIncome.proposed > 0)
-    ? (Math.abs(deficit) / totalIncome.proposed * 100).toFixed(2)
-    : '0.00';
-
-  html += '<div style="margin-top:24px; padding:20px; background:var(--gray-50, #f9fafb); border:1px solid var(--gray-200); border-radius:8px;">' +
-    '<div style="font-size:14px; font-weight:600; margin-bottom:12px; color:var(--gray-700);">Operating Surplus / ' + deficitLabel + '</div>' +
-    '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; font-size:14px;">' +
-    '<div style="color:var(--gray-500);">Total Income (Proposed)</div><div style="text-align:right; font-weight:500;">' + fmt(totalIncome.proposed) + '</div>' +
-    '<div style="color:var(--gray-500);">Total Expenses (Proposed)</div><div style="text-align:right; font-weight:500;">' + fmt(totalExpense.proposed) + '</div>' +
-    '<div style="border-top:1px solid var(--gray-300); padding-top:8px; font-weight:600;">Net Operating</div>' +
-    '<div style="border-top:1px solid var(--gray-300); padding-top:8px; text-align:right; font-weight:700; font-size:16px; color:' + deficitColor + ';">' + fmt(deficit) + '</div>' +
-    '</div>';
-
-  if (isDeficit) {
-    html += '<div style="margin-top:16px; padding-top:16px; border-top:1px dashed var(--gray-300);">' +
-      '<div style="font-size:13px; font-weight:600; margin-bottom:8px; color:var(--gray-600);">Maintenance Increase to Cover Deficit</div>' +
-      '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px;">' +
-      '<div style="color:var(--gray-500);">Current Proposed Income</div><div style="text-align:right;">' + fmt(totalIncome.proposed) + '</div>' +
-      '<div style="color:var(--gray-500);">Deficit Amount</div><div style="text-align:right; color:var(--red);">' + fmt(Math.abs(deficit)) + '</div>' +
-      '<div style="font-weight:600; color:var(--orange, #d97706);">Required Increase</div><div style="text-align:right; font-weight:700; font-size:15px; color:var(--orange, #d97706);">' + maintIncrease + '%</div>' +
-      '</div></div>';
-  }
-
-  html += '</div>';
-
-  // ── Non-Operating Income / Expense ────────────────────────────────
-  const nonOp = allAssumptions.non_operating || {};
-  const noIncome = nonOp.income || {};
-  const noExpense = nonOp.expense || {};
-  const noIncomeItems = [
-    {key: 'capital_assessment', label: 'Capital Assessment'},
-    {key: 'special_assessment', label: 'Special Assessment'},
-    {key: 'interest_income', label: 'Interest Income'},
-    {key: 'insurance_proceeds', label: 'Insurance Proceeds'},
-    {key: 'other_non_op_income', label: 'Other Non-Op Income'}
-  ];
-  const noExpenseItems = [
-    {key: 'capital_expenses', label: 'Capital Expenses'},
-    {key: 'cert_fee_tax_reduction', label: 'Cert Fee for Tax Reduction'},
-    {key: 'other_non_op_expense', label: 'Other Non-Op Expense'}
-  ];
-
-  let totalNOI = 0, totalNOE = 0;
-  noIncomeItems.forEach(i => { totalNOI += parseFloat(noIncome[i.key] || 0); });
-  noExpenseItems.forEach(i => { totalNOE += parseFloat(noExpense[i.key] || 0); });
-
-  if (totalNOI > 0 || totalNOE > 0) {
-    html += '<div style="margin-top:24px; padding:20px; background:white; border:1px solid var(--gray-200); border-radius:8px;">' +
-      '<div style="font-size:14px; font-weight:600; margin-bottom:12px; color:var(--gray-700);">Non-Operating Items</div>';
-
-    if (totalNOI > 0) {
-      html += '<div style="font-size:12px; font-weight:600; color:var(--green); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Non-Operating Income</div>' +
-        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px; margin-bottom:12px;">';
-      noIncomeItems.forEach(i => {
-        const v = parseFloat(noIncome[i.key] || 0);
-        if (v > 0) html += '<div style="color:var(--gray-500);">' + i.label + '</div><div style="text-align:right;">' + fmt(v) + '</div>';
-      });
-      html += '<div style="font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">Total Non-Op Income</div>' +
-        '<div style="text-align:right; font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">' + fmt(totalNOI) + '</div></div>';
-    }
-
-    if (totalNOE > 0) {
-      html += '<div style="font-size:12px; font-weight:600; color:var(--red); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Non-Operating Expense</div>' +
-        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:13px; margin-bottom:12px;">';
-      noExpenseItems.forEach(i => {
-        const v = parseFloat(noExpense[i.key] || 0);
-        if (v > 0) html += '<div style="color:var(--gray-500);">' + i.label + '</div><div style="text-align:right;">' + fmt(v) + '</div>';
-      });
-      html += '<div style="font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">Total Non-Op Expense</div>' +
-        '<div style="text-align:right; font-weight:600; border-top:1px solid var(--gray-200); padding-top:4px;">' + fmt(totalNOE) + '</div></div>';
-    }
-
-    // Net after non-operating
-    const netAfterNonOp = deficit + totalNOI - totalNOE;
-    const netColor = netAfterNonOp >= 0 ? 'var(--green)' : 'var(--red)';
-    html += '<div style="border-top:2px solid var(--gray-300); padding-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:14px;">' +
-      '<div style="font-weight:700;">Net After Non-Operating</div>' +
-      '<div style="text-align:right; font-weight:700; font-size:16px; color:' + netColor + ';">' + fmt(netAfterNonOp) + '</div></div>';
-
-    html += '</div>';
-  }
-
-  // ── Capital Budget + Reserve Tracker ──────────────────────────────
-  const reserveBal = parseFloat((allAssumptions.capital_reserve || {}).reserve_balance || 0);
-  // Find capital GL lines (7xxx series) across all sheets
-  const capLines = [];
-  Object.keys(allSheets).forEach(sn => {
-    (allSheets[sn] || []).forEach(l => {
-      if (l.gl_code && l.gl_code.startsWith('7')) capLines.push(l);
-    });
-  });
-  const capExpFromNonOp = parseFloat((nonOp.expense || {}).capital_expenses || 0);
-  const totalCapFromLines = capLines.reduce((s, l) => s + (l.proposed_budget || faComputeForecast(l) * (1 + (l.increase_pct || 0))), 0);
-  const totalCapSpend = totalCapFromLines > 0 ? totalCapFromLines : capExpFromNonOp;
-
-  if (reserveBal > 0 || totalCapSpend > 0 || capLines.length > 0) {
-    const remaining = reserveBal - totalCapSpend;
-    const utilizationPct = reserveBal > 0 ? Math.min(100, (totalCapSpend / reserveBal * 100)) : 0;
-    const barColor = utilizationPct > 80 ? 'var(--red)' : utilizationPct > 50 ? 'var(--orange, #d97706)' : 'var(--green)';
-
-    html += '<div style="margin-top:24px; padding:20px; background:white; border:1px solid var(--gray-200); border-radius:8px;">' +
-      '<div style="font-size:14px; font-weight:600; margin-bottom:16px; color:var(--gray-700);">Capital Budget</div>';
-
-    // Reserve summary
-    if (reserveBal > 0) {
-      html += '<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center; margin-bottom:16px;">' +
-        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Reserve Balance</div><div style="font-size:18px; font-weight:700; color:var(--gray-700); margin-top:4px;">' + fmt(reserveBal) + '</div></div>' +
-        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Planned Spend</div><div style="font-size:18px; font-weight:700; color:var(--red); margin-top:4px;">' + fmt(totalCapSpend) + '</div></div>' +
-        '<div style="background:var(--gray-50); padding:12px; border-radius:6px;"><div style="font-size:11px; color:var(--gray-500); text-transform:uppercase;">Remaining</div><div style="font-size:18px; font-weight:700; color:' + (remaining >= 0 ? 'var(--green)' : 'var(--red)') + '; margin-top:4px;">' + fmt(remaining) + '</div></div></div>';
-
-      // Utilization bar
-      html += '<div style="margin-bottom:16px;"><div style="display:flex; justify-content:space-between; font-size:11px; color:var(--gray-500); margin-bottom:4px;"><span>Reserve Utilization</span><span>' + utilizationPct.toFixed(0) + '%</span></div>' +
-        '<div style="background:var(--gray-200); border-radius:4px; height:8px; overflow:hidden;"><div style="background:' + barColor + '; height:100%; width:' + utilizationPct.toFixed(0) + '%; border-radius:4px; transition:width 0.3s;"></div></div></div>';
-    }
-
-    // Capital line items table
-    if (capLines.length > 0) {
-      html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
-        '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-        '<th style="text-align:left; padding:8px;">GL Code</th><th style="text-align:left; padding:8px;">Description</th>' +
-        '<th style="text-align:right; padding:8px;">YTD Actual</th><th style="text-align:right; padding:8px;">Proposed</th></tr></thead><tbody>';
-      let capTotal = 0;
-      capLines.forEach(l => {
-        const proposed = l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0)));
-        capTotal += proposed;
-        html += '<tr style="border-bottom:1px solid var(--gray-100);"><td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + '</td>' +
-          '<td style="padding:6px 8px;">' + l.description + '</td>' +
-          '<td style="text-align:right; padding:6px 8px;">' + fmt(l.ytd_actual || 0) + '</td>' +
-          '<td style="text-align:right; padding:6px 8px;">' + fmt(proposed) + '</td></tr>';
-      });
-      html += '<tr style="font-weight:700; background:var(--gray-100);"><td colspan="2" style="padding:8px;">Total Capital</td>' +
-        '<td></td><td style="text-align:right; padding:8px;">' + fmt(capTotal) + '</td></tr>';
-      html += '</tbody></table>';
-    }
-
-    html += '</div>';
-  }
-
-  contentDiv.innerHTML = html;
-}
-
-// ── RE Taxes Tab — Custom Calculation Layout ──────────────────────────────────────────
+// ── RE Taxes Tab — Custom Calculation Layout ──────────────────────────────
 function renderRETaxesTab(contentDiv) {
   const reTaxes = window._reTaxesData;
   if (!reTaxes) {
@@ -4579,148 +3502,129 @@ function renderRETaxesTab(contentDiv) {
   const fmt = v => '$' + Math.round(v).toLocaleString();
   const pctFmt = v => (v * 100).toFixed(2) + '%';
   const rateFmt = v => (v * 100).toFixed(4) + '%';
-  const inputStyle = 'background:var(--blue-light,#eff6ff); color:var(--blue,#1a56db); font-weight:600; text-align:right; padding:7px 10px; border:1.5px solid var(--gray-200,#e5e7eb); border-radius:6px; width:140px; font-size:13px; outline:none; transition:border-color 0.15s;';
-  const outputStyle = 'font-weight:600; text-align:right; padding:8px 12px; color:var(--gray-700,#374151); font-size:14px;';
-  const labelStyle = 'padding:10px 16px; font-size:13px; color:var(--gray-700,#374151);';
-  const noteStyle = 'padding:8px 12px; font-size:12px; color:var(--gray-400,#9ca3af);';
-  const sectionStyle = 'padding:10px 16px; font-size:12px; font-weight:700; color:var(--blue,#1a56db); text-transform:uppercase; letter-spacing:0.5px; background:var(--blue-light,#eff6ff); border-top:1px solid var(--gray-200,#e5e7eb);';
-  const subHeaderStyle = 'background:var(--gray-50,#f9fafb); padding:8px 16px; font-weight:600; font-size:12px; color:var(--gray-500,#6b7280);';
+  const inputStyle = 'background:#dce6f1; color:#0000ff; font-weight:600; text-align:right; padding:6px 10px; border:1px solid #b0c4de; border-radius:4px; width:140px;';
+  const outputStyle = 'background:#e2efda; color:#000; font-weight:600; text-align:right; padding:8px 12px;';
+  const labelStyle = 'padding:8px 12px; font-size:14px;';
+  const noteStyle = 'padding:8px 12px; font-size:12px; color:#808080; font-style:italic;';
+  const headerStyle = 'background:#1f4e79; color:#fff; padding:10px 12px; font-weight:700; font-size:13px;';
+  const subHeaderStyle = 'background:#f2f2f2; padding:8px 12px; font-weight:600; font-size:13px;';
 
   const d = reTaxes;
   const ex = d.exemptions || {};
 
   let html = `
   <div style="max-width:900px; margin:0 auto;">
-    <!-- Header -->
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
       <div>
-        <div style="font-size:15px; font-weight:700; color:var(--gray-700,#374151);">Real Estate Tax Calculation</div>
-        <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:4px;">BBL: ${d.bbl || 'N/A'} &nbsp;&middot;&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;&middot;&nbsp; Source: ${d.source || 'N/A'}</div>
+        <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
+        <div style="font-size:13px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} &nbsp;|&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;|&nbsp; Source: ${d.source || 'N/A'}</div>
       </div>
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <span id="dofRefreshTimestamp" style="font-size:11px; color:var(--gray-400,#9ca3af);"></span>
-        <button onclick="refreshDOFData()" style="padding:7px 14px; background:white; color:var(--blue,#1a56db); border:1.5px solid var(--blue,#1a56db); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:background 0.15s;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button onclick="refreshDOFData()" style="padding:8px 16px; background:var(--primary); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">
           ↻ Refresh from NYC DOF
         </button>
-        <a id="dofVerifyLink" href="#" target="_blank" rel="noopener" style="display:inline-flex; align-items:center; gap:5px; padding:7px 14px; background:var(--gray-50,#f9fafb); color:var(--gray-600,#4b5563); border:1.5px solid var(--gray-300,#d1d5db); border-radius:6px; text-decoration:none; font-size:12px; font-weight:600; transition:background 0.15s, border-color 0.15s;" onmouseover="this.style.background='#fff'; this.style.borderColor='var(--blue,#1a56db)'; this.style.color='var(--blue,#1a56db)';" onmouseout="this.style.background='var(--gray-50,#f9fafb)'; this.style.borderColor='var(--gray-300,#d1d5db)'; this.style.color='var(--gray-600,#4b5563)';">
-          <span style="font-size:14px;">↗</span> Verify on DOF Site
+        <a href="https://propertyinformationportal.nyc.gov/parcels/parcel/${(d.bbl || '').replace(/-/g, '')}" target="_blank" rel="noopener"
+           style="padding:8px 16px; background:#f59e0b; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; text-decoration:none; font-weight:500;">
+          Verify on DOF ↗
         </a>
       </div>
     </div>
 
-    <!-- Tax Calculation Card -->
-    <div style="background:white; border:1px solid var(--gray-200,#e5e7eb); border-radius:10px; overflow:hidden; margin-bottom:16px;">
-      <div style="${sectionStyle}; border-top:none;">Tax Calculation</div>
+    <table style="width:100%; border-collapse:collapse; font-size:14px; border:1px solid #ddd;">
+      <colgroup>
+        <col style="width:35%">
+        <col style="width:20%">
+        <col style="width:25%">
+        <col style="width:20%">
+      </colgroup>
 
-      <table style="width:100%; border-collapse:collapse; font-size:14px;">
-        <colgroup>
-          <col style="width:35%">
-          <col style="width:20%">
-          <col style="width:25%">
-          <col style="width:20%">
-        </colgroup>
+      <!-- TAX CALCULATION HEADER -->
+      <tr><td colspan="4" style="${headerStyle}">TAX CALCULATION</td></tr>
 
-        <!-- 1st Half -->
-        <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
-        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Transitional Assessed Value</td>
-          <td style="padding:6px 16px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-          <td colspan="2" style="${noteStyle}">Trans AV from DOF Final Assessment Roll (not Market AV)</td>
-        </tr>
-        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Tax Rate (Actual) <span style="display:block; font-size:10px; color:var(--orange,#d97706); margin-top:2px;">⚠ Manual — not from DOF API</span></td>
-          <td style="padding:6px 16px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-          <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
-          <td style="${noteStyle}">1st Half Tax</td>
-        </tr>
+      <!-- 1st Half -->
+      <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Assessed Valuation (Actual)</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Tax Rate (Actual)</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
+        <td style="${noteStyle}">← 1st Half Tax</td>
+      </tr>
 
-        <!-- 2nd Half -->
-        <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
-        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Transitional AV Increase %</td>
-          <td style="padding:6px 16px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-          <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
-        </tr>
-        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Estimated Assessed Valuation</td>
-          <td style="${outputStyle}; padding-left:16px;" id="re_est_av">${fmt(d.est_assessed_value)}</td>
-          <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
-        </tr>
-        <tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-          <td style="${labelStyle}">Estimated Tax Rate <span style="display:block; font-size:10px; color:var(--orange,#d97706); margin-top:2px;">⚠ Manual — verify on DOF site</span></td>
-          <td style="padding:6px 16px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-          <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
-          <td style="${noteStyle}">2nd Half Tax</td>
-        </tr>
-      </table>
+      <!-- 2nd Half -->
+      <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Transitional AV Increase %</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Estimated Assessed Valuation</td>
+        <td style="${outputStyle}" id="re_est_av">${fmt(d.est_assessed_value)}</td>
+        <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
+      </tr>
+      <tr style="border-bottom:1px solid #eee;">
+        <td style="${labelStyle}">Estimated Tax Rate</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
+        <td style="${noteStyle}">← 2nd Half Tax</td>
+      </tr>
 
-      <!-- Gross Total -->
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px; background:var(--gray-50,#f9fafb); border-top:2px solid var(--gray-200,#e5e7eb);">
-        <span style="font-weight:700; font-size:14px; color:var(--gray-700,#374151);">Gross Tax Liability (Full Year)</span>
-        <div style="display:flex; align-items:center; gap:12px;">
-          <span style="font-weight:700; font-size:16px; color:var(--blue,#1a56db);" id="re_gross">${fmt(d.gross_tax)}</span>
-          <span style="font-size:11px; color:var(--gray-400,#9ca3af);">1st Half + 2nd Half</span>
-        </div>
-      </div>
-    </div>
+      <!-- Gross -->
+      <tr style="border-top:2px solid #333; border-bottom:2px solid #333;">
+        <td style="padding:10px 12px; font-weight:700; font-size:15px;">GROSS TAX LIABILITY (Full Year)</td>
+        <td style="${outputStyle}; font-size:15px;" id="re_gross">${fmt(d.gross_tax)}</td>
+        <td colspan="2" style="${noteStyle}">1st Half + 2nd Half</td>
+      </tr>
 
-    <!-- Exemptions Card -->
-    <div style="background:white; border:1px solid var(--gray-200,#e5e7eb); border-radius:10px; overflow:hidden; margin-bottom:16px;">
-      <div style="${sectionStyle}; border-top:none;">Tax Exemptions & Abatements</div>
-
-      <table style="width:100%; border-collapse:collapse; font-size:13px;">
-        <colgroup>
-          <col style="width:35%">
-          <col style="width:18%">
-          <col style="width:22%">
-          <col style="width:25%">
-        </colgroup>
-        <tr style="border-bottom:1px solid var(--gray-200,#e5e7eb);">
-          <td style="padding:8px 16px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px;">Exemption Type</td>
-          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:center;">Growth %</td>
-          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:right;">Current Year</td>
-          <td style="padding:8px 12px; font-weight:600; font-size:11px; color:var(--gray-500,#6b7280); text-transform:uppercase; letter-spacing:0.3px; text-align:right;">Budget Year</td>
-        </tr>`;
+      <!-- Exemptions Header -->
+      <tr><td colspan="4" style="${headerStyle}">TAX EXEMPTIONS & ABATEMENTS</td></tr>
+      <tr style="background:#d6e4f0;">
+        <td style="padding:8px 12px; font-weight:600; font-size:12px;">Exemption Type</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:center;">Growth %</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Current Year</td>
+        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Budget Year</td>
+      </tr>`;
 
   // Exemption rows
   const exRows = [
-    {key:'veteran', label:'Veteran Exemption', gl:'6315-0025'},
-    {key:'sche', label:'Senior Citizen (SCHE)', gl:'6315-0035'},
-    {key:'star', label:'STAR Exemption', gl:'6315-0020'},
-    {key:'coop_abatement', label:'Co-op Abatement', gl:'6315-0010'},
+    {key:'veteran', label:'Veteran Exemption', gl:'GL 6315-0025'},
+    {key:'sche', label:'Senior Citizen (SCHE)', gl:'GL 6315-0035'},
+    {key:'star', label:'STAR Exemption', gl:'GL 6315-0020'},
+    {key:'coop_abatement', label:'Co-op Abatement', gl:'GL 6315-0010'},
   ];
   exRows.forEach(r => {
     const e = ex[r.key] || {growth_pct:0, current_year:0, budget_year:0};
-    html += `<tr style="border-bottom:1px solid var(--gray-100,#f3f4f6);">
-      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:var(--gray-400,#9ca3af);">GL ${r.gl}</span></td>
+    html += `<tr style="border-bottom:1px solid #eee;">
+      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:#999;">(${r.gl})</span></td>
       <td style="padding:6px 12px; text-align:center;"><input type="text" id="re_ex_${r.key}_growth" value="${e.growth_pct}" onchange="reCalcTaxes()" style="${inputStyle} width:80px;"></td>
       <td style="padding:6px 12px;"><input type="text" id="re_ex_${r.key}_current" value="${e.current_year}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-      <td style="${outputStyle}; padding-right:16px;" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
+      <td style="${outputStyle}" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
     </tr>`;
   });
 
   html += `
-        <tr style="border-top:1px solid var(--gray-200,#e5e7eb);">
-          <td style="padding:10px 16px; font-weight:700; font-size:13px; color:var(--gray-700,#374151);">Total Exemptions</td>
-          <td></td>
-          <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
-          <td style="${outputStyle}; padding-right:16px;" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
-        </tr>
-      </table>
-    </div>
+      <tr style="border-top:1px solid #999;">
+        <td style="padding:10px 12px; font-weight:700;">TOTAL EXEMPTIONS</td>
+        <td></td>
+        <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
+        <td style="${outputStyle}" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
+      </tr>
 
-    <!-- Net Total Card -->
-    <div style="background:var(--blue-light,#eff6ff); border:2px solid var(--blue,#1a56db); border-radius:10px; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-      <div>
-        <div style="font-weight:700; font-size:15px; color:var(--blue,#1a56db);">Net Tax Liability (Proposed Budget)</div>
-        <div style="font-size:12px; color:var(--gray-400,#9ca3af); margin-top:2px;">Gross Tax − Total Exemptions</div>
-      </div>
-      <span style="font-weight:700; font-size:22px; color:var(--blue,#1a56db);" id="re_net">${fmt(d.net_tax)}</span>
-    </div>
+      <!-- Net Tax -->
+      <tr style="border-top:3px solid #1f4e79; background:#f0f7ff;">
+        <td style="padding:12px; font-weight:700; font-size:16px;">NET TAX LIABILITY (Proposed Budget)</td>
+        <td style="${outputStyle}; font-size:16px; background:#e2efda;" id="re_net">${fmt(d.net_tax)}</td>
+        <td colspan="2" style="${noteStyle}">Gross Tax − Total Exemptions</td>
+      </tr>
+    </table>
 
-    <!-- Actions -->
-    <div style="display:flex; align-items:center; gap:12px;">
-      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--blue,#1a56db); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; transition:background 0.15s;">
+    <div style="margin-top:12px; display:flex; gap:12px;">
+      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--green, #22c55e); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600;">
         ✓ Save RE Taxes
       </button>
       <span id="reTaxSaveStatus" style="font-size:13px; color:var(--gray-400); padding:8px 0;"></span>
@@ -4729,79 +3633,19 @@ function renderRETaxesTab(contentDiv) {
 
   contentDiv.innerHTML = html;
 
-  // Build DOF verify link — use Property Information Portal (direct BBL lookup)
-  try {
-    const bblClean = (d.bbl || '').replace(/-/g, '');
-    if (bblClean.length >= 10) {
-      const dofLink = document.getElementById('dofVerifyLink');
-      if (dofLink) {
-        dofLink.href = 'https://propertyinformationportal.nyc.gov/parcels/parcel/' + bblClean;
-      }
-    }
-  } catch(e) { console.warn('Could not build DOF verify link:', e); }
-
-  // Format input displays on load
-  _reFmtDollar('re_av');
-  _reFmtRate('re_rate');
-  _reFmtPct('re_trans');
-  _reFmtRate('re_est_rate');
-  ['veteran','sche','star','coop_abatement'].forEach(k => {
-    _reFmtPct('re_ex_' + k + '_growth');
-    _reFmtDollar('re_ex_' + k + '_current');
-  });
-
-  // Attach focus/blur handlers to toggle between raw and formatted
-  // On focus: show the formatted percentage/dollar (user-friendly) not the raw decimal
-  // On blur: parse what the user typed and convert back to raw decimal
-  document.querySelectorAll('#sheetContent input[type=text]').forEach(inp => {
-    inp.addEventListener('focus', function() {
-      // Show editable value in user-friendly format (percentage for rates/pcts)
-      const raw = parseFloat(this.dataset.raw) || 0;
-      if (this.dataset.type === 'rate') this.value = (raw * 100).toFixed(4);
-      else if (this.dataset.type === 'pct') this.value = (raw * 100).toFixed(2);
-      else if (this.dataset.type === 'dollar') this.value = Math.round(raw);
-      else this.value = this.dataset.raw || _reParseNum(this.value);
-      this.select();
-    });
-    inp.addEventListener('blur', function() {
-      let v = parseFloat(_reParseNum(this.value)) || 0;
-      // User types percentage values (e.g. 9.6324 for 9.6324%) — convert to decimal
-      if (this.dataset.type === 'rate' || this.dataset.type === 'pct') {
-        v = v / 100;
-      }
-      this.dataset.raw = v;
-      _reApplyFmt(this);
-      reCalcTaxes();
-    });
-  });
-
-  // Show last refresh timestamp if available
-  const tsEl = document.getElementById('dofRefreshTimestamp');
-  if (tsEl && window._dofLastRefresh) {
-    const t = window._dofLastRefresh;
-    tsEl.textContent = 'Last refreshed ' + t.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' at ' + t.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  }
-}
-
-// ── RE Taxes formatting helpers ──
-function _reParseNum(v) { return String(v).replace(/[$,%\s]/g, '').replace(/,/g, '') || '0'; }
-function _reFmtDollar(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = '$' + Math.round(n).toLocaleString(); el.dataset.type = 'dollar'; }
-function _reFmtRate(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = (n * 100).toFixed(4) + '%'; el.dataset.type = 'rate'; }
-function _reFmtPct(id) { const el = document.getElementById(id); if (!el) return; const n = parseFloat(_reParseNum(el.value)) || 0; el.dataset.raw = n; el.value = (n * 100).toFixed(2) + '%'; el.dataset.type = 'pct'; }
-function _reApplyFmt(el) {
-  const raw = parseFloat(el.dataset.raw) || 0;
-  if (el.dataset.type === 'dollar') el.value = '$' + Math.round(raw).toLocaleString();
-  else if (el.dataset.type === 'rate') el.value = (raw * 100).toFixed(4) + '%';
-  else if (el.dataset.type === 'pct') el.value = (raw * 100).toFixed(2) + '%';
+  // Format input displays
+  document.getElementById('re_av').value = d.assessed_value;
+  document.getElementById('re_rate').value = d.tax_rate;
+  document.getElementById('re_trans').value = d.transitional_av_increase;
+  document.getElementById('re_est_rate').value = d.est_tax_rate;
 }
 
 // Live recalculation of RE Taxes when inputs change
-function _reVal(id) { const el = document.getElementById(id); return parseFloat(el.dataset.raw !== undefined ? el.dataset.raw : _reParseNum(el.value)) || 0; }
 function reCalcTaxes() {
-  const av = _reVal('re_av');
-  const rate = _reVal('re_rate');
-  const trans = _reVal('re_trans');
-  const estRate = _reVal('re_est_rate');
+  const av = parseFloat(document.getElementById('re_av').value) || 0;
+  const rate = parseFloat(document.getElementById('re_rate').value) || 0;
+  const trans = parseFloat(document.getElementById('re_trans').value) || 0;
+  const estRate = parseFloat(document.getElementById('re_est_rate').value) || 0;
 
   const h1 = av * rate / 2;
   const estAv = av * (1 + trans);
@@ -4815,8 +3659,8 @@ function reCalcTaxes() {
 
   let totalCurrent = 0, totalBudget = 0;
   ['veteran','sche','star','coop_abatement'].forEach(key => {
-    const growth = _reVal('re_ex_' + key + '_growth');
-    const current = _reVal('re_ex_' + key + '_current');
+    const growth = parseFloat(document.getElementById('re_ex_' + key + '_growth').value) || 0;
+    const current = parseFloat(document.getElementById('re_ex_' + key + '_current').value) || 0;
     const budget = current * (1 + growth);
     document.getElementById('re_ex_' + key + '_budget').textContent = '$' + Math.round(budget).toLocaleString();
     totalCurrent += current;
@@ -4826,29 +3670,23 @@ function reCalcTaxes() {
   document.getElementById('re_ex_total_current').textContent = '$' + Math.round(totalCurrent).toLocaleString();
   document.getElementById('re_ex_total_budget').textContent = '$' + Math.round(totalBudget).toLocaleString();
   document.getElementById('re_net').textContent = '$' + Math.round(gross - totalBudget).toLocaleString();
-
-  // Re-format inputs that weren't just edited
-  if (document.activeElement && document.activeElement.tagName !== 'INPUT') {
-    _reFmtDollar('re_av'); _reFmtRate('re_rate'); _reFmtPct('re_trans'); _reFmtRate('re_est_rate');
-    ['veteran','sche','star','coop_abatement'].forEach(k => { _reFmtPct('re_ex_'+k+'_growth'); _reFmtDollar('re_ex_'+k+'_current'); });
-  }
 }
 
 // Save RE Taxes overrides to server
 async function saveRETaxes() {
-  // Don't save assessed_value or tax_rate as overrides — those come from
-  // config/DOF (Trans AV). Only save user-adjustable fields.
   const overrides = {
-    transitional_av_increase: _reVal('re_trans'),
-    est_tax_rate: _reVal('re_est_rate'),
-    veteran_growth: _reVal('re_ex_veteran_growth'),
-    veteran_current: _reVal('re_ex_veteran_current'),
-    sche_growth: _reVal('re_ex_sche_growth'),
-    sche_current: _reVal('re_ex_sche_current'),
-    star_growth: _reVal('re_ex_star_growth'),
-    star_current: _reVal('re_ex_star_current'),
-    abatement_growth: _reVal('re_ex_coop_abatement_growth'),
-    abatement_current: _reVal('re_ex_coop_abatement_current'),
+    assessed_value: parseFloat(document.getElementById('re_av').value) || 0,
+    tax_rate: parseFloat(document.getElementById('re_rate').value) || 0,
+    transitional_av_increase: parseFloat(document.getElementById('re_trans').value) || 0,
+    est_tax_rate: parseFloat(document.getElementById('re_est_rate').value) || 0,
+    veteran_growth: parseFloat(document.getElementById('re_ex_veteran_growth').value) || 0,
+    veteran_current: parseFloat(document.getElementById('re_ex_veteran_current').value) || 0,
+    sche_growth: parseFloat(document.getElementById('re_ex_sche_growth').value) || 0,
+    sche_current: parseFloat(document.getElementById('re_ex_sche_current').value) || 0,
+    star_growth: parseFloat(document.getElementById('re_ex_star_growth').value) || 0,
+    star_current: parseFloat(document.getElementById('re_ex_star_current').value) || 0,
+    abatement_growth: parseFloat(document.getElementById('re_ex_coop_abatement_growth').value) || 0,
+    abatement_current: parseFloat(document.getElementById('re_ex_coop_abatement_current').value) || 0,
   };
   const statusEl = document.getElementById('reTaxSaveStatus');
   statusEl.textContent = 'Saving...';
@@ -4883,7 +3721,6 @@ async function refreshDOFData() {
     const result = await resp.json();
     if (result.re_taxes) {
       window._reTaxesData = result.re_taxes;
-      window._dofLastRefresh = new Date();
       renderRETaxesTab(document.getElementById('sheetContent'));
       if (statusEl) { statusEl.textContent = '✓ DOF data refreshed'; statusEl.style.color = 'var(--green, #22c55e)'; }
     }
@@ -4892,36 +3729,127 @@ async function refreshDOFData() {
   }
 }
 
+function renderBudgetSummary(contentDiv) {
+  const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
+  let html = '<div style="margin-bottom:8px; display:flex; align-items:center; gap:12px;">' +
+    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span></div>';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:14px;">' +
+    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+    '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
+    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
+    '<th style="' + thStyle + '">Current<br>Budget</th>' +
+    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
+    '<th style="' + thStyle + '">$<br>Variance</th>' +
+    '<th style="' + thStyle + '">%<br>Change</th>' +
+    '</tr></thead><tbody>';
+
+  let totalIncome = {prior:0, budget:0, proposed:0};
+  let totalExpense = {prior:0, budget:0, proposed:0};
+
+  SUMMARY_ROWS.forEach((sr, idx) => {
+    const sheetLines = allSheets[sr.sheet] || [];
+    let lines = sheetLines;
+    if (sr.rowRange) {
+      lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
+    }
+    let prior = 0, budget = 0, proposed = 0;
+    lines.forEach(l => {
+      prior += l.prior_year || 0;
+      budget += l.current_budget || 0;
+      const forecast = faComputeForecast(l);
+      proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    });
+
+    const variance = proposed - prior;
+    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const varColor = sr.type === 'income'
+      ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
+      : (variance >= 0 ? 'var(--red)' : 'var(--green)');
+
+    if (sr.type === 'income') { totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; }
+    else { totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; }
+
+    // Bold for income row, normal for expense detail
+    const isIncomeRow = idx === 0;
+    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-50, #eff6ff);' : '';
+    html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
+      '<td style="padding:10px 12px;">' + sr.label + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
+      '<td style="text-align:right; padding:10px 12px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
+
+    // After last expense row, add totals
+    if (idx === SUMMARY_ROWS.length - 1) {
+      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
+      const teVar = teProposed - tePrior;
+      const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
+      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
+
+      // NOI
+      const noiPrior = totalIncome.prior - tePrior;
+      const noiBudget = totalIncome.budget - teBudget;
+      const noiProposed = totalIncome.proposed - teProposed;
+      const noiVar = noiProposed - noiPrior;
+      const noiPct = noiPrior ? (noiProposed / noiPrior - 1) : 0;
+      const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
+      html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
+        '<td style="text-align:right; padding:10px 12px;">' + (noiPct * 100).toFixed(1) + '%</td></tr>';
+    }
+  });
+
+  html += '</tbody></table>';
+  contentDiv.innerHTML = html;
+}
+
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
   const thStyle = 'text-align:right; padding:8px; white-space:nowrap;';
   let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
     '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
     '<th style="text-align:left; padding:8px;">GL Code</th>' +
     '<th style="text-align:left; padding:8px;">Description</th>' +
+    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
     '<th style="' + thStyle + '">YTD<br>Actual</th>' +
+    '<th style="' + thStyle + '">YTD<br>Budget</th>' +
     '<th style="' + thStyle + '">Approved<br>Budget</th>' +
     '<th style="' + thStyle + '">Variance</th>' +
     '</tr></thead><tbody>';
 
-  let totals = {ytd:0, budget:0};
+  let totals = {prior:0, ytd:0, ytdBudget:0, budget:0};
   sheetLines.forEach(l => {
+    const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
+    const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
-    const variance = budget - ytd;
-    totals.ytd += ytd; totals.budget += budget;
+    const variance = budget - prior;
+    totals.prior += prior; totals.ytd += ytd; totals.ytdBudget += ytdBudget; totals.budget += budget;
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
 
     html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
       '<td style="font-family:monospace; font-size:12px; padding:6px 8px;">' + l.gl_code + '</td>' +
       '<td style="padding:6px 8px;">' + l.description + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(ytd) + '</td>' +
+      '<td style="text-align:right; padding:6px 8px;">' + fmt(ytdBudget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px;">' + fmt(budget) + '</td>' +
       '<td style="text-align:right; padding:6px 8px; color:' + varColor + ';">' + fmt(variance) + '</td></tr>';
   });
 
-  const totalVar = totals.budget - totals.ytd;
+  const totalVar = totals.budget - totals.prior;
   html += '<tr style="font-weight:700; background:var(--gray-100);"><td style="padding:8px;" colspan="2">Sheet Total</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.prior) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.ytd) + '</td>' +
+    '<td style="text-align:right; padding:8px;">' + fmt(totals.ytdBudget) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totals.budget) + '</td>' +
     '<td style="text-align:right; padding:8px;">' + fmt(totalVar) + '</td></tr>';
   html += '</tbody></table>';
@@ -4939,131 +3867,6 @@ async function faFetchExpenseData() {
     _faExpenseCache = await res.json();
     return _faExpenseCache;
   } catch(e) { _faExpenseCache = false; return null; }
-}
-
-// ── FA Open AP (Unpaid Bills) drill-down ─────────────────────────────
-let _faOpenAPCache = null;
-
-async function faFetchOpenAPData() {
-  if (_faOpenAPCache !== null) return _faOpenAPCache;
-  try {
-    const res = await fetch('/api/open-ap/' + entityCode);
-    if (!res.ok) { _faOpenAPCache = false; return null; }
-    _faOpenAPCache = await res.json();
-    return _faOpenAPCache;
-  } catch(e) { _faOpenAPCache = false; return null; }
-}
-
-async function faToggleUnpaidDrill(glCode, el) {
-  const row = el.closest('tr');
-  const next = row.nextElementSibling;
-  if (next && next.classList.contains('fa-unpaid-detail')) {
-    next.remove();
-    return;
-  }
-  // Remove any existing open detail rows for this GL
-  const existing = row.parentNode.querySelector('.fa-unpaid-detail[data-gl="' + glCode + '"]');
-  if (existing) existing.remove();
-
-  const data = await faFetchOpenAPData();
-  if (!data || !data.gl_groups) {
-    const noData = document.createElement('tr');
-    noData.className = 'fa-unpaid-detail';
-    noData.dataset.gl = glCode;
-    noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No Open AP data uploaded yet. Include the AP Aging report in your budget generator upload.</td>';
-    row.after(noData);
-    return;
-  }
-
-  const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
-  if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
-    const noInv = document.createElement('tr');
-    noInv.className = 'fa-unpaid-detail';
-    noInv.dataset.gl = glCode;
-    noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No unpaid invoices for ' + glCode + '</td>';
-    row.after(noInv);
-    return;
-  }
-
-  const detailRow = document.createElement('tr');
-  detailRow.className = 'fa-unpaid-detail';
-  detailRow.dataset.gl = glCode;
-  let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--amber">';
-  html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-unpaid-detail\').remove(); return false;" title="Close">×</button></div>';
-  html += '<div class="drill-panel-body"><table>';
-  html += '<thead><tr>';
-  html += '<td style="text-align:left;">Vendor</td><td>Invoice #</td><td>Date</td><td>Description</td><td style="text-align:right;">Amount</td></tr></thead>';
-  html += '<tbody>';
-
-  glGroup.invoices.forEach(inv => {
-    html += '<tr>';
-    html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + (inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;') + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
-    html += '</tr>';
-  });
-
-  html += '</tbody></table></div>';
-  html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
-  html += '<span>' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span>';
-  html += '<span style="font-size:13px;">' + fmt(glGroup.total || 0) + '</span>';
-  html += '</div></div></td>';
-  detailRow.innerHTML = html;
-  row.after(detailRow);
-}
-
-async function faToggleAccrualDrill(glCode, el) {
-  const row = el.closest('tr');
-  // Check if drill-down already open
-  const existingDrill = row.nextElementSibling;
-  if (existingDrill && existingDrill.classList.contains('fa-accrual-detail')) {
-    existingDrill.remove();
-    el.textContent = '▼';
-    return;
-  }
-  el.textContent = '▲';
-
-  // Fetch prior-year invoices
-  try {
-    const resp = await fetch('/api/accrual-invoices/' + entityCode + '/' + glCode);
-    const data = await resp.json();
-
-    if (!data.invoices || data.invoices.length === 0) {
-      showToast('No prior-year invoices found for ' + glCode, 'info');
-      el.textContent = '▼';
-      return;
-    }
-
-    const drillRow = document.createElement('tr');
-    drillRow.className = 'fa-accrual-detail';
-    const nc = row.querySelectorAll('td').length;
-    let html = '<td colspan="' + nc + '" style="padding:0;"><div class="drill-panel drill-panel--amber">';
-    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Prior-Year Invoices</span><span style="font-weight:400; font-size:12px; opacity:0.7;">before ' + (data.cutoff || '?') + ' · ' + data.invoices.length + ' invoice' + (data.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-accrual-detail\').remove(); return false;" title="Close">×</button></div>';
-    html += '<div class="drill-panel-body"><table>';
-    html += '<thead><tr><th style="text-align:left;">Payee</th><th>Invoice #</th><th>Invoice Date</th><th style="text-align:right;">Amount</th></tr></thead>';
-    html += '<tbody>';
-
-    data.invoices.forEach(inv => {
-      html += '<tr>' +
-        '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>' +
-        '<td>' + (inv.invoice_num || '—') + '</td>' +
-        '<td>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
-        '<td style="text-align:right;">' + fmt(inv.amount) + '</td></tr>';
-    });
-
-    html += '</tbody></table></div>';
-    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
-    html += '<span>Accrual Adjustment (negative)</span>';
-    html += '<span style="color:var(--red);">' + fmt(data.total) + '</span>';
-    html += '</div></div></td>';
-    drillRow.innerHTML = html;
-    row.after(drillRow);
-  } catch(e) {
-    showToast('Error loading accrual invoices: ' + e.message, 'error');
-    el.textContent = '▼';
-  }
 }
 
 async function faToggleInvoices(glCode, el) {
@@ -5094,45 +3897,45 @@ async function faToggleInvoices(glCode, el) {
     return;
   }
 
-  // Build all GL codes for reclass dropdown — sorted alphabetically, across all sheets, with descriptions
-  const allGLMap = {};
-  Object.values(allSheets).forEach(sheetArr => sheetArr.forEach(l => { if (l.gl_code !== glCode) allGLMap[l.gl_code] = l.description || ''; }));
-  const allGLs = Object.keys(allGLMap).sort();
+  // Build all GL codes for reclass dropdown from current sheet
+  const currentSheet = document.querySelector('.sheet-tab.active');
+  const sheetName = currentSheet ? currentSheet.dataset.sheet : '';
+  const sheetLines = allSheets[sheetName] || [];
+  const allGLs = sheetLines.map(l => l.gl_code).filter(g => g !== glCode);
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
-  let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--blue">';
-  html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-invoice-detail\').remove(); return false;" title="Close">×</button></div>';
-  html += '<div class="drill-panel-body"><table>';
-  html += '<thead><tr>';
-  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px; padding-left:20px;">Reclass To</td></tr></thead>';
-  html += '<tbody>';
-
-  // Shared datalist
-  let dlOptions = '';
-  allGLs.forEach(g => { dlOptions += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
+  let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
+  html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
+  html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
+  html += '</div>';
+  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+  html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+  html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
-    html += '<tr' + (isReclassed ? ' style="opacity:0.5;"' : '') + '>';
-    html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="font-family:monospace; font-size:11px;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="white-space:nowrap;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
-    html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="text-align:left; white-space:nowrap; padding-left:20px;">';
+    html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
+    html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
+    html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
+    html += '<td style="padding:6px 10px; text-align:right;">';
     if (isReclassed) {
-      html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
-      html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
+      html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
+      html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
     } else {
-      html += '<span class="reclass-wrap"><span class="reclass-search"><input id="fa_reclass_gl_' + inv.id + '" list="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..."></span>';
-      html += '<button class="reclass-btn reclass-btn--primary" onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')">Reclass</button></span>';
+      html += '<select id="fa_reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
+      html += '<option value="">Reclass to…</option>';
+      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
+      html += '</select> ';
+      html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
     }
     html += '</td></tr>';
   });
-  html += '</tbody></table></div>';
-  html += '<datalist id="fa_dl_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '">' + dlOptions + '</datalist>';
-  html += '</div></td>';
+  html += '</table></div></td>';
   detailRow.innerHTML = html;
   row.after(detailRow);
 }
@@ -5171,98 +3974,6 @@ async function faUndoReclass(invoiceId, fromGL) {
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
 
-// ── FA Maint Proof toggle for Income lines ───────────────────────────
-async function faToggleMaintProof(glCode, el) {
-  const row = el.closest('tr');
-  if (!row) return;
-  const detailRow = row.nextElementSibling;
-
-  // Collapse if already open
-  if (detailRow && detailRow.classList && detailRow.classList.contains('fa-maint-detail')) {
-    detailRow.remove();
-    el.classList.remove('fa-drill-open');
-    return;
-  }
-
-  // Map GL codes to charge codes
-  const glToChargeCode = {
-    '4010-0000': 'maint',
-    '4130-0010': 'storage',
-    '4130-0015': 'bike'
-  };
-
-  const chargeCode = glToChargeCode[glCode];
-
-  // Create detail row
-  const newRow = document.createElement('tr');
-  newRow.classList.add('fa-maint-detail');
-  newRow.innerHTML = '<td colspan="15" style="padding:0;">';
-
-  if (!chargeCode) {
-    newRow.innerHTML += '<div class="drill-panel drill-panel--gray"><div class="drill-panel-header"><span>No proof data for this income line</span><button class="drill-close" onclick="this.closest(\'.fa-maint-detail\').remove(); return false;" title="Close">×</button></div></div>';
-  } else {
-    newRow.innerHTML += '<div style="padding:16px; min-height:60px;"><p style="font-size:12px; color:var(--gray-600); margin-bottom:8px;">Loading unit proof data...</p></div>';
-  }
-
-  newRow.innerHTML += '</td>';
-  row.after(newRow);
-  el.classList.add('fa-drill-open');
-
-  if (!chargeCode) return;
-
-  // Fetch maint proof data
-  try {
-    const proofResp = await fetch('/api/maint-proof/' + entityCode);
-    if (!proofResp.ok) {
-      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Failed to load maint proof data</p>';
-      return;
-    }
-
-    const proofData = await proofResp.json();
-    const charge = proofData.charge_summary ? proofData.charge_summary[chargeCode] : null;
-
-    if (!charge) {
-      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--gray-500); padding:12px 16px;">No data for ' + chargeCode + '</p>';
-      return;
-    }
-
-    // Fetch unit detail
-    try {
-      const unitsResp = await fetch('/api/maint-proof/' + entityCode + '/units?charge_code=' + chargeCode);
-      const unitsData = unitsResp.ok ? await unitsResp.json() : {};
-      const units = unitsData.units || [];
-
-      // Build unit table
-      let html = '<div class="drill-panel drill-panel--gray">';
-      html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + chargeCode.toUpperCase() + ' Unit Proof</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + units.length + ' units</span></div><button class="drill-close" onclick="this.closest(\'.fa-maint-detail\').remove(); return false;" title="Close">×</button></div>';
-      html += '<div class="drill-panel-body"><table>';
-      html += '<thead><tr>';
-      html += '<td style="text-align:left;">Unit Code</td><td>Shares</td><td>Status</td><td style="text-align:right;">Monthly</td><td style="text-align:right;">Annual</td></tr></thead>';
-      html += '<tbody>';
-
-      units.forEach(u => {
-        html += '<tr>';
-        html += '<td>' + (u.unit_code || '—') + '</td>';
-        html += '<td>' + (u.shares || '—') + '</td>';
-        html += '<td>' + (u.status || '—') + '</td>';
-        html += '<td style="text-align:right;">$' + (u.monthly ? Math.round(u.monthly).toLocaleString() : '—') + '</td>';
-        html += '<td style="text-align:right;">$' + (u.annual ? Math.round(u.annual).toLocaleString() : '—') + '</td>';
-        html += '</tr>';
-      });
-
-      html += '</tbody></table></div>';
-      html += '<div class="drill-panel-footer">' + units.length + ' units · ' + (charge.count || '—') + ' records</div>';
-      html += '</div>';
-
-      newRow.querySelector('div').innerHTML = html;
-    } catch(e) {
-      newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Failed to load unit detail: ' + e.message + '</p>';
-    }
-  } catch(e) {
-    newRow.querySelector('div').innerHTML = '<p style="font-size:12px; color:var(--red); padding:12px 16px;">Error: ' + e.message + '</p>';
-  }
-}
-
 // ── FA Zero-row toggle ───────────────────────────────────────────────
 let _faShowZeroRows = false;
 
@@ -5284,31 +3995,19 @@ function faToggleZeroRows() {
     row.style.display = _faShowZeroRows ? '' : 'none';
   });
   faUpdateZeroToggle();
-  faUpdateSheetTotals();
 }
 
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const NC = 15;
   const estLbl = estimateLabel();
 
-  // ── Invoice reclass adjustments are now computed server-side ──
-  // Lines with _reclass_ytd_adj already have adjusted ytd_actual from the API
-  // Ensure _orig_ytd and _reclass_ytd_adj are available for tooltip display
-  sheetLines.forEach(l => {
-    if (!l._orig_ytd && l._reclass_ytd_adj) {
-      l._orig_ytd = (l.ytd_actual || 0) - l._reclass_ytd_adj;
-    }
-    if (!l._reclass_ytd_adj) l._reclass_ytd_adj = 0;
-    if (!l._orig_ytd) l._orig_ytd = l.ytd_actual || 0;
-  });
-
   // Inject PM-style CSS if not already present
   if (!document.getElementById('faSheetStyle')) {
     const style = document.createElement('style');
     style.id = 'faSheetStyle';
     style.textContent = `
-      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; position:relative; }
-      .fa-grid-scroll { overflow:auto; max-height:calc(100vh - 280px); }
+      .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
+      .fa-grid-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }
       .fa-grid table { width:100%; border-collapse:collapse; font-size:13px; }
       .fa-grid thead { background:var(--gray-100); position:sticky; top:0; z-index:10; }
       .fa-grid th { padding:10px 12px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); }
@@ -5316,53 +4015,17 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid td { padding:8px 12px; border-bottom:1px solid var(--gray-200); }
       .fa-grid td.num { text-align:right; font-variant-numeric:tabular-nums; }
       .fa-grid tbody tr:hover { background:#eef2ff; }
-      .fa-grid .cat-hdr td { background:var(--blue-light, #e1effe); font-weight:700; color:var(--blue, #1a56db); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #1a56db); }
+      .fa-grid .cat-hdr td { background:var(--blue-light, #f5efe7); font-weight:700; color:var(--blue, #5a4a3f); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #5a4a3f); }
       .fa-grid .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }
       .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
       .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; }
-      .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #e1effe); }
+      .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { width:60px; }
-      .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
-      .fa-invoice-detail td, .fa-unpaid-detail td, .fa-accrual-detail td, .fa-maint-detail td { padding:0 !important; }
-      .fa-invoice-detail:hover, .fa-unpaid-detail:hover, .fa-accrual-detail:hover, .fa-maint-detail:hover { background:transparent !important; }
-      /* ── Drill-down panel redesign ── */
-      .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
-      .drill-panel-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; font-size:13px; font-weight:600; }
-      .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:2px 6px; line-height:1; border-radius:4px; transition:all 0.15s; }
-      .drill-panel-header .drill-close:hover { color:var(--gray-700); background:var(--gray-100); }
-      .drill-panel-body { max-height:360px; overflow-y:auto; }
-      .drill-panel-body table { width:100%; border-collapse:collapse; font-size:12px; }
-      .drill-panel-body thead { position:sticky; top:0; z-index:2; }
-      .drill-panel-body thead td, .drill-panel-body thead th { padding:8px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
-      .drill-panel-body tbody tr { transition:background 0.1s; }
-      .drill-panel-body tbody tr:hover { background:var(--gray-50, #f9fafb); }
-      .drill-panel-body tbody td { padding:8px 12px; border-bottom:1px solid var(--gray-100); font-size:12px; }
-      .drill-panel-footer { padding:8px 16px; font-size:11px; border-top:1px solid var(--gray-200); }
-      /* Type variants */
-      .drill-panel--blue { border-color:#bfdbfe; }
-      .drill-panel--blue .drill-panel-header { background:linear-gradient(135deg, #eff6ff, #dbeafe); color:#1e40af; }
-      .drill-panel--blue .drill-panel-body thead td, .drill-panel--blue .drill-panel-body thead th { background:#eff6ff; color:#1e40af; }
-      .drill-panel--blue .drill-panel-footer { background:#f0f7ff; color:#1e40af; }
-      .drill-panel--amber { border-color:#fde68a; }
-      .drill-panel--amber .drill-panel-header { background:linear-gradient(135deg, #fffbeb, #fef3c7); color:#92400e; }
-      .drill-panel--amber .drill-panel-body thead td, .drill-panel--amber .drill-panel-body thead th { background:#fffbeb; color:#92400e; }
-      .drill-panel--amber .drill-panel-footer { background:#fffbeb; color:#92400e; }
-      .drill-panel--gray { border-color:var(--gray-200); }
-      .drill-panel--gray .drill-panel-header { background:var(--gray-50, #f9fafb); color:var(--gray-700); }
-      .drill-panel--gray .drill-panel-body thead td, .drill-panel--gray .drill-panel-body thead th { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
-      .drill-panel--gray .drill-panel-footer { background:var(--gray-50, #f9fafb); color:var(--gray-600); }
-      .drill-panel .reclass-wrap { display:inline-flex; align-items:center; gap:4px; }
-      .drill-panel .reclass-search { position:relative; display:inline-flex; align-items:center; }
-      .drill-panel .reclass-search::before { content:'\\1F50D'; position:absolute; left:6px; font-size:10px; pointer-events:none; opacity:0.4; }
-      .drill-panel .reclass-input { font-size:11px; padding:4px 8px 4px 22px; border:1px solid var(--gray-300); border-radius:6px; width:150px; transition:border-color 0.15s; background:white; font-family:inherit; }
-      .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); width:180px; }
-      .drill-panel .reclass-btn { font-size:11px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; transition:all 0.15s; font-family:inherit; }
-      .drill-panel .reclass-btn:hover { opacity:0.85; transform:translateY(-1px); }
-      .drill-panel .reclass-btn--primary { background:var(--blue); color:white; }
-      .drill-panel .reclass-btn--undo { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+      .fa-invoice-detail td { padding:0 !important; }
+      .fa-invoice-detail:hover { background:transparent !important; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
@@ -5375,136 +4038,35 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated (click to see formula)</span>' +
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
-  // Formula bar — Excel-style with live preview + Accept/Cancel
-  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
-    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
-    '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
-    '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
-    '<span id="faFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
-    '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
-    '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
-    '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
-    '</div>';
-
-  // Maint proof tie-out panel for Income sheet
-  if (sheetName === 'Income') {
-    html += '<div id="faMaintTieoutPanel" style="padding:12px 16px; background:#f0f9ff; border:1px solid var(--blue-light, #bfdbfe); border-radius:8px; margin-bottom:12px;">' +
-      '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out</div>' +
-      '<p style="font-size:12px; color:var(--gray-500); margin-bottom:8px;">Loading proof data...</p>' +
-      '</div>';
-
-    // Fetch and render maint proof tie-out
-    (async () => {
-      try {
-        const proofResp = await fetch('/api/maint-proof/' + entityCode);
-        const panel = document.getElementById('faMaintTieoutPanel');
-        if (!panel) return; // DOM was replaced (tab switched)
-
-        if (!proofResp.ok) {
-          panel.innerHTML = '<p style="font-size:12px; color:var(--red);">Failed to load maint proof data</p>';
-          return;
-        }
-
-        const proofData = await proofResp.json();
-        const cs = proofData.charge_summary || {};
-
-        if (!proofData.exists) {
-          panel.innerHTML =
-            '<div style="display:flex; align-items:center; gap:10px;">' +
-            '<div style="font-weight:600; font-size:13px; color:var(--blue);">Maint Proof Tie-Out</div>' +
-            '<span style="font-size:12px; color:var(--gray-500);">No maintenance proof uploaded yet. Upload via Data Collection to validate income lines.</span>' +
-            '</div>';
-          return;
-        }
-
-        const chargeMap = {
-          'maint': {gl: '4010-0000', label: 'Maintenance'},
-          'storage': {gl: '4130-0010', label: 'Storage Room'},
-          'bike': {gl: '4130-0015', label: 'Bicycle Charge'}
-        };
-
-        let tieoutHtml = '<div style="font-weight:600; font-size:13px; color:var(--blue); margin-bottom:8px;">Maint Proof Tie-Out <span style="font-size:11px; font-weight:400; color:var(--gray-500);">(' + (proofData.report.total_units || 0) + ' units, ' + (proofData.report.total_shares || 0).toLocaleString() + ' shares)</span></div>';
-        tieoutHtml += '<table style="width:100%; border-collapse:collapse; font-size:12px; background:white; border-radius:4px; overflow:hidden;">';
-        tieoutHtml += '<thead><tr style="background:var(--blue-light, #bfdbfe); border-bottom:1px solid var(--blue, #1a56db);">';
-        tieoutHtml += '<th style="text-align:left; padding:6px 10px; color:var(--blue); font-weight:600;">Charge Code</th>';
-        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Proof Monthly</th>';
-        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Proof Annual</th>';
-        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Budget Amount</th>';
-        tieoutHtml += '<th style="text-align:right; padding:6px 10px; color:var(--blue); font-weight:600;">Variance</th>';
-        tieoutHtml += '<th style="text-align:center; padding:6px 10px; color:var(--blue); font-weight:600;">Status</th>';
-        tieoutHtml += '</tr></thead><tbody>';
-
-        Object.keys(chargeMap).forEach(chargeCode => {
-          const cfg = chargeMap[chargeCode];
-          const charge = cs[chargeCode];
-          const budgetLine = sheetLines.find(l => l.gl_code === cfg.gl);
-          const proofAnnual = charge ? (charge.annual || 0) : 0;
-          const budgetAmount = budgetLine ? (budgetLine.current_budget || 0) : 0;
-          const variance = budgetAmount - proofAnnual;
-          const varColor = Math.abs(variance) <= 1 ? 'var(--green)' : 'var(--red)';
-          const status = Math.abs(variance) <= 1 ? '✓' : '⚠';
-          const statusColor = Math.abs(variance) <= 1 ? 'var(--green)' : 'var(--orange)';
-
-          tieoutHtml += '<tr style="border-top:1px solid var(--gray-200);">';
-          tieoutHtml += '<td style="padding:6px 10px; color:var(--gray-700);">' + cfg.label + ' (' + cfg.gl + ')</td>';
-          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + (charge ? Math.round(charge.monthly || 0).toLocaleString() : '0') + '</td>';
-          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(proofAnnual).toLocaleString() + '</td>';
-          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(budgetAmount).toLocaleString() + '</td>';
-          tieoutHtml += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums; color:' + varColor + ';">' + (variance >= 0 ? '+' : '') + '$' + Math.round(variance).toLocaleString() + '</td>';
-          tieoutHtml += '<td style="padding:6px 10px; text-align:center; color:' + statusColor + '; font-weight:700;">' + status + '</td>';
-          tieoutHtml += '</tr>';
-        });
-
-        tieoutHtml += '</tbody></table>';
-        if (panel) panel.innerHTML = tieoutHtml;
-      } catch(e) {
-        const p = document.getElementById('faMaintTieoutPanel');
-        if (p) p.innerHTML = '<p style="font-size:12px; color:var(--red);">Error loading tie-out: ' + e.message + '</p>';
-      }
-    })();
-  }
-
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
-    '<th class="num">YTD Actual</th>' +
+    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
     '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
+    '<th class="num">YTD Budget</th>' +
     '<th class="num">' + estLbl + ' Est</th><th class="num">12 Mo Forecast</th>' +
     '<th class="num">Curr Budget</th><th class="num">Inc %</th>' +
-    '<th class="num">Proposed</th><th class="num">$ V. Fcst</th><th class="num">% Chg</th>' +
+    '<th class="num">Proposed</th><th class="num">$ Var</th><th class="num">% Chg</th>' +
     '</tr></thead><tbody>';
 
   const catConfig = SHEET_CATEGORIES[sheetName];
 
   function buildLineRow(l) {
     const gl = l.gl_code;
+    const prior = l.prior_year || 0;
     const ytd = l.ytd_actual || 0;
     const accrual = l.accrual_adj || 0;
     const unpaid = l.unpaid_bills || 0;
+    const ytdBudget = l.ytd_budget || 0;
     const budget = l.current_budget || 0;
-    const isZero = !ytd && !accrual && !unpaid && !budget && !(l.increase_pct);
+    const isZero = !prior && !ytd && !accrual && !unpaid && !ytdBudget && !budget && !(l.increase_pct);
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
-    // If there's a stored formula, evaluate it; otherwise use proposed_budget or auto-calc
-    let proposed;
-    const userFormula = l.proposed_formula || '';
-    if (userFormula) {
-      const evalResult = safeEvalFormula(userFormula);
-      proposed = evalResult !== null ? evalResult : (l.proposed_budget || (forecast * (1 + (l.increase_pct || 0))));
-    } else {
-      proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    }
-    const variance = proposed - forecast;
-    const pctChange = forecast ? (proposed / forecast - 1) : 0;
+    const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    const variance = proposed - prior;
+    const pctChange = prior ? (proposed / prior - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
-
-    // Build notes display: prepend PM reclass info if present
-    let notesDisplay = l.notes || '';
-    if (l.reclass_to_gl) {
-      const reclassInfo = '[PM Reclass → ' + l.reclass_to_gl + (l.reclass_amount ? ' $' + Math.round(l.reclass_amount).toLocaleString() : '') + ']' + (l.reclass_notes ? ' ' + l.reclass_notes : '');
-      notesDisplay = notesDisplay ? reclassInfo + ' | ' + notesDisplay : reclassInfo;
-    }
 
     const estFormula = faGetFormulaTooltip(l, 'estimate');
     const fcstFormula = faGetFormulaTooltip(l, 'forecast');
@@ -5519,61 +4081,41 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onfocus="this.value=this.dataset.raw"' +
         ' onblur="cellBlur(this)">';
     }
-    // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
-    function fxCell(id, field, val, formula, isOverride, proposedFormula) {
-      const hasUserFormula = field === 'proposed_budget' && proposedFormula;
-      const overrideAttr = (isOverride || hasUserFormula) ? 'true' : 'false';
-      let badge;
-      if (hasUserFormula) {
-        badge = '<span class="fa-fx" style="background:#dbeafe; color:var(--blue); border-color:var(--blue);">fx</span>';
-      } else if (isOverride) {
-        badge = '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;">✎</span>';
-      } else {
-        badge = '<span class="fa-fx">fx</span>';
-      }
-      const pfAttr = proposedFormula ? ' data-proposed-formula="' + proposedFormula.replace(/"/g, '&quot;') + '"' : '';
-      return '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
-        '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
+    // Formula cell: shows $1,234 normally, shows formula on focus, editable
+    function fxCell(id, field, val, formula) {
+      return '<td class="num"><input id="' + id + '" class="cell cell-fx" type="text"' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
-        ' data-override="' + overrideAttr + '"' +
-        pfAttr +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
-        ' onblur="fxCellBlur(this)"' +
-        ' onkeydown="fxCellKeydown(this, event)"' +
-        ' style="cursor:pointer; pointer-events:none;"></td>';
+        ' onfocus="this.value=this.dataset.formula; this.select();"' +
+        ' onblur="fxCellBlur(this)"></td>';
     }
-
-    // Determine which toggle function to use based on sheet type
-    const toggleFn = sheetName === 'Income' ? 'faToggleMaintProof' : 'faToggleInvoices';
-    const toggleTitle = sheetName === 'Income' ? 'Click to view unit proof' : 'Click to view expenses';
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
-      '<td style="font-size:12px;"><a href="#" onclick="' + toggleFn + '(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="' + toggleTitle + '">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
-      '<td><input class="cell cell-notes" type="text" value="' + notesDisplay.replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"' + (l.reclass_to_gl ? ' style="background:#fef9e7; border-left:3px solid var(--orange);"' : '') + '></td>' +
-      '<td class="num" style="position:relative;">' + $cell('ytd_'+gl, 'ytd_actual', ytd) +
-        (l._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange); background:var(--orange-light); padding:0 3px; border-radius:3px; border:1px solid var(--orange);" title="Original: ' + fmt(l._orig_ytd) + ' | Reclass adj: ' + (l._reclass_ytd_adj > 0 ? '+' : '') + fmt(l._reclass_ytd_adj) + '">R</span>' : '') + '</td>' +
-      '<td class="num" style="position:relative;' + (accrual !== 0 ? 'cursor:pointer;' : '') + '"' + (accrual !== 0 ? ' onclick="faToggleAccrualDrill(\'' + gl + '\', this)" onmouseenter="this.style.background=\'#e1effe\'" onmouseleave="this.style.background=\'\'" title="Click to view prior-year invoices"' : '') + '>' + $cell('acc_'+gl, 'accrual_adj', accrual) +
-        (accrual !== 0 ? '<span style="position:absolute; top:2px; right:2px; font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">▼</span>' : '') + '</td>' +
-      '<td class="num" style="position:relative;' + (unpaid !== 0 ? 'cursor:pointer;' : '') + '"' + (unpaid !== 0 ? ' onclick="faToggleUnpaidDrill(\'' + gl + '\', this)" onmouseenter="this.style.background=\'#fef3c7\'" onmouseleave="this.style.background=\'\'" title="Click to view unpaid invoices"' : '') + '>' + $cell('unp_'+gl, 'unpaid_bills', unpaid) +
-        (unpaid !== 0 ? '<span style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;">▼</span>' : '') + '</td>' +
-      fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
-      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
+      '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
+      '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+      '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
+      '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
+      '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
+      '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
+      '<td class="num">' + $cell('ytdb_'+gl, 'ytd_budget', ytdBudget) + '</td>' +
+      fxCell('est_'+gl, 'estimate_override', estimate, estFormula) +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
-      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula) +
+      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula) +
       '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
       '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }
 
   function sumLines(lines) {
-    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
     lines.forEach(l => {
+      t.prior += l.prior_year || 0;
       t.ytd += l.ytd_actual || 0;
-      t.accrual += l.accrual_adj || 0;
-      t.unpaid += l.unpaid_bills || 0;
+      t.ytdBudget += l.ytd_budget || 0;
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
       t.budget += l.current_budget || 0;
@@ -5582,15 +4124,15 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     return t;
   }
 
-  function subtotalRow(label, t, cls, rowId) {
-    const v = t.proposed - t.forecast;
-    const p = t.forecast ? (t.proposed/t.forecast-1) : 0;
-    const rid = rowId ? ' id="' + rowId + '"' : '';
-    return '<tr class="' + (cls||'sub-row') + '"' + rid + '>' +
+  function subtotalRow(label, t, cls) {
+    const v = t.proposed - t.prior;
+    const p = t.prior ? (t.proposed/t.prior-1) : 0;
+    return '<tr class="' + (cls||'sub-row') + '">' +
       '<td colspan="3">' + label + '</td>' +
+      '<td class="num">' + fmt(t.prior) + '</td>' +
       '<td class="num">' + fmt(t.ytd) + '</td>' +
-      '<td class="num">' + fmt(t.accrual || 0) + '</td>' +
-      '<td class="num">' + fmt(t.unpaid || 0) + '</td>' +
+      '<td class="num"></td><td class="num"></td>' +
+      '<td class="num">' + fmt(t.ytdBudget) + '</td>' +
       '<td class="num">' + fmt(t.estimate) + '</td>' +
       '<td class="num">' + fmt(t.forecast) + '</td>' +
       '<td class="num">' + fmt(t.budget) + '</td>' +
@@ -5600,50 +4142,42 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + (p*100).toFixed(1) + '%</td></tr>';
   }
 
-  // Track category group -> GL codes for dynamic subtotal updates
-  const _catGroupGLs = {};
-
   if (catConfig) {
     catConfig.groups.forEach(grp => {
       const gl = sheetLines.filter(grp.match);
       if (gl.length === 0) return;
-      _catGroupGLs[grp.key] = gl.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '">' + grp.label + '</td></tr>';
       gl.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total ' + grp.label, sumLines(gl), 'sub-row', 'subtotal_' + grp.key);
+      html += subtotalRow('Total ' + grp.label, sumLines(gl));
     });
     const allGrouped = catConfig.groups.flatMap(g => sheetLines.filter(g.match));
     const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
     if (ungrouped.length > 0) {
-      _catGroupGLs['_other'] = ungrouped.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td></tr>';
       ungrouped.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total Other', sumLines(ungrouped), 'sub-row', 'subtotal__other');
+      html += subtotalRow('Total Other', sumLines(ungrouped));
     }
   } else {
     sheetLines.forEach(l => { html += buildLineRow(l); });
   }
 
-  // Store group mapping globally so faUpdateSheetTotals can use it
-  window._catGroupGLs = _catGroupGLs;
-
-  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
-  html += '</tbody></table></div>';
-  html += '</div>';
+  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row');
+  html += '</tbody></table></div></div>';
   contentDiv.innerHTML = html;
-
-  // Recalculate totals from rounded cell values so they match exactly
-  setTimeout(() => {
-    faUpdateSheetTotals();
-  }, 100);
 }
 
 function computeForecast(l) {
   const ytdActual = l.ytd_actual || 0;
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
-  const estimate = (ytdActual > 0 && YTD_MONTHS > 0) ? (ytdActual / YTD_MONTHS) * REMAINING_MONTHS : 0;
-  return ytdActual + accrualAdj + unpaidBills + estimate;
+  const priorYear = l.prior_year || 0;
+  const ytdTotal = ytdActual + accrualAdj + unpaidBills;
+
+  if (ytdTotal >= priorYear) {
+    return ytdTotal + (ytdTotal / 2) * 10;
+  } else {
+    return ytdTotal + (priorYear - ytdTotal);
+  }
 }
 
 async function sendToPM() {
@@ -5694,21 +4228,22 @@ PM_PORTAL_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM Portal - Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-dark: #1e429f;
-    --blue-light: #e1effe;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -5809,7 +4344,6 @@ PM_PORTAL_TEMPLATE = r"""
     <a href="/pm" class="nav-link active">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 
@@ -5957,26 +4491,27 @@ PM_EDIT_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM Edit — {{ building_name }} — Century Management</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
-    --blue: #1a56db;
-    --blue-dark: #1e429f;
-    --blue-light: #e1effe;
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
     --green: #057a55;
     --green-light: #def7ec;
     --orange: #d97706;
     --orange-light: #fef3c7;
     --red: #e02424;
-    --gray-50: #f9fafb;
-    --gray-100: #f3f4f6;
-    --gray-200: #e5e7eb;
-    --gray-300: #d1d5db;
-    --gray-500: #6b7280;
-    --gray-700: #374151;
-    --gray-900: #111827;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--gray-50);
     color: var(--gray-900);
     line-height: 1.5;
@@ -6122,41 +4657,6 @@ PM_EDIT_TEMPLATE = r"""
 
   .invoice-detail-row td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
-  .pm-unpaid-detail td { padding: 0 !important; }
-  .pm-unpaid-detail:hover { background: transparent !important; }
-  .pm-accrual-detail td { padding: 0 !important; }
-  .pm-accrual-detail:hover { background: transparent !important; }
-
-  /* Shared drill-panel component */
-  .drill-panel { margin:4px 16px 8px 16px; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
-  .drill-panel-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; font-size:13px; font-weight:600; }
-  .drill-panel-header .drill-close { background:none; border:none; font-size:18px; color:var(--gray-400); cursor:pointer; padding:2px 6px; line-height:1; border-radius:4px; transition:all 0.15s; }
-  .drill-panel-header .drill-close:hover { color:var(--gray-700); background:var(--gray-100); }
-  .drill-panel-body { max-height:360px; overflow-y:auto; }
-  .drill-panel-body table { width:100%; border-collapse:collapse; font-size:12px; }
-  .drill-panel-body thead { position:sticky; top:0; z-index:2; }
-  .drill-panel-body thead td, .drill-panel-body thead th { padding:8px 12px; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:0.4px; border-bottom:1px solid var(--gray-200); }
-  .drill-panel-body tbody tr { transition:background 0.1s; }
-  .drill-panel-body tbody tr:hover { background:var(--gray-50, #f9fafb); }
-  .drill-panel-body tbody td { padding:8px 12px; border-bottom:1px solid var(--gray-100); font-size:12px; }
-  .drill-panel-footer { padding:8px 16px; font-size:11px; border-top:1px solid var(--gray-200); }
-  /* Blue variant */
-  .drill-panel--blue { border-color:#bfdbfe; }
-  .drill-panel--blue .drill-panel-header { background:linear-gradient(135deg, #eff6ff, #dbeafe); color:#1e40af; }
-  .drill-panel--blue .drill-panel-body thead td, .drill-panel--blue .drill-panel-body thead th { background:#eff6ff; color:#1e40af; }
-  /* Amber variant */
-  .drill-panel--amber { border-color:#fde68a; }
-  .drill-panel--amber .drill-panel-header { background:linear-gradient(135deg, #fffbeb, #fef3c7); color:#92400e; }
-  .drill-panel--amber .drill-panel-body thead td, .drill-panel--amber .drill-panel-body thead th { background:#fffbeb; color:#92400e; }
-  /* Reclass search bar */
-  .drill-panel .reclass-wrap { display:inline-flex; align-items:center; gap:4px; }
-  .drill-panel .reclass-search { position:relative; display:inline-flex; align-items:center; }
-  .drill-panel .reclass-search::before { content:'\\1F50D'; position:absolute; left:6px; font-size:10px; pointer-events:none; opacity:0.4; }
-  .drill-panel .reclass-input { font-size:11px; padding:4px 8px 4px 22px; border:1px solid var(--gray-300); border-radius:6px; width:150px; transition:border-color 0.15s; background:white; font-family:inherit; }
-  .drill-panel .reclass-input:focus { border-color:var(--blue); outline:none; box-shadow:0 0 0 2px var(--blue-light, #dbeafe); width:180px; }
-  .drill-panel .reclass-btn { font-size:11px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-weight:600; transition:all 0.15s; font-family:inherit; }
-  .drill-panel .reclass-btn--primary { background:var(--blue); color:white; }
-  .drill-panel .reclass-btn--undo { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
 </style>
 </head>
 <body>
@@ -6170,7 +4670,6 @@ PM_EDIT_TEMPLATE = r"""
     <a href="/pm" class="nav-link active">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
   </div>
 </nav>
 
@@ -6208,15 +4707,17 @@ PM_EDIT_TEMPLATE = r"""
             <th>GL Code</th>
             <th>Description</th>
             <th>Notes</th>
+            <th class="number">Prior Year<br>Actual</th>
             <th class="number">YTD<br>Actual</th>
             <th class="number">Accrual<br>Adj</th>
             <th class="number">Unpaid<br>Bills</th>
-            <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
-            <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+            <th class="number">YTD<br>Budget</th>
+            <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+            <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">Current<br>Budget</th>
             <th class="number">Increase<br>%</th>
-            <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #e1effe); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
-            <th class="number">$ V.<br>Forecast</th>
+            <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+            <th class="number">$<br>Variance</th>
             <th class="number">%<br>Change</th>
           </tr>
         </thead>
@@ -6258,10 +4759,15 @@ function pctFmt(n) {
 
 function computeEstimate(line) {
     const ytd = line.ytd_actual || 0;
-    if (ytd > 0 && YTD_MONTHS > 0) {
-        return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+    const accrual = line.accrual_adj || 0;
+    const unpaid = line.unpaid_bills || 0;
+    const prior = line.prior_year || 0;
+    const base = ytd + accrual + unpaid;
+    if (base >= prior && prior > 0) {
+        return (base / YTD_MONTHS) * REMAINING_MONTHS;
+    } else {
+        return Math.max(prior - base, 0);
     }
-    return 0;
 }
 
 function computeForecast(line) {
@@ -6287,8 +4793,8 @@ function renderTable() {
         if (categories[l.category]) categories[l.category].push(l);
     });
 
-    let grandTotals = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
-    const NC = 13;
+    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const NC = 15;
 
     for (const [cat, catLines] of Object.entries(categories)) {
         if (catLines.length === 0) continue;
@@ -6298,18 +4804,18 @@ function renderTable() {
         headerRow.innerHTML = '<td colspan="' + NC + '">' + catLabels[cat] + '</td>';
         tbody.appendChild(headerRow);
 
-        let catTotals = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
 
         catLines.forEach(line => {
             const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            const variance = proposed - forecast;
-            const pctChange = forecast ? (proposed / forecast - 1) : 0;
+            const variance = proposed - (line.prior_year || 0);
+            const pctChange = (line.prior_year || 0) ? (proposed / (line.prior_year) - 1) : 0;
 
+            catTotals.prior += (line.prior_year || 0);
             catTotals.ytd += (line.ytd_actual || 0);
-            catTotals.accrual += (line.accrual_adj || 0);
-            catTotals.unpaid += (line.unpaid_bills || 0);
+            catTotals.ytdBudget += (line.ytd_budget || 0);
             catTotals.estimate += estimate;
             catTotals.forecast += forecast;
             catTotals.budget += (line.current_budget || 0);
@@ -6317,17 +4823,18 @@ function renderTable() {
 
             const reclassBadge = line.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">Reclass</span>' : '';
 
-            const isZero = !(line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
+            const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.ytd_budget || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
-            tr.dataset.gl = line.gl_code;
             tr.innerHTML = `
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
                 <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
-                <td class="number" style="position:relative;">${fmt(line.ytd_actual)}${line._reclass_ytd_adj ? '<span style="position:absolute; top:1px; right:2px; font-size:9px; color:var(--orange,#d97706); background:var(--orange-light,#fef3c7); padding:0 3px; border-radius:3px; border:1px solid var(--orange,#d97706);" title="Original: ' + fmt(line._orig_ytd) + ' | Reclass adj: ' + (line._reclass_ytd_adj > 0 ? '+' : '') + fmt(line._reclass_ytd_adj) + '">R</span>' : ''}</td>
-                <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.accrual_adj || 0) !== 0 ? '<span onclick="pmToggleAccrualDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #fde68a;" title="View prior-year invoices">▼</span>' : ''}</td>
-                <td class="number" style="position:relative;"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}>${(line.unpaid_bills || 0) !== 0 ? '<span onclick="pmToggleUnpaidDrill(\'' + line.gl_code + '\', this)" style="position:absolute; top:2px; right:2px; font-size:9px; color:#92400e; cursor:pointer; background:#fef3c7; padding:0 3px; border-radius:3px; border:1px solid #f59e0b;" title="View unpaid invoices">▼</span>' : ''}</td>
+                <td class="number">${fmt(line.prior_year)}</td>
+                <td class="number">${fmt(line.ytd_actual)}</td>
+                <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number">${fmt(line.ytd_budget)}</td>
                 <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
                 <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
                 <td class="number">${fmt(line.current_budget)}</td>
@@ -6340,14 +4847,15 @@ function renderTable() {
         });
 
         // Subtotal
-        const catVar = catTotals.proposed - catTotals.forecast;
+        const catVar = catTotals.proposed - catTotals.prior;
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
             <td></td><td>Total ${catLabels[cat]}</td><td></td>
+            <td class="number">${fmt(catTotals.prior)}</td>
             <td class="number">${fmt(catTotals.ytd)}</td>
-            <td class="number"><input type="number" step="1" value="${Math.round(catTotals.accrual || 0)}" disabled></td>
-            <td class="number"><input type="number" step="1" value="${Math.round(catTotals.unpaid || 0)}" disabled></td>
+            <td></td><td></td>
+            <td class="number">${fmt(catTotals.ytdBudget)}</td>
             <td class="number">${fmt(catTotals.estimate)}</td>
             <td class="number">${fmt(catTotals.forecast)}</td>
             <td class="number">${fmt(catTotals.budget)}</td>
@@ -6358,19 +4866,20 @@ function renderTable() {
         `;
         tbody.appendChild(subRow);
 
-        Object.keys(grandTotals).forEach(k => { if (k in catTotals) grandTotals[k] += catTotals[k]; });
+        Object.keys(grandTotals).forEach(k => grandTotals[k] += catTotals[k]);
     }
 
     // Grand total
-    const grandVar = grandTotals.proposed - grandTotals.forecast;
-    const grandPct = grandTotals.forecast ? (grandTotals.proposed / grandTotals.forecast - 1) : 0;
+    const grandVar = grandTotals.proposed - grandTotals.prior;
+    const grandPct = grandTotals.prior ? (grandTotals.proposed / grandTotals.prior - 1) : 0;
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
         <td></td><td>GRAND TOTAL R&M</td><td></td>
+        <td class="number">${fmt(grandTotals.prior)}</td>
         <td class="number">${fmt(grandTotals.ytd)}</td>
-        <td class="number"><input type="number" step="1" value="${Math.round(grandTotals.accrual || 0)}" disabled></td>
-        <td class="number"><input type="number" step="1" value="${Math.round(grandTotals.unpaid || 0)}" disabled></td>
+        <td></td><td></td>
+        <td class="number">${fmt(grandTotals.ytdBudget)}</td>
         <td class="number">${fmt(grandTotals.estimate)}</td>
         <td class="number">${fmt(grandTotals.forecast)}</td>
         <td class="number">${fmt(grandTotals.budget)}</td>
@@ -6396,7 +4905,7 @@ function updateZeroToggle() {
     if (count === 0) { btn.style.display = 'none'; return; }
     btn.style.display = '';
     btn.textContent = _showZeroRows ? 'Hide ' + count + ' Zero Rows' : 'Show ' + count + ' Hidden Zero Rows';
-    btn.style.background = _showZeroRows ? 'var(--gray-200)' : 'var(--blue-light, #e1effe)';
+    btn.style.background = _showZeroRows ? 'var(--gray-200)' : 'var(--blue-light, #f5efe7)';
     btn.style.color = _showZeroRows ? 'var(--gray-600)' : 'var(--blue)';
     btn.style.borderColor = _showZeroRows ? 'var(--gray-300)' : 'var(--blue)';
 }
@@ -6423,13 +4932,18 @@ function showPmFormula(cell, type, gl) {
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
     const base = ytd + accrual + unpaid;
+    const prior = line.prior_year || 0;
     const est = computeEstimate(line);
     const fc = computeForecast(line);
     const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
 
     let formula = '';
     if (type === 'est') {
-        formula = `YTD ${fmt(ytd)} / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
+        if (base >= prior && prior > 0) {
+            formula = `(YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)}) / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
+        } else {
+            formula = `max(Prior ${fmt(prior)} − Base ${fmt(base)}, 0) = ${fmt(est)}`;
+        }
     } else if (type === 'fc') {
         formula = `YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)} + Est ${fmt(est)} = ${fmt(fc)}`;
     } else if (type === 'pb') {
@@ -6467,151 +4981,6 @@ async function fetchExpenseData() {
     } catch(e) { _expenseCache = false; return null; }
 }
 
-// ── PM Open AP (Unpaid Bills) drill-down ────────────────────────────
-let _pmOpenAPCache = null;
-
-async function pmFetchOpenAPData() {
-    if (_pmOpenAPCache !== null) return _pmOpenAPCache;
-    try {
-        const res = await fetch('/api/open-ap/' + ENTITY);
-        if (!res.ok) { _pmOpenAPCache = false; return null; }
-        _pmOpenAPCache = await res.json();
-        return _pmOpenAPCache;
-    } catch(e) { _pmOpenAPCache = false; return null; }
-}
-
-async function pmToggleUnpaidDrill(glCode, linkEl) {
-    const row = linkEl.closest('tr');
-    const next = row.nextElementSibling;
-    if (next && next.classList.contains('pm-unpaid-detail')) {
-        next.remove();
-        return;
-    }
-
-    const data = await pmFetchOpenAPData();
-    if (!data || !data.gl_groups) {
-        const noData = document.createElement('tr');
-        noData.className = 'pm-unpaid-detail';
-        noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No Open AP data available. Upload the AP Aging report with the budget generator.</td>';
-        row.after(noData);
-        return;
-    }
-
-    const glGroup = data.gl_groups.find(g => g.gl_code === glCode);
-    if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
-        const noInv = document.createElement('tr');
-        noInv.className = 'pm-unpaid-detail';
-        noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No unpaid invoices for ' + glCode + '</td>';
-        row.after(noInv);
-        return;
-    }
-
-    const detailRow = document.createElement('tr');
-    detailRow.className = 'pm-unpaid-detail';
-    let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--amber">';
-    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Unpaid Bills — ' + glCode + ' ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.pm-unpaid-detail\').remove(); return false;" title="Close">×</button></div>';
-    html += '<div class="drill-panel-body"><table>';
-    html += '<thead><tr>';
-    html += '<td style="text-align:left;">Vendor</td><td>Invoice #</td><td>Date</td><td>Description</td><td style="text-align:right;">Amount</td></tr></thead>';
-    html += '<tbody>';
-
-    glGroup.invoices.forEach(inv => {
-        html += '<tr>';
-        html += '<td>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.invoice_notes || inv.notes || '').replace(/"/g,'&quot;')) + '">' + (inv.invoice_notes || inv.notes || '—') + '</td>';
-        html += '<td style="text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.current_owed) + '</td>';
-        html += '</tr>';
-    });
-
-    html += '</tbody></table></div>';
-    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
-    html += '<span>' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + '</span>';
-    html += '<span style="font-size:13px;">' + fmt(glGroup.total || 0) + '</span>';
-    html += '</div></div></td>';
-    detailRow.innerHTML = html;
-    row.after(detailRow);
-}
-
-// ── Apply invoice-level reclass adjustments to LINES YTD ──
-// Scans reclassed invoices in expense data and adjusts ytd_actual on LINES
-async function applyExpenseReclassAdjustments() {
-    const data = await fetchExpenseData();
-    if (!data || !data.gl_groups) return;
-
-    // Restore original YTD values first (avoid double-counting on re-render)
-    LINES.forEach(l => {
-        if (l._orig_ytd !== undefined) l.ytd_actual = l._orig_ytd;
-        l._orig_ytd = l.ytd_actual || 0;
-    });
-
-    // Compute net adjustment per GL from reclassed invoices
-    const adj = {};  // {gl_code: net_amount_change}
-    data.gl_groups.forEach(g => {
-        if (!g.invoices) return;
-        g.invoices.forEach(inv => {
-            if (inv.reclass_to_gl) {
-                // Source GL loses this amount
-                adj[g.gl_code] = (adj[g.gl_code] || 0) - inv.amount;
-                // Target GL gains this amount
-                adj[inv.reclass_to_gl] = (adj[inv.reclass_to_gl] || 0) + inv.amount;
-            }
-        });
-    });
-
-    // Apply adjustments to LINES
-    LINES.forEach(l => {
-        const a = adj[l.gl_code] || 0;
-        if (a) {
-            l.ytd_actual = (l.ytd_actual || 0) + a;
-            l._reclass_ytd_adj = a;
-        } else {
-            l._reclass_ytd_adj = 0;
-        }
-    });
-}
-
-async function pmToggleAccrualDrill(glCode, el) {
-  const row = el.closest('tr');
-  const existingDrill = row.nextElementSibling;
-  if (existingDrill && existingDrill.classList.contains('pm-accrual-detail')) {
-    existingDrill.remove();
-    el.textContent = '▼';
-    return;
-  }
-  el.textContent = '▲';
-  try {
-    const resp = await fetch('/api/accrual-invoices/' + ENTITY + '/' + glCode);
-    const data = await resp.json();
-    if (!data.invoices || data.invoices.length === 0) {
-      el.textContent = '▼';
-      return;
-    }
-    const drillRow = document.createElement('tr');
-    drillRow.className = 'pm-accrual-detail';
-    const nc = row.querySelectorAll('td').length;
-    let html = '<td colspan="' + nc + '" style="padding:0;"><div class="drill-panel drill-panel--amber">';
-    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">Prior-Year Invoices</span><span style="font-weight:400; font-size:12px; opacity:0.7;">before ' + (data.cutoff || '?') + ' · ' + data.invoices.length + ' invoice' + (data.invoices.length !== 1 ? 's' : '') + '</span></div><button class="drill-close" onclick="this.closest(\'.pm-accrual-detail\').remove(); return false;" title="Close">×</button></div>';
-    html += '<div class="drill-panel-body"><table>';
-    html += '<thead><tr><th style="text-align:left;">Payee</th><th>Invoice #</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>';
-    html += '<tbody>';
-    data.invoices.forEach(inv => {
-      html += '<tr><td>' + (inv.payee_name || '—') + '</td>' +
-        '<td>' + (inv.invoice_num || '—') + '</td>' +
-        '<td>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>' +
-        '<td style="text-align:right;">' + fmt(inv.amount) + '</td></tr>';
-    });
-    html += '</tbody></table></div>';
-    html += '<div class="drill-panel-footer" style="display:flex; justify-content:space-between; font-weight:600;">';
-    html += '<span>Accrual Adjustment (negative)</span>';
-    html += '<span style="color:var(--red);">' + fmt(data.total) + '</span>';
-    html += '</div></div></td>';
-    drillRow.innerHTML = html;
-    row.after(drillRow);
-  } catch(e) { el.textContent = '▼'; }
-}
-
 async function toggleInvoices(glCode, linkEl) {
     const row = linkEl.closest('tr');
     const existingDetail = row.nextElementSibling;
@@ -6643,62 +5012,44 @@ async function toggleInvoices(glCode, linkEl) {
         return;
     }
 
-    // Build all GL codes for reclass dropdown — sorted alphabetically, with descriptions
-    const allGLMap = {};
-    LINES.forEach(l => { if (l.gl_code !== glCode) allGLMap[l.gl_code] = l.description || ''; });
-    const allGLs = Object.keys(allGLMap).sort();
+    // Build all GL codes for reclass dropdown
+    const allGLs = LINES.map(l => l.gl_code).filter(g => g !== glCode);
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
-    let html = '<td colspan="15" style="padding:0;"><div class="drill-panel drill-panel--blue">';
-    html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span></div><button class="drill-close" onclick="this.closest(\'.invoice-detail-row\').remove(); return false;" title="Close">×</button></div>';
+    let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
+    html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
+    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
+    html += '</div>';
 
-    // Build datalist options once (shared)
-    let dlOptions = '';
-    allGLs.forEach(g => { dlOptions += '<option value="' + g + '">' + g + ' - ' + (allGLMap[g] || '') + '</option>'; });
-
-    html += '<div class="drill-panel-body"><table>';
-    html += '<thead><tr>';
-    html += '<td style="width:28px;"><input type="checkbox" id="batch_all_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" onchange="toggleBatchAll(this,\'' + glCode + '\')" title="Select all"></td>';
-    html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px; padding-left:20px;">Reclass To</td></tr></thead>';
-    html += '<tbody>';
+    html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+    html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
-        html += '<tr' + (isReclassed ? ' style="opacity:0.5;"' : '') + '>';
-        html += '<td>';
-        if (!isReclassed) {
-            html += '<input type="checkbox" class="batch-cb" data-inv-id="' + inv.id + '" data-gl="' + glCode + '" data-amt="' + inv.amount + '" onchange="updateBatchBar(\'' + glCode + '\')">';
-        }
-        html += '</td>';
-        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="font-family:monospace; font-size:11px;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
-        html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + fmt(inv.amount) + '</td>';
-        html += '<td style="text-align:left; white-space:nowrap; padding-left:20px;">';
+        html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
+        html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
+        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.amount) + '</td>';
+        html += '<td style="padding:6px 10px; text-align:right;">';
         if (isReclassed) {
-            html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
-            html += '<button class="reclass-btn reclass-btn--undo" onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
+            html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
+            html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
-            html += '<span class="reclass-wrap"><span class="reclass-search"><input id="reclass_gl_' + inv.id + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..."></span>';
-            html += '<button class="reclass-btn reclass-btn--primary" onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')">Reclass</button></span>';
+            html += '<select id="reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
+            html += '<option value="">Reclass to…</option>';
+            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
+            html += '</select> ';
+            html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
         }
         html += '</td></tr>';
     });
-    html += '</tbody></table></div>';
-    html += '<datalist id="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '">' + dlOptions + '</datalist>';
 
-    // Batch reclass bar (hidden by default)
-    html += '<div id="batch_bar_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="display:none; margin:0 16px 8px; padding:8px 12px; background:#dbeafe; border:1px solid #2563eb; border-radius:6px; font-size:12px; font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">';
-    html += '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
-    html += '<span id="batch_count_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" style="font-weight:600; color:#2563eb;">0 selected ($0)</span>';
-    html += '<span>→ Reclass to:</span>';
-    html += '<span class="reclass-search"><input id="batch_target_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" list="reclass_list_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" class="reclass-input" placeholder="Search GL code..." style="width:180px;"></span>';
-    html += '<button class="reclass-btn reclass-btn--primary" onclick="batchReclass(\'' + glCode + '\')">Reclass Selected</button>';
-    html += '</div></div>';
-
-    html += '</div></td>';
+    html += '</table></div></td>';
     detailRow.innerHTML = html;
     row.after(detailRow);
 }
@@ -6714,11 +5065,10 @@ async function inlineReclass(invoiceId, fromGL) {
         });
         if (resp.ok) {
             _expenseCache = null; // Clear cache to refresh
-            // Re-apply reclass adjustments to YTD and re-render the whole table
-            await applyExpenseReclassAdjustments();
-            renderTable();
-            updateZeroToggle();
-            showToast('Invoice reclassified to ' + select.value + ' — YTD updated', 'success');
+            // Re-toggle to refresh the detail view
+            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
+            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
+            showToast('Invoice reclassified to ' + select.value, 'success');
         } else { showToast('Reclass failed', 'error'); }
     } catch(e) { showToast('Reclass error: ' + e.message, 'error'); }
 }
@@ -6732,59 +5082,11 @@ async function inlineUndoReclass(invoiceId, fromGL) {
         });
         if (resp.ok) {
             _expenseCache = null;
-            // Re-apply reclass adjustments to YTD and re-render
-            await applyExpenseReclassAdjustments();
-            renderTable();
-            updateZeroToggle();
-            showToast('Reclass undone — YTD restored', 'success');
+            const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
+            if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
+            showToast('Reclass undone', 'success');
         } else { showToast('Undo failed', 'error'); }
     } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
-}
-
-function glKey(glCode) { return glCode.replace(/[^a-zA-Z0-9]/g,'_'); }
-
-function toggleBatchAll(masterCb, glCode) {
-    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]');
-    cbs.forEach(cb => { cb.checked = masterCb.checked; });
-    updateBatchBar(glCode);
-}
-
-function updateBatchBar(glCode) {
-    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]:checked');
-    const bar = document.getElementById('batch_bar_' + glKey(glCode));
-    const countEl = document.getElementById('batch_count_' + glKey(glCode));
-    if (!bar) return;
-    let total = 0;
-    cbs.forEach(cb => { total += parseFloat(cb.dataset.amt || 0); });
-    if (cbs.length > 0) {
-        bar.style.display = 'block';
-        countEl.textContent = cbs.length + ' selected (' + fmt(total) + ')';
-    } else {
-        bar.style.display = 'none';
-    }
-}
-
-async function batchReclass(glCode) {
-    const cbs = document.querySelectorAll('.batch-cb[data-gl="' + glCode + '"]:checked');
-    const target = document.getElementById('batch_target_' + glKey(glCode));
-    if (!cbs.length) { alert('No invoices selected'); return; }
-    if (!target || !target.value) { alert('Select a target GL code'); return; }
-    const ids = Array.from(cbs).map(cb => parseInt(cb.dataset.invId));
-    try {
-        const resp = await fetch('/api/expense-dist/reclass-batch', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ invoice_ids: ids, reclass_to_gl: target.value, reclass_notes: 'Batch reclassed from PM budget review' })
-        });
-        const data = await resp.json();
-        if (resp.ok) {
-            _expenseCache = null;
-            await applyExpenseReclassAdjustments();
-            renderTable();
-            updateZeroToggle();
-            showToast(data.reclassed + ' invoice' + (data.reclassed !== 1 ? 's' : '') + ' reclassified to ' + target.value + ' — YTD updated', 'success');
-        } else { showToast('Batch reclass failed: ' + (data.error || 'Unknown error'), 'error'); }
-    } catch(e) { showToast('Batch reclass error: ' + e.message, 'error'); }
 }
 
 function onInput(el) {
@@ -6809,8 +5111,8 @@ function onInput(el) {
     const est = computeEstimate(line);
     const fc = computeForecast(line);
     const pb = computeProposed(line);
-    const variance = pb - (line.current_budget || 0);
-    const pctChange = (line.current_budget || 0) ? (pb / line.current_budget - 1) : 0;
+    const variance = pb - (line.prior_year || 0);
+    const pctChange = (line.prior_year || 0) ? (pb / line.prior_year - 1) : 0;
 
     const estEl = document.getElementById('est_' + gl);
     const fcEl = document.getElementById('fc_' + gl);
@@ -6885,7 +5187,6 @@ function showReclass(glCode) {
 
     // Build GL options from RM_GL_MAP keys (all budget template GL codes)
     const glOptions = LINES.filter(l => l.gl_code !== glCode)
-        .sort((a, b) => a.gl_code.localeCompare(b.gl_code))
         .map(l => `<option value="${l.gl_code}">${l.gl_code} - ${l.description}</option>`)
         .join('');
 
@@ -6900,14 +5201,14 @@ function showReclass(glCode) {
     const formRow = document.createElement('tr');
     formRow.className = 'reclass-form-row';
     formRow.innerHTML = `
-        <td colspan="13" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
+        <td colspan="12" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
-                <input id="reclass_target_${glCode}" list="reclass_target_list_${glCode}" placeholder="Search GL code..." style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px; width:180px;">
-                <datalist id="reclass_target_list_${glCode}">
+                <select id="reclass_target_${glCode}" style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
+                    <option value="">-- Select target GL --</option>
                     ${glOptions}
-                </datalist>
-                <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.ytd_actual || 0)}"
+                </select>
+                <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.current_budget || 0)}"
                        style="width:100px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
                 <input type="text" id="reclass_notes_${glCode}" placeholder="Notes for FA" value="${line.reclass_notes || ''}"
                        style="width:200px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
@@ -6953,12 +5254,8 @@ if (!CAN_EDIT) {
     if (btn) btn.disabled = true;
 }
 
-// Apply invoice reclass adjustments before first render, then render
-(async () => {
-    await applyExpenseReclassAdjustments();
-    renderTable();
-    updateZeroToggle();
-})();
+renderTable();
+updateZeroToggle();
 </script>
 </body>
 </html>
@@ -7048,9 +5345,10 @@ document.getElementById('printDate').textContent = new Date().toLocaleDateString
 function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
 
 function computeEstimate(l) {
-  const ytd = l.ytd_actual || 0;
-  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
-  return 0;
+  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0, prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  return Math.max(prior - base, 0);
 }
 
 function computeForecast(l) {
@@ -7073,8 +5371,9 @@ const CATEGORIES = {
 };
 
 function sumLines(lines) {
-  const t = {forecast:0, proposed:0, budget:0};
+  const t = {prior:0, forecast:0, proposed:0, budget:0};
   lines.forEach(l => {
+    t.prior += l.prior_year || 0;
     t.forecast += computeForecast(l);
     t.budget += l.current_budget || 0;
     t.proposed += l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
@@ -7092,20 +5391,20 @@ function renderSummary() {
   const inc = sumLines(incomeLines);
   const exp = sumLines(expenseLines);
   const noiProposed = inc.proposed - exp.proposed;
-  const noiBudget = inc.budget - exp.budget;
+  const noiPrior = inc.prior - exp.prior;
 
   let html = '<div class="summary-cards">' +
     '<div class="card"><div class="label">Total Income</div><div class="value">' + fmt(inc.proposed) + '</div>' +
-    '<div class="delta ' + (inc.proposed >= inc.budget ? 'delta-down' : 'delta-up') + '">' + (inc.budget ? ((inc.proposed/inc.budget-1)*100).toFixed(1) + '% vs budget' : '') + '</div></div>' +
+    '<div class="delta ' + (inc.proposed >= inc.prior ? 'delta-down' : 'delta-up') + '">' + (inc.prior ? ((inc.proposed/inc.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
     '<div class="card"><div class="label">Total Expenses</div><div class="value">' + fmt(exp.proposed) + '</div>' +
-    '<div class="delta ' + (exp.proposed <= exp.budget ? 'delta-down' : 'delta-up') + '">' + (exp.budget ? ((exp.proposed/exp.budget-1)*100).toFixed(1) + '% vs budget' : '') + '</div></div>' +
+    '<div class="delta ' + (exp.proposed <= exp.prior ? 'delta-down' : 'delta-up') + '">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
     '<div class="card"><div class="label">Net Operating Income</div><div class="value">' + fmt(noiProposed) + '</div>' +
-    '<div class="delta ' + (noiProposed >= noiBudget ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiBudget) + ' vs budget</div></div>' +
+    '<div class="delta ' + (noiProposed >= noiPrior ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiPrior) + ' vs prior</div></div>' +
     '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '—') + '</div>' +
     '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
 
   // Summary table by sheet
-  html += '<table><thead><tr><th>Category</th><th class="num">Proposed Budget</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>Category</th><th class="num">Prior Year</th><th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
   SHEET_ORDER.forEach(s => {
     const cats = CATEGORIES[s];
     if (cats) {
@@ -7114,19 +5413,35 @@ function renderSummary() {
         const gl = sheetLines.filter(cat.match);
         if (gl.length === 0) return;
         const t = sumLines(gl);
-        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.proposed) + '</td></tr>';
+        const v = t.proposed - t.prior;
+        const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
+        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
+          '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+          '<td class="num">' + p.toFixed(1) + '%</td></tr>';
       });
       const st = sumLines(SHEETS[s] || []);
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.proposed) + '</td></tr>';
+      const sv = st.proposed - st.prior;
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.prior) + '</td><td class="num">' + fmt(st.proposed) + '</td>' +
+        '<td class="num ' + (sv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(sv) + '</td>' +
+        '<td class="num">' + (st.prior ? ((st.proposed/st.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
     } else {
       const t = sumLines(SHEETS[s] || []);
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.proposed) + '</td></tr>';
+      const v = t.proposed - t.prior;
+      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
+        '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+        '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
     }
   });
   // Total row
-  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.proposed) + '</td></tr>';
+  const totalV = exp.proposed - exp.prior;
+  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.prior) + '</td><td class="num">' + fmt(exp.proposed) + '</td>' +
+    '<td class="num ' + (totalV >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(totalV) + '</td>' +
+    '<td class="num">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   // NOI
-  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiProposed) + '</td></tr>';
+  const noiV = noiProposed - noiPrior;
+  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiPrior) + '</td><td class="num">' + fmt(noiProposed) + '</td>' +
+    '<td class="num ' + (noiV >= 0 ? 'variance-neg' : 'variance-pos') + '">' + fmt(noiV) + '</td>' +
+    '<td class="num">' + (noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }
@@ -7138,23 +5453,22 @@ function renderSheet(sheetName) {
 
   let html = '<table><thead><tr>' +
     '<th>GL Code</th><th>Description</th>' +
-    '<th class="num">YTD Actual</th>' +
+    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
     '<th class="num">' + estLabel + ' Est</th><th class="num">12 Mo Forecast</th>' +
-    '<th class="num">Current Budget</th><th class="num">Proposed Budget</th><th class="num">$ V. Forecast</th><th class="num">% Change</th>' +
+    '<th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
     '</tr></thead><tbody>';
 
   const cats = CATEGORIES[sheetName];
 
   function buildRow(l) {
-    const budget = l.current_budget || 0;
+    const prior = l.prior_year || 0;
     const forecast = computeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const v = proposed - forecast;
-    const p = forecast ? (proposed/forecast-1)*100 : 0;
+    const v = proposed - prior;
+    const p = prior ? (proposed/prior-1)*100 : 0;
     return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
-      '<td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
+      '<td class="num">' + fmt(prior) + '</td><td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
       '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
-      '<td class="num">' + fmt(budget) + '</td>' +
       '<td class="num" style="font-weight:600;">' + fmt(proposed) + '</td>' +
       '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
       '<td class="num">' + p.toFixed(1) + '%</td></tr>';
@@ -7162,11 +5476,11 @@ function renderSheet(sheetName) {
 
   function buildSubtotal(label, ls) {
     const t = sumLines(ls);
-    const v = t.proposed - t.forecast;
+    const v = t.proposed - t.prior;
     return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
-      '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-      '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + (t.forecast ? ((t.proposed/t.forecast-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+      '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
+      '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   }
 
   if (cats) {
@@ -7183,11 +5497,11 @@ function renderSheet(sheetName) {
 
   // Sheet total
   const t = sumLines(lines);
-  const tv = t.proposed - t.forecast;
+  const tv = t.proposed - t.prior;
   html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
-    '<td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-    '<td class="num">' + fmt(t.budget) + '</td><td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
-    '<td class="num">' + (t.forecast ? ((t.proposed/t.forecast-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
+    '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
+    '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }
