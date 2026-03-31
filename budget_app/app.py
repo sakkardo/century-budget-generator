@@ -2557,6 +2557,16 @@ GENERATE_TEMPLATE = r"""
   <div id="autoStatus" style="display:none; margin-top:16px; padding:16px; background:#f0fdf4; border:1px solid #86efac; border-radius:8px;">
     <p style="margin:0; font-weight:600; color:#166534;">Files auto-uploaded and processed. Check the FA Dashboard for results.</p>
   </div>
+
+  <!-- Manual upload fallback -->
+  <div style="margin-top:24px; padding:16px; background:#f8f5f0; border:1px solid #e8e0d4; border-radius:8px;">
+    <p style="margin:0 0 8px; font-weight:600; color:#5a4a3f;">Manual Upload</p>
+    <p style="margin:0 0 12px; font-size:12px; color:#8a7a6f;">Upload Yardi Excel files directly (YSL, Expense Distribution, AP Aging, Maintenance Proof). The app auto-detects file types.</p>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <input type="file" id="manualFiles" multiple accept=".xlsx,.xls" style="font-size:13px;">
+      <button class="btn btn-primary" id="uploadBtn" onclick="manualUpload()" style="background:#5a4a3f;">Upload &amp; Process</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -2688,7 +2698,36 @@ function copyAPScript() {
   });
 }
 
-// Upload section removed — files auto-upload from Yardi script
+// ── Manual Upload (fallback for files that don't auto-upload) ──
+async function manualUpload() {
+  const input = document.getElementById('manualFiles');
+  if (!input.files.length) { alert('Select at least one file'); return; }
+
+  const formData = new FormData();
+  for (const f of input.files) formData.append('files', f);
+
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+
+  try {
+    const resp = await fetch('/api/process', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+
+    let msg = '';
+    if (data.success?.length) msg += 'Success: ' + data.success.join(', ') + '\\n';
+    if (data.warnings?.length) msg += 'Warnings: ' + data.warnings.join(', ') + '\\n';
+    if (data.failed?.length) msg += 'Failed: ' + data.failed.join(', ');
+    alert(msg || 'Files processed.');
+    input.value = '';
+  } catch (err) {
+    alert('Upload failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload & Process';
+  }
+}
 </script>
 </body>
 </html>
