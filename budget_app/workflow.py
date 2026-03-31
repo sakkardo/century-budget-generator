@@ -71,11 +71,23 @@ RM_GL_MAP = {
     "5809-0016": ("Sprinkler Maintenance", 66, "maintenance"),
 }
 
-# Maps budget_line category -> Century audit category
+# Comprehensive mapping: budget_line category → Century audit category
 BUDGET_CAT_TO_CENTURY = {
     "supplies": "Supplies",
     "repairs": "Repairs & Maintenance",
     "maintenance": "Repairs & Maintenance",
+    "payroll": "Payroll",
+    "electric": "Electric",
+    "gas": "Gas Cooking / Heating",
+    "fuel": "Fuel",
+    "oil": "Fuel",
+    "water": "Water & Sewer",
+    "sewer": "Water & Sewer",
+    "insurance": "Insurance",
+    "re_taxes": "Real Estate Taxes",
+    "professional": "Professional Fees",
+    "admin": "Administrative & Other",
+    "financial": "Financial Expenses",
 }
 
 BUDGET_STATUSES = [
@@ -1052,15 +1064,18 @@ def create_workflow_blueprint(db):
             pass
 
         # Check audit data — fetch ALL confirmed uploads for multi-year comparison
-        audit_data = {"exists": False, "years": {}}
+        audit_data = {"exists": False, "years": {}, "summary_years": {}}
         try:
             import json as _json
+            from budget_app.audited_financials import CENTURY_TO_SUMMARY
+
             audit_rows = db.session.execute(
                 db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
                 {"ec": entity_code}
             ).fetchall()
             if audit_rows:
                 years_data = {}
+                summary_years_data = {}
                 for row in audit_rows:
                     if not row[0]:
                         continue
@@ -1068,19 +1083,33 @@ def create_workflow_blueprint(db):
                     fiscal_year = row[1] or "Unknown"
                     # Extract year_totals[0] for each category (the primary year)
                     year_cats = {}
+                    summary_totals = {}
                     for cat, data in mapped.items():
                         if isinstance(data, dict):
                             totals = data.get("year_totals", data.get("years", []))
                             if totals and len(totals) > 0:
                                 year_cats[cat] = totals[0]
+                                # Also aggregate to summary row
+                                summary_label = CENTURY_TO_SUMMARY.get(cat, cat)
+                                summary_totals[summary_label] = summary_totals.get(summary_label, 0) + totals[0]
                             elif data.get("total"):
                                 year_cats[cat] = data["total"]
+                                summary_label = CENTURY_TO_SUMMARY.get(cat, cat)
+                                summary_totals[summary_label] = summary_totals.get(summary_label, 0) + data["total"]
                     if year_cats:
                         years_data[fiscal_year] = year_cats
-                if years_data:
+                    if summary_totals:
+                        summary_years_data[fiscal_year] = summary_totals
+
+                # Limit to 2 most recent fiscal years
+                years_data_limited = dict(sorted(years_data.items(), reverse=True)[:2])
+                summary_years_data_limited = dict(sorted(summary_years_data.items(), reverse=True)[:2])
+
+                if years_data_limited:
                     audit_data = {
                         "exists": True,
-                        "years": years_data,
+                        "years": years_data_limited,
+                        "summary_years": summary_years_data_limited,
                         "category_mapping": BUDGET_CAT_TO_CENTURY
                     }
         except Exception:
@@ -2980,6 +3009,7 @@ function renderDetail(data) {
   // Budget Workbook Tabs
   allSheets = data.sheets || {};  // global for Budget Summary access
   window._reTaxesData = data.re_taxes || null;  // RE Taxes tab data for co-ops
+  window._data = data;  // Store data for renderBudgetSummary access to audit.summary_years
   const sheets = allSheets;
   const sheetOrder = data.sheet_order || Object.keys(sheets);
   const tabsDiv = document.getElementById('sheetTabs');
@@ -3731,12 +3761,33 @@ async function refreshDOFData() {
 
 function renderBudgetSummary(contentDiv) {
   const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
-  let html = '<div style="margin-bottom:8px; display:flex; align-items:center; gap:12px;">' +
-    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span></div>';
-  html += '<table style="width:100%; border-collapse:collapse; font-size:14px;">' +
-    '<thead><tr style="background:var(--gray-100); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-    '<th style="text-align:left; padding:10px 12px; width:35%;">Category</th>' +
-    '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
+
+  // Get audit summary years (up to 2 most recent)
+  const auditSummary = (window._data && window._data.audit && window._data.audit.summary_years) ? window._data.audit.summary_years : {};
+  const auditYearKeys = Object.keys(auditSummary).sort().reverse().slice(0, 2).reverse(); // chronological, max 2
+  const hasAudit = auditYearKeys.length > 0;
+
+  // Track custom rows added by FA
+  if (!window._customSummaryRows) window._customSummaryRows = [];
+
+  let showZeroRows = window._showZeroSummaryRows || false;
+
+  let html = '<div style="margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">' +
+    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span>' +
+    '<button onclick="toggleZeroRows()" id="zeroToggleBtn" style="margin-left:auto; padding:4px 12px; font-size:11px; border:1px solid var(--gray-300); border-radius:4px; background:white; cursor:pointer;">' +
+    (showZeroRows ? 'Hide Empty Rows' : 'Show All Rows') + '</button></div>';
+
+  // Table header
+  html += '<table id="summaryTable" style="width:100%; border-collapse:collapse; font-size:13px;">' +
+    '<thead><tr style="background:var(--gray-100); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
+    '<th style="text-align:left; padding:10px 12px; width:28%;">Category</th>';
+
+  // Audit year columns
+  auditYearKeys.forEach(y => {
+    html += '<th style="' + thStyle + '">FY' + y + '<br>Audit</th>';
+  });
+
+  html += '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
     '<th style="' + thStyle + '">Current<br>Budget</th>' +
     '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
     '<th style="' + thStyle + '">$<br>Variance</th>' +
@@ -3745,6 +3796,8 @@ function renderBudgetSummary(contentDiv) {
 
   let totalIncome = {prior:0, budget:0, proposed:0};
   let totalExpense = {prior:0, budget:0, proposed:0};
+  let auditTotalIncome = auditYearKeys.map(() => 0);
+  let auditTotalExpense = auditYearKeys.map(() => 0);
 
   SUMMARY_ROWS.forEach((sr, idx) => {
     const sheetLines = allSheets[sr.sheet] || [];
@@ -3760,21 +3813,45 @@ function renderBudgetSummary(contentDiv) {
       proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     });
 
+    // Add custom rows for this category
+    window._customSummaryRows.forEach(cr => {
+      if (cr.summaryLabel === sr.label) {
+        proposed += cr.amount;
+      }
+    });
+
+    // Get audit amounts for this summary row
+    const auditAmounts = auditYearKeys.map(y => {
+      return (auditSummary[y] && auditSummary[y][sr.label]) ? auditSummary[y][sr.label] : 0;
+    });
+
+    const allZero = prior === 0 && budget === 0 && proposed === 0 && auditAmounts.every(a => a === 0);
+    if (allZero && !showZeroRows) return; // skip zero rows
+
     const variance = proposed - prior;
     const pctChange = prior ? (proposed / prior - 1) : 0;
     const varColor = sr.type === 'income'
       ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
       : (variance >= 0 ? 'var(--red)' : 'var(--green)');
 
-    if (sr.type === 'income') { totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; }
-    else { totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; }
+    if (sr.type === 'income') {
+      totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed;
+      auditAmounts.forEach((a, i) => auditTotalIncome[i] += a);
+    } else {
+      totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed;
+      auditAmounts.forEach((a, i) => auditTotalExpense[i] += a);
+    }
 
-    // Bold for income row, normal for expense detail
     const isIncomeRow = idx === 0;
-    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-50, #eff6ff);' : '';
+    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-light, #f5efe7);' : '';
     html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
-      '<td style="padding:10px 12px;">' + sr.label + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
+      '<td style="padding:10px 12px;">' + sr.label + '</td>';
+
+    auditAmounts.forEach(a => {
+      html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>';
+    });
+
+    html += '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
       '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
       '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
       '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
@@ -3785,8 +3862,9 @@ function renderBudgetSummary(contentDiv) {
       const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
       const teVar = teProposed - tePrior;
       const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
-      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
+      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>';
+      auditTotalExpense.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
+      html += '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
@@ -3799,8 +3877,13 @@ function renderBudgetSummary(contentDiv) {
       const noiVar = noiProposed - noiPrior;
       const noiPct = noiPrior ? (noiProposed / noiPrior - 1) : 0;
       const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
-      html += '<tr style="font-weight:700; background:var(--blue-50, #eff6ff); border-top:2px solid var(--primary);"><td style="padding:10px 12px;">Net Operating Income</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
+
+      // NOI audit amounts
+      const noiAudit = auditYearKeys.map((_, i) => auditTotalIncome[i] - auditTotalExpense[i]);
+
+      html += '<tr style="font-weight:700; background:var(--blue-light, #f5efe7); border-top:2px solid var(--blue);"><td style="padding:10px 12px;">Net Operating Income</td>';
+      noiAudit.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
+      html += '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
         '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
         '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
@@ -3809,7 +3892,44 @@ function renderBudgetSummary(contentDiv) {
   });
 
   html += '</tbody></table>';
+
+  // Manual row add section
+  const colCount = 5 + auditYearKeys.length; // category + audit cols + prior + budget + proposed + var + %
+  html += '<div style="margin-top:12px; padding:12px; background:var(--gray-100); border-radius:8px;" id="addRowSection">' +
+    '<button onclick="document.getElementById(\'addRowForm\').style.display=\'flex\'" style="padding:6px 14px; font-size:12px; border:1px dashed var(--gray-300); border-radius:6px; background:white; cursor:pointer; color:var(--gray-500);">+ Add Custom Row</button>' +
+    '<div id="addRowForm" style="display:none; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center;">' +
+    '<select id="addRowCategory" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px;">' +
+    '<option value="">Select category...</option>';
+  SUMMARY_ROWS.forEach(sr => {
+    html += '<option value="' + sr.label + '">' + sr.label + '</option>';
+  });
+  html += '</select>' +
+    '<input id="addRowLabel" placeholder="Line description" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; width:180px;" />' +
+    '<input id="addRowAmount" type="number" placeholder="Amount" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; width:100px;" />' +
+    '<button onclick="addCustomSummaryRow()" style="padding:6px 14px; background:var(--blue); color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer;">Add</button>' +
+    '<button onclick="document.getElementById(\'addRowForm\').style.display=\'none\'" style="padding:6px 14px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; cursor:pointer; background:white;">Cancel</button>' +
+    '</div></div>';
+
   contentDiv.innerHTML = html;
+}
+
+// Toggle zero rows
+function toggleZeroRows() {
+  window._showZeroSummaryRows = !window._showZeroSummaryRows;
+  const contentDiv = document.querySelector('[data-sheet="Summary"]') || document.getElementById('sheetContent');
+  if (contentDiv) renderBudgetSummary(contentDiv);
+}
+
+// Add custom summary row
+function addCustomSummaryRow() {
+  const cat = document.getElementById('addRowCategory').value;
+  const label = document.getElementById('addRowLabel').value;
+  const amount = parseFloat(document.getElementById('addRowAmount').value) || 0;
+  if (!cat || !label || !amount) { alert('Fill in all fields'); return; }
+  if (!window._customSummaryRows) window._customSummaryRows = [];
+  window._customSummaryRows.push({summaryLabel: cat, label: label, amount: amount});
+  const contentDiv = document.querySelector('[data-sheet="Summary"]') || document.getElementById('sheetContent');
+  if (contentDiv) renderBudgetSummary(contentDiv);
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {

@@ -25,8 +25,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Century audit categories — each maps to exactly one budget summary row
 CENTURY_CATEGORIES = [
-    # Income (yrlycomp rows 10-19)
+    # Income
     "Maintenance",
     "Tax Benefit Credits",
     "Commercial",
@@ -37,7 +38,7 @@ CENTURY_CATEGORIES = [
     "Laundry",
     "Assessment - Operating",
     "Other Income",
-    # Expenses (yrlycomp rows 23-36)
+    # Expenses
     "Payroll",
     "Electric",
     "Gas Cooking / Heating",
@@ -52,7 +53,7 @@ CENTURY_CATEGORIES = [
     "Professional Fees",
     "Administrative & Other",
     "Financial Expenses",
-    # Non-Operating Income (yrlycomp rows 42-49)
+    # Non-Operating Income
     "Capital Assessment",
     "Special Assessment",
     "Interest Income",
@@ -60,10 +61,57 @@ CENTURY_CATEGORIES = [
     "Real Estate Tax refund",
     "ICON Settlement Proceeds",
     "SBA - PPP Loan Proceeds",
-    # Non-Operating Expense (yrlycomp rows 53-54)
+    # Non-Operating Expense
     "Capital Expenses",
     "Cert Fee for Tax Reduction",
 ]
+
+# Maps every Century audit category → budget summary row label
+# This is the canonical bridge between audited financials and the budget summary
+CENTURY_TO_SUMMARY = {
+    # Income categories → Total Operating Income
+    "Maintenance": "Total Operating Income",
+    "Tax Benefit Credits": "Total Operating Income",
+    "Commercial": "Total Operating Income",
+    "Garage": "Total Operating Income",
+    "Commercial Real Estate Tax": "Total Operating Income",
+    "Storage Income": "Total Operating Income",
+    "Bicycle Charge": "Total Operating Income",
+    "Laundry": "Total Operating Income",
+    "Assessment - Operating": "Total Operating Income",
+    "Other Income": "Total Operating Income",
+    # Expense categories → specific summary rows
+    "Payroll": "Payroll & Related",
+    "Electric": "Energy",
+    "Gas Cooking / Heating": "Energy",
+    "Fuel": "Energy",
+    "Water & Sewer": "Water & Sewer",
+    "Supplies": "Repairs & Supplies",
+    "Repairs & Maintenance": "Repairs & Supplies",
+    "Insurance": "Insurance",
+    "Real Estate Taxes": "Taxes",
+    "Real Estate Tax Benefit Credits": "Taxes",
+    "Corporate Taxes": "Taxes",
+    "Professional Fees": "Professional Fees",
+    "Administrative & Other": "Administrative & Other",
+    "Financial Expenses": "Financial Expenses",
+    # Non-operating (not on main summary but tracked)
+    "Capital Assessment": "Non-Operating Income",
+    "Special Assessment": "Non-Operating Income",
+    "Interest Income": "Non-Operating Income",
+    "Insurance Proceeds": "Non-Operating Income",
+    "Real Estate Tax refund": "Non-Operating Income",
+    "ICON Settlement Proceeds": "Non-Operating Income",
+    "SBA - PPP Loan Proceeds": "Non-Operating Income",
+    "Capital Expenses": "Non-Operating Expense",
+    "Cert Fee for Tax Reduction": "Non-Operating Expense",
+}
+
+# Which summary rows are income vs expense (for reconciliation)
+INCOME_SUMMARY_ROWS = {"Total Operating Income", "Non-Operating Income"}
+EXPENSE_SUMMARY_ROWS = {"Payroll & Related", "Energy", "Water & Sewer", "Repairs & Supplies",
+                         "Professional Fees", "Administrative & Other", "Insurance", "Taxes",
+                         "Financial Expenses", "Non-Operating Expense"}
 
 
 def create_audited_financials_blueprint(db):
@@ -1014,7 +1062,7 @@ Be precise with numbers. Include all line items found.
     <div class="confirm-section">
         <h3>Confirm Extraction</h3>
         <p>Review the data above and confirm to save as official actuals for this building/year.</p>
-        <button class="btn-green" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
+        <button id="confirmBtn" class="btn-green" disabled style="opacity:0.4; cursor:not-allowed;" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
         <div id="confirmStatus"></div>
     </div>
 </div>
@@ -1024,6 +1072,7 @@ Be precise with numbers. Include all line items found.
         const mappedData = {{ mapped_json }};
         const unmappedItems = {{ unmapped_json }};
         const centuryCategories = {{ century_categories_json }};
+        const CENTURY_TO_SUMMARY = {{ century_to_summary_json }};
         const existingRules = {{ existing_rules_json }};
         const profileId = {{ profile_id }};
         let itemIndex = 0;
@@ -1033,19 +1082,20 @@ Be precise with numbers. Include all line items found.
             return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
         }
 
-        function makeDropdown(description) {
+        function makeDropdown(description, amount, section) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
             const currentMapping = existingRules[normalized] || '';
             const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
 
-            let html = '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
+            let html = '<div data-section="' + (section || 'expense') + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="renderReconciliation()"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
             html += '<option value="">— unmapped —</option>';
             for (let cat of centuryCategories) {
                 const sel = (cat === currentMapping) ? ' selected' : '';
                 html += '<option value="' + cat + '"' + sel + '>' + cat + '</option>';
             }
-            html += '</select>';
+            html += '</select></div>';
             return html;
         }
 
@@ -1064,9 +1114,10 @@ Be precise with numbers. Include all line items found.
                 for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
                 for (let item of rawExtraction.revenue.items) {
+                    const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                     html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description + '</td>';
                     for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                    html += '<td style="padding:4px;">' + makeDropdown(item.description) + '</td></tr>';
+                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'revenue') + '</td></tr>';
                 }
                 if (rawExtraction.revenue.total) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
@@ -1084,9 +1135,10 @@ Be precise with numbers. Include all line items found.
                 for (let cat of rawExtraction.expenses.categories) {
                     html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of cat.items) {
+                        const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                         html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description + '</td>';
                         for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                        html += '<td style="padding:4px;">' + makeDropdown(item.description) + '</td></tr>';
+                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'expense') + '</td></tr>';
                     }
                     if (cat.total) {
                         html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
@@ -1139,26 +1191,86 @@ Be precise with numbers. Include all line items found.
 
         function renderReconciliation() {
             const container = document.getElementById('reconciliation');
-            let html = '<div style="background:#f8f9fa; padding:12px; border-radius:5px; font-size:13px;">';
-            html += '<strong>Totals:</strong><br/>';
-            if (rawExtraction.revenue && rawExtraction.revenue.total) {
-                html += 'Revenue: $' + formatAmount(rawExtraction.revenue.total[0]) + '<br/>';
-            }
-            if (rawExtraction.expenses && rawExtraction.expenses.total_expenses) {
-                html += 'Expenses: $' + formatAmount(rawExtraction.expenses.total_expenses[0]) + '<br/>';
+            const centuryToSummary = CENTURY_TO_SUMMARY;
+            const incomeSummaryRows = new Set(["Total Operating Income", "Non-Operating Income"]);
+
+            // Compute mapped totals from current dropdown selections
+            let mappedRevenue = 0;
+            let mappedExpense = 0;
+            let unmappedCount = 0;
+            let unmappedRevenue = 0;
+            let unmappedExpense = 0;
+
+            const allSelects = document.querySelectorAll('select[id^="map_"]');
+            allSelects.forEach(s => {
+                const amount = parseFloat(s.dataset.amount) || 0;
+                if (!s.value) {
+                    unmappedCount++;
+                    // Try to figure out if this is revenue or expense from its position
+                    const section = s.closest('[data-section]');
+                    if (section && section.dataset.section === 'revenue') unmappedRevenue += amount;
+                    else unmappedExpense += amount;
+                } else {
+                    const summaryRow = centuryToSummary[s.value] || '';
+                    if (incomeSummaryRows.has(summaryRow)) {
+                        mappedRevenue += amount;
+                    } else {
+                        mappedExpense += amount;
+                    }
+                }
+            });
+
+            // Get extracted totals from Claude output
+            const extractedRevenue = (rawExtraction.revenue && rawExtraction.revenue.total) ? rawExtraction.revenue.total[0] : 0;
+            const extractedExpense = (rawExtraction.expenses && rawExtraction.expenses.total_expenses) ? rawExtraction.expenses.total_expenses[0] : 0;
+
+            const revenueDelta = Math.abs(mappedRevenue - extractedRevenue);
+            const expenseDelta = Math.abs(mappedExpense - extractedExpense);
+            const tolerance = 1; // $1 rounding tolerance
+            const revenueOk = revenueDelta <= tolerance;
+            const expenseOk = expenseDelta <= tolerance;
+            const allTied = revenueOk && expenseOk && unmappedCount === 0;
+
+            let html = '<div style="background:var(--gray-100); padding:16px; border-radius:8px; font-size:13px; margin-top:12px;">';
+            html += '<strong style="font-size:14px;">Reconciliation</strong><br/><br/>';
+
+            // Revenue reconciliation
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:6px;">';
+            html += '<span>Extracted Revenue:</span><span style="font-weight:600;">' + formatAmount(extractedRevenue) + '</span></div>';
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:6px;">';
+            html += '<span>Mapped Revenue:</span><span style="font-weight:600;">' + formatAmount(mappedRevenue) + '</span></div>';
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:12px; color:' + (revenueOk ? 'var(--green)' : 'var(--red)') + '; font-weight:600;">';
+            html += '<span>Delta:</span><span>' + (revenueOk ? '✓ Tied' : formatAmount(revenueDelta) + ' off') + '</span></div>';
+
+            // Expense reconciliation
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:6px;">';
+            html += '<span>Extracted Expenses:</span><span style="font-weight:600;">' + formatAmount(extractedExpense) + '</span></div>';
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:6px;">';
+            html += '<span>Mapped Expenses:</span><span style="font-weight:600;">' + formatAmount(mappedExpense) + '</span></div>';
+            html += '<div style="display:flex; justify-content:space-between; margin-bottom:12px; color:' + (expenseOk ? 'var(--green)' : 'var(--red)') + '; font-weight:600;">';
+            html += '<span>Delta:</span><span>' + (expenseOk ? '✓ Tied' : formatAmount(expenseDelta) + ' off') + '</span></div>';
+
+            // Unmapped
+            if (unmappedCount > 0) {
+                html += '<div style="color:var(--red); font-weight:600; margin-bottom:8px;">⚠ ' + unmappedCount + ' items still unmapped</div>';
             }
 
-            // Count unmapped
-            const allSelects = document.querySelectorAll('select[id^="map_"]');
-            let unmappedCount = 0;
-            allSelects.forEach(s => { if (!s.value) unmappedCount++; });
-            if (unmappedCount > 0) {
-                html += '<div class="unmapped" style="margin-top:8px;">' + unmappedCount + ' items still unmapped</div>';
-            } else if (allSelects.length > 0) {
-                html += '<div class="success" style="margin-top:8px;">All items mapped!</div>';
+            // Status
+            if (allTied) {
+                html += '<div style="background:var(--green-light); color:var(--green); padding:8px 12px; border-radius:6px; font-weight:600; text-align:center;">✓ All totals tied — ready to confirm</div>';
+            } else {
+                html += '<div style="background:var(--red-light, #fde8e8); color:var(--red); padding:8px 12px; border-radius:6px; font-weight:600; text-align:center;">Totals must tie before confirming</div>';
             }
             html += '</div>';
             container.innerHTML = html;
+
+            // Enable/disable confirm button
+            const confirmBtn = document.getElementById('confirmBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = !allTied;
+                confirmBtn.style.opacity = allTied ? '1' : '0.4';
+                confirmBtn.style.cursor = allTied ? 'pointer' : 'not-allowed';
+            }
         }
 
         function saveAllRules() {
@@ -1239,6 +1351,7 @@ Be precise with numbers. Include all line items found.
         html = html.replace("{{ mapped_json }}", json.dumps(mapped_data))
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
         html = html.replace("{{ century_categories_json }}", json.dumps(CENTURY_CATEGORIES))
+        html = html.replace("{{ century_to_summary_json }}", json.dumps(CENTURY_TO_SUMMARY))
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
 
@@ -1499,6 +1612,45 @@ Be precise with numbers. Include all line items found.
             return jsonify({"success": False, "error": "Upload not found"}), 404
 
         try:
+            # Validate totals match before confirming
+            if upload.raw_extraction and upload.mapped_data:
+                try:
+                    raw_extraction = json.loads(upload.raw_extraction)
+                    mapped_data = json.loads(upload.mapped_data)
+
+                    # Get extracted totals
+                    extracted_revenue = 0
+                    extracted_expense = 0
+                    if raw_extraction.get("revenue") and raw_extraction["revenue"].get("total"):
+                        extracted_revenue = raw_extraction["revenue"]["total"][0] if raw_extraction["revenue"]["total"] else 0
+                    if raw_extraction.get("expenses") and raw_extraction["expenses"].get("total_expenses"):
+                        extracted_expense = raw_extraction["expenses"]["total_expenses"][0] if raw_extraction["expenses"]["total_expenses"] else 0
+
+                    # Sum mapped income and expense totals
+                    mapped_revenue = sum(item.get("amount", 0) for item in mapped_data.get("revenue", []))
+                    mapped_expense = sum(item.get("amount", 0) for item in mapped_data.get("expenses", []))
+
+                    # Check deltas within $1 tolerance
+                    tolerance = 1
+                    revenue_delta = abs(mapped_revenue - extracted_revenue)
+                    expense_delta = abs(mapped_expense - extracted_expense)
+
+                    if revenue_delta > tolerance:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Revenue totals do not match: extracted ${extracted_revenue:,.2f}, mapped ${mapped_revenue:,.2f} (delta: ${revenue_delta:,.2f})"
+                        }), 400
+
+                    if expense_delta > tolerance:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Expense totals do not match: extracted ${extracted_expense:,.2f}, mapped ${mapped_expense:,.2f} (delta: ${expense_delta:,.2f})"
+                        }), 400
+
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    logger.warning(f"Validation parse error (upload {upload_id}): {e}")
+                    # Don't block confirmation on parse errors
+
             upload.status = "confirmed"
             data = request.get_json(silent=True) or {}
             upload.confirmed_by = data.get("confirmed_by", "system")
