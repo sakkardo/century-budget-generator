@@ -907,8 +907,27 @@ def generate_script():
     )
 
     # Expense Distribution removed from combined script — runs separately
-    # (like AP Aging) because ASP.NET ViewState reverts RT=1 to RT=3.
+    # because ASP.NET ViewState reverts RT=1 to RT=3.
     # See /api/generate-expense-dist-script.
+
+    # Build AP Aging script with user settings (back in combined — safe now
+    # that Expense Distribution is separate, so no RT contamination)
+    ap_script = ""
+    if AP_AGING_SCRIPT:
+        ap_script = AP_AGING_SCRIPT
+        ap_script = ap_script.replace(
+            "const ENTITIES = [148, 204, 206, 805];",
+            f"const ENTITIES = [{entities_js}];"
+        )
+        ap_script = ap_script.replace(
+            "const PERIOD_TO = '03/2026';",
+            f"const PERIOD_TO = '{period}';"
+        )
+        # Inject auto-upload into AP Aging triggerDownload
+        ap_script = ap_script.replace(
+            "    URL.revokeObjectURL(a.href);\n  }",
+            "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
+        )
 
     # Build Maintenance Proof script with user settings
     # Map entity → charge code based on building type from CSV
@@ -936,10 +955,22 @@ def generate_script():
         f"const ENTITY_CHARGES = {{{mp_mapping_js}}};"
     )
 
-    # AP Aging removed from combined script — runs separately to avoid
-    # Yardi session state contamination (RT=2 from Expense Distribution
-    # persists and overrides RT=3 for Aging). See /api/generate-ap-aging-script.
-    ap_script_block = ""
+    # AP Aging is back in the combined script now that Expense Distribution
+    # runs separately. No RT contamination risk.
+    if ap_script:
+        ap_script_block = f"""
+  // ── Part 3: AP Aging ──
+  console.log('\\n>>> Starting Part 3: AP Aging <<<\\n');
+  try {{
+    _partResults.ap = await {ap_script}
+    console.log('\\n>>> Part 3 (AP Aging) completed successfully <<<\\n');
+  }} catch (_e3) {{
+    console.error('>>> Part 3 (AP Aging) FAILED with error:', _e3.message);
+    console.error(_e3.stack);
+    _partResults.ap = 'ERROR: ' + _e3.message;
+  }}"""
+    else:
+        ap_script_block = ""
 
     # ── Inject auto-upload into each script's triggerDownload function ──
     # The 3 scripts (Expense, MaintProof, AP Aging) all have a triggerDownload(blob, entity)
@@ -974,8 +1005,8 @@ def generate_script():
     # Each part is wrapped in try/catch so errors don't kill subsequent parts
     combined = f"""/**
  * Century Budget — Combined Yardi Download Script
- * Downloads YSL Annual Budget + Maintenance Proof for all selected entities.
- * Expense Distribution and AP Aging run separately (own buttons).
+ * Downloads YSL Annual Budget + Maintenance Proof + AP Aging for all selected entities.
+ * Expense Distribution runs separately (own button).
  * Generated for: {email}
  * Entities: {entities_js}
  * Period: {period}
@@ -985,7 +1016,7 @@ def generate_script():
  */
 (async function() {{
   'use strict';
-  const _partResults = {{ysl: null, mp: null}};
+  const _partResults = {{ysl: null, mp: null, ap: null}};
   const _uploadedFiles = [];
   const _SESSION_ID = 'yardi_' + Date.now();
   const _BUDGET_APP = '{railway_url}';
@@ -1065,7 +1096,8 @@ def generate_script():
   console.log('Session: ' + _SESSION_ID);
   console.log('Part 1: YSL Annual Budget reports');
   console.log('Part 2: Maintenance Proof reports');
-  console.log('(Expense Distribution and AP Aging run separately — use their buttons)');
+  console.log('Part 3: AP Aging reports');
+  console.log('(Expense Distribution runs separately — use its button)');
   console.log('='.repeat(60));
 
   // ── Part 1: YSL Annual Budget ──
@@ -1098,10 +1130,11 @@ def generate_script():
   console.log('ALL DONE — Summary:');
   console.log('  Part 1 (YSL):', _partResults.ysl === null ? 'SKIPPED' : (typeof _partResults.ysl === 'string' && _partResults.ysl.startsWith('ERROR') ? _partResults.ysl : 'OK'));
   console.log('  Part 2 (MP): ', _partResults.mp === null ? 'SKIPPED' : (typeof _partResults.mp === 'string' && _partResults.mp.startsWith('ERROR') ? _partResults.mp : 'OK'));
+  console.log('  Part 3 (AP): ', _partResults.ap === null ? 'SKIPPED' : (typeof _partResults.ap === 'string' && _partResults.ap.startsWith('ERROR') ? _partResults.ap : 'OK'));
   console.log('  Auto-Upload:', _uploadedFiles.length + ' files sent to server');
   console.log(_uploadedFiles.length > 0 ? 'Files were auto-processed — check the dashboard!' : 'Files were downloaded locally — upload them via the Generator page.');
   console.log('');
-  console.log('Now run the Expense Distribution and AP Aging scripts (separate buttons on the Generate page).');
+  console.log('Now run the Expense Distribution script separately (use its button on the Generate page).');
   console.log('='.repeat(60));
 }})();"""
 
@@ -2497,12 +2530,8 @@ GENERATE_TEMPLATE = r"""
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 7h6m0 10v-3m-3 3v-6m-3 6v-1M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>
         Expense Distribution
       </button>
-      <button class="btn btn-primary" onclick="generateAPAgingScript()" id="apBtn" style="background:var(--amber-600, #d97706);">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-        AP Aging
-      </button>
     </div>
-    <p style="font-size:11px; color:var(--gray-500); margin-top:6px;">1. Run main script (YSL + Maint Proof). 2. Open APAnalytics in Yardi, select "Expense Distribution", run that script. 3. Run AP Aging.</p>
+    <p style="font-size:11px; color:var(--gray-500); margin-top:6px;">1. Run main script (YSL + Maint Proof + AP Aging). 2. Open APAnalytics in Yardi, select "Expense Distribution", run that script separately.</p>
 
     <div class="script-box" id="scriptBox">
       <button class="copy-btn" id="copyBtn" onclick="copyScript()">Copy</button>
@@ -2517,6 +2546,7 @@ GENERATE_TEMPLATE = r"""
       <code id="expScriptCode"></code>
     </div>
 
+    <!-- AP Aging script box hidden — AP Aging is now in the combined script -->
     <div class="script-box" id="apScriptBox" style="display:none; border-color:var(--amber-200, #fde68a);">
       <button class="copy-btn" id="apCopyBtn" onclick="copyAPScript()">Copy AP Aging</button>
       <code id="apScriptCode"></code>
