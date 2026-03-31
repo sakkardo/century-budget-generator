@@ -1,15 +1,16 @@
 /**
- * Expense Distribution Batch Downloader v4 — Iframe Approach
+ * Expense Distribution Batch Downloader v6 — Direct Page Approach
  *
- * KEY FIX: v3 used fetch-only approach and never set ReportType,
- * so it downloaded whatever the ASP.NET session had (usually Aging/RT=3).
- * v4 uses the proven iframe+postback approach from AP Aging Script v5,
- * but sets ReportType=1 (Expense Distribution) instead of 3 (Aging).
+ * PREREQUISITE: User must be on APAnalytics.aspx with "Expense Distribution"
+ * already selected in the ReportType dropdown. This script does NOT change
+ * the report type — it trusts the page state and just fills in property/period
+ * fields and exports.
  *
- * Uses fresh iframe per entity to avoid session state contamination.
- * Sequential processing (not parallel) because iframe postbacks are stateful.
+ * This avoids the ASP.NET ViewState issue where RT=1 reverts to RT=3 during
+ * postbacks. By running directly on the page (no iframe), the server state
+ * is whatever the user already set.
  *
- * BEFORE RUNNING: Edit the settings below
+ * BEFORE RUNNING: Select "Expense Distribution" in the Report Type dropdown
  */
 (async function() {
   'use strict';
@@ -21,139 +22,113 @@
   const BASE = '/03578cms/Pages';
   const PAGE_URL = `${BASE}/APAnalytics.aspx?sMenuSet=iData`;
 
-  const REPORT_TYPE = '1';  // 1 = Expense Distribution, 2 = Expense Dist (Paid Only), 3 = Aging
-
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const log = msg => console.log(`[ExpDist] ${msg}`);
   const results = { success: [], failed: [] };
   const startTime = Date.now();
 
+  // ── Verify we're on the right page with RT=1 ─────────────────────────────
+  const rtCheck = document.querySelector('select[name*="ReportType"]');
+  if (!rtCheck) {
+    throw new Error('Not on APAnalytics page — no ReportType dropdown found. Navigate to AP Analytics first.');
+  }
+  if (rtCheck.value !== '1') {
+    throw new Error(`ReportType is "${rtCheck.value}" — please select "Expense Distribution" from the dropdown before running this script.`);
+  }
+
   log('='.repeat(50));
-  log('Expense Distribution Batch Download v4');
+  log('Expense Distribution Batch Download v6 — Direct Page');
   log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}–${PERIOD_TO}`);
-  log(`ReportType = ${REPORT_TYPE} (Expense Distribution)`);
+  log('RT verified as 1 (Expense Distribution)');
   log('='.repeat(50));
 
-  // ── Load APAnalytics in a working iframe ──────────────────────────────────
-  log('Loading AP Analytics page in iframe...');
-  const workFrame = document.createElement('iframe');
-  workFrame.name = '_expDistWork';
-  workFrame.style.display = 'none';
-  workFrame.src = PAGE_URL;
-  document.body.appendChild(workFrame);
-  await new Promise(r => { workFrame.onload = r; });
-  await sleep(1000);
-
-  const wDoc = () => workFrame.contentDocument;
-  const wWin = () => workFrame.contentWindow;
-
-  if (!wDoc()?.querySelector('select[name*="ReportType"]')) {
-    document.body.removeChild(workFrame);
-    throw new Error('Failed to load APAnalytics in iframe (session expired?)');
-  }
-  log('AP Analytics loaded.');
-
-  // ── Helper: postback inside the work iframe ───────────────────────────────
-  async function doPostback(eventTarget) {
-    wWin().__doPostBack(eventTarget, '');
-    await new Promise(r => { workFrame.onload = r; });
-    await sleep(500);
-  }
-
-  // ── Helper: set all form fields ───────────────────────────────────────────
-  function setAllFields(entity) {
-    const d = wDoc();
-    const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
-    if (p) p.value = String(entity);
-    const ap = d.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
-    if (ap) ap.value = '';
-    const pf = d.querySelector('input[name*="PeriodFrom"]');
-    if (pf) pf.value = PERIOD_FROM;
-    const pt = d.querySelector('input[name*="PeriodTo"]');
-    if (pt) pt.value = PERIOD_TO;
-    const det = d.querySelector('input[name*="ShowDetail"]');
-    if (det) det.checked = true;
-    const grd = d.querySelector('input[name*="ShowGrid"]');
-    if (grd) grd.checked = true;
-
-    // Force RT dropdown to 1 (Expense Distribution)
-    const rt = d.querySelector('select[name*="ReportType"]');
-    if (rt) rt.value = REPORT_TYPE;
-  }
-
-  // ── Helper: log form state for debugging ──────────────────────────────────
-  function logFormState(label) {
-    const d = wDoc();
-    const rt = d.querySelector('select[name*="ReportType"]');
-    const prop = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
-    const pf = d.querySelector('input[name*="PeriodFrom"]');
-    const pt = d.querySelector('input[name*="PeriodTo"]');
-    log(`  [${label}] RT=${rt?.value} Prop=${prop?.value} From=${pf?.value} To=${pt?.value}`);
-  }
-
-  // ── Process each entity sequentially ──────────────────────────────────────
+  // ── Process each entity ──────────────────────────────────────────────────
   for (const entity of ENTITIES) {
     try {
       log(`\n── ${entity}: Starting ──`);
 
-      // STEP 1: Reload fresh iframe for each entity to avoid state pollution
-      workFrame.src = PAGE_URL;
-      await new Promise(r => { workFrame.onload = r; });
-      await sleep(1000);
+      // Set property
+      const prop = document.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+      if (prop) prop.value = String(entity);
 
-      logFormState('Fresh load');
+      // Set periods
+      const pf = document.querySelector('input[name*="PeriodFrom"]');
+      if (pf) pf.value = PERIOD_FROM;
+      const pt = document.querySelector('input[name*="PeriodTo"]');
+      if (pt) pt.value = PERIOD_TO;
 
-      // STEP 2: Set property and do property postback FIRST
-      // (Let server use whatever RT default it wants during this step)
-      const propInput = wDoc().querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
-      if (propInput) propInput.value = String(entity);
+      // Set AP Account (blank for all)
+      const ap = document.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+      if (ap) ap.value = '';
+
+      // Checkboxes
+      const det = document.querySelector('input[name*="ShowDetail"]');
+      if (det) det.checked = true;
+      const grd = document.querySelector('input[name*="ShowGrid"]');
+      if (grd) grd.checked = true;
+
+      // Property postback to validate entity
       log(`  Property postback for ${entity}...`);
-      await doPostback('PropertyLookup:LookupCode');
-      logFormState('After prop postback');
+      __doPostBack('PropertyLookup:LookupCode', '');
+      await new Promise(r => {
+        const check = setInterval(() => {
+          // Wait for page to settle after postback
+          if (document.readyState === 'complete') {
+            clearInterval(check);
+            r();
+          }
+        }, 200);
+      });
+      await sleep(1500);
 
-      // STEP 3: NOW switch to Expense Distribution (RT=1) — this is the
-      // LAST postback before export, so ViewState will encode RT=1
-      const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
-      if (!rtSelect) {
-        results.failed.push({ entity, ok: false, reason: 'No ReportType dropdown' });
-        continue;
+      // Verify RT is still 1 after property postback
+      const rtAfterProp = document.querySelector('select[name*="ReportType"]')?.value;
+      log(`  RT after property postback: ${rtAfterProp}`);
+      if (rtAfterProp !== '1') {
+        log(`  WARNING: RT changed to ${rtAfterProp} — re-selecting Expense Distribution`);
+        const rtFix = document.querySelector('select[name*="ReportType"]');
+        if (rtFix) {
+          rtFix.value = '1';
+          rtFix.dispatchEvent(new Event('change', { bubbles: true }));
+          __doPostBack('ReportType:DropDownList', '');
+          await new Promise(r => {
+            const check = setInterval(() => {
+              if (document.readyState === 'complete') { clearInterval(check); r(); }
+            }, 200);
+          });
+          await sleep(1000);
+        }
       }
-      rtSelect.value = REPORT_TYPE;
-      log(`  Setting RT=${REPORT_TYPE} and posting back...`);
-      await doPostback('ReportType:DropDownList');
 
-      // Verify RT stuck
-      const rtAfter = wDoc().querySelector('select[name*="ReportType"]')?.value;
-      log(`  RT after postback: ${rtAfter}`);
-      if (rtAfter !== REPORT_TYPE) {
-        results.failed.push({ entity, ok: false, reason: `RT is ${rtAfter} after postback, expected ${REPORT_TYPE}` });
-        continue;
-      }
+      // Re-set fields after postback (ASP.NET may have reset them)
+      const prop2 = document.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+      if (prop2) prop2.value = String(entity);
+      const pf2 = document.querySelector('input[name*="PeriodFrom"]');
+      if (pf2) pf2.value = PERIOD_FROM;
+      const pt2 = document.querySelector('input[name*="PeriodTo"]');
+      if (pt2) pt2.value = PERIOD_TO;
+      const ap2 = document.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+      if (ap2) ap2.value = '';
+      const det2 = document.querySelector('input[name*="ShowDetail"]');
+      if (det2) det2.checked = true;
+      const grd2 = document.querySelector('input[name*="ShowGrid"]');
+      if (grd2) grd2.checked = true;
 
-      // STEP 4: Set ALL remaining fields (periods, checkboxes, etc.)
-      // Do NOT do another postback — RT=1 ViewState must be preserved
-      setAllFields(entity);
-      logFormState('Pre-export');
-
-      // STEP 7: Excel export via FormData
-      const form = wDoc().querySelector('form');
+      // Excel export via FormData
+      const form = document.querySelector('form');
       const fd = new FormData(form);
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
 
-      // Force all ReportType fields in FormData to our value
-      let rtFieldCount = 0;
-      for (const [key, val] of [...fd.entries()]) {
+      // Force RT in FormData
+      for (const [key] of [...fd.entries()]) {
         if (key.toLowerCase().includes('reporttype')) {
-          log(`  FormData: ${key} = "${val}" → forcing "${REPORT_TYPE}"`);
-          fd.set(key, REPORT_TYPE);
-          rtFieldCount++;
+          fd.set(key, '1');
         }
       }
-      log(`  Forced ${rtFieldCount} RT field(s) to "${REPORT_TYPE}" in FormData`);
 
-      const vs = fd.get('__VIEWSTATE') || fd.get('__VIEWSTATE__') || '';
-      log(`  ViewState length: ${vs.length}`);
+      const rtFinal = document.querySelector('select[name*="ReportType"]')?.value;
+      log(`  Exporting... RT=${rtFinal} Prop=${prop2?.value} From=${pf2?.value} To=${pt2?.value}`);
 
       const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
       const ct = resp.headers.get('content-type') || '';
@@ -200,9 +175,6 @@
       results.failed.push({ entity, ok: false, reason: ex.message });
     }
   }
-
-  // Cleanup
-  document.body.removeChild(workFrame);
 
   function triggerDownload(blob, entity) {
     const a = document.createElement('a');
