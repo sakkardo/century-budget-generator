@@ -5105,7 +5105,7 @@ async function faToggleInvoices(glCode, el) {
   html += '<div class="drill-panel-header"><div><span style="margin-right:8px;">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span><span style="font-weight:400; font-size:12px; opacity:0.7;">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span></div><button class="drill-close" onclick="this.closest(\'.fa-invoice-detail\').remove(); return false;" title="Close">×</button></div>';
   html += '<div class="drill-panel-body"><table>';
   html += '<thead><tr>';
-  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px;">Reclass To</td></tr></thead>';
+  html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px; padding-left:20px;">Reclass To</td></tr></thead>';
   html += '<tbody>';
 
   // Shared datalist
@@ -5120,7 +5120,7 @@ async function faToggleInvoices(glCode, el) {
     html += '<td style="white-space:nowrap;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
     html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
     html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="text-align:left; white-space:nowrap;">';
+    html += '<td style="text-align:left; white-space:nowrap; padding-left:20px;">';
     if (isReclassed) {
       html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button class="reclass-btn reclass-btn--undo" onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
@@ -6660,7 +6660,7 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<div class="drill-panel-body"><table>';
     html += '<thead><tr>';
     html += '<td style="width:28px;"><input type="checkbox" id="batch_all_' + glCode.replace(/[^a-zA-Z0-9]/g,'_') + '" onchange="toggleBatchAll(this,\'' + glCode + '\')" title="Select all"></td>';
-    html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px;">Reclass To</td></tr></thead>';
+    html += '<td style="text-align:left;">Payee</td><td>Invoice #</td><td>Date</td><td>Check #</td><td style="text-align:right;">Amount</td><td style="text-align:left; min-width:230px; padding-left:20px;">Reclass To</td></tr></thead>';
     html += '<tbody>';
 
     glGroup.invoices.forEach(inv => {
@@ -6676,7 +6676,7 @@ async function toggleInvoices(glCode, linkEl) {
         html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
         html += '<td' + (isReclassed ? ' style="text-decoration:line-through;"' : '') + '>' + (inv.check_num || '—') + '</td>';
         html += '<td style="text-align:right; font-variant-numeric:tabular-nums;' + (isReclassed ? ' text-decoration:line-through;' : '') + '">' + fmt(inv.amount) + '</td>';
-        html += '<td style="text-align:left; white-space:nowrap;">';
+        html += '<td style="text-align:left; white-space:nowrap; padding-left:20px;">';
         if (isReclassed) {
             html += '<span class="reclass-wrap"><span style="font-size:11px; color:var(--orange); font-weight:500;">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button class="reclass-btn reclass-btn--undo" onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')">Undo</button></span>';
