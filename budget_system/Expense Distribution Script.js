@@ -1,9 +1,13 @@
 /**
- * Expense Distribution (Paid Only) Batch Downloader v7 — Iframe Postback
+ * Expense Distribution Batch Downloader v4 — Iframe Approach
  *
- * Works from ANY Yardi page. Loads APAnalytics in a hidden iframe,
- * uses iframe postbacks for ReportType and Property changes, then
- * fetch with FormData from the iframe for Excel export.
+ * KEY FIX: v3 used fetch-only approach and never set ReportType,
+ * so it downloaded whatever the ASP.NET session had (usually Aging/RT=3).
+ * v4 uses the proven iframe+postback approach from AP Aging Script v5,
+ * but sets ReportType=1 (Expense Distribution) instead of 3 (Aging).
+ *
+ * Uses fresh iframe per entity to avoid session state contamination.
+ * Sequential processing (not parallel) because iframe postbacks are stateful.
  *
  * BEFORE RUNNING: Edit the settings below
  */
@@ -17,14 +21,17 @@
   const BASE = '/03578cms/Pages';
   const PAGE_URL = `${BASE}/APAnalytics.aspx?sMenuSet=iData`;
 
+  const REPORT_TYPE = '1';  // 1 = Expense Distribution, 2 = Expense Dist (Paid Only), 3 = Aging
+
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const log = msg => console.log(`[ExpDist] ${msg}`);
   const results = { success: [], failed: [] };
   const startTime = Date.now();
 
   log('='.repeat(50));
-  log(`Expense Distribution Batch Download v7`);
+  log('Expense Distribution Batch Download v4');
   log(`${ENTITIES.length} buildings, period ${PERIOD_FROM}–${PERIOD_TO}`);
+  log(`ReportType = ${REPORT_TYPE} (Expense Distribution)`);
   log('='.repeat(50));
 
   // ── Load APAnalytics in a working iframe ──────────────────────────────────
@@ -53,53 +60,119 @@
     await sleep(500);
   }
 
-  // ── Step 1: Set ReportType to 2 ───────────────────────────────────────────
-  const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
-  if (rtSelect && rtSelect.value !== '2') {
-    log('Setting ReportType to Expense Distribution (Paid Only)...');
-    rtSelect.value = '2';
-    await doPostback('ReportType:DropDownList');
-    log('ReportType set to 2: ' + wDoc().querySelector('select[name*="ReportType"]')?.value);
-  } else {
-    log('ReportType already 2.');
+  // ── Helper: set all form fields ───────────────────────────────────────────
+  function setAllFields(entity) {
+    const d = wDoc();
+    const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+    if (p) p.value = String(entity);
+    const ap = d.querySelector('input[name*="APAccountLookup"][name*="LookupCode"]');
+    if (ap) ap.value = '';
+    const pf = d.querySelector('input[name*="PeriodFrom"]');
+    if (pf) pf.value = PERIOD_FROM;
+    const pt = d.querySelector('input[name*="PeriodTo"]');
+    if (pt) pt.value = PERIOD_TO;
+    const det = d.querySelector('input[name*="ShowDetail"]');
+    if (det) det.checked = true;
+    const grd = d.querySelector('input[name*="ShowGrid"]');
+    if (grd) grd.checked = true;
+
+    // Force RT dropdown to 1 (Expense Distribution)
+    const rt = d.querySelector('select[name*="ReportType"]');
+    if (rt) rt.value = REPORT_TYPE;
   }
 
-  // ── Step 2: Process each entity ───────────────────────────────────────────
+  // ── Helper: log form state for debugging ──────────────────────────────────
+  function logFormState(label) {
+    const d = wDoc();
+    const rt = d.querySelector('select[name*="ReportType"]');
+    const prop = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+    const pf = d.querySelector('input[name*="PeriodFrom"]');
+    const pt = d.querySelector('input[name*="PeriodTo"]');
+    log(`  [${label}] RT=${rt?.value} Prop=${prop?.value} From=${pf?.value} To=${pt?.value}`);
+  }
+
+  // ── Process each entity sequentially ──────────────────────────────────────
   for (const entity of ENTITIES) {
     try {
-      log(`\n  ${entity}: Setting property and period...`);
+      log(`\n── ${entity}: Starting ──`);
 
-      const setFields = () => {
-        const d = wDoc();
-        const p = d.querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
-        if (p) p.value = String(entity);
-        const pf = d.querySelector('input[name*="PeriodFrom"]');
-        if (pf) pf.value = PERIOD_FROM;
-        const pt = d.querySelector('input[name*="PeriodTo"]');
-        if (pt) pt.value = PERIOD_TO;
-        const det = d.querySelector('input[name*="ShowDetail"]');
-        if (det) det.checked = true;
-        const grd = d.querySelector('input[name*="ShowGrid"]');
-        if (grd) grd.checked = true;
-      };
+      // STEP 1: Reload fresh iframe for each entity to avoid state pollution
+      workFrame.src = PAGE_URL;
+      await new Promise(r => { workFrame.onload = r; });
+      await sleep(1000);
 
-      setFields();
+      logFormState('Fresh load');
+
+      // STEP 2: Switch to Expense Distribution (RT=1) FIRST
+      const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
+      if (!rtSelect) {
+        results.failed.push({ entity, ok: false, reason: 'No ReportType dropdown' });
+        continue;
+      }
+      rtSelect.value = REPORT_TYPE;
+      log(`  Setting RT=${REPORT_TYPE} and posting back...`);
+      await doPostback('ReportType:DropDownList');
+
+      // Verify RT stuck
+      const rtAfter = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      log(`  RT after postback: ${rtAfter}`);
+      if (rtAfter !== REPORT_TYPE) {
+        results.failed.push({ entity, ok: false, reason: `RT is ${rtAfter} after postback, expected ${REPORT_TYPE}` });
+        continue;
+      }
+
+      // STEP 3: Set ALL fields including property (on the RT=1 page)
+      setAllFields(entity);
+      logFormState('Fields set');
+
+      // STEP 4: Do property postback ON THE RT=1 PAGE
+      log(`  Property postback...`);
       await doPostback('PropertyLookup:LookupCode');
-      log(`  ${entity}: Property validated, requesting Excel...`);
+      logFormState('After prop postback');
 
-      // Re-set fields after postback
-      setFields();
+      // STEP 5: Check if RT reverted. If so, fix it and postback again
+      const rtAfterProp = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      if (rtAfterProp !== REPORT_TYPE) {
+        log(`  RT reverted to ${rtAfterProp} after property postback! Re-setting...`);
+        const rtFix = wDoc().querySelector('select[name*="ReportType"]');
+        rtFix.value = REPORT_TYPE;
+        await doPostback('ReportType:DropDownList');
+        const rtFixed = wDoc().querySelector('select[name*="ReportType"]')?.value;
+        log(`  RT after re-fix: ${rtFixed}`);
+        if (rtFixed !== REPORT_TYPE) {
+          results.failed.push({ entity, ok: false, reason: `RT won't stick: ${rtFixed}` });
+          continue;
+        }
+      }
 
-      // Excel via fetch with FormData from iframe's form
+      // STEP 6: Re-set ALL fields (postback replaces form HTML)
+      setAllFields(entity);
+      logFormState('Pre-export');
+
+      // STEP 7: Excel export via FormData
       const form = wDoc().querySelector('form');
       const fd = new FormData(form);
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
-      if (!fd.get('__VIEWSTATE') && fd.get('__VIEWSTATE__')) fd.delete('__VIEWSTATE');
+
+      // Force all ReportType fields in FormData to our value
+      let rtFieldCount = 0;
+      for (const [key, val] of [...fd.entries()]) {
+        if (key.toLowerCase().includes('reporttype')) {
+          log(`  FormData: ${key} = "${val}" → forcing "${REPORT_TYPE}"`);
+          fd.set(key, REPORT_TYPE);
+          rtFieldCount++;
+        }
+      }
+      log(`  Forced ${rtFieldCount} RT field(s) to "${REPORT_TYPE}" in FormData`);
+
+      const vs = fd.get('__VIEWSTATE') || fd.get('__VIEWSTATE__') || '';
+      log(`  ViewState length: ${vs.length}`);
 
       const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
       const ct = resp.headers.get('content-type') || '';
       const cd = resp.headers.get('content-disposition') || '';
+      log(`  Response: ${resp.status} ct=${ct.substring(0, 50)} cd=${cd.substring(0, 50)}`);
 
       let blob = null;
       if (ct.includes('spreadsheet') || ct.includes('excel') || ct.includes('octet-stream') || cd.includes('attachment')) {
