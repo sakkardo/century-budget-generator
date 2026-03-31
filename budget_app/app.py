@@ -2707,6 +2707,7 @@ async function manualUpload() {
 
   const formData = new FormData();
   for (const f of input.files) formData.append('files', f);
+  formData.append('fresh_start', 'true');
 
   const btn = document.getElementById('uploadBtn');
   btn.disabled = true;
