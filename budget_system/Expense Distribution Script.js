@@ -103,7 +103,16 @@
 
       logFormState('Fresh load');
 
-      // STEP 2: Switch to Expense Distribution (RT=1) FIRST
+      // STEP 2: Set property and do property postback FIRST
+      // (Let server use whatever RT default it wants during this step)
+      const propInput = wDoc().querySelector('input[name*="PropertyLookup"][name*="LookupCode"]');
+      if (propInput) propInput.value = String(entity);
+      log(`  Property postback for ${entity}...`);
+      await doPostback('PropertyLookup:LookupCode');
+      logFormState('After prop postback');
+
+      // STEP 3: NOW switch to Expense Distribution (RT=1) — this is the
+      // LAST postback before export, so ViewState will encode RT=1
       const rtSelect = wDoc().querySelector('select[name*="ReportType"]');
       if (!rtSelect) {
         results.failed.push({ entity, ok: false, reason: 'No ReportType dropdown' });
@@ -121,31 +130,8 @@
         continue;
       }
 
-      // STEP 3: Set ALL fields including property (on the RT=1 page)
-      setAllFields(entity);
-      logFormState('Fields set');
-
-      // STEP 4: Do property postback ON THE RT=1 PAGE
-      log(`  Property postback...`);
-      await doPostback('PropertyLookup:LookupCode');
-      logFormState('After prop postback');
-
-      // STEP 5: Check if RT reverted. If so, fix it and postback again
-      const rtAfterProp = wDoc().querySelector('select[name*="ReportType"]')?.value;
-      if (rtAfterProp !== REPORT_TYPE) {
-        log(`  RT reverted to ${rtAfterProp} after property postback! Re-setting...`);
-        const rtFix = wDoc().querySelector('select[name*="ReportType"]');
-        rtFix.value = REPORT_TYPE;
-        await doPostback('ReportType:DropDownList');
-        const rtFixed = wDoc().querySelector('select[name*="ReportType"]')?.value;
-        log(`  RT after re-fix: ${rtFixed}`);
-        if (rtFixed !== REPORT_TYPE) {
-          results.failed.push({ entity, ok: false, reason: `RT won't stick: ${rtFixed}` });
-          continue;
-        }
-      }
-
-      // STEP 6: Re-set ALL fields (postback replaces form HTML)
+      // STEP 4: Set ALL remaining fields (periods, checkboxes, etc.)
+      // Do NOT do another postback — RT=1 ViewState must be preserved
       setAllFields(entity);
       logFormState('Pre-export');
 
