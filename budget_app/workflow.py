@@ -3707,9 +3707,11 @@ function faLineChanged(gl, field, value) {
   const ytd = getRaw('ytd_' + gl);
   const accrual = getRaw('acc_' + gl);
   const unpaid = getRaw('unp_' + gl);
+  const prior = getRaw('pr_' + gl);
   const budget = getRaw('bud_' + gl);
   const incRaw = parseFloat(document.getElementById('inc_' + gl)?.dataset.raw) || 0;
   const incPct = incRaw / 100;
+  const base = ytd + accrual + unpaid;
 
   let estimate, forecast;
   if (field === 'estimate_override' && value !== null) {
@@ -3719,8 +3721,13 @@ function faLineChanged(gl, field, value) {
     forecast = parseFloat(value) || 0;
     estimate = forecast - (ytd + accrual + unpaid);
   } else {
-    if (ytd > 0 && YTD_MONTHS > 0) {
-      estimate = (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+    // Excel: =IFERROR(IF((YTD+Accrual+Unpaid)>=Prior,(YTD+Accrual+Unpaid)/YTD_MONTHS*REMAINING,Prior-(YTD+Accrual+Unpaid)),0)
+    if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+      estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+    } else if (prior > 0) {
+      estimate = Math.max(prior - base, 0);
+    } else if (base > 0 && YTD_MONTHS > 0) {
+      estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
     } else {
       estimate = 0;
     }
@@ -3746,9 +3753,21 @@ function faLineChanged(gl, field, value) {
       if (newFormula && el.dataset.override !== 'true') el.dataset.formula = newFormula;
     }
   };
-  // Build updated formula strings (real =formulas matching faGetFormulaTooltip)
-  const estFormula = (ytd > 0 && YTD_MONTHS > 0) ? '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '=0';
-  const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+  // Build updated formula strings matching Excel: =IF((base)>=prior, base/YTD*REM, prior-base)
+  let estFormula, estExpr;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+    estFormula = '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    estExpr = '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+  } else if (prior > 0) {
+    estFormula = '=' + prior + '-(' + ytd + '+' + accrual + '+' + unpaid + ')';
+    estExpr = prior + '-(' + ytd + '+' + accrual + '+' + unpaid + ')';
+  } else if (base > 0 && YTD_MONTHS > 0) {
+    estFormula = '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    estExpr = '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+  } else {
+    estFormula = '=0';
+    estExpr = '0';
+  }
   const fcstFormula = '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   const propFormula = hasUserFormula && field !== '__recalc_proposed'
     ? propEl.dataset.proposedFormula
@@ -3763,11 +3782,12 @@ function faLineChanged(gl, field, value) {
     faAutoSave(gl, 'proposed_budget', Math.round(proposed));
   }
 
-  const variance = proposed - forecast;
+  // Excel: Variance = Proposed - Prior Year; % Change = Proposed/Prior - 1
+  const variance = proposed - prior;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (forecast ? ((proposed / forecast - 1) * 100).toFixed(1) : '0.0') + '%';
+  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
 
   // Recalculate sheet totals from live cell values
   faUpdateSheetTotals();
@@ -3777,10 +3797,11 @@ function faUpdateSheetTotals() {
   const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
 
   function sumGLs(glCodes) {
-    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
     glCodes.forEach(gl => {
       const row = document.querySelector('tr[data-gl="' + gl + '"]');
       if (row && row.style.display === 'none') return;
+      t.prior += raw('pr_' + gl);
       t.ytd += raw('ytd_' + gl);
       t.accrual += raw('acc_' + gl);
       t.unpaid += raw('unp_' + gl);
@@ -3794,8 +3815,9 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    const v = t.proposed - t.forecast;
-    const p = t.forecast ? (t.proposed / t.forecast - 1) : 0;
+    // Excel: Variance = Proposed - Prior Year; % Change = Proposed/Prior - 1
+    const v = t.proposed - t.prior;
+    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
     if (cells.length >= 11) {
       cells[1].textContent = fmt(t.ytd);
@@ -3892,7 +3914,14 @@ function faComputeEstimate(l) {
   // Use override if FA set one
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
   const ytd = l.ytd_actual || 0;
-  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+  const accrual = l.accrual_adj || 0;
+  const unpaid = l.unpaid_bills || 0;
+  const prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  // Excel: =IFERROR(IF((YTD+Accrual+Unpaid)>=Prior,(YTD+Accrual+Unpaid)/YTD_MONTHS*REMAINING,Prior-(YTD+Accrual+Unpaid)),0)
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  if (prior > 0) return Math.max(prior - base, 0);
+  if (base > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
   return 0;
 }
 
@@ -3911,7 +3940,11 @@ function faGetFormulaTooltip(l, field) {
   const incPct = l.increase_pct || 0;
 
   if (field === 'estimate') {
-    if (ytd > 0 && YTD_MONTHS > 0) return '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    const prior = l.prior_year || 0;
+    const base = ytd + accrual + unpaid;
+    if (base >= prior && prior > 0 && YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    if (prior > 0) return '=' + prior + '-(' + ytd + '+' + accrual + '+' + unpaid + ')';
+    if (base > 0 && YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
     return '=0';
   }
   if (field === 'forecast') {
@@ -5345,7 +5378,14 @@ function pctFmt(n) {
 function computeEstimate(line) {
     if (line.estimate_override !== null && line.estimate_override !== undefined) return line.estimate_override;
     const ytd = line.ytd_actual || 0;
-    if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+    const accrual = line.accrual_adj || 0;
+    const unpaid = line.unpaid_bills || 0;
+    const prior = line.prior_year || 0;
+    const base = ytd + accrual + unpaid;
+    // Excel: =IFERROR(IF((YTD+Accrual+Unpaid)>=Prior,(base)/YTD_MONTHS*REM,Prior-base),0)
+    if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+    if (prior > 0) return Math.max(prior - base, 0);
+    if (base > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
     return 0;
 }
 
@@ -5926,8 +5966,11 @@ function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
 
 function computeEstimate(l) {
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
-  const ytd = l.ytd_actual || 0;
-  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0, prior = l.prior_year || 0;
+  const base = ytd + accrual + unpaid;
+  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
+  if (prior > 0) return Math.max(prior - base, 0);
+  if (base > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
   return 0;
 }
 
