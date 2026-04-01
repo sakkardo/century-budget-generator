@@ -3693,9 +3693,10 @@ function faLineChanged(gl, field, value) {
 
   if (field === 'increase_pct') {
     faAutoSave(gl, 'increase_pct', (parseFloat(value) || 0) / 100);
-  } else if (field === 'estimate_override' || field === 'forecast_override' ||
-             field === '__recalc_estimate' || field === '__recalc_forecast') {
-    // Formula cells: overrides get saved via proposed; recalcs skip save
+  } else if (field === '__recalc_estimate' || field === '__recalc_forecast' || field === '__recalc_proposed') {
+    // Recalc triggers — no save needed, just recalculate below
+  } else if (field === 'estimate_override' || field === 'forecast_override') {
+    // Override saved by formulaBarAccept; just recalculate downstream here
   } else if (field && value !== null && value !== undefined) {
     faAutoSave(gl, field, Math.round(parseDollar(value)));
   }
@@ -3703,10 +3704,10 @@ function faLineChanged(gl, field, value) {
   const row = document.querySelector('tr[data-gl="' + gl + '"]');
   if (!row) return;
 
-  const prior = getRaw('pr_' + gl);
   const ytd = getRaw('ytd_' + gl);
   const accrual = getRaw('acc_' + gl);
   const unpaid = getRaw('unp_' + gl);
+  const budget = getRaw('bud_' + gl);
   const incRaw = parseFloat(document.getElementById('inc_' + gl)?.dataset.raw) || 0;
   const incPct = incRaw / 100;
 
@@ -3718,32 +3719,112 @@ function faLineChanged(gl, field, value) {
     forecast = parseFloat(value) || 0;
     estimate = forecast - (ytd + accrual + unpaid);
   } else {
-    const base = ytd + accrual + unpaid;
-    if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
-      estimate = (base / YTD_MONTHS) * REMAINING_MONTHS;
+    if (ytd > 0 && YTD_MONTHS > 0) {
+      estimate = (ytd / YTD_MONTHS) * REMAINING_MONTHS;
     } else {
-      estimate = Math.max(prior - base, 0);
+      estimate = 0;
     }
     forecast = ytd + accrual + unpaid + estimate;
   }
 
-  const proposed = forecast * (1 + incPct);
+  // Check if proposed has a user formula — if so, don't auto-recalc it
+  const propEl = document.getElementById('prop_' + gl);
+  const hasUserFormula = propEl && propEl.dataset.proposedFormula;
+  let proposed;
+  if (hasUserFormula && field !== '__recalc_proposed') {
+    const evalResult = safeEvalFormula(propEl.dataset.proposedFormula);
+    proposed = evalResult !== null ? evalResult : parseFloat(propEl.dataset.raw) || 0;
+  } else {
+    proposed = forecast * (1 + incPct);
+  }
 
-  const updateCell = (id, val) => {
+  const updateCell = (id, val, newFormula) => {
     const el = document.getElementById(id);
-    if (el) { el.dataset.raw = Math.round(val); el.value = fmt(val); }
+    if (el) {
+      el.dataset.raw = Math.round(val);
+      el.value = fmt(val);
+      if (newFormula && el.dataset.override !== 'true') el.dataset.formula = newFormula;
+    }
   };
-  if (field !== 'estimate_override') updateCell('est_' + gl, estimate);
-  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast);
-  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed);
+  // Build updated formula strings (real =formulas matching faGetFormulaTooltip)
+  const estFormula = (ytd > 0 && YTD_MONTHS > 0) ? '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '=0';
+  const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+  const fcstFormula = '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
+  const propFormula = hasUserFormula && field !== '__recalc_proposed'
+    ? propEl.dataset.proposedFormula
+    : '=(' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + '))*(1+' + incPct.toFixed(4) + ')';
 
-  faAutoSave(gl, 'proposed_budget', Math.round(proposed));
+  if (field !== 'estimate_override') updateCell('est_' + gl, estimate, estFormula);
+  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, fcstFormula);
+  if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed, propFormula);
 
-  const variance = proposed - prior;
+  // Only auto-save proposed if there's no user formula (formula saves handled by Accept)
+  if (!hasUserFormula || field === '__recalc_proposed') {
+    faAutoSave(gl, 'proposed_budget', Math.round(proposed));
+  }
+
+  const variance = proposed - forecast;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
+  if (pctEl) pctEl.textContent = (forecast ? ((proposed / forecast - 1) * 100).toFixed(1) : '0.0') + '%';
+
+  // Recalculate sheet totals from live cell values
+  faUpdateSheetTotals();
+}
+
+function faUpdateSheetTotals() {
+  const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
+
+  function sumGLs(glCodes) {
+    const t = {ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+    glCodes.forEach(gl => {
+      const row = document.querySelector('tr[data-gl="' + gl + '"]');
+      if (row && row.style.display === 'none') return;
+      t.ytd += raw('ytd_' + gl);
+      t.accrual += raw('acc_' + gl);
+      t.unpaid += raw('unp_' + gl);
+      t.estimate += raw('est_' + gl);
+      t.forecast += raw('fcst_' + gl);
+      t.budget += raw('bud_' + gl);
+      t.proposed += raw('prop_' + gl);
+    });
+    return t;
+  }
+
+  function updateTotalRow(rowEl, t) {
+    if (!rowEl) return;
+    const v = t.proposed - t.forecast;
+    const p = t.forecast ? (t.proposed / t.forecast - 1) : 0;
+    const cells = rowEl.querySelectorAll('td');
+    if (cells.length >= 11) {
+      cells[1].textContent = fmt(t.ytd);
+      cells[2].textContent = fmt(t.accrual);
+      cells[3].textContent = fmt(t.unpaid);
+      cells[4].textContent = fmt(t.estimate);
+      cells[5].textContent = fmt(t.forecast);
+      cells[6].textContent = fmt(t.budget);
+      cells[7].textContent = '';
+      cells[8].textContent = fmt(t.proposed);
+      cells[9].textContent = fmt(v);
+      cells[9].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+      cells[10].textContent = (p * 100).toFixed(1) + '%';
+    }
+  }
+
+  // Update category subtotal rows
+  const groups = window._catGroupGLs || {};
+  Object.keys(groups).forEach(key => {
+    const subRow = document.getElementById('subtotal_' + key);
+    if (subRow) updateTotalRow(subRow, sumGLs(groups[key]));
+  });
+
+  // Update sheet total row (all visible GL rows)
+  const allGLs = [];
+  document.querySelectorAll('tr[data-gl]').forEach(row => {
+    if (row.style.display !== 'none') allGLs.push(row.dataset.gl);
+  });
+  updateTotalRow(document.getElementById('faSheetTotal'), sumGLs(allGLs));
 }
 
 let _faSaveTimer = null;
@@ -3808,16 +3889,16 @@ const SUMMARY_ROWS = [
 ];
 
 function faComputeEstimate(l) {
+  // Use override if FA set one
+  if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
   const ytd = l.ytd_actual || 0;
-  const accrual = l.accrual_adj || 0;
-  const unpaid = l.unpaid_bills || 0;
-  const prior = l.prior_year || 0;
-  const base = ytd + accrual + unpaid;
-  if (base >= prior && prior > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
-  return Math.max(prior - base, 0);
+  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+  return 0;
 }
 
 function faComputeForecast(l) {
+  // Use override if FA set one
+  if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
 
@@ -3825,25 +3906,22 @@ function faGetFormulaTooltip(l, field) {
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
-  const prior = l.prior_year || 0;
-  const base = ytd + accrual + unpaid;
   const estimate = faComputeEstimate(l);
   const forecast = faComputeForecast(l);
   const incPct = l.increase_pct || 0;
 
   if (field === 'estimate') {
-    if (base >= prior && prior > 0) {
-      return 'Annualized: (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') / ' + YTD_MONTHS + ' × ' + REMAINING_MONTHS + ' = ' + fmt(estimate);
-    } else {
-      return 'Prior Year Adj: ' + fmt(prior) + ' - (' + fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ') = ' + fmt(estimate);
-    }
+    if (ytd > 0 && YTD_MONTHS > 0) return '=' + ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+    return '=0';
   }
   if (field === 'forecast') {
-    return fmt(ytd) + ' + ' + fmt(accrual) + ' + ' + fmt(unpaid) + ' + ' + fmt(estimate) + ' = ' + fmt(forecast);
+    const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+    return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   }
   if (field === 'proposed') {
-    const proposed = l.proposed_budget || (forecast * (1 + incPct));
-    return fmt(forecast) + ' × (1 + ' + (incPct * 100).toFixed(1) + '%) = ' + fmt(proposed);
+    if (l.proposed_formula) return l.proposed_formula;
+    const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
+    return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
   }
   return '';
 }
@@ -5265,19 +5343,14 @@ function pctFmt(n) {
 }
 
 function computeEstimate(line) {
+    if (line.estimate_override !== null && line.estimate_override !== undefined) return line.estimate_override;
     const ytd = line.ytd_actual || 0;
-    const accrual = line.accrual_adj || 0;
-    const unpaid = line.unpaid_bills || 0;
-    const prior = line.prior_year || 0;
-    const base = ytd + accrual + unpaid;
-    if (base >= prior && prior > 0) {
-        return (base / YTD_MONTHS) * REMAINING_MONTHS;
-    } else {
-        return Math.max(prior - base, 0);
-    }
+    if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+    return 0;
 }
 
 function computeForecast(line) {
+    if (line.forecast_override !== null && line.forecast_override !== undefined) return line.forecast_override;
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
@@ -5852,13 +5925,14 @@ document.getElementById('printDate').textContent = new Date().toLocaleDateString
 function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
 
 function computeEstimate(l) {
-  const ytd = l.ytd_actual || 0, accrual = l.accrual_adj || 0, unpaid = l.unpaid_bills || 0, prior = l.prior_year || 0;
-  const base = ytd + accrual + unpaid;
-  if (base >= prior && prior > 0 && YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
-  return Math.max(prior - base, 0);
+  if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
+  const ytd = l.ytd_actual || 0;
+  if (ytd > 0 && YTD_MONTHS > 0) return (ytd / YTD_MONTHS) * REMAINING_MONTHS;
+  return 0;
 }
 
 function computeForecast(l) {
+  if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + computeEstimate(l);
 }
 
