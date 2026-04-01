@@ -1716,40 +1716,13 @@ def process_files():
                 results["warnings"].append(f"Maintenance Proof file {mp_filename} error: {str(mp_err)}")
 
         if not output_files:
-            # If expense files were processed successfully, return 200
+            # If expense/AP/maint files were processed successfully, return 200
             if results["success"]:
                 return jsonify({"message": "Files processed", **results}), 200
             return jsonify({"error": "No budgets generated", **results}), 400
 
-        # Always return results as JSON now (files are saved to disk)
-        # Also provide a download link for convenience
-        if len(output_files) == 1:
-            name, path = output_files[0]
-            buf = BytesIO(path.read_bytes())
-            buf.seek(0)
-            # Return the file as download, with results in a header
-            resp = send_file(
-                buf,
-                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                as_attachment=True,
-                download_name=name,
-            )
-            resp.headers["X-Budget-Results"] = json.dumps(results)
-            return resp
-        else:
-            zip_buf = BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for name, path in output_files:
-                    zf.write(path, name)
-            zip_buf.seek(0)
-            resp = send_file(
-                zip_buf,
-                mimetype="application/zip",
-                as_attachment=True,
-                download_name="2027_Budgets.zip",
-            )
-            resp.headers["X-Budget-Results"] = json.dumps(results)
-            return resp
+        # Return JSON with results — files are already saved to disk
+        return jsonify({"message": f"{len(output_files)} budget(s) generated", **results}), 200
 
 
 @app.route("/api/defaults", methods=["GET", "POST"])
