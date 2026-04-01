@@ -1493,7 +1493,9 @@ def process_files():
                 building_dir.mkdir(parents=True, exist_ok=True)
 
                 # Generate budget into the building folder
-                output_name = f"{entity}_{name}_2027_Budget.xlsx"
+                from datetime import datetime as _dt_now
+                _ts = _dt_now.now().strftime("%Y%m%d_%H%M")
+                output_name = f"{entity}_{name}_2027_Budget_{_ts}.xlsx"
                 output_path = building_dir / output_name
 
                 # Derive YTD months from period (e.g., "02/2026" → 2)
