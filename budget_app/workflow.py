@@ -304,6 +304,7 @@ def create_workflow_blueprint(db):
                 "reclass_amount": float(self.reclass_amount or 0),
                 "reclass_notes": self.reclass_notes or "",
                 "proposed_budget": float(self.proposed_budget or 0),
+                "proposed_formula": self.proposed_formula or "",
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
@@ -1540,6 +1541,12 @@ def create_workflow_blueprint(db):
                 if (line.notes or "") != new_val:
                     changes.append(("notes", line.notes or "", new_val))
                 line.notes = new_val
+            if "proposed_formula" in line_data:
+                new_val = line_data["proposed_formula"]  # string or None
+                old_val = line.proposed_formula or ""
+                if old_val != (new_val or ""):
+                    changes.append(("proposed_formula", old_val, new_val or ""))
+                line.proposed_formula = new_val or None
 
             for field, old_v, new_v in changes:
                 db.session.add(BudgetRevision(
@@ -3422,23 +3429,249 @@ function cellBlur(el) {
   faLineChanged(gl, field, raw);
 }
 
-// fxCellBlur: user finished editing a formula cell
-// If the value looks like a number (user typed an override), use that number.
-// If it still matches the formula text, keep the calculated value.
-function fxCellBlur(el) {
-  const gl = el.dataset.gl, field = el.dataset.field;
-  const typed = el.value.trim();
-  const formula = el.dataset.formula || '';
-  const numericVal = parseDollar(typed);
-  const isNumber = typed !== '' && typed !== formula && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed);
-  if (isNumber) {
-    el.dataset.raw = Math.round(numericVal);
-    el.value = fmt(numericVal);
-    faLineChanged(gl, field, numericVal);
+// Track the currently selected formula cell
+let _activeFxCell = null;
+let _formulaBarOriginal = '';  // track original value to detect changes
+
+// ── Safe math evaluator (no eval) ──────────────────────────────────────
+function safeEvalFormula(expr) {
+  let s = expr.trim();
+  if (s.startsWith('=')) s = s.substring(1);
+  s = s.replace(/([\d.]+)\s*%/g, '($1/100)');
+  if (!/^[\d\s+\-*\/().]+$/.test(s)) return null;
+  try {
+    const result = new Function('return (' + s + ')')();
+    if (typeof result !== 'number' || !isFinite(result)) return null;
+    return result;
+  } catch (e) { return null; }
+}
+
+// ── Show/hide formula bar buttons ──────────────────────────────────────
+function _showFormulaButtons(show, hasFormula) {
+  const ids = ['faFormulaPreview','faFormulaAccept','faFormulaCancel'];
+  ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = show ? 'inline-block' : 'none'; });
+  const clearBtn = document.getElementById('faFormulaClear');
+  if (clearBtn) clearBtn.style.display = (show && hasFormula) ? 'inline-block' : 'none';
+}
+
+// ── fxCellFocus: populate the formula bar when clicking a formula cell ─
+function fxCellFocus(el) {
+  _activeFxCell = el;
+  const bar = document.getElementById('faFormulaBar');
+  const label = document.getElementById('faFormulaLabel');
+  if (!bar || !label) return;
+
+  const field = el.dataset.field;
+  const fieldLabel = field === 'proposed_budget' ? 'Proposed Budget' :
+                     field === 'estimate_override' ? 'Estimate' :
+                     field === 'forecast_override' ? 'Forecast' : field;
+  label.textContent = el.dataset.gl + ' / ' + fieldLabel;
+  label.style.display = 'inline';
+  bar.style.display = 'block';
+
+  if (field === 'proposed_budget' && el.dataset.proposedFormula) {
+    bar.value = el.dataset.proposedFormula;
+  } else if (el.dataset.override === 'true') {
+    bar.value = el.dataset.raw || '';
   } else {
-    el.value = fmt(parseFloat(el.dataset.raw) || 0);
+    bar.value = el.dataset.formula || '';
+  }
+  _formulaBarOriginal = bar.value;
+  const hasStoredFormula = !!(el.dataset.proposedFormula);
+  _showFormulaButtons(true, hasStoredFormula);
+  formulaBarPreview();
+
+  el.style.border = '2px solid var(--blue)';
+  el.style.borderRadius = '4px';
+  el.style.background = '#ecfdf5';
+
+  bar.focus({ preventScroll: true });
+  bar.setSelectionRange(bar.value.length, bar.value.length);
+}
+
+// fxCellBlur: just restore visual styling (editing now happens via Accept)
+function fxCellBlur(el) {
+  setTimeout(() => {
+    const bar = document.getElementById('faFormulaBar');
+    if (document.activeElement === bar) return;
+    if (_activeFxCell === el) {
+      el.style.border = '';
+      el.style.borderRadius = '';
+      el.style.background = '';
+    }
+  }, 100);
+}
+
+// ── Formula bar live preview ───────────────────────────────────────────
+function formulaBarPreview() {
+  const bar = document.getElementById('faFormulaBar');
+  const preview = document.getElementById('faFormulaPreview');
+  if (!bar || !preview || !_activeFxCell) return;
+
+  const typed = bar.value.trim();
+  if (!typed) {
+    preview.style.display = 'none';
+    const hadFormula = !!_activeFxCell.dataset.proposedFormula;
+    _showFormulaButtons(hadFormula, hadFormula);
+    return;
+  }
+
+  const result = safeEvalFormula(typed);
+  const isChanged = typed !== _formulaBarOriginal;
+  if (result !== null) {
+    preview.textContent = '= ' + fmt(result);
+    preview.style.color = isChanged ? '#059669' : 'var(--green)';
+  } else if (/^[\d$,.\-\s]+$/.test(typed)) {
+    const num = parseDollar(typed);
+    preview.textContent = '= ' + fmt(num);
+    preview.style.color = isChanged ? '#2563eb' : 'var(--blue)';
+  } else {
+    preview.textContent = 'Invalid formula';
+    preview.style.color = 'var(--red)';
+  }
+  preview.style.display = 'inline-block';
+
+  const hasStoredFormula = !!_activeFxCell.dataset.proposedFormula;
+  _showFormulaButtons(true, hasStoredFormula || isChanged);
+}
+
+// ── Accept: commit formula/value to cell and save ──────────────────────
+function formulaBarAccept() {
+  const bar = document.getElementById('faFormulaBar');
+  if (!bar || !_activeFxCell) return;
+
+  const el = _activeFxCell;
+  const typed = bar.value.trim();
+  const gl = el.dataset.gl, field = el.dataset.field;
+
+  if (field === 'proposed_budget') {
+    const formulaResult = safeEvalFormula(typed);
+    if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
+      const rounded = Math.round(formulaResult);
+      el.dataset.raw = rounded;
+      el.dataset.proposedFormula = typed.startsWith('=') ? typed : '=' + typed;
+      el.dataset.override = 'true';
+      el.value = fmt(formulaResult);
+      const badge = el.parentElement.querySelector('.fa-fx');
+      if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
+      faAutoSave(gl, 'proposed_budget', rounded);
+      faAutoSave(gl, 'proposed_formula', el.dataset.proposedFormula);
+      faUpdateSheetTotals();
+    } else {
+      const num = parseDollar(typed);
+      if (!isNaN(num)) {
+        el.dataset.raw = Math.round(num);
+        el.dataset.override = 'true';
+        el.dataset.proposedFormula = '';
+        el.value = fmt(num);
+        const badge = el.parentElement.querySelector('.fa-fx');
+        if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+        faAutoSave(gl, 'proposed_budget', Math.round(num));
+        faAutoSave(gl, 'proposed_formula', null);
+        faUpdateSheetTotals();
+      }
+    }
+  } else {
+    const formulaResult = safeEvalFormula(typed);
+    const numericVal = parseDollar(typed);
+    if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
+      const rounded = Math.round(formulaResult);
+      el.dataset.raw = rounded;
+      el.dataset.override = 'true';
+      el.value = fmt(formulaResult);
+      el.dataset.formula = typed.startsWith('=') ? typed : '=' + typed;
+      const badge = el.parentElement.querySelector('.fa-fx');
+      if (badge) { badge.textContent = 'fx✎'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
+      faLineChanged(gl, field, formulaResult);
+      faAutoSave(gl, field, rounded);
+    } else if (typed !== '' && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed)) {
+      el.dataset.raw = Math.round(numericVal);
+      el.dataset.override = 'true';
+      el.value = fmt(numericVal);
+      const badge = el.parentElement.querySelector('.fa-fx');
+      if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+      faLineChanged(gl, field, numericVal);
+      faAutoSave(gl, field, Math.round(numericVal));
+    } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
+      el.dataset.override = 'false';
+      const badge = el.parentElement.querySelector('.fa-fx');
+      if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
+      faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
+                         field === 'forecast_override' ? '__recalc_forecast' : field, null);
+      faAutoSave(gl, field, null);
+    }
+  }
+
+  el.style.border = '2px solid var(--green)';
+  el.style.background = '#ecfdf5';
+  const preview = document.getElementById('faFormulaPreview');
+  if (preview) {
+    preview.textContent = '✓ Accepted';
+    preview.style.color = 'var(--green)';
+    preview.style.display = 'inline-block';
+  }
+  _showFormulaButtons(false, false);
+  _formulaBarOriginal = bar.value.trim();
+  setTimeout(() => {
+    el.style.border = '';
+    el.style.borderRadius = '';
+    el.style.background = '';
+    if (preview) preview.style.display = 'none';
+  }, 1200);
+}
+
+// ── Cancel: revert formula bar to original ─────────────────────────────
+function formulaBarCancel() {
+  const bar = document.getElementById('faFormulaBar');
+  if (bar) bar.value = _formulaBarOriginal;
+  _showFormulaButtons(false, false);
+  const preview = document.getElementById('faFormulaPreview');
+  if (preview) preview.style.display = 'none';
+  if (_activeFxCell) {
+    _activeFxCell.style.border = '';
+    _activeFxCell.style.borderRadius = '';
+    _activeFxCell.style.background = '';
+  }
+}
+
+// ── Clear: remove formula, revert to auto-calc ─────────────────────────
+function formulaBarClear() {
+  if (!_activeFxCell) return;
+  const el = _activeFxCell;
+  const gl = el.dataset.gl, field = el.dataset.field;
+
+  if (field === 'proposed_budget') {
+    el.dataset.proposedFormula = '';
+    el.dataset.override = 'false';
+    const badge = el.parentElement.querySelector('.fa-fx');
+    if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
+    faLineChanged(gl, '__recalc_proposed', null);
+    faAutoSave(gl, 'proposed_formula', null);
+  } else {
+    el.dataset.override = 'false';
+    const badge = el.parentElement.querySelector('.fa-fx');
+    if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
     faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
                        field === 'forecast_override' ? '__recalc_forecast' : field, null);
+    faAutoSave(gl, field, null);
+  }
+
+  const bar = document.getElementById('faFormulaBar');
+  if (bar) bar.value = '';
+  _showFormulaButtons(false, false);
+  el.style.border = '';
+  el.style.borderRadius = '';
+  el.style.background = '';
+}
+
+// formulaBarKeydown: Enter = Accept, Escape = Cancel
+function formulaBarKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    formulaBarAccept();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    formulaBarCancel();
   }
 }
 
@@ -4263,6 +4496,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
+      .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { width:60px; }
       .fa-invoice-detail td { padding:0 !important; }
@@ -4278,6 +4512,17 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<span><span class="fa-legend-dot" style="background:#fffff0;"></span>Editable</span>' +
     '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated (click to see formula)</span>' +
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
+
+  // Formula bar — Excel-style with live preview + Accept/Cancel
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
+    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
+    '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
+    '<span id="faFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+    '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
+    '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
+    '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '</div>';
 
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th>GL Code</th><th>Description</th><th>Notes</th>' +
@@ -4302,7 +4547,14 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const isZero = !prior && !ytd && !accrual && !unpaid && !ytdBudget && !budget && !(l.increase_pct);
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
-    const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    const userFormula = l.proposed_formula || '';
+    let proposed;
+    if (userFormula) {
+      const evalResult = safeEvalFormula(userFormula);
+      proposed = evalResult !== null ? evalResult : (l.proposed_budget || (forecast * (1 + (l.increase_pct || 0))));
+    } else {
+      proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+    }
     const variance = proposed - prior;
     const pctChange = prior ? (proposed / prior - 1) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
@@ -4322,15 +4574,29 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onfocus="this.value=this.dataset.raw"' +
         ' onblur="cellBlur(this)">';
     }
-    // Formula cell: shows $1,234 normally, shows formula on focus, editable
-    function fxCell(id, field, val, formula) {
-      return '<td class="num"><input id="' + id + '" class="cell cell-fx" type="text"' +
+    // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
+    function fxCell(id, field, val, formula, isOverride, proposedFormula) {
+      const hasUserFormula = field === 'proposed_budget' && proposedFormula;
+      const overrideAttr = (isOverride || hasUserFormula) ? 'true' : 'false';
+      let badge;
+      if (hasUserFormula) {
+        badge = '<span class="fa-fx" style="background:#dbeafe; color:var(--blue); border-color:var(--blue);">fx</span>';
+      } else if (isOverride) {
+        badge = '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;">✎</span>';
+      } else {
+        badge = '<span class="fa-fx">fx</span>';
+      }
+      const pfAttr = proposedFormula ? ' data-proposed-formula="' + proposedFormula.replace(/"/g, '&quot;') + '"' : '';
+      return '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
+        '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
         ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
+        ' data-override="' + overrideAttr + '"' +
+        pfAttr +
         ' data-gl="' + gl + '" data-field="' + field + '"' +
-        ' onfocus="this.value=this.dataset.formula; this.select();"' +
-        ' onblur="fxCellBlur(this)"></td>';
+        ' onblur="fxCellBlur(this)"' +
+        ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
@@ -4342,11 +4608,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
       '<td class="num">' + $cell('ytdb_'+gl, 'ytd_budget', ytdBudget) + '</td>' +
-      fxCell('est_'+gl, 'estimate_override', estimate, estFormula) +
-      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula) +
+      fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
-      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula) +
+      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula) +
       '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
       '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
   }
