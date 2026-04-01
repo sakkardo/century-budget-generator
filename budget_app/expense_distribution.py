@@ -145,6 +145,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
 
     Budget = workflow_models["Budget"]
     BudgetLine = workflow_models["BudgetLine"]
+    BudgetRevision = workflow_models.get("BudgetRevision")  # For audit trail
 
     # ─── Models ───────────────────────────────────────────────────────────────
 
@@ -505,6 +506,122 @@ def create_expense_distribution_blueprint(db, workflow_models):
             budget_lines_json=json_mod.dumps(budget_lines),
         )
 
+    # ─── Helper: Apply accrual adjustments ─────────────────────────────────────
+
+    def apply_accrual_adjustments(entity_code, report_id, period_from):
+        """
+        Identify prior-year invoices (invoice_date <= 12/31 of prior year)
+        and sum them by GL code into BudgetLine.accrual_adj.
+
+        Logic: The Expense Distribution report covers a current-year period
+        (e.g., 01/2026–03/2026). Any invoice with an invoice_date in a prior
+        year (i.e., <= 12/31/2025) represents a prior-year expense that was
+        paid in the current year. These amounts are accrual adjustments that
+        need to be backed out of YTD actuals for budgeting purposes.
+
+        Args:
+            entity_code: Building entity code (e.g., "204")
+            report_id: ExpenseReport.id for the uploaded report
+            period_from: Report start period as "MM/YYYY" string
+
+        Returns:
+            dict: {"applied": int, "accruals": {gl_code: amount}}
+        """
+        from datetime import datetime as _dt
+
+        # Determine cutoff: 12/31 of the year BEFORE the report period
+        try:
+            parts = period_from.split("/")
+            report_year = int(parts[1]) if len(parts) == 2 else int(parts[0])
+        except (ValueError, IndexError):
+            logger.warning(f"Could not parse period_from '{period_from}' for accrual cutoff")
+            return {"applied": 0, "accruals": {}}
+
+        prior_year = report_year - 1
+        cutoff_str = f"{prior_year}-12-31"  # ISO format for comparison
+        logger.info(f"Accrual cutoff for entity {entity_code}: invoice_date <= {cutoff_str}")
+
+        # Get the report's invoices
+        report = ExpenseReport.query.get(report_id)
+        if not report or not report.invoices:
+            logger.warning(f"No invoices found for report {report_id}")
+            return {"applied": 0, "accruals": {}}
+
+        # Sum prior-year invoices by GL code
+        accruals = {}
+        prior_count = 0
+        for inv in report.invoices:
+            inv_date_str = (inv.invoice_date or "").strip()
+            if not inv_date_str:
+                continue
+
+            # Parse invoice date — handle multiple formats
+            inv_date = None
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    inv_date = _dt.strptime(inv_date_str[:10], fmt)
+                    break
+                except ValueError:
+                    continue
+
+            if inv_date is None:
+                logger.warning(f"Could not parse invoice_date '{inv_date_str}' for invoice {inv.id}")
+                continue
+
+            # Check if this invoice is from prior year or earlier
+            cutoff_date = _dt(prior_year, 12, 31)
+            if inv_date <= cutoff_date:
+                gl = inv.reclass_to_gl or inv.gl_code  # Use reclassed GL if applicable
+                if gl not in accruals:
+                    accruals[gl] = 0
+                accruals[gl] += float(inv.amount or 0)
+                prior_count += 1
+
+        # Round totals
+        accruals = {gl: round(amt, 2) for gl, amt in accruals.items()}
+
+        if not accruals:
+            logger.info(f"No prior-year invoices found for entity {entity_code} (checked {len(report.invoices)} invoices, cutoff={cutoff_str})")
+            return {"applied": 0, "accruals": {}}
+
+        logger.info(f"Found {prior_count} prior-year invoices across {len(accruals)} GL codes for entity {entity_code}")
+
+        # Get the budget and update BudgetLine.accrual_adj
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.year.desc(), Budget.version.desc()).first()
+        if not budget:
+            logger.warning(f"No budget found for entity {entity_code}, cannot apply accrual adjustments")
+            return {"applied": 0, "accruals": accruals}
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        gl_to_line = {line.gl_code: line for line in lines}
+
+        applied = 0
+        for gl, total in accruals.items():
+            if gl in gl_to_line:
+                line = gl_to_line[gl]
+                old_val = float(line.accrual_adj or 0)
+                if abs(old_val - total) > 0.01:
+                    line.accrual_adj = total
+
+                    if BudgetRevision:
+                        db.session.add(BudgetRevision(
+                            budget_id=budget.id,
+                            budget_line_id=line.id,
+                            action="update",
+                            field_name="accrual_adj",
+                            old_value=str(old_val),
+                            new_value=str(total),
+                            notes=f"GL {gl}: auto-calculated from Expense Distribution (invoices dated <= {cutoff_str})",
+                            source="expense_dist_auto"
+                        ))
+                applied += 1
+            else:
+                logger.info(f"Accrual GL {gl} (${total:,.2f}) has no matching BudgetLine — skipped")
+
+        db.session.commit()
+        logger.info(f"Applied accrual adjustments to {applied} GL lines for entity {entity_code} (${sum(accruals.values()):,.2f} total)")
+        return {"applied": applied, "accruals": accruals}
+
     # ─── Return blueprint ─────────────────────────────────────────────────────
 
     models = {
@@ -515,6 +632,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
         "parse_expense_distribution": parse_expense_distribution,
         "store_expense_report": store_expense_report,
         "get_adjusted_gl_totals": get_adjusted_gl_totals,
+        "apply_accrual_adjustments": apply_accrual_adjustments,
     }
 
     return (bp, models, helpers)
