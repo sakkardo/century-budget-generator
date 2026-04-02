@@ -5419,6 +5419,13 @@ function fmt(n) {
     return '$' + Math.round(n).toLocaleString();
 }
 
+function fmtAmt(n) {
+    if (n == null || isNaN(n)) return '$0.00';
+    const abs = Math.abs(n);
+    const str = abs.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    return n < 0 ? '($' + str + ')' : '$' + str;
+}
+
 function pctFmt(n) {
     if (n == null || isNaN(n)) return '0.0%';
     return (n * 100).toFixed(1) + '%';
@@ -5691,7 +5698,7 @@ async function toggleInvoices(glCode, linkEl) {
     let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
     html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
     html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
-    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmt(glGroup.total || 0) + '</span>';
+    html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmtAmt(glGroup.total || 0) + '</span>';
     html += '</div>';
 
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
@@ -5705,7 +5712,7 @@ async function toggleInvoices(glCode, linkEl) {
         html += '<td style="padding:6px 10px; font-size:11px; color:var(--gray-600); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
         html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
         html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.amount) + '</td>';
+        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmtAmt(inv.amount) + '</td>';
         html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
         html += '<td style="padding:6px 10px; text-align:right;">';
         if (isReclassed) {
