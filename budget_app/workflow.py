@@ -5704,18 +5704,18 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05); table-layout:fixed;">';
     html += '<colgroup><col style="width:18%"><col style="width:22%"><col style="width:10%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:22%"></colgroup>';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 10px; overflow:hidden;">Payee</td><td style="padding:6px 10px; overflow:hidden;">Description</td><td style="padding:6px 10px; overflow:hidden;">Invoice #</td><td style="padding:6px 10px; overflow:hidden;">Date</td><td style="padding:6px 10px; text-align:right; overflow:hidden;">Amount</td><td style="padding:6px 10px; overflow:hidden;">Check #</td><td style="padding:6px 10px; text-align:right; overflow:hidden;">Action</td></tr></thead>';
+    html += '<td style="padding:6px 10px; max-width:0; overflow:hidden;">Payee</td><td style="padding:6px 10px; max-width:0; overflow:hidden;">Description</td><td style="padding:6px 10px; max-width:0; overflow:hidden;">Invoice #</td><td style="padding:6px 10px; max-width:0; overflow:hidden;">Date</td><td style="padding:6px 10px; text-align:right; max-width:0; overflow:hidden;">Amount</td><td style="padding:6px 10px; max-width:0; overflow:hidden;">Check #</td><td style="padding:6px 10px; text-align:right; max-width:0; overflow:hidden;">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
         html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-        html += '<td style="padding:6px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.payee_name || inv.payee_code || '').replace(/"/g, '&quot;')) + '">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="padding:6px 10px; font-size:11px; color:var(--gray-600); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
-        html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="padding:6px 10px; overflow:hidden; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums; overflow:hidden; white-space:nowrap;">' + fmtAmt(inv.amount) + '</td>';
-        html += '<td style="padding:6px 10px; overflow:hidden; white-space:nowrap;">' + (inv.check_num || '—') + '</td>';
-        html += '<td style="padding:6px 10px; text-align:right;">';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.payee_name || inv.payee_code || '').replace(/"/g, '&quot;')) + '">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--gray-600);" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;">' + fmtAmt(inv.amount) + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; white-space:nowrap;">' + (inv.check_num || '—') + '</td>';
+        html += '<td style="padding:6px 10px; max-width:0; overflow:hidden; text-align:right;">';
         if (isReclassed) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
