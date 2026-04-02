@@ -4213,19 +4213,15 @@ function reTaxFxClick(el) {
   const label = document.getElementById('reTaxFormulaLabel');
   if (!bar || !label) return;
 
-  // Show label + formula description
-  const formulaDesc = el.dataset.formula || '';
-  label.textContent = (el.dataset.label || '') + (formulaDesc ? '  ' + formulaDesc : '');
+  // Show cell name in label, formula in bar (Excel-style)
+  label.textContent = el.dataset.label || el.id;
   label.style.display = 'inline';
 
-  // Put the actual numeric value in the bar (editable), not the description
+  // Bar shows the formula (like Excel), or override value if manually overridden
   if (el.dataset.override === 'true') {
     bar.value = el.dataset.overrideVal || '';
   } else {
-    // Extract raw number from the displayed text (strip $ and commas)
-    const valSpan = el.querySelector('.re-fx-val');
-    const displayText = valSpan ? valSpan.textContent : '';
-    bar.value = displayText.replace(/[$,]/g, '').trim() || '';
+    bar.value = el.dataset.formula || '';
   }
   _reTaxFormulaOriginal = bar.value;
   _showReTaxButtons(true);
