@@ -3999,153 +3999,186 @@ function renderRETaxesTab(contentDiv) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">RE Taxes data not available. This building may not be a co-op, or DOF data has not been fetched yet.</p>';
     return;
   }
-  const fmt = v => '$' + Math.round(v).toLocaleString();
-  const pctFmt = v => (v * 100).toFixed(2) + '%';
-  const rateFmt = v => (v * 100).toFixed(4) + '%';
-  const inputStyle = 'background:#dce6f1; color:#0000ff; font-weight:600; text-align:right; padding:6px 10px; border:1px solid #b0c4de; border-radius:4px; width:140px;';
-  const outputStyle = 'background:#e2efda; color:#000; font-weight:600; text-align:right; padding:8px 12px;';
-  const labelStyle = 'padding:8px 12px; font-size:14px;';
-  const noteStyle = 'padding:8px 12px; font-size:12px; color:#808080; font-style:italic;';
-  const headerStyle = 'background:#1f4e79; color:#fff; padding:10px 12px; font-weight:700; font-size:13px;';
-  const subHeaderStyle = 'background:#f2f2f2; padding:8px 12px; font-weight:600; font-size:13px;';
+  // Formatters matching the budget workbook
+  const fmtD = v => '$' + Math.round(v).toLocaleString();
+  const fmtPct = v => (v * 100).toFixed(2) + '%';
+  const fmtRate = v => (v * 100).toFixed(4) + '%';
+  const fmtDollarInput = v => '$' + Math.round(v).toLocaleString();
+  // Styles matching FA dashboard grid
+  const thStyle = 'padding:8px 10px; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; color:var(--gray-600); white-space:nowrap;';
+  const cellEdit = 'text-align:right; padding:4px; border-bottom:1px solid var(--gray-200);';
+  const cellCalc = 'text-align:right; padding:8px 10px; border-bottom:1px solid var(--gray-200); background:#f0faf0; font-weight:600;';
+  const cellLabel = 'padding:8px 10px; font-size:13px; border-bottom:1px solid var(--gray-200);';
+  const cellNote = 'padding:8px 10px; font-size:11px; color:var(--gray-400); border-bottom:1px solid var(--gray-200);';
+  const inputDollar = 'width:100%; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
+  const inputRate = 'width:90px; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
+  const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">fx</span>';
 
   const d = reTaxes;
   const ex = d.exemptions || {};
 
   let html = `
-  <div style="max-width:900px; margin:0 auto;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+  <div style="max-width:960px; margin:0 auto;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
       <div>
         <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
-        <div style="font-size:13px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} &nbsp;|&nbsp; Tax Class: ${d.tax_class || '2'} &nbsp;|&nbsp; Source: ${d.source || 'N/A'}</div>
+        <div style="font-size:12px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} | Tax Class: ${d.tax_class || '2'} | Source: ${d.source || 'N/A'}${d.year ? ' | Year: ' + d.year : ''}</div>
       </div>
       <div style="display:flex; gap:8px; align-items:center;">
-        <button onclick="refreshDOFData()" style="padding:8px 16px; background:var(--primary); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">
-          ↻ Refresh from NYC DOF
+        <button onclick="refreshDOFData()" style="padding:6px 14px; background:var(--primary); color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px;">
+          Refresh DOF
         </button>
         <a href="https://propertyinformationportal.nyc.gov/parcels/parcel/${(d.bbl || '').replace(/-/g, '')}" target="_blank" rel="noopener"
-           style="padding:8px 16px; background:#f59e0b; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; text-decoration:none; font-weight:500;">
-          Verify on DOF ↗
+           style="padding:6px 14px; background:#f59e0b; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px; text-decoration:none; font-weight:500;">
+          Verify on DOF
         </a>
       </div>
     </div>
 
-    <table style="width:100%; border-collapse:collapse; font-size:14px; border:1px solid #ddd;">
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
       <colgroup>
-        <col style="width:35%">
-        <col style="width:20%">
-        <col style="width:25%">
-        <col style="width:20%">
+        <col style="width:32%">
+        <col style="width:18%">
+        <col style="width:18%">
+        <col style="width:32%">
       </colgroup>
 
-      <!-- TAX CALCULATION HEADER -->
-      <tr><td colspan="4" style="${headerStyle}">TAX CALCULATION</td></tr>
-
-      <!-- 1st Half -->
-      <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Transitional Assessed Value (Prior Year)</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">Prior year transitional AV from DOF${d.prior_trans_av ? ' (pytrntot: ' + fmt(d.prior_trans_av) + ')' : ''}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Tax Rate</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
-        <td style="${noteStyle}">← 1st Half Tax</td>
+      <!-- 1st Half Header -->
+      <tr style="background:var(--gray-100); border-bottom:2px solid var(--gray-300);">
+        <td colspan="4" style="padding:8px 10px; font-weight:700; font-size:13px;">1ST HALF — Current Fiscal Year (Jul–Dec)</td>
       </tr>
 
-      <!-- 2nd Half -->
-      <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Transitional Assessed Value (Current)</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_av2" value="${d.est_assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">Current transitional AV from DOF${d.current_trans_av ? ' (curtrntot: ' + fmt(d.current_trans_av) + ')' : ''}</td>
+      <tr>
+        <td style="${cellLabel}">Transitional AV (Prior Year)</td>
+        <td style="${cellEdit}"><input type="text" id="re_av" data-raw="${d.assessed_value}" value="${fmtDollarInput(d.assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
+        <td style="${cellCalc}" id="re_h1_tax">${fmtD(d.first_half_tax)}${fxBadge}</td>
+        <td style="${cellNote}">= Prior Trans AV × Rate ÷ 2</td>
       </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Transitional AV Change</td>
-        <td style="${outputStyle}" id="re_trans_pct">${d.prior_trans_av > 0 ? pctFmt((d.est_assessed_value / d.prior_trans_av) - 1) : '—'}</td>
-        <td colspan="2" style="${noteStyle}">Current Trans AV ÷ Prior Trans AV − 1</td>
+      <tr>
+        <td style="${cellLabel}">Tax Rate</td>
+        <td style="${cellEdit}"><input type="text" id="re_rate" data-raw="${d.tax_rate}" value="${fmtRate(d.tax_rate)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurRate(this)" style="${inputRate}"></td>
+        <td style="${cellNote}" colspan="2"></td>
       </tr>
-      <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Estimated Tax Rate</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_est_rate" value="${d.est_tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td style="${outputStyle}" id="re_h2_tax">${fmt(d.second_half_tax)}</td>
-        <td style="${noteStyle}">← 2nd Half Tax</td>
+
+      <!-- 2nd Half Header -->
+      <tr style="background:var(--gray-100); border-bottom:2px solid var(--gray-300); border-top:2px solid var(--gray-300);">
+        <td colspan="4" style="padding:8px 10px; font-weight:700; font-size:13px;">2ND HALF — Next Fiscal Year (Jan–Jun)</td>
+      </tr>
+
+      <tr>
+        <td style="${cellLabel}">Transitional AV (Current)</td>
+        <td style="${cellEdit}"><input type="text" id="re_av2" data-raw="${d.est_assessed_value}" value="${fmtDollarInput(d.est_assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
+        <td style="${cellCalc}" id="re_h2_tax">${fmtD(d.second_half_tax)}${fxBadge}</td>
+        <td style="${cellNote}">= Current Trans AV × Est Rate ÷ 2</td>
+      </tr>
+      <tr>
+        <td style="${cellLabel}">Trans AV Change</td>
+        <td style="${cellCalc}" id="re_trans_pct">${d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014'}${fxBadge}</td>
+        <td style="${cellNote}" colspan="2">= Current Trans AV ÷ Prior Trans AV − 1</td>
+      </tr>
+      <tr>
+        <td style="${cellLabel}">Estimated Tax Rate</td>
+        <td style="${cellEdit}"><input type="text" id="re_est_rate" data-raw="${d.est_tax_rate}" value="${fmtRate(d.est_tax_rate)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurRate(this)" style="${inputRate}"></td>
+        <td style="${cellNote}" colspan="2"></td>
       </tr>
 
       <!-- Gross -->
-      <tr style="border-top:2px solid #333; border-bottom:2px solid #333;">
-        <td style="padding:10px 12px; font-weight:700; font-size:15px;">GROSS TAX LIABILITY (Full Year)</td>
-        <td style="${outputStyle}; font-size:15px;" id="re_gross">${fmt(d.gross_tax)}</td>
-        <td colspan="2" style="${noteStyle}">1st Half + 2nd Half</td>
+      <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300);">
+        <td style="padding:10px; font-weight:700; font-size:14px;">GROSS TAX LIABILITY</td>
+        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px;" id="re_gross">${fmtD(d.gross_tax)}</td>
+        <td style="${cellNote}" colspan="2">= 1st Half Tax + 2nd Half Tax</td>
       </tr>
 
       <!-- Exemptions Header -->
-      <tr><td colspan="4" style="${headerStyle}">TAX EXEMPTIONS & ABATEMENTS</td></tr>
-      <tr style="background:#d6e4f0;">
-        <td style="padding:8px 12px; font-weight:600; font-size:12px;">Exemption Type</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:center;">Growth %</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Current Year</td>
-        <td style="padding:8px 12px; font-weight:600; font-size:12px; text-align:right;">Budget Year</td>
+      <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300); border-bottom:2px solid var(--gray-300);">
+        <td style="padding:8px 10px; font-weight:700; font-size:13px;">EXEMPTIONS & ABATEMENTS</td>
+        <td style="${thStyle} text-align:center;">Growth %</td>
+        <td style="${thStyle} text-align:right;">Current Year</td>
+        <td style="${thStyle} text-align:right;">Budget Year</td>
       </tr>`;
 
   // Exemption rows
   const exRows = [
-    {key:'veteran', label:'Veteran Exemption', gl:'GL 6315-0025'},
-    {key:'sche', label:'Senior Citizen (SCHE)', gl:'GL 6315-0035'},
-    {key:'star', label:'STAR Exemption', gl:'GL 6315-0020'},
-    {key:'coop_abatement', label:'Co-op Abatement', gl:'GL 6315-0010'},
+    {key:'veteran', label:'Veteran Exemption', gl:'6315-0025'},
+    {key:'sche', label:'Senior Citizen (SCHE)', gl:'6315-0035'},
+    {key:'star', label:'STAR Exemption', gl:'6315-0020'},
+    {key:'coop_abatement', label:'Co-op Abatement', gl:'6315-0010'},
   ];
   exRows.forEach(r => {
     const e = ex[r.key] || {growth_pct:0, current_year:0, budget_year:0};
-    html += `<tr style="border-bottom:1px solid #eee;">
-      <td style="${labelStyle}">${r.label} <span style="font-size:11px; color:#999;">(${r.gl})</span></td>
-      <td style="padding:6px 12px; text-align:center;"><input type="text" id="re_ex_${r.key}_growth" value="${e.growth_pct}" onchange="reCalcTaxes()" style="${inputStyle} width:80px;"></td>
-      <td style="padding:6px 12px;"><input type="text" id="re_ex_${r.key}_current" value="${e.current_year}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-      <td style="${outputStyle}" id="re_ex_${r.key}_budget">${fmt(e.budget_year)}</td>
+    html += `<tr>
+      <td style="${cellLabel}">${r.label} <span style="font-size:10px; color:var(--gray-400);">${r.gl}</span></td>
+      <td style="${cellEdit} text-align:center;"><input type="text" id="re_ex_${r.key}_growth" data-raw="${e.growth_pct}" value="${e.growth_pct ? fmtPct(e.growth_pct) : '0.00%'}" onfocus="reTaxFocus(this)" onblur="reTaxBlurPct(this)" style="${inputRate}"></td>
+      <td style="${cellEdit}"><input type="text" id="re_ex_${r.key}_current" data-raw="${e.current_year}" value="${fmtDollarInput(e.current_year)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
+      <td style="${cellCalc}" id="re_ex_${r.key}_budget">${fmtD(e.budget_year)}${fxBadge}</td>
     </tr>`;
   });
 
   html += `
-      <tr style="border-top:1px solid #999;">
-        <td style="padding:10px 12px; font-weight:700;">TOTAL EXEMPTIONS</td>
+      <tr style="border-top:2px solid var(--gray-300);">
+        <td style="padding:10px; font-weight:700;">TOTAL EXEMPTIONS</td>
         <td></td>
-        <td style="${outputStyle}" id="re_ex_total_current">${fmt(d.total_exemptions_current)}</td>
-        <td style="${outputStyle}" id="re_ex_total_budget">${fmt(d.total_exemptions_budget)}</td>
+        <td style="text-align:right; padding:10px; font-weight:600;" id="re_ex_total_current">${fmtD(d.total_exemptions_current)}</td>
+        <td style="text-align:right; padding:10px; font-weight:600;" id="re_ex_total_budget">${fmtD(d.total_exemptions_budget)}</td>
       </tr>
 
       <!-- Net Tax -->
-      <tr style="border-top:3px solid #1f4e79; background:#f0f7ff;">
-        <td style="padding:12px; font-weight:700; font-size:16px;">NET TAX LIABILITY (Proposed Budget)</td>
-        <td style="${outputStyle}; font-size:16px; background:#e2efda;" id="re_net">${fmt(d.net_tax)}</td>
-        <td colspan="2" style="${noteStyle}">Gross Tax − Total Exemptions</td>
+      <tr style="border-top:3px solid var(--gray-400); background:#f0faf0;">
+        <td style="padding:12px 10px; font-weight:700; font-size:15px;">NET TAX LIABILITY</td>
+        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px;" id="re_net">${fmtD(d.net_tax)}</td>
+        <td style="${cellNote}" colspan="2">= Gross Tax − Total Exemptions</td>
       </tr>
     </table>
 
-    <div style="margin-top:12px; display:flex; gap:12px;">
+    <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
       <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--green, #22c55e); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600;">
-        ✓ Save RE Taxes
+        Save RE Taxes
       </button>
-      <span id="reTaxSaveStatus" style="font-size:13px; color:var(--gray-400); padding:8px 0;"></span>
+      <span id="reTaxSaveStatus" style="font-size:12px; color:var(--gray-400);"></span>
     </div>
   </div>`;
 
   contentDiv.innerHTML = html;
+}
 
-  // Format input displays
-  document.getElementById('re_av').value = d.assessed_value;
-  document.getElementById('re_rate').value = d.tax_rate;
-  document.getElementById('re_av2').value = d.est_assessed_value;
-  document.getElementById('re_est_rate').value = d.est_tax_rate;
+// RE Taxes input focus/blur helpers — show raw on focus, formatted on blur
+function reTaxFocus(el) {
+  el.value = el.dataset.raw || '';
+  el.select();
+}
+function reTaxBlurDollar(el) {
+  const v = parseFloat(el.value) || 0;
+  el.dataset.raw = v;
+  el.value = '$' + Math.round(v).toLocaleString();
+  reCalcTaxes();
+}
+function reTaxBlurRate(el) {
+  let v = parseFloat(el.value) || 0;
+  if (v > 1) v = v / 100;  // user typed 9.6 meaning 9.6%
+  el.dataset.raw = v;
+  el.value = (v * 100).toFixed(4) + '%';
+  reCalcTaxes();
+}
+function reTaxBlurPct(el) {
+  let v = parseFloat(el.value) || 0;
+  if (v > 1) v = v / 100;  // user typed 3 meaning 3%
+  el.dataset.raw = v;
+  el.value = (v * 100).toFixed(2) + '%';
+  reCalcTaxes();
+}
+
+// Helper: read raw numeric value from data-raw attribute (inputs show formatted text)
+function reRaw(id) {
+  const el = document.getElementById(id);
+  return el ? (parseFloat(el.dataset.raw) || 0) : 0;
 }
 
 // Live recalculation of RE Taxes when inputs change
 function reCalcTaxes() {
-  const av1 = parseFloat(document.getElementById('re_av').value) || 0;
-  const rate = parseFloat(document.getElementById('re_rate').value) || 0;
-  const av2 = parseFloat(document.getElementById('re_av2').value) || 0;
-  const estRate = parseFloat(document.getElementById('re_est_rate').value) || 0;
+  const av1 = reRaw('re_av');
+  const rate = reRaw('re_rate');
+  const av2 = reRaw('re_av2');
+  const estRate = reRaw('re_est_rate');
 
   const h1 = av1 * rate / 2;
   const h2 = av2 * estRate / 2;
@@ -4163,8 +4196,8 @@ function reCalcTaxes() {
 
   let totalCurrent = 0, totalBudget = 0;
   ['veteran','sche','star','coop_abatement'].forEach(key => {
-    const growth = parseFloat(document.getElementById('re_ex_' + key + '_growth').value) || 0;
-    const current = parseFloat(document.getElementById('re_ex_' + key + '_current').value) || 0;
+    const growth = reRaw('re_ex_' + key + '_growth');
+    const current = reRaw('re_ex_' + key + '_current');
     const budget = current * (1 + growth);
     document.getElementById('re_ex_' + key + '_budget').textContent = '$' + Math.round(budget).toLocaleString();
     totalCurrent += current;
@@ -4179,18 +4212,18 @@ function reCalcTaxes() {
 // Save RE Taxes overrides to server
 async function saveRETaxes() {
   const overrides = {
-    first_half_av: parseFloat(document.getElementById('re_av').value) || 0,
-    tax_rate: parseFloat(document.getElementById('re_rate').value) || 0,
-    second_half_av: parseFloat(document.getElementById('re_av2').value) || 0,
-    est_tax_rate: parseFloat(document.getElementById('re_est_rate').value) || 0,
-    veteran_growth: parseFloat(document.getElementById('re_ex_veteran_growth').value) || 0,
-    veteran_current: parseFloat(document.getElementById('re_ex_veteran_current').value) || 0,
-    sche_growth: parseFloat(document.getElementById('re_ex_sche_growth').value) || 0,
-    sche_current: parseFloat(document.getElementById('re_ex_sche_current').value) || 0,
-    star_growth: parseFloat(document.getElementById('re_ex_star_growth').value) || 0,
-    star_current: parseFloat(document.getElementById('re_ex_star_current').value) || 0,
-    abatement_growth: parseFloat(document.getElementById('re_ex_coop_abatement_growth').value) || 0,
-    abatement_current: parseFloat(document.getElementById('re_ex_coop_abatement_current').value) || 0,
+    first_half_av: reRaw('re_av'),
+    tax_rate: reRaw('re_rate'),
+    second_half_av: reRaw('re_av2'),
+    est_tax_rate: reRaw('re_est_rate'),
+    veteran_growth: reRaw('re_ex_veteran_growth'),
+    veteran_current: reRaw('re_ex_veteran_current'),
+    sche_growth: reRaw('re_ex_sche_growth'),
+    sche_current: reRaw('re_ex_sche_current'),
+    star_growth: reRaw('re_ex_star_growth'),
+    star_current: reRaw('re_ex_star_current'),
+    abatement_growth: reRaw('re_ex_coop_abatement_growth'),
+    abatement_current: reRaw('re_ex_coop_abatement_current'),
   };
   const statusEl = document.getElementById('reTaxSaveStatus');
   statusEl.textContent = 'Saving...';
