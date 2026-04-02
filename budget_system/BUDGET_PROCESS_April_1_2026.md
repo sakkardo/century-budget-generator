@@ -163,3 +163,42 @@ Editing any cell (accrual, unpaid, increase %, or overrides) triggers: Estimate 
 - `reTaxFormulaAccept()` / `reTaxFormulaCancel()` / `reTaxFormulaClear()` — edit lifecycle
 - `reCalcTaxes()` — recalculates all derived cells using `reRaw()` + `reSetCalc()`
 - `saveRETaxes()` — saves all RE tax data to server via `/api/re-taxes/<entityCode>`
+
+---
+
+### Summary Tab — Formula Bar & GL Breakdown (April 2, 2026)
+
+#### Overview
+The 📊 Summary tab (`renderBudgetSummary`) now has a full formula bar system. Every column except **Prior Year Actual** is clickable with a green `fx` badge. Clicking any cell shows where the numbers come from.
+
+#### Columns with Formula Bar
+- **Current Budget** — sum of `current_budget` across GL lines in that category
+- **Proposed Budget** — sum of `proposed_budget` (or `forecast × (1 + increase_pct)`) across GL lines
+- **$ Variance** — `= Proposed - Prior`
+- **% Change** — `= (Proposed / Prior - 1) × 100`
+
+#### Formula Bar Behavior
+- **Click any fx cell** → label shows category/field, bar shows real math with actual numbers
+- **Detail breakdown** appears below the bar showing each GL code, description, and dollar amount
+- Example: clicking "Energy / Proposed" shows:
+  - Bar: `= 601963 + 12769 + 232423`
+  - Detail: `Energy — 3 GL lines: 5252-0000 Gas - Heating $601,963 + 5250-0000 Gas $12,769 + 5255-0000 Electricity $232,423`
+- Categories with 10+ GL lines show: `= SUM(18 GL lines) = 9,434,429`
+- Variance cells show: `= 847155 - 847155`
+- % Change cells show: `= (847155 / 847155 - 1) * 100`
+- Summary is **read-only** — formula bar shows formulas but does not accept edits
+
+#### Data Flow
+- Each `SUMMARY_ROWS` entry maps to a sheet + optional `rowRange` filter
+- `_sumCatData[cellId]` stores the field type and GL lines array for each fx cell
+- `_buildSumFormula(cellId)` reads live GL line values to construct the formula string
+- `_buildSumDetail(cellId)` generates the GL-level breakdown with codes and descriptions
+- Total Operating Expenses and NOI rows aggregate across all expense/income SUMMARY_ROWS
+
+#### Key Functions (all in `workflow.py`)
+- `renderBudgetSummary(contentDiv)` — renders the Summary tab HTML with formula bar
+- `sumFxClick(el)` — populates formula bar and detail when clicking an fx cell
+- `_buildSumFormula(cellId)` — builds formula string from live GL data
+- `_buildSumDetail(cellId)` — builds GL code/description/amount breakdown
+- `_sumFormulaPreview()` — evaluates formula and shows result
+- `sumFormulaCancel()` — dismisses the formula bar selection

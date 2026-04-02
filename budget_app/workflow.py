@@ -5043,12 +5043,6 @@ async function faToggleInvoices(glCode, el) {
     return;
   }
 
-  // Build all GL codes for reclass dropdown from current sheet
-  const currentSheet = document.querySelector('.sheet-tab.active');
-  const sheetName = currentSheet ? currentSheet.dataset.sheet : '';
-  const sheetLines = allSheets[sheetName] || [];
-  const allGLs = sheetLines.map(l => l.gl_code).filter(g => g !== glCode);
-
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
   let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
@@ -5056,28 +5050,29 @@ async function faToggleInvoices(glCode, el) {
   html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
   html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
   html += '</div>';
-  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+  html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05); table-layout:fixed;">';
+  html += '<colgroup><col style="width:18%"><col style="width:22%"><col style="width:10%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:22%"></colgroup>';
   html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
+  html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Payee</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Description</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Invoice #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Date</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Amount</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Check #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Action</div></td></tr></thead>';
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
     html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-    html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
-    html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="padding:6px 10px; text-align:right;">';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.payee_name || inv.payee_code || '').replace(/"/g, '&quot;')) + '">' + (inv.payee_name || inv.payee_code || '—') + '</div></td>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--gray-600);" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</div></td>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</div></td>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</div></td>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums;">$' + Math.round(inv.amount).toLocaleString() + '</div></td>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">' + (inv.check_num || '—') + '</div></td>';
+    html += '<td style="text-align:right;">';
     if (isReclassed) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
     } else {
-      html += '<select id="fa_reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
-      html += '<option value="">Reclass to…</option>';
-      allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
-      html += '</select> ';
-      html += '<button onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
+      html += '<span id="fa_reclass_label_' + inv.id + '" style="font-size:11px; color:var(--gray-500); margin-right:4px;"></span>';
+      html += '<input type="hidden" id="fa_reclass_gl_' + inv.id + '" value="">';
+      html += '<button onclick="faOpenReclassModal(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--gray-100); color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer;">Reclass to…</button> ';
+      html += '<button id="fa_reclass_go_' + inv.id + '" onclick="faInlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; display:none;">Go</button>';
     }
     html += '</td></tr>';
   });
@@ -5118,6 +5113,105 @@ async function faUndoReclass(invoiceId, fromGL) {
       showToast('Reclass undone', 'success');
     } else { showToast('Undo failed', 'error'); }
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── FA Searchable Reclass Modal (matches PM dashboard) ──────────────
+let _faReclassCallback = null;
+
+function faOpenReclassModal(invoiceId, fromGL) {
+  _faReclassCallback = { id: invoiceId, fromGL: fromGL };
+
+  let overlay = document.getElementById('faReclassOverlay');
+  if (overlay) overlay.remove();
+
+  // Build ALL_GL_CODES from allSheets
+  const allGLs = [];
+  const seen = {};
+  Object.keys(allSheets).forEach(sheet => {
+    (allSheets[sheet] || []).forEach(l => {
+      if (!seen[l.gl_code]) {
+        seen[l.gl_code] = true;
+        allGLs.push({ gl_code: l.gl_code, description: l.description || '', category: l.category || 'other' });
+      }
+    });
+  });
+  allGLs.sort((a, b) => a.gl_code.localeCompare(b.gl_code));
+
+  // Group by category
+  const cats = {};
+  const catOrder = [];
+  allGLs.filter(g => g.gl_code !== fromGL).forEach(g => {
+    const cat = g.category || 'other';
+    if (!cats[cat]) { cats[cat] = []; catOrder.push(cat); }
+    cats[cat].push(g);
+  });
+  catOrder.sort();
+
+  const catLabels = {supplies:'Supplies',repairs:'Repairs',maintenance:'Maintenance Contracts',payroll:'Payroll',electric:'Electric',gas:'Gas',fuel:'Fuel',water:'Water & Sewer',sewer:'Water & Sewer',insurance:'Insurance',re_taxes:'Real Estate Taxes',professional:'Professional Fees',admin:'Administrative',financial:'Financial',income:'Income',other:'Other'};
+
+  let listHtml = '';
+  catOrder.forEach(cat => {
+    listHtml += '<div class="rm-cat-header">' + (catLabels[cat] || cat) + '</div>';
+    cats[cat].forEach(g => {
+      listHtml += '<div class="rm-gl-row" data-gl="' + g.gl_code + '" data-desc="' + (g.description || '').toLowerCase() + '" data-cat="' + cat + '" onclick="faSelectReclassGL(\'' + g.gl_code + '\',\'' + g.description.replace(/'/g, "\\'") + '\')">';
+      listHtml += '<span class="gl-code">' + g.gl_code + '</span>';
+      listHtml += '<span class="gl-desc">' + (g.description || '') + '</span>';
+      listHtml += '</div>';
+    });
+  });
+
+  overlay = document.createElement('div');
+  overlay.id = 'faReclassOverlay';
+  overlay.className = 'fa-reclass-overlay';
+  overlay.innerHTML =
+    '<div class="fa-reclass-modal">' +
+      '<div class="rm-header"><h3>Select Target GL Code</h3>' +
+        '<button onclick="document.getElementById(\'faReclassOverlay\').remove()" style="background:none; border:none; font-size:18px; cursor:pointer; color:var(--gray-500);">✕</button></div>' +
+      '<div class="rm-search"><input type="text" id="faReclassSearch" placeholder="Search by GL code, name, or category…" oninput="faFilterReclassModal(this.value)" autofocus></div>' +
+      '<div class="rm-list" id="faReclassListContainer">' + listHtml + '</div>' +
+      '<div class="rm-footer"><span style="font-size:12px; color:var(--gray-500);">' + allGLs.length + ' GL codes available</span></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  setTimeout(() => { const s = document.getElementById('faReclassSearch'); if (s) s.focus(); }, 50);
+}
+
+function faFilterReclassModal(q) {
+  q = q.toLowerCase();
+  const container = document.getElementById('faReclassListContainer');
+  const rows = container.querySelectorAll('.rm-gl-row');
+  const catHeaders = container.querySelectorAll('.rm-cat-header');
+
+  rows.forEach(r => {
+    const gl = r.dataset.gl.toLowerCase();
+    const desc = r.dataset.desc;
+    const cat = r.dataset.cat;
+    const match = !q || gl.includes(q) || desc.includes(q) || (cat && cat.includes(q));
+    r.style.display = match ? '' : 'none';
+  });
+
+  catHeaders.forEach(h => {
+    let sib = h.nextElementSibling;
+    let anyVisible = false;
+    while (sib && !sib.classList.contains('rm-cat-header')) {
+      if (sib.style.display !== 'none') anyVisible = true;
+      sib = sib.nextElementSibling;
+    }
+    h.style.display = anyVisible ? '' : 'none';
+  });
+}
+
+function faSelectReclassGL(glCode, glDesc) {
+  if (!_faReclassCallback) return;
+  const cb = _faReclassCallback;
+  const hidden = document.getElementById('fa_reclass_gl_' + cb.id);
+  const label = document.getElementById('fa_reclass_label_' + cb.id);
+  const goBtn = document.getElementById('fa_reclass_go_' + cb.id);
+  if (hidden) hidden.value = glCode;
+  if (label) { label.textContent = '→ ' + glCode; label.style.color = 'var(--blue)'; label.style.fontWeight = '600'; }
+  if (goBtn) goBtn.style.display = '';
+  document.getElementById('faReclassOverlay').remove();
 }
 
 // ── FA Zero-row toggle ───────────────────────────────────────────────
@@ -5176,6 +5270,20 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
+      .fa-reclass-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center; z-index:9999; }
+      .fa-reclass-modal { background:white; border-radius:12px; width:560px; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3); }
+      .fa-reclass-modal .rm-header { padding:16px 20px; border-bottom:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center; }
+      .fa-reclass-modal .rm-header h3 { font-size:15px; font-weight:700; color:var(--blue); }
+      .fa-reclass-modal .rm-search { padding:12px 20px; border-bottom:1px solid var(--gray-200); }
+      .fa-reclass-modal .rm-search input { width:100%; padding:8px 12px; border:1px solid var(--gray-300); border-radius:6px; font-size:13px; outline:none; }
+      .fa-reclass-modal .rm-search input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(90,74,63,0.08); }
+      .fa-reclass-modal .rm-list { flex:1; overflow-y:auto; max-height:400px; }
+      .fa-reclass-modal .rm-cat-header { padding:6px 20px; font-size:11px; font-weight:700; text-transform:uppercase; color:var(--blue); background:var(--blue-light); position:sticky; top:0; }
+      .fa-reclass-modal .rm-gl-row { padding:8px 20px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:13px; border-bottom:1px solid var(--gray-100); }
+      .fa-reclass-modal .rm-gl-row:hover { background:var(--blue-light); }
+      .fa-reclass-modal .rm-gl-row .gl-code { font-family:monospace; font-weight:600; min-width:90px; }
+      .fa-reclass-modal .rm-gl-row .gl-desc { flex:1; color:var(--gray-700); }
+      .fa-reclass-modal .rm-footer { padding:12px 20px; border-top:1px solid var(--gray-200); display:flex; gap:8px; justify-content:flex-end; }
     `;
     document.head.appendChild(style);
   }
