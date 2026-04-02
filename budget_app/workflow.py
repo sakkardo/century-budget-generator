@@ -3472,6 +3472,7 @@ function fxCellFocus(el) {
   const bar = document.getElementById('faFormulaBar');
   const label = document.getElementById('faFormulaLabel');
   if (!bar || !label) return;
+  bar.readOnly = false;
 
   const field = el.dataset.field;
   const fieldLabel = field === 'proposed_budget' ? 'Proposed Budget' :
@@ -3512,6 +3513,69 @@ function fxCellBlur(el) {
       el.style.background = '';
     }
   }, 100);
+}
+
+// ── fxSubtotalFocus: formula bar for subtotal/total row cells ──────────
+function fxSubtotalFocus(td) {
+  const bar = document.getElementById('faFormulaBar');
+  const label = document.getElementById('faFormulaLabel');
+  if (!bar || !label) return;
+  // Clear any active GL-row fx cell
+  if (_activeFxCell) {
+    _activeFxCell.style.border = '';
+    _activeFxCell.style.borderRadius = '';
+    _activeFxCell.style.background = '';
+    _activeFxCell = null;
+  }
+  const row = td.closest('tr');
+  const rowId = row ? row.id : '';
+  const col = td.dataset.col;
+  // Row label from first cell text
+  let rowLabel = 'Total';
+  if (row) { const fc = row.querySelector('td'); if (fc) rowLabel = fc.textContent.trim(); }
+  const colLabels = {prior:'Prior Year', ytd:'YTD Actual', ytdBudget:'YTD Budget', estimate:'Estimate', forecast:'12 Mo Forecast', budget:'Curr Budget', proposed:'Proposed', variance:'$ Variance', pctchange:'% Change'};
+  label.textContent = rowLabel + ' / ' + (colLabels[col] || col);
+  label.style.display = 'inline';
+  bar.style.display = 'block';
+  // Gather GL codes for this row
+  const colPrefix = {prior:'pr_', ytd:'ytd_', ytdBudget:'ytdb_', estimate:'est_', forecast:'fcst_', budget:'bud_', proposed:'prop_'};
+  let glCodes = [];
+  if (rowId === 'faSheetTotal') {
+    document.querySelectorAll('tr[data-gl]').forEach(r => { if (r.style.display !== 'none') glCodes.push(r.dataset.gl); });
+  } else if (rowId.startsWith('subtotal_')) {
+    const key = rowId.replace('subtotal_', '');
+    glCodes = (window._catGroupGLs || {})[key] || [];
+  }
+  if (col === 'variance') {
+    bar.value = '= Proposed - Prior Year';
+  } else if (col === 'pctchange') {
+    bar.value = '= (Proposed / Prior Year) - 1';
+  } else {
+    const pfx = colPrefix[col];
+    if (pfx && glCodes.length) {
+      const parts = glCodes.map(gl => { const el = document.getElementById(pfx + gl); return el ? fmt(parseFloat(el.dataset.raw) || 0) : '$0'; });
+      bar.value = '= ' + parts.join(' + ');
+    } else {
+      bar.value = '= ' + fmt(parseFloat(td.dataset.raw) || 0);
+    }
+  }
+  _formulaBarOriginal = bar.value;
+  _showFormulaButtons(false, false);
+  bar.readOnly = true;
+  // Highlight clicked cell
+  td.style.outline = '2px solid var(--blue)';
+  td.style.outlineOffset = '-2px';
+  td.style.borderRadius = '4px';
+  const cleanup = (e) => {
+    if (!td.contains(e.target) && e.target !== bar) {
+      td.style.outline = '';
+      td.style.outlineOffset = '';
+      td.style.borderRadius = '';
+      bar.readOnly = false;
+      document.removeEventListener('click', cleanup);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', cleanup), 0);
 }
 
 // ── Formula bar live preview ───────────────────────────────────────────
@@ -3828,7 +3892,6 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    // Excel: Variance = Proposed - Prior Year; % Change = Proposed/Prior - 1
     const v = t.proposed - t.prior;
     const p = t.prior ? (t.proposed / t.prior - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
@@ -3836,19 +3899,26 @@ function faUpdateSheetTotals() {
     // cells[3]=accrual(empty), cells[4]=unpaid(empty), cells[5]=ytdBudget,
     // cells[6]=estimate, cells[7]=forecast, cells[8]=budget, cells[9]=inc%(empty),
     // cells[10]=proposed, cells[11]=variance, cells[12]=pctChange
+    function setC(cell, val) {
+      const sp = cell.querySelector('.sub-val');
+      if (sp) { sp.textContent = fmt(val); cell.dataset.raw = Math.round(val).toString(); }
+      else { cell.textContent = fmt(val); }
+    }
     if (cells.length >= 13) {
-      cells[1].textContent = fmt(t.prior);
-      cells[2].textContent = fmt(t.ytd);
-      // cells[3] & cells[4] stay empty (accrual/unpaid not summed in subtotals)
-      cells[5].textContent = fmt(t.ytdBudget);
-      cells[6].textContent = fmt(t.estimate);
-      cells[7].textContent = fmt(t.forecast);
-      cells[8].textContent = fmt(t.budget);
-      // cells[9] stays empty (inc%)
-      cells[10].textContent = fmt(t.proposed);
-      cells[11].textContent = fmt(v);
+      setC(cells[1], t.prior);
+      setC(cells[2], t.ytd);
+      setC(cells[5], t.ytdBudget);
+      setC(cells[6], t.estimate);
+      setC(cells[7], t.forecast);
+      setC(cells[8], t.budget);
+      setC(cells[10], t.proposed);
+      const vs = cells[11].querySelector('.sub-val');
+      if (vs) { vs.textContent = fmt(v); cells[11].dataset.raw = Math.round(v).toString(); }
+      else { cells[11].textContent = fmt(v); }
       cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-      cells[12].textContent = (p * 100).toFixed(1) + '%';
+      const ps = cells[12].querySelector('.sub-val');
+      if (ps) { ps.textContent = (p * 100).toFixed(1) + '%'; cells[12].dataset.raw = p.toString(); }
+      else { cells[12].textContent = (p * 100).toFixed(1) + '%'; }
     }
   }
 
@@ -5421,19 +5491,27 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const v = t.proposed - t.prior;
     const p = t.prior ? (t.proposed/t.prior-1) : 0;
     const idAttr = rowId ? ' id="' + rowId + '"' : '';
+    const isTotal = cls === 'total-row';
+    const bs = isTotal ? 'background:rgba(255,255,255,0.2); color:white; border-color:rgba(255,255,255,0.4);' : '';
+    function fxTd(val, col) {
+      return '<td class="num" style="position:relative; cursor:pointer;" data-col="' + col + '" data-raw="' + Math.round(val) + '" onclick="fxSubtotalFocus(this)">' +
+        '<span class="fa-fx" style="' + bs + '">fx</span>' +
+        '<span class="sub-val">' + fmt(val) + '</span></td>';
+    }
+    const vc = v >= 0 ? 'var(--red)' : 'var(--green)';
     return '<tr class="' + (cls||'sub-row') + '"' + idAttr + '>' +
       '<td colspan="3">' + label + '</td>' +
-      '<td class="num">' + fmt(t.prior) + '</td>' +
-      '<td class="num">' + fmt(t.ytd) + '</td>' +
+      fxTd(t.prior, 'prior') +
+      fxTd(t.ytd, 'ytd') +
       '<td class="num"></td><td class="num"></td>' +
-      '<td class="num">' + fmt(t.ytdBudget) + '</td>' +
-      '<td class="num">' + fmt(t.estimate) + '</td>' +
-      '<td class="num">' + fmt(t.forecast) + '</td>' +
-      '<td class="num">' + fmt(t.budget) + '</td>' +
+      fxTd(t.ytdBudget, 'ytdBudget') +
+      fxTd(t.estimate, 'estimate') +
+      fxTd(t.forecast, 'forecast') +
+      fxTd(t.budget, 'budget') +
       '<td class="num"></td>' +
-      '<td class="num">' + fmt(t.proposed) + '</td>' +
-      '<td class="num" style="color:' + (v>=0?'var(--red)':'var(--green)') + ';">' + fmt(v) + '</td>' +
-      '<td class="num">' + (p*100).toFixed(1) + '%</td></tr>';
+      fxTd(t.proposed, 'proposed') +
+      '<td class="num" style="position:relative; cursor:pointer; color:' + vc + ';" data-col="variance" data-raw="' + Math.round(v) + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + fmt(v) + '</span></td>' +
+      '<td class="num" style="position:relative; cursor:pointer;" data-col="pctchange" data-raw="' + p + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + (p*100).toFixed(1) + '%</span></td></tr>';
   }
 
   // Build category groups and populate _catGroupGLs for live recalculation
