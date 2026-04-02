@@ -4074,8 +4074,8 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Prior Year)</td>
         <td style="${cellEdit}"><input type="text" id="re_av" data-raw="${d.assessed_value}" value="${fmtDollarInput(d.assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        ${fxCell('re_h1_tax', fmtD(d.first_half_tax), '= Prior Trans AV × Tax Rate ÷ 2', '1st Half Tax')}
-        <td style="${cellNote}">= Prior Trans AV × Rate ÷ 2</td>
+        ${fxCell('re_h1_tax', fmtD(d.first_half_tax), '= (re_av × re_rate) / 2', '1st Half Tax')}
+        <td style="${cellNote}">= (re_av × re_rate) / 2</td>
       </tr>
       <tr>
         <td style="${cellLabel}">Tax Rate</td>
@@ -4091,13 +4091,13 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Current)</td>
         <td style="${cellEdit}"><input type="text" id="re_av2" data-raw="${d.est_assessed_value}" value="${fmtDollarInput(d.est_assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        ${fxCell('re_h2_tax', fmtD(d.second_half_tax), '= Current Trans AV × Est Rate ÷ 2', '2nd Half Tax')}
-        <td style="${cellNote}">= Current Trans AV × Est Rate ÷ 2</td>
+        ${fxCell('re_h2_tax', fmtD(d.second_half_tax), '= (re_av2 × re_est_rate) / 2', '2nd Half Tax')}
+        <td style="${cellNote}">= (re_av2 × re_est_rate) / 2</td>
       </tr>
       <tr>
         <td style="${cellLabel}">Trans AV Change</td>
-        ${fxCell('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014', '= Current Trans AV ÷ Prior Trans AV − 1', 'Trans AV Change')}
-        <td style="${cellNote}" colspan="2">= Current Trans AV ÷ Prior Trans AV − 1</td>
+        ${fxCell('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014', '= re_av2 / re_av - 1', 'Trans AV Change')}
+        <td style="${cellNote}" colspan="2">= re_av2 / re_av - 1</td>
       </tr>
       <tr>
         <td style="${cellLabel}">Estimated Tax Rate</td>
@@ -4108,8 +4108,8 @@ function renderRETaxesTab(contentDiv) {
       <!-- Gross -->
       <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700; font-size:14px;">GROSS TAX LIABILITY</td>
-        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; background:#f0faf0; cursor:pointer;" id="re_gross" data-formula="= 1st Half Tax + 2nd Half Tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
-        <td style="${cellNote}" colspan="2">= 1st Half Tax + 2nd Half Tax</td>
+        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; background:#f0faf0; cursor:pointer;" id="re_gross" data-formula="= re_h1_tax + re_h2_tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
+        <td style="${cellNote}" colspan="2">= re_h1_tax + re_h2_tax</td>
       </tr>
 
       <!-- Exemptions Header -->
@@ -4133,7 +4133,7 @@ function renderRETaxesTab(contentDiv) {
       <td style="${cellLabel}">${r.label} <span style="font-size:10px; color:var(--gray-400);">${r.gl}</span></td>
       <td style="${cellEdit} text-align:center;"><input type="text" id="re_ex_${r.key}_growth" data-raw="${e.growth_pct}" value="${e.growth_pct ? fmtPct(e.growth_pct) : '0.00%'}" onfocus="reTaxFocus(this)" onblur="reTaxBlurPct(this)" style="${inputRate}"></td>
       <td style="${cellEdit}"><input type="text" id="re_ex_${r.key}_current" data-raw="${e.current_year}" value="${fmtDollarInput(e.current_year)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-      <td style="${cellCalc} cursor:pointer;" id="re_ex_${r.key}_budget" data-formula="= Current Year × (1 + Growth %)" data-label="${r.label} Budget" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(e.budget_year)}</span>${fxBadge}</td>
+      <td style="${cellCalc} cursor:pointer;" id="re_ex_${r.key}_budget" data-formula="= current × (1 + growth)" data-label="${r.label} Budget" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(e.budget_year)}</span>${fxBadge}</td>
     </tr>`;
   });
 
@@ -4141,15 +4141,15 @@ function renderRETaxesTab(contentDiv) {
       <tr style="border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700;">TOTAL EXEMPTIONS</td>
         <td></td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_current" data-formula="= SUM(All Current Year Exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_budget" data-formula="= SUM(All Budget Year Exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_current" data-formula="= SUM(current exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_budget" data-formula="= SUM(budget exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
       </tr>
 
       <!-- Net Tax -->
       <tr style="border-top:3px solid var(--gray-400); background:#f0faf0;">
         <td style="padding:12px 10px; font-weight:700; font-size:15px;">NET TAX LIABILITY</td>
-        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; background:#f0faf0; cursor:pointer;" id="re_net" data-formula="= Gross Tax − Total Exemptions (Budget)" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
-        <td style="${cellNote}" colspan="2">= Gross Tax − Total Exemptions</td>
+        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; background:#f0faf0; cursor:pointer;" id="re_net" data-formula="= re_gross - re_ex_total_budget" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
+        <td style="${cellNote}" colspan="2">= re_gross - re_ex_total_budget</td>
       </tr>
     </table>
 
