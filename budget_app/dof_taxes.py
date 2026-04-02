@@ -147,6 +147,7 @@ def fetch_dof_data(entity_code: str) -> dict | None:
                     "prior_actual_av": float(record.get("pyacttot", 0)),
                     "market_value": float(record.get("curmkttot", 0)),
                     "taxable_value": float(record.get("curtxbtot", 0)),
+                    "tax_rate": cfg.get("tax_rate", 0),  # API doesn't have rate; use config
                     "source": "nyc_open_data_api",
                     "tax_class": cfg["tax_class"],
                     "year": record.get("year", ""),
