@@ -4044,12 +4044,12 @@ function renderRETaxesTab(contentDiv) {
       <!-- 1st Half -->
       <tr><td colspan="4" style="${subHeaderStyle}">1st Half — Current City Fiscal Year (Jul–Dec)</td></tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Assessed Valuation (Actual)</td>
+        <td style="${labelStyle}">Transitional Assessed Value (Prior Year)</td>
         <td style="padding:6px 12px;"><input type="text" id="re_av" value="${d.assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">From DOF Notice of Property Value (NOPV)</td>
+        <td colspan="2" style="${noteStyle}">Prior year transitional AV from DOF${d.prior_trans_av ? ' (pytrntot: ' + fmt(d.prior_trans_av) + ')' : ''}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Tax Rate (Actual)</td>
+        <td style="${labelStyle}">Tax Rate</td>
         <td style="padding:6px 12px;"><input type="text" id="re_rate" value="${d.tax_rate}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
         <td style="${outputStyle}" id="re_h1_tax">${fmt(d.first_half_tax)}</td>
         <td style="${noteStyle}">← 1st Half Tax</td>
@@ -4058,14 +4058,14 @@ function renderRETaxesTab(contentDiv) {
       <!-- 2nd Half -->
       <tr><td colspan="4" style="${subHeaderStyle}">2nd Half — Next City Fiscal Year (Jan–Jun)</td></tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Transitional AV Increase %</td>
-        <td style="padding:6px 12px;"><input type="text" id="re_trans" value="${d.transitional_av_increase}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
-        <td colspan="2" style="${noteStyle}">Estimated increase in assessed valuation</td>
+        <td style="${labelStyle}">Transitional Assessed Value (Current)</td>
+        <td style="padding:6px 12px;"><input type="text" id="re_av2" value="${d.est_assessed_value}" onchange="reCalcTaxes()" style="${inputStyle}"></td>
+        <td colspan="2" style="${noteStyle}">Current transitional AV from DOF${d.current_trans_av ? ' (curtrntot: ' + fmt(d.current_trans_av) + ')' : ''}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="${labelStyle}">Estimated Assessed Valuation</td>
-        <td style="${outputStyle}" id="re_est_av">${fmt(d.est_assessed_value)}</td>
-        <td colspan="2" style="${noteStyle}">AV × (1 + increase %)</td>
+        <td style="${labelStyle}">Transitional AV Change</td>
+        <td style="${outputStyle}" id="re_trans_pct">${d.prior_trans_av > 0 ? pctFmt((d.est_assessed_value / d.prior_trans_av) - 1) : '—'}</td>
+        <td colspan="2" style="${noteStyle}">Current Trans AV ÷ Prior Trans AV − 1</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
         <td style="${labelStyle}">Estimated Tax Rate</td>
@@ -4136,24 +4136,28 @@ function renderRETaxesTab(contentDiv) {
   // Format input displays
   document.getElementById('re_av').value = d.assessed_value;
   document.getElementById('re_rate').value = d.tax_rate;
-  document.getElementById('re_trans').value = d.transitional_av_increase;
+  document.getElementById('re_av2').value = d.est_assessed_value;
   document.getElementById('re_est_rate').value = d.est_tax_rate;
 }
 
 // Live recalculation of RE Taxes when inputs change
 function reCalcTaxes() {
-  const av = parseFloat(document.getElementById('re_av').value) || 0;
+  const av1 = parseFloat(document.getElementById('re_av').value) || 0;
   const rate = parseFloat(document.getElementById('re_rate').value) || 0;
-  const trans = parseFloat(document.getElementById('re_trans').value) || 0;
+  const av2 = parseFloat(document.getElementById('re_av2').value) || 0;
   const estRate = parseFloat(document.getElementById('re_est_rate').value) || 0;
 
-  const h1 = av * rate / 2;
-  const estAv = av * (1 + trans);
-  const h2 = estAv * estRate / 2;
+  const h1 = av1 * rate / 2;
+  const h2 = av2 * estRate / 2;
   const gross = h1 + h2;
 
+  // Show trans AV change %
+  const transPctEl = document.getElementById('re_trans_pct');
+  if (transPctEl && av1 > 0) {
+    transPctEl.textContent = ((av2 / av1 - 1) * 100).toFixed(2) + '%';
+  }
+
   document.getElementById('re_h1_tax').textContent = '$' + Math.round(h1).toLocaleString();
-  document.getElementById('re_est_av').textContent = '$' + Math.round(estAv).toLocaleString();
   document.getElementById('re_h2_tax').textContent = '$' + Math.round(h2).toLocaleString();
   document.getElementById('re_gross').textContent = '$' + Math.round(gross).toLocaleString();
 
@@ -4175,9 +4179,9 @@ function reCalcTaxes() {
 // Save RE Taxes overrides to server
 async function saveRETaxes() {
   const overrides = {
-    assessed_value: parseFloat(document.getElementById('re_av').value) || 0,
+    first_half_av: parseFloat(document.getElementById('re_av').value) || 0,
     tax_rate: parseFloat(document.getElementById('re_rate').value) || 0,
-    transitional_av_increase: parseFloat(document.getElementById('re_trans').value) || 0,
+    second_half_av: parseFloat(document.getElementById('re_av2').value) || 0,
     est_tax_rate: parseFloat(document.getElementById('re_est_rate').value) || 0,
     veteran_growth: parseFloat(document.getElementById('re_ex_veteran_growth').value) || 0,
     veteran_current: parseFloat(document.getElementById('re_ex_veteran_current').value) || 0,

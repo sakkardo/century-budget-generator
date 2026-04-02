@@ -93,3 +93,30 @@ Editing any cell (accrual, unpaid, increase %, or overrides) triggers: Estimate 
 - Entity code is read from inside each file — no need to select it on the page for manual uploads
 - Formula functions are in `workflow.py`: `faComputeEstimate`, `faComputeForecast`, `faLineChanged`, `faUpdateSheetTotals`, `faGetFormulaTooltip`
 - Formula bar functions: `fxCellFocus`, `fxCellBlur`, `formulaBarAccept`, `formulaBarCancel`, `formulaBarClear`, `safeEvalFormula`
+
+---
+
+### PM Portal Features (April 1, 2026)
+
+#### Invoice Drill-Down Table
+- Click "View invoices" on any GL row to expand invoice detail
+- Columns: Payee → Description → Invoice # → Date → Amount → Check # → Action
+- Amounts formatted with cents and accounting parentheses for negatives: `($70.00)`
+- Long text (payee names, descriptions) truncated with ellipsis
+- Reclass button opens searchable modal with all 576 GL codes grouped by 9 categories
+
+#### Searchable Reclass Modal
+- Click "Reclass to…" on any invoice → modal with search bar + all GL codes
+- Search filters by GL code, description, or category name
+- GL codes grouped by category, sorted numerically
+- Works for both invoice-level (inline) and GL-level reclasses
+
+#### Accrual Adjustments
+- Stored as **negative** values — they back out prior-year expenses from YTD
+- Formula: `accrual_adj = -abs(total)` where total = sum of prior-year invoices for that GL
+- Fixed in `expense_distribution.py` `apply_accrual_adjustments()` for all future uploads
+
+#### CSS Lesson: table-layout:fixed + max-width:0 Kills Padding
+- `max-width:0` on `<td>` collapses computed padding to `0px` — adjacent cell text merges visually
+- Fix: remove all styling from `<td>`, wrap content in `<div>` with padding + `overflow:hidden`
+- `overflow:hidden` does NOT work on `<td>` elements per CSS spec — only on block elements like `<div>`
