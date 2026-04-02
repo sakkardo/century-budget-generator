@@ -3809,7 +3809,7 @@ function faUpdateSheetTotals() {
   const raw = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.dataset.raw) || 0 : 0; };
 
   function sumGLs(glCodes) {
-    const t = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
     glCodes.forEach(gl => {
       const row = document.querySelector('tr[data-gl="' + gl + '"]');
       if (row && row.style.display === 'none') return;
@@ -3817,6 +3817,7 @@ function faUpdateSheetTotals() {
       t.ytd += raw('ytd_' + gl);
       t.accrual += raw('acc_' + gl);
       t.unpaid += raw('unp_' + gl);
+      t.ytdBudget += raw('ytdb_' + gl);
       t.estimate += raw('est_' + gl);
       t.forecast += raw('fcst_' + gl);
       t.budget += raw('bud_' + gl);
@@ -3831,18 +3832,23 @@ function faUpdateSheetTotals() {
     const v = t.proposed - t.prior;
     const p = t.prior ? (t.proposed / t.prior - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
-    if (cells.length >= 11) {
-      cells[1].textContent = fmt(t.ytd);
-      cells[2].textContent = fmt(t.accrual);
-      cells[3].textContent = fmt(t.unpaid);
-      cells[4].textContent = fmt(t.estimate);
-      cells[5].textContent = fmt(t.forecast);
-      cells[6].textContent = fmt(t.budget);
-      cells[7].textContent = '';
-      cells[8].textContent = fmt(t.proposed);
-      cells[9].textContent = fmt(v);
-      cells[9].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-      cells[10].textContent = (p * 100).toFixed(1) + '%';
+    // With colspan="3" first cell: cells[0]=label, cells[1]=prior, cells[2]=ytd,
+    // cells[3]=accrual(empty), cells[4]=unpaid(empty), cells[5]=ytdBudget,
+    // cells[6]=estimate, cells[7]=forecast, cells[8]=budget, cells[9]=inc%(empty),
+    // cells[10]=proposed, cells[11]=variance, cells[12]=pctChange
+    if (cells.length >= 13) {
+      cells[1].textContent = fmt(t.prior);
+      cells[2].textContent = fmt(t.ytd);
+      // cells[3] & cells[4] stay empty (accrual/unpaid not summed in subtotals)
+      cells[5].textContent = fmt(t.ytdBudget);
+      cells[6].textContent = fmt(t.estimate);
+      cells[7].textContent = fmt(t.forecast);
+      cells[8].textContent = fmt(t.budget);
+      // cells[9] stays empty (inc%)
+      cells[10].textContent = fmt(t.proposed);
+      cells[11].textContent = fmt(v);
+      cells[11].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+      cells[12].textContent = (p * 100).toFixed(1) + '%';
     }
   }
 
@@ -5411,10 +5417,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     return t;
   }
 
-  function subtotalRow(label, t, cls) {
+  function subtotalRow(label, t, cls, rowId) {
     const v = t.proposed - t.prior;
     const p = t.prior ? (t.proposed/t.prior-1) : 0;
-    return '<tr class="' + (cls||'sub-row') + '">' +
+    const idAttr = rowId ? ' id="' + rowId + '"' : '';
+    return '<tr class="' + (cls||'sub-row') + '"' + idAttr + '>' +
       '<td colspan="3">' + label + '</td>' +
       '<td class="num">' + fmt(t.prior) + '</td>' +
       '<td class="num">' + fmt(t.ytd) + '</td>' +
@@ -5429,26 +5436,30 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + (p*100).toFixed(1) + '%</td></tr>';
   }
 
+  // Build category groups and populate _catGroupGLs for live recalculation
+  window._catGroupGLs = {};
   if (catConfig) {
     catConfig.groups.forEach(grp => {
       const gl = sheetLines.filter(grp.match);
       if (gl.length === 0) return;
+      window._catGroupGLs[grp.key] = gl.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '">' + grp.label + '</td></tr>';
       gl.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total ' + grp.label, sumLines(gl));
+      html += subtotalRow('Total ' + grp.label, sumLines(gl), null, 'subtotal_' + grp.key);
     });
     const allGrouped = catConfig.groups.flatMap(g => sheetLines.filter(g.match));
     const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
     if (ungrouped.length > 0) {
+      window._catGroupGLs['other'] = ungrouped.map(l => l.gl_code);
       html += '<tr class="cat-hdr"><td colspan="' + NC + '" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td></tr>';
       ungrouped.forEach(l => { html += buildLineRow(l); });
-      html += subtotalRow('Total Other', sumLines(ungrouped));
+      html += subtotalRow('Total Other', sumLines(ungrouped), null, 'subtotal_other');
     }
   } else {
     sheetLines.forEach(l => { html += buildLineRow(l); });
   }
 
-  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row');
+  html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
   html += '</tbody></table></div></div>';
   contentDiv.innerHTML = html;
 }
