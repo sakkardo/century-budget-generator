@@ -4213,14 +4213,19 @@ function reTaxFxClick(el) {
   const label = document.getElementById('reTaxFormulaLabel');
   if (!bar || !label) return;
 
-  label.textContent = el.dataset.label || '';
+  // Show label + formula description
+  const formulaDesc = el.dataset.formula || '';
+  label.textContent = (el.dataset.label || '') + (formulaDesc ? '  ' + formulaDesc : '');
   label.style.display = 'inline';
 
-  // Show formula or current override value
+  // Put the actual numeric value in the bar (editable), not the description
   if (el.dataset.override === 'true') {
     bar.value = el.dataset.overrideVal || '';
   } else {
-    bar.value = el.dataset.formula || '';
+    // Extract raw number from the displayed text (strip $ and commas)
+    const valSpan = el.querySelector('.re-fx-val');
+    const displayText = valSpan ? valSpan.textContent : '';
+    bar.value = displayText.replace(/[$,]/g, '').trim() || '';
   }
   _reTaxFormulaOriginal = bar.value;
   _showReTaxButtons(true);
