@@ -4021,13 +4021,25 @@ function renderRETaxesTab(contentDiv) {
   const inputRate = 'width:90px; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
   const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">fx</span>';
   // Wrap calculated values in a span so reCalcTaxes can update value without destroying the fx badge
-  const fxVal = (id, val) => '<span class="re-fx-val" data-for="' + id + '">' + val + '</span>' + fxBadge;
+  // Each fx cell is clickable: onclick populates the formula bar
+  const fxCell = (id, val, formula, label) => {
+    return '<td style="' + cellCalc + ' cursor:pointer;" id="' + id + '" data-formula="' + formula + '" data-label="' + label + '" onclick="reTaxFxClick(this)" tabindex="0">' +
+      '<span class="re-fx-val">' + val + '</span>' + fxBadge + '</td>';
+  };
 
   const d = reTaxes;
   const ex = d.exemptions || {};
 
   let html = `
   <div style="max-width:960px; margin:0 auto;">
+    <!-- Formula bar — matches FA grid style -->
+    <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+      <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
+      <span id="reTaxFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>
+      <input id="reTaxFormulaBar" type="text" readonly placeholder="Click a green formula cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white; color:var(--gray-700);">
+      <span id="reTaxFormulaResult" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>
+    </div>
+
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
       <div>
         <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
@@ -4060,7 +4072,7 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Prior Year)</td>
         <td style="${cellEdit}"><input type="text" id="re_av" data-raw="${d.assessed_value}" value="${fmtDollarInput(d.assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        <td style="${cellCalc}" id="re_h1_tax">${fxVal('re_h1_tax', fmtD(d.first_half_tax))}</td>
+        ${fxCell('re_h1_tax', fmtD(d.first_half_tax), '= Prior Trans AV × Tax Rate ÷ 2', '1st Half Tax')}
         <td style="${cellNote}">= Prior Trans AV × Rate ÷ 2</td>
       </tr>
       <tr>
@@ -4077,12 +4089,12 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Current)</td>
         <td style="${cellEdit}"><input type="text" id="re_av2" data-raw="${d.est_assessed_value}" value="${fmtDollarInput(d.est_assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        <td style="${cellCalc}" id="re_h2_tax">${fxVal('re_h2_tax', fmtD(d.second_half_tax))}</td>
+        ${fxCell('re_h2_tax', fmtD(d.second_half_tax), '= Current Trans AV × Est Rate ÷ 2', '2nd Half Tax')}
         <td style="${cellNote}">= Current Trans AV × Est Rate ÷ 2</td>
       </tr>
       <tr>
         <td style="${cellLabel}">Trans AV Change</td>
-        <td style="${cellCalc}" id="re_trans_pct">${fxVal('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014')}</td>
+        ${fxCell('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014', '= Current Trans AV ÷ Prior Trans AV − 1', 'Trans AV Change')}
         <td style="${cellNote}" colspan="2">= Current Trans AV ÷ Prior Trans AV − 1</td>
       </tr>
       <tr>
@@ -4094,7 +4106,7 @@ function renderRETaxesTab(contentDiv) {
       <!-- Gross -->
       <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700; font-size:14px;">GROSS TAX LIABILITY</td>
-        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px;" id="re_gross">${fmtD(d.gross_tax)}</td>
+        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; background:#f0faf0; cursor:pointer;" id="re_gross" data-formula="= 1st Half Tax + 2nd Half Tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
         <td style="${cellNote}" colspan="2">= 1st Half Tax + 2nd Half Tax</td>
       </tr>
 
@@ -4119,7 +4131,7 @@ function renderRETaxesTab(contentDiv) {
       <td style="${cellLabel}">${r.label} <span style="font-size:10px; color:var(--gray-400);">${r.gl}</span></td>
       <td style="${cellEdit} text-align:center;"><input type="text" id="re_ex_${r.key}_growth" data-raw="${e.growth_pct}" value="${e.growth_pct ? fmtPct(e.growth_pct) : '0.00%'}" onfocus="reTaxFocus(this)" onblur="reTaxBlurPct(this)" style="${inputRate}"></td>
       <td style="${cellEdit}"><input type="text" id="re_ex_${r.key}_current" data-raw="${e.current_year}" value="${fmtDollarInput(e.current_year)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-      <td style="${cellCalc}" id="re_ex_${r.key}_budget">${fxVal('re_ex_' + r.key + '_budget', fmtD(e.budget_year))}</td>
+      <td style="${cellCalc} cursor:pointer;" id="re_ex_${r.key}_budget" data-formula="= Current Year × (1 + Growth %)" data-label="${r.label} Budget" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(e.budget_year)}</span>${fxBadge}</td>
     </tr>`;
   });
 
@@ -4127,14 +4139,14 @@ function renderRETaxesTab(contentDiv) {
       <tr style="border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700;">TOTAL EXEMPTIONS</td>
         <td></td>
-        <td style="text-align:right; padding:10px; font-weight:600;" id="re_ex_total_current">${fmtD(d.total_exemptions_current)}</td>
-        <td style="text-align:right; padding:10px; font-weight:600;" id="re_ex_total_budget">${fmtD(d.total_exemptions_budget)}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_current" data-formula="= SUM(All Current Year Exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_budget" data-formula="= SUM(All Budget Year Exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
       </tr>
 
       <!-- Net Tax -->
       <tr style="border-top:3px solid var(--gray-400); background:#f0faf0;">
         <td style="padding:12px 10px; font-weight:700; font-size:15px;">NET TAX LIABILITY</td>
-        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px;" id="re_net">${fmtD(d.net_tax)}</td>
+        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; background:#f0faf0; cursor:pointer;" id="re_net" data-formula="= Gross Tax − Total Exemptions (Budget)" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
         <td style="${cellNote}" colspan="2">= Gross Tax − Total Exemptions</td>
       </tr>
     </table>
@@ -4176,6 +4188,56 @@ function reTaxBlurPct(el) {
   reCalcTaxes();
 }
 
+// ── RE Taxes formula bar interaction ───────────────────────────────────
+let _activeReTaxFxCell = null;
+
+function reTaxFxClick(el) {
+  // Deselect previous
+  if (_activeReTaxFxCell && _activeReTaxFxCell !== el) {
+    _activeReTaxFxCell.style.border = '';
+    _activeReTaxFxCell.style.borderRadius = '';
+  }
+  _activeReTaxFxCell = el;
+  const bar = document.getElementById('reTaxFormulaBar');
+  const label = document.getElementById('reTaxFormulaLabel');
+  const result = document.getElementById('reTaxFormulaResult');
+  if (!bar || !label) return;
+
+  label.textContent = el.dataset.label || '';
+  label.style.display = 'inline';
+  bar.value = el.dataset.formula || '';
+
+  // Show computed result
+  const valSpan = el.querySelector('.re-fx-val');
+  if (result && valSpan) {
+    result.textContent = valSpan.textContent;
+    result.style.display = 'inline-block';
+  }
+
+  // Highlight active cell
+  el.style.border = '2px solid var(--blue)';
+  el.style.borderRadius = '4px';
+}
+
+// Deselect when clicking outside
+document.addEventListener('click', function(e) {
+  if (!_activeReTaxFxCell) return;
+  const wrap = document.getElementById('reTaxFormulaBarWrap');
+  if (_activeReTaxFxCell.contains(e.target)) return;
+  if (wrap && wrap.contains(e.target)) return;
+  // Clicked outside — deselect
+  _activeReTaxFxCell.style.border = '';
+  _activeReTaxFxCell.style.borderRadius = '';
+  _activeReTaxFxCell = null;
+  const bar = document.getElementById('reTaxFormulaBar');
+  const label = document.getElementById('reTaxFormulaLabel');
+  const result = document.getElementById('reTaxFormulaResult');
+  if (bar) bar.value = '';
+  if (bar) bar.placeholder = 'Click a green formula cell to view its formula...';
+  if (label) label.style.display = 'none';
+  if (result) result.style.display = 'none';
+});
+
 // Helper: read raw numeric value from data-raw attribute (inputs show formatted text)
 function reRaw(id) {
   const el = document.getElementById(id);
@@ -4187,6 +4249,11 @@ function reSetCalc(id, text) {
   if (!cell) return;
   const span = cell.querySelector('.re-fx-val');
   if (span) { span.textContent = text; } else { cell.textContent = text; }
+  // Update formula bar result if this cell is currently selected
+  if (_activeReTaxFxCell === cell) {
+    const result = document.getElementById('reTaxFormulaResult');
+    if (result) result.textContent = text;
+  }
 }
 
 // Live recalculation of RE Taxes when inputs change
