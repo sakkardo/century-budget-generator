@@ -4013,6 +4013,8 @@ function renderRETaxesTab(contentDiv) {
   const inputDollar = 'width:100%; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
   const inputRate = 'width:90px; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
   const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">fx</span>';
+  // Wrap calculated values in a span so reCalcTaxes can update value without destroying the fx badge
+  const fxVal = (id, val) => '<span class="re-fx-val" data-for="' + id + '">' + val + '</span>' + fxBadge;
 
   const d = reTaxes;
   const ex = d.exemptions || {};
@@ -4051,7 +4053,7 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Prior Year)</td>
         <td style="${cellEdit}"><input type="text" id="re_av" data-raw="${d.assessed_value}" value="${fmtDollarInput(d.assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        <td style="${cellCalc}" id="re_h1_tax">${fmtD(d.first_half_tax)}${fxBadge}</td>
+        <td style="${cellCalc}" id="re_h1_tax">${fxVal('re_h1_tax', fmtD(d.first_half_tax))}</td>
         <td style="${cellNote}">= Prior Trans AV × Rate ÷ 2</td>
       </tr>
       <tr>
@@ -4068,12 +4070,12 @@ function renderRETaxesTab(contentDiv) {
       <tr>
         <td style="${cellLabel}">Transitional AV (Current)</td>
         <td style="${cellEdit}"><input type="text" id="re_av2" data-raw="${d.est_assessed_value}" value="${fmtDollarInput(d.est_assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        <td style="${cellCalc}" id="re_h2_tax">${fmtD(d.second_half_tax)}${fxBadge}</td>
+        <td style="${cellCalc}" id="re_h2_tax">${fxVal('re_h2_tax', fmtD(d.second_half_tax))}</td>
         <td style="${cellNote}">= Current Trans AV × Est Rate ÷ 2</td>
       </tr>
       <tr>
         <td style="${cellLabel}">Trans AV Change</td>
-        <td style="${cellCalc}" id="re_trans_pct">${d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014'}${fxBadge}</td>
+        <td style="${cellCalc}" id="re_trans_pct">${fxVal('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014')}</td>
         <td style="${cellNote}" colspan="2">= Current Trans AV ÷ Prior Trans AV − 1</td>
       </tr>
       <tr>
@@ -4110,7 +4112,7 @@ function renderRETaxesTab(contentDiv) {
       <td style="${cellLabel}">${r.label} <span style="font-size:10px; color:var(--gray-400);">${r.gl}</span></td>
       <td style="${cellEdit} text-align:center;"><input type="text" id="re_ex_${r.key}_growth" data-raw="${e.growth_pct}" value="${e.growth_pct ? fmtPct(e.growth_pct) : '0.00%'}" onfocus="reTaxFocus(this)" onblur="reTaxBlurPct(this)" style="${inputRate}"></td>
       <td style="${cellEdit}"><input type="text" id="re_ex_${r.key}_current" data-raw="${e.current_year}" value="${fmtDollarInput(e.current_year)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-      <td style="${cellCalc}" id="re_ex_${r.key}_budget">${fmtD(e.budget_year)}${fxBadge}</td>
+      <td style="${cellCalc}" id="re_ex_${r.key}_budget">${fxVal('re_ex_' + r.key + '_budget', fmtD(e.budget_year))}</td>
     </tr>`;
   });
 
@@ -4172,6 +4174,13 @@ function reRaw(id) {
   const el = document.getElementById(id);
   return el ? (parseFloat(el.dataset.raw) || 0) : 0;
 }
+// Helper: set value in a calculated cell — targets the .re-fx-val span to preserve the fx badge
+function reSetCalc(id, text) {
+  const cell = document.getElementById(id);
+  if (!cell) return;
+  const span = cell.querySelector('.re-fx-val');
+  if (span) { span.textContent = text; } else { cell.textContent = text; }
+}
 
 // Live recalculation of RE Taxes when inputs change
 function reCalcTaxes() {
@@ -4185,28 +4194,27 @@ function reCalcTaxes() {
   const gross = h1 + h2;
 
   // Show trans AV change %
-  const transPctEl = document.getElementById('re_trans_pct');
-  if (transPctEl && av1 > 0) {
-    transPctEl.textContent = ((av2 / av1 - 1) * 100).toFixed(2) + '%';
+  if (av1 > 0) {
+    reSetCalc('re_trans_pct', ((av2 / av1 - 1) * 100).toFixed(2) + '%');
   }
 
-  document.getElementById('re_h1_tax').textContent = '$' + Math.round(h1).toLocaleString();
-  document.getElementById('re_h2_tax').textContent = '$' + Math.round(h2).toLocaleString();
-  document.getElementById('re_gross').textContent = '$' + Math.round(gross).toLocaleString();
+  reSetCalc('re_h1_tax', '$' + Math.round(h1).toLocaleString());
+  reSetCalc('re_h2_tax', '$' + Math.round(h2).toLocaleString());
+  reSetCalc('re_gross', '$' + Math.round(gross).toLocaleString());
 
   let totalCurrent = 0, totalBudget = 0;
   ['veteran','sche','star','coop_abatement'].forEach(key => {
     const growth = reRaw('re_ex_' + key + '_growth');
     const current = reRaw('re_ex_' + key + '_current');
     const budget = current * (1 + growth);
-    document.getElementById('re_ex_' + key + '_budget').textContent = '$' + Math.round(budget).toLocaleString();
+    reSetCalc('re_ex_' + key + '_budget', '$' + Math.round(budget).toLocaleString());
     totalCurrent += current;
     totalBudget += budget;
   });
 
-  document.getElementById('re_ex_total_current').textContent = '$' + Math.round(totalCurrent).toLocaleString();
-  document.getElementById('re_ex_total_budget').textContent = '$' + Math.round(totalBudget).toLocaleString();
-  document.getElementById('re_net').textContent = '$' + Math.round(gross - totalBudget).toLocaleString();
+  reSetCalc('re_ex_total_current', '$' + Math.round(totalCurrent).toLocaleString());
+  reSetCalc('re_ex_total_budget', '$' + Math.round(totalBudget).toLocaleString());
+  reSetCalc('re_net', '$' + Math.round(gross - totalBudget).toLocaleString());
 }
 
 // Save RE Taxes overrides to server
