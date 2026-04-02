@@ -600,8 +600,9 @@ def create_expense_distribution_blueprint(db, workflow_models):
             if gl in gl_to_line:
                 line = gl_to_line[gl]
                 old_val = float(line.accrual_adj or 0)
-                if abs(old_val - total) > 0.01:
-                    line.accrual_adj = total
+                neg_total = -abs(total)  # Accruals are backed out of YTD → store as negative
+                if abs(old_val - neg_total) > 0.01:
+                    line.accrual_adj = neg_total
 
                     if BudgetRevision:
                         db.session.add(BudgetRevision(
@@ -610,7 +611,7 @@ def create_expense_distribution_blueprint(db, workflow_models):
                             action="update",
                             field_name="accrual_adj",
                             old_value=str(old_val),
-                            new_value=str(total),
+                            new_value=str(neg_total),
                             notes=f"GL {gl}: auto-calculated from Expense Distribution (invoices dated <= {cutoff_str})",
                             source="expense_dist_auto"
                         ))
