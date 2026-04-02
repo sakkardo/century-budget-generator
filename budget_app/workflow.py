@@ -4204,7 +4204,62 @@ function _showReTaxButtons(show, hasOverride) {
   if (clearBtn) clearBtn.style.display = (show && hasOverride) ? 'inline-block' : 'none';
 }
 
-// ── reTaxFxClick: mirrors fxCellFocus from FA grid exactly ────────────
+// ── Build live formula with actual cell values (real math, no words) ──
+function _buildReTaxFormula(id) {
+  const av1 = reRaw('re_av');
+  const rate = reRaw('re_rate');
+  const av2 = reRaw('re_av2');
+  const estRate = reRaw('re_est_rate');
+  const h1 = av1 * rate / 2;
+  const h2 = av2 * estRate / 2;
+  const gross = h1 + h2;
+
+  if (id === 're_h1_tax') return '= ' + av1 + ' * ' + rate + ' / 2';
+  if (id === 're_h2_tax') return '= ' + av2 + ' * ' + estRate + ' / 2';
+  if (id === 're_trans_pct') return av1 > 0 ? '= ' + av2 + ' / ' + av1 + ' - 1' : '= 0';
+  if (id === 're_gross') return '= ' + Math.round(h1) + ' + ' + Math.round(h2);
+
+  // Exemption budget formulas: = current * (1 + growth)
+  const exKeys = ['veteran','sche','star','coop_abatement'];
+  for (const k of exKeys) {
+    if (id === 're_ex_' + k + '_budget') {
+      const cur = reRaw('re_ex_' + k + '_current');
+      const g = reRaw('re_ex_' + k + '_growth');
+      return '= ' + cur + ' * (1 + ' + g + ')';
+    }
+  }
+
+  // Total exemptions
+  if (id === 're_ex_total_current') {
+    const vals = exKeys.map(k => reRaw('re_ex_' + k + '_current'));
+    return '= ' + vals.join(' + ');
+  }
+  if (id === 're_ex_total_budget') {
+    const vals = exKeys.map(k => {
+      const el = document.getElementById('re_ex_' + k + '_budget');
+      if (!el) return 0;
+      const span = el.querySelector('.re-fx-val');
+      return span ? parseFloat(span.textContent.replace(/[$,]/g, '')) || 0 : 0;
+    });
+    return '= ' + vals.map(v => Math.round(v)).join(' + ');
+  }
+
+  // Net tax
+  if (id === 're_net') {
+    const grossVal = Math.round(gross);
+    const totalEx = exKeys.reduce((sum, k) => {
+      const el = document.getElementById('re_ex_' + k + '_budget');
+      if (!el) return sum;
+      const span = el.querySelector('.re-fx-val');
+      return sum + (span ? parseFloat(span.textContent.replace(/[$,]/g, '')) || 0 : 0);
+    }, 0);
+    return '= ' + grossVal + ' - ' + Math.round(totalEx);
+  }
+
+  return '';
+}
+
+// ── reTaxFxClick: populate formula bar with live math ─────────────────
 function reTaxFxClick(el) {
   // Deselect previous cell
   if (_activeReTaxFxCell && _activeReTaxFxCell !== el) {
@@ -4217,28 +4272,28 @@ function reTaxFxClick(el) {
   const label = document.getElementById('reTaxFormulaLabel');
   if (!bar || !label) return;
 
-  // Label shows cell name (like FA shows "GL / Field")
+  // Label shows cell name
   label.textContent = el.dataset.label || el.id;
   label.style.display = 'inline';
   bar.style.display = 'block';
 
-  // Bar shows formula or override value (exactly like FA fxCellFocus)
+  // Bar shows actual math formula with real numbers, or override value
   if (el.dataset.override === 'true') {
     bar.value = el.dataset.overrideVal || '';
   } else {
-    bar.value = el.dataset.formula || '';
+    bar.value = _buildReTaxFormula(el.id);
   }
   _reTaxFormulaOriginal = bar.value;
   const hasOverride = (el.dataset.override === 'true');
   _showReTaxButtons(true, hasOverride);
   reTaxFormulaPreview();
 
-  // Highlight active cell (same as FA)
+  // Highlight active cell
   el.style.border = '2px solid var(--blue)';
   el.style.borderRadius = '4px';
   el.style.background = '#ecfdf5';
 
-  // Focus bar (same as FA — no scroll, use preventScroll)
+  // Focus bar
   bar.focus({ preventScroll: true });
   bar.setSelectionRange(bar.value.length, bar.value.length);
 }
