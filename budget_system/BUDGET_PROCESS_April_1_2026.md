@@ -120,3 +120,46 @@ Editing any cell (accrual, unpaid, increase %, or overrides) triggers: Estimate 
 - `max-width:0` on `<td>` collapses computed padding to `0px` — adjacent cell text merges visually
 - Fix: remove all styling from `<td>`, wrap content in `<div>` with padding + `overflow:hidden`
 - `overflow:hidden` does NOT work on `<td>` elements per CSS spec — only on block elements like `<div>`
+
+---
+
+### RE Taxes Tab — Formula Bar & Redesign (April 2, 2026)
+
+#### Layout
+- Budget workbook-style table: 1st Half (Jul–Dec), 2nd Half (Jan–Jun), Gross, Exemptions, Net
+- Editable inputs: Transitional AV (Prior & Current), Tax Rate, Est Tax Rate, Exemption growth % and current year amounts
+- All inputs use `data-raw` attribute for raw numeric values; display shows formatted text (`$39,979,620`)
+- `reRaw(id)` helper reads `parseFloat(el.dataset.raw)` from any input
+- `reSetCalc(id, text)` updates calculated cells by targeting inner `.re-fx-val` spans to preserve fx badges
+- Tax rate sourced from Assumptions tab (`re_taxes_overrides.tax_rate`), falls back to hardcoded config in `dof_taxes.py`
+
+#### Formula Bar (mirrors FA grid exactly)
+- Sticky formula bar at top with `fx` badge, label, editable input, live preview, Accept/Cancel/Clear buttons
+- **Click any green `fx` cell** → label shows cell name, bar shows **actual math with real numbers** (no words)
+- Example: clicking "1st Half Tax" shows `= 39979620 * 0.096324 / 2` with preview `= $1,925,498`
+- `_buildReTaxFormula(id)` dynamically builds the formula string by reading live cell values via `reRaw()`
+
+#### Formula Mapping (matches 204 budget Excel)
+- **1st Half Tax** (`re_h1_tax`): `= AV × Rate / 2` — Excel: `=(+G11*G12)/2`
+- **2nd Half Tax** (`re_h2_tax`): `= AV2 × EstRate / 2` — Excel: `=(+G16*G17)/2`
+- **Trans AV Change** (`re_trans_pct`): `= AV2 / AV - 1`
+- **Gross Tax** (`re_gross`): `= H1Tax + H2Tax` — Excel: `=SUM(I11:I17)`
+- **Exemption Budgets**: `= Current × (1 + Growth)` — Excel: `=+F25*1.02` pattern
+- **Co-op Abatement**: Excel: `=+((I11*2)*17.5%)*89%`
+- **Total Exemptions**: `= SUM(all exemption budgets)`
+- **Net Tax** (`re_net`): `= Gross - Total Exemptions`
+
+#### Override Behavior (same as FA grid)
+- **Type a formula** (e.g., `= 2000000 * 0.10 / 2`) → Accept evaluates, saves override, badge turns blue `fx`
+- **Type a plain number** (e.g., `1950000`) → Accept saves override, badge turns orange `✎` pencil
+- **Type "auto" or clear** → reverts to auto-calculated formula, badge returns to green `fx`
+- Overrides auto-save via `saveRETaxes()` and persist in `assumptions_json.re_taxes_overrides`
+
+#### Key Functions (all in `workflow.py`)
+- `renderRETaxesTab()` — renders the full RE Taxes HTML with formula bar
+- `reTaxFxClick(el)` — populates formula bar when clicking an fx cell
+- `_buildReTaxFormula(id)` — builds live formula string with actual numeric values
+- `reTaxFormulaPreview()` — live preview via `safeEvalFormula()`
+- `reTaxFormulaAccept()` / `reTaxFormulaCancel()` / `reTaxFormulaClear()` — edit lifecycle
+- `reCalcTaxes()` — recalculates all derived cells using `reRaw()` + `reSetCalc()`
+- `saveRETaxes()` — saves all RE tax data to server via `/api/re-taxes/<entityCode>`

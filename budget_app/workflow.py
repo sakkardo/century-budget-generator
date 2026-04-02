@@ -4568,8 +4568,139 @@ async function refreshDOFData() {
   }
 }
 
+// ── Summary tab formula bar ───────────────────────────────────────────
+let _activeSumFxCell = null;
+let _sumFormulaOriginal = '';
+let _sumCatData = {};
+
+function _showSumButtons(show) {
+  ['sumFormulaPreview','sumFormulaAccept','sumFormulaCancel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = show ? 'inline-block' : 'none';
+  });
+}
+
+function _buildSumFormula(cellId) {
+  const data = _sumCatData[cellId];
+  if (!data) return '';
+  const field = data.field;
+  const lines = data.lines;
+
+  if (field === 'var') {
+    const proposed = Math.round(lines.reduce((s, l) => {
+      const f = faComputeForecast(l);
+      return s + (l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
+    }, 0));
+    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
+    return '= ' + proposed + ' - ' + prior;
+  }
+  if (field === 'pct') {
+    const proposed = Math.round(lines.reduce((s, l) => {
+      const f = faComputeForecast(l);
+      return s + (l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
+    }, 0));
+    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
+    return prior ? '= (' + proposed + ' / ' + prior + ' - 1) * 100' : '= 0';
+  }
+
+  // For budget/proposed/prior, show SUM of GL line values
+  const getVal = (l) => {
+    if (field === 'budget') return Math.round(l.current_budget || 0);
+    if (field === 'proposed') {
+      const f = faComputeForecast(l);
+      return Math.round(l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
+    }
+    return 0;
+  };
+
+  const vals = lines.map(getVal).filter(v => v !== 0);
+  if (vals.length === 0) return '= 0';
+  if (vals.length <= 10) return '= ' + vals.join(' + ');
+  return '= SUM(' + vals.length + ' GL lines) = ' + vals.reduce((a, b) => a + b, 0);
+}
+
+function sumFxClick(el) {
+  if (_activeSumFxCell && _activeSumFxCell !== el) {
+    _activeSumFxCell.style.border = '';
+    _activeSumFxCell.style.borderRadius = '';
+    _activeSumFxCell.style.background = '';
+  }
+  _activeSumFxCell = el;
+  const bar = document.getElementById('sumFormulaBar');
+  const label = document.getElementById('sumFormulaLabel');
+  if (!bar || !label) return;
+
+  label.textContent = el.dataset.label || el.id;
+  label.style.display = 'inline';
+
+  bar.value = _buildSumFormula(el.id);
+  _sumFormulaOriginal = bar.value;
+  _showSumButtons(true);
+  _sumFormulaPreview();
+
+  el.style.border = '2px solid var(--blue)';
+  el.style.borderRadius = '4px';
+  el.style.background = '#ecfdf5';
+
+  bar.focus({ preventScroll: true });
+  bar.setSelectionRange(bar.value.length, bar.value.length);
+}
+
+function _sumFormulaPreview() {
+  const bar = document.getElementById('sumFormulaBar');
+  const preview = document.getElementById('sumFormulaPreview');
+  if (!bar || !preview || !_activeSumFxCell) return;
+  const typed = bar.value.trim();
+  if (!typed) { preview.style.display = 'none'; return; }
+  const result = safeEvalFormula(typed);
+  if (result !== null) {
+    const field = (_sumCatData[_activeSumFxCell.id] || {}).field || '';
+    if (field === 'pct') {
+      preview.textContent = '= ' + result.toFixed(1) + '%';
+    } else {
+      preview.textContent = '= $' + Math.round(result).toLocaleString();
+    }
+    preview.style.color = 'var(--green)';
+    preview.style.display = 'inline-block';
+  } else {
+    preview.style.display = 'none';
+  }
+}
+
+function sumFormulaCancel() {
+  const bar = document.getElementById('sumFormulaBar');
+  if (bar) bar.value = _sumFormulaOriginal;
+  _showSumButtons(false);
+  const preview = document.getElementById('sumFormulaPreview');
+  if (preview) preview.style.display = 'none';
+  if (_activeSumFxCell) {
+    _activeSumFxCell.style.border = '';
+    _activeSumFxCell.style.borderRadius = '';
+    _activeSumFxCell.style.background = '';
+  }
+}
+
+document.addEventListener('click', function(e) {
+  if (!_activeSumFxCell) return;
+  const wrap = document.getElementById('sumFormulaBarWrap');
+  if (_activeSumFxCell.contains(e.target)) return;
+  if (wrap && wrap.contains(e.target)) return;
+  _activeSumFxCell.style.border = '';
+  _activeSumFxCell.style.borderRadius = '';
+  _activeSumFxCell.style.background = '';
+  _activeSumFxCell = null;
+  const bar = document.getElementById('sumFormulaBar');
+  const label = document.getElementById('sumFormulaLabel');
+  const preview = document.getElementById('sumFormulaPreview');
+  if (bar) { bar.value = ''; bar.placeholder = 'Click any fx cell to view its formula...'; }
+  if (label) label.style.display = 'none';
+  if (preview) preview.style.display = 'none';
+  _showSumButtons(false);
+});
+
 function renderBudgetSummary(contentDiv) {
   const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
+  _sumCatData = {};
 
   // Get audit summary years (up to 2 most recent)
   const auditSummary = (window._data && window._data.audit && window._data.audit.summary_years) ? window._data.audit.summary_years : {};
@@ -4581,10 +4712,28 @@ function renderBudgetSummary(contentDiv) {
 
   let showZeroRows = window._showZeroSummaryRows || false;
 
+  const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:8px; font-weight:700; padding:1px 3px; border-radius:3px; margin-left:3px; vertical-align:middle;">fx</span>';
+  let _cellIdx = 0;
+  function sfx(val, label, field, lines, extraStyle) {
+    const id = 'sumfx_' + (++_cellIdx);
+    _sumCatData[id] = {field: field, lines: lines};
+    return '<td style="text-align:right; padding:10px 12px; cursor:pointer;' + (extraStyle || '') + '" id="' + id + '" data-label="' + label.replace(/"/g, '&quot;') + '" onclick="sumFxClick(this)">' + val + fxBadge + '</td>';
+  }
+
   let html = '<div style="margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">' +
     '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span>' +
     '<button onclick="toggleZeroRows()" id="zeroToggleBtn" style="margin-left:auto; padding:4px 12px; font-size:11px; border:1px solid var(--gray-300); border-radius:4px; background:white; cursor:pointer;">' +
     (showZeroRows ? 'Hide Empty Rows' : 'Show All Rows') + '</button></div>';
+
+  // Formula bar
+  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
+    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>' +
+    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" onkeydown="if(event.key===\'Escape\')sumFormulaCancel()">' +
+    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+    '<button id="sumFormulaAccept" style="display:none;">OK</button>' +
+    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
+    '</div>';
 
   // Table header
   html += '<table id="summaryTable" style="width:100%; border-collapse:collapse; font-size:13px;">' +
@@ -4661,23 +4810,32 @@ function renderBudgetSummary(contentDiv) {
     });
 
     html += '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(budget) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + fmt(proposed) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px; color:' + varColor + ';">' + fmt(variance) + '</td>' +
-      '<td style="text-align:right; padding:10px 12px;">' + (pctChange * 100).toFixed(1) + '%</td></tr>';
+      sfx(fmt(budget), sr.label + ' / Curr Budget', 'budget', lines) +
+      sfx(fmt(proposed), sr.label + ' / Proposed', 'proposed', lines) +
+      sfx(fmt(variance), sr.label + ' / $ Var', 'var', lines, ' color:' + varColor + ';') +
+      sfx((pctChange * 100).toFixed(1) + '%', sr.label + ' / % Chg', 'pct', lines) +
+      '</tr>';
 
     // After last expense row, add totals
     if (idx === SUMMARY_ROWS.length - 1) {
       const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
       const teVar = teProposed - tePrior;
       const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
+      // Collect all expense lines for formula
+      const allExpLines = SUMMARY_ROWS.filter(r => r.type === 'expense').reduce((arr, r) => {
+        let ls = allSheets[r.sheet] || [];
+        if (r.rowRange) ls = ls.filter(l => l.row_num >= r.rowRange[0] && l.row_num <= r.rowRange[1]);
+        return arr.concat(ls);
+      }, []);
+
       html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>';
       auditTotalExpense.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
       html += '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teBudget) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teProposed) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(teVar) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + (tePct * 100).toFixed(1) + '%</td></tr>';
+        sfx(fmt(teBudget), 'Total Expenses / Curr Budget', 'budget', allExpLines) +
+        sfx(fmt(teProposed), 'Total Expenses / Proposed', 'proposed', allExpLines) +
+        sfx(fmt(teVar), 'Total Expenses / $ Var', 'var', allExpLines, teVar >= 0 ? ' color:var(--red);' : ' color:var(--green);') +
+        sfx((tePct * 100).toFixed(1) + '%', 'Total Expenses / % Chg', 'pct', allExpLines) +
+        '</tr>';
 
       // NOI
       const noiPrior = totalIncome.prior - tePrior;
@@ -4689,14 +4847,21 @@ function renderBudgetSummary(contentDiv) {
 
       // NOI audit amounts
       const noiAudit = auditYearKeys.map((_, i) => auditTotalIncome[i] - auditTotalExpense[i]);
+      // All lines for NOI formula
+      const allIncLines = SUMMARY_ROWS.filter(r => r.type === 'income').reduce((arr, r) => {
+        let ls = allSheets[r.sheet] || [];
+        if (r.rowRange) ls = ls.filter(l => l.row_num >= r.rowRange[0] && l.row_num <= r.rowRange[1]);
+        return arr.concat(ls);
+      }, []);
 
       html += '<tr style="font-weight:700; background:var(--blue-light, #f5efe7); border-top:2px solid var(--blue);"><td style="padding:10px 12px;">Net Operating Income</td>';
       noiAudit.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
       html += '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiBudget) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + fmt(noiProposed) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px; color:' + noiColor + ';">' + fmt(noiVar) + '</td>' +
-        '<td style="text-align:right; padding:10px 12px;">' + (noiPct * 100).toFixed(1) + '%</td></tr>';
+        sfx(fmt(noiBudget), 'NOI / Curr Budget', 'budget', allIncLines.concat(allExpLines)) +
+        sfx(fmt(noiProposed), 'NOI / Proposed', 'proposed', allIncLines.concat(allExpLines)) +
+        sfx(fmt(noiVar), 'NOI / $ Var', 'var', allIncLines.concat(allExpLines), ' color:' + noiColor + ';') +
+        sfx((noiPct * 100).toFixed(1) + '%', 'NOI / % Chg', 'pct', allIncLines.concat(allExpLines)) +
+        '</tr>';
     }
   });
 
@@ -6484,6 +6649,18 @@ function computeForecast(l) {
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + computeEstimate(l);
 }
 
+function safeEvalFormula(expr) {
+  let s = expr.trim();
+  if (s.startsWith('=')) s = s.substring(1);
+  s = s.replace(/([\d.]+)\s*%/g, '($1/100)');
+  if (!/^[\d\s+\-*\/().]+$/.test(s)) return null;
+  try {
+    const result = new Function('return (' + s + ')')();
+    if (typeof result !== 'number' || !isFinite(result)) return null;
+    return result;
+  } catch (e) { return null; }
+}
+
 const CATEGORIES = {
   'Repairs & Supplies': [
     {label:'Supplies', match: l => l.category === 'supplies'},
@@ -6500,9 +6677,13 @@ const CATEGORIES = {
 };
 
 function sumLines(lines) {
-  const t = {prior:0, forecast:0, proposed:0, budget:0};
+  const t = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
   lines.forEach(l => {
     t.prior += l.prior_year || 0;
+    t.ytd += l.ytd_actual || 0;
+    t.accrual += l.accrual_adj || 0;
+    t.unpaid += l.unpaid_bills || 0;
+    t.estimate += computeEstimate(l);
     t.forecast += computeForecast(l);
     t.budget += l.current_budget || 0;
     t.proposed += l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
@@ -6510,8 +6691,184 @@ function sumLines(lines) {
   return t;
 }
 
+// ── Summary formula bar state ─────────────────────────────────────────
+let _activeSumFxCell = null;
+let _sumFormulaOriginal = '';
+// Store category data so formula builder can access it
+let _sumCatData = {};
+
+function _showSumButtons(show) {
+  ['sumFormulaPreview','sumFormulaAccept','sumFormulaCancel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = show ? 'inline-block' : 'none';
+  });
+}
+
+// Build real math formula for a summary cell
+function _buildSumFormula(cellId) {
+  const data = _sumCatData[cellId];
+  if (!data) return '';
+  const field = data.field;
+  const lines = data.lines;
+
+  if (field === 'var') {
+    // $ Change = Proposed - Prior
+    const proposed = Math.round(lines.reduce((s, l) => s + (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))), 0));
+    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
+    return '= ' + proposed + ' - ' + prior;
+  }
+  if (field === 'pct') {
+    // % Change = (Proposed / Prior - 1) * 100
+    const proposed = Math.round(lines.reduce((s, l) => s + (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))), 0));
+    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
+    return prior ? '= (' + proposed + ' / ' + prior + ' - 1) * 100' : '= 0';
+  }
+  if (field === 'forecast') {
+    // Show SUM of GL forecasts
+    const vals = lines.map(l => Math.round(computeForecast(l)));
+    if (vals.length <= 8) return '= ' + vals.join(' + ');
+    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+  }
+  if (field === 'proposed') {
+    const vals = lines.map(l => Math.round(l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
+    if (vals.length <= 8) return '= ' + vals.join(' + ');
+    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+  }
+  if (field === 'ytd') {
+    const vals = lines.map(l => Math.round(l.ytd_actual || 0)).filter(v => v !== 0);
+    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
+    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+  }
+  if (field === 'estimate') {
+    const vals = lines.map(l => Math.round(computeEstimate(l))).filter(v => v !== 0);
+    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
+    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+  }
+  if (field === 'budget') {
+    const vals = lines.map(l => Math.round(l.current_budget || 0)).filter(v => v !== 0);
+    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
+    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+  }
+  // Subtotal rows (field starts with 'sub_')
+  if (field.startsWith('sub_')) {
+    const subField = field.replace('sub_', '');
+    const catIds = data.catIds || [];
+    if (catIds.length && subField !== 'var' && subField !== 'pct') {
+      const vals = catIds.map(cid => {
+        const cd = _sumCatData[cid];
+        if (!cd) return 0;
+        const t = sumLines(cd.lines);
+        return Math.round(t[subField] || 0);
+      });
+      return '= ' + vals.join(' + ');
+    }
+    if (subField === 'var') {
+      const t = sumLines(lines);
+      return '= ' + Math.round(t.proposed) + ' - ' + Math.round(t.prior);
+    }
+    if (subField === 'pct') {
+      const t = sumLines(lines);
+      return t.prior ? '= (' + Math.round(t.proposed) + ' / ' + Math.round(t.prior) + ' - 1) * 100' : '= 0';
+    }
+    // Fallback: sum all lines for the field
+    const t = sumLines(lines);
+    return '= SUM of ' + lines.length + ' GL lines = ' + Math.round(t[subField] || 0);
+  }
+  return '';
+}
+
+function sumFxClick(el) {
+  if (_activeSumFxCell && _activeSumFxCell !== el) {
+    _activeSumFxCell.style.border = '';
+    _activeSumFxCell.style.borderRadius = '';
+    _activeSumFxCell.style.background = '';
+  }
+  _activeSumFxCell = el;
+  const bar = document.getElementById('sumFormulaBar');
+  const label = document.getElementById('sumFormulaLabel');
+  if (!bar || !label) return;
+
+  label.textContent = el.dataset.label || el.id;
+  label.style.display = 'inline';
+  bar.style.display = 'block';
+
+  bar.value = _buildSumFormula(el.id);
+  _sumFormulaOriginal = bar.value;
+  _showSumButtons(true);
+  sumFormulaPreview();
+
+  el.style.border = '2px solid var(--blue)';
+  el.style.borderRadius = '4px';
+  el.style.background = '#ecfdf5';
+
+  bar.focus({ preventScroll: true });
+  bar.setSelectionRange(bar.value.length, bar.value.length);
+}
+
+function sumFormulaPreview() {
+  const bar = document.getElementById('sumFormulaBar');
+  const preview = document.getElementById('sumFormulaPreview');
+  if (!bar || !preview || !_activeSumFxCell) return;
+  const typed = bar.value.trim();
+  if (!typed) { preview.style.display = 'none'; return; }
+  const result = safeEvalFormula(typed);
+  if (result !== null) {
+    const field = (_sumCatData[_activeSumFxCell.id] || {}).field || '';
+    if (field === 'pct' || field === 'sub_pct') {
+      preview.textContent = '= ' + result.toFixed(1) + '%';
+    } else {
+      preview.textContent = '= $' + Math.round(result).toLocaleString();
+    }
+    preview.style.color = 'var(--green)';
+  } else {
+    preview.textContent = '';
+  }
+  preview.style.display = result !== null ? 'inline-block' : 'none';
+}
+
+function sumFormulaAccept() {
+  // Summary is read-only — just dismiss
+  sumFormulaCancel();
+}
+
+function sumFormulaCancel() {
+  const bar = document.getElementById('sumFormulaBar');
+  if (bar) bar.value = _sumFormulaOriginal;
+  _showSumButtons(false);
+  const preview = document.getElementById('sumFormulaPreview');
+  if (preview) preview.style.display = 'none';
+  if (_activeSumFxCell) {
+    _activeSumFxCell.style.border = '';
+    _activeSumFxCell.style.borderRadius = '';
+    _activeSumFxCell.style.background = '';
+  }
+}
+
+function sumFormulaKeydown(e) {
+  if (e.key === 'Escape') { e.preventDefault(); sumFormulaCancel(); }
+}
+
+document.addEventListener('click', function(e) {
+  if (!_activeSumFxCell) return;
+  const wrap = document.getElementById('sumFormulaBarWrap');
+  if (_activeSumFxCell.contains(e.target)) return;
+  if (wrap && wrap.contains(e.target)) return;
+  _activeSumFxCell.style.border = '';
+  _activeSumFxCell.style.borderRadius = '';
+  _activeSumFxCell.style.background = '';
+  _activeSumFxCell = null;
+  const bar = document.getElementById('sumFormulaBar');
+  const label = document.getElementById('sumFormulaLabel');
+  const preview = document.getElementById('sumFormulaPreview');
+  if (bar) { bar.value = ''; bar.placeholder = 'Click any fx cell to view its formula...'; }
+  if (label) label.style.display = 'none';
+  if (preview) preview.style.display = 'none';
+  _showSumButtons(false);
+});
+
 function renderSummary() {
   const content = document.getElementById('mainContent');
+  _sumCatData = {};
   let allLines = [];
   SHEET_ORDER.forEach(s => { allLines = allLines.concat(SHEETS[s] || []); });
   const incomeLines = SHEETS['Income'] || [];
@@ -6522,6 +6879,19 @@ function renderSummary() {
   const noiProposed = inc.proposed - exp.proposed;
   const noiPrior = inc.prior - exp.prior;
 
+  const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:8px; font-weight:700; padding:1px 3px; border-radius:3px; margin-left:3px; vertical-align:middle;">fx</span>';
+
+  // Helper: make an fx cell for the summary table
+  let _cellIdx = 0;
+  function sfx(val, label, field, lines, cls, catIds) {
+    const id = 'sum_' + (++_cellIdx);
+    _sumCatData[id] = {field: field, lines: lines, catIds: catIds || []};
+    const extraCls = cls || '';
+    return '<td class="num ' + extraCls + '" id="' + id + '" data-label="' + label.replace(/"/g, '&quot;') + '" style="cursor:pointer;" onclick="sumFxClick(this)">' + val + fxBadge + '</td>';
+  }
+  // Plain cell (Prior Year — no formula bar)
+  function pln(val, cls) { return '<td class="num ' + (cls || '') + '">' + val + '</td>'; }
+
   let html = '<div class="summary-cards">' +
     '<div class="card"><div class="label">Total Income</div><div class="value">' + fmt(inc.proposed) + '</div>' +
     '<div class="delta ' + (inc.proposed >= inc.prior ? 'delta-down' : 'delta-up') + '">' + (inc.prior ? ((inc.proposed/inc.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
@@ -6529,48 +6899,115 @@ function renderSummary() {
     '<div class="delta ' + (exp.proposed <= exp.prior ? 'delta-down' : 'delta-up') + '">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
     '<div class="card"><div class="label">Net Operating Income</div><div class="value">' + fmt(noiProposed) + '</div>' +
     '<div class="delta ' + (noiProposed >= noiPrior ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiPrior) + ' vs prior</div></div>' +
-    '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '—') + '</div>' +
+    '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '\u2014') + '</div>' +
     '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
 
-  // Summary table by sheet
-  html += '<table><thead><tr><th>Category</th><th class="num">Prior Year</th><th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+  // Formula bar
+  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200,#e2e8f0); border-radius:8px; margin-bottom:12px;">' +
+    '<span style="font-size:11px; font-weight:700; color:#3b82f6; background:#dbeafe; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#64748b; white-space:nowrap; min-width:120px;"></span>' +
+    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
+    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#22c55e; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+    '<button id="sumFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:#22c55e; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaAccept()">OK</button>' +
+    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#e2e8f0; color:#334155; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
+    '</div>';
+
+  // Summary table with expanded columns
+  html += '<table><thead><tr><th>Category</th>' +
+    '<th class="num">Prior Year</th>' +
+    '<th class="num">YTD Actual</th>' +
+    '<th class="num">Estimate</th>' +
+    '<th class="num">Forecast</th>' +
+    '<th class="num">Curr Budget</th>' +
+    '<th class="num">Proposed</th>' +
+    '<th class="num">$ Var</th>' +
+    '<th class="num">% Chg</th>' +
+    '</tr></thead><tbody>';
+
   SHEET_ORDER.forEach(s => {
     const cats = CATEGORIES[s];
+    const sheetLines = SHEETS[s] || [];
     if (cats) {
-      const sheetLines = SHEETS[s] || [];
+      const catCellIds = [];
       cats.forEach(cat => {
         const gl = sheetLines.filter(cat.match);
         if (gl.length === 0) return;
         const t = sumLines(gl);
         const v = t.proposed - t.prior;
         const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
-        html += '<tr><td style="padding-left:24px;">' + cat.label + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
-          '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-          '<td class="num">' + p.toFixed(1) + '%</td></tr>';
+        const lbl = cat.label;
+        // Track this category's cell ID base for subtotal formulas
+        const baseIdx = _cellIdx + 1;
+        html += '<tr><td style="padding-left:24px;">' + lbl + '</td>' +
+          pln(fmt(t.prior)) +
+          sfx(fmt(t.ytd), lbl + ' / YTD', 'ytd', gl) +
+          sfx(fmt(t.estimate), lbl + ' / Estimate', 'estimate', gl) +
+          sfx(fmt(t.forecast), lbl + ' / Forecast', 'forecast', gl) +
+          sfx(fmt(t.budget), lbl + ' / Curr Budget', 'budget', gl) +
+          sfx(fmt(t.proposed), lbl + ' / Proposed', 'proposed', gl) +
+          sfx(fmt(v), lbl + ' / $ Var', 'var', gl, v >= 0 ? 'variance-pos' : 'variance-neg') +
+          sfx(p.toFixed(1) + '%', lbl + ' / % Chg', 'pct', gl) +
+          '</tr>';
+        // Save category cell IDs for subtotal reference
+        catCellIds.push({ytd:'sum_'+(baseIdx), est:'sum_'+(baseIdx+1), fcst:'sum_'+(baseIdx+2), bud:'sum_'+(baseIdx+3), prop:'sum_'+(baseIdx+4)});
       });
-      const st = sumLines(SHEETS[s] || []);
+      // Sheet subtotal
+      const st = sumLines(sheetLines);
       const sv = st.proposed - st.prior;
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(st.prior) + '</td><td class="num">' + fmt(st.proposed) + '</td>' +
-        '<td class="num ' + (sv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(sv) + '</td>' +
-        '<td class="num">' + (st.prior ? ((st.proposed/st.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      const sp = st.prior ? ((st.proposed/st.prior-1)*100) : 0;
+      html += '<tr class="subtotal"><td>' + s + '</td>' +
+        pln(fmt(st.prior)) +
+        sfx(fmt(st.ytd), s + ' Total / YTD', 'sub_ytd', sheetLines) +
+        sfx(fmt(st.estimate), s + ' Total / Estimate', 'sub_estimate', sheetLines) +
+        sfx(fmt(st.forecast), s + ' Total / Forecast', 'sub_forecast', sheetLines) +
+        sfx(fmt(st.budget), s + ' Total / Curr Budget', 'sub_budget', sheetLines) +
+        sfx(fmt(st.proposed), s + ' Total / Proposed', 'sub_proposed', sheetLines) +
+        sfx(fmt(sv), s + ' Total / $ Var', 'sub_var', sheetLines, sv >= 0 ? 'variance-pos' : 'variance-neg') +
+        sfx(sp.toFixed(1) + '%', s + ' Total / % Chg', 'sub_pct', sheetLines) +
+        '</tr>';
     } else {
-      const t = sumLines(SHEETS[s] || []);
+      const t = sumLines(sheetLines);
       const v = t.proposed - t.prior;
-      html += '<tr class="subtotal"><td>' + s + '</td><td class="num">' + fmt(t.prior) + '</td><td class="num">' + fmt(t.proposed) + '</td>' +
-        '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-        '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
+      html += '<tr class="subtotal"><td>' + s + '</td>' +
+        pln(fmt(t.prior)) +
+        sfx(fmt(t.ytd), s + ' / YTD', 'ytd', sheetLines) +
+        sfx(fmt(t.estimate), s + ' / Estimate', 'estimate', sheetLines) +
+        sfx(fmt(t.forecast), s + ' / Forecast', 'forecast', sheetLines) +
+        sfx(fmt(t.budget), s + ' / Curr Budget', 'budget', sheetLines) +
+        sfx(fmt(t.proposed), s + ' / Proposed', 'proposed', sheetLines) +
+        sfx(fmt(v), s + ' / $ Var', 'var', sheetLines, v >= 0 ? 'variance-pos' : 'variance-neg') +
+        sfx(p.toFixed(1) + '%', s + ' / % Chg', 'pct', sheetLines) +
+        '</tr>';
     }
   });
-  // Total row
+
+  // Total Operating Expenses
   const totalV = exp.proposed - exp.prior;
-  html += '<tr class="sheet-total"><td>Total Operating Expenses</td><td class="num">' + fmt(exp.prior) + '</td><td class="num">' + fmt(exp.proposed) + '</td>' +
-    '<td class="num ' + (totalV >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(totalV) + '</td>' +
-    '<td class="num">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '<tr class="sheet-total"><td>Total Operating Expenses</td>' +
+    pln(fmt(exp.prior)) +
+    sfx(fmt(exp.ytd), 'Total Expenses / YTD', 'ytd', expenseLines) +
+    sfx(fmt(exp.estimate), 'Total Expenses / Estimate', 'estimate', expenseLines) +
+    sfx(fmt(exp.forecast), 'Total Expenses / Forecast', 'forecast', expenseLines) +
+    sfx(fmt(exp.budget), 'Total Expenses / Curr Budget', 'budget', expenseLines) +
+    sfx(fmt(exp.proposed), 'Total Expenses / Proposed', 'proposed', expenseLines) +
+    sfx(fmt(totalV), 'Total Expenses / $ Var', 'var', expenseLines, totalV >= 0 ? 'variance-pos' : 'variance-neg') +
+    sfx((exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%', 'Total Expenses / % Chg', 'pct', expenseLines) +
+    '</tr>';
+
   // NOI
   const noiV = noiProposed - noiPrior;
-  html += '<tr class="sheet-total"><td>Net Operating Income</td><td class="num">' + fmt(noiPrior) + '</td><td class="num">' + fmt(noiProposed) + '</td>' +
-    '<td class="num ' + (noiV >= 0 ? 'variance-neg' : 'variance-pos') + '">' + fmt(noiV) + '</td>' +
-    '<td class="num">' + (noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+  html += '<tr class="sheet-total"><td>Net Operating Income</td>' +
+    pln(fmt(noiPrior)) +
+    sfx(fmt(inc.ytd - exp.ytd), 'NOI / YTD', 'sub_ytd', allLines) +
+    sfx(fmt(inc.estimate - exp.estimate), 'NOI / Estimate', 'sub_estimate', allLines) +
+    sfx(fmt(inc.forecast - exp.forecast), 'NOI / Forecast', 'sub_forecast', allLines) +
+    sfx(fmt(inc.budget - exp.budget), 'NOI / Curr Budget', 'sub_budget', allLines) +
+    sfx(fmt(noiProposed), 'NOI / Proposed', 'sub_proposed', allLines) +
+    sfx(fmt(noiV), 'NOI / $ Var', 'sub_var', allLines, noiV >= 0 ? 'variance-neg' : 'variance-pos') +
+    sfx((noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%', 'NOI / % Chg', 'sub_pct', allLines) +
+    '</tr>';
+
   html += '</tbody></table>';
   content.innerHTML = html;
 }
