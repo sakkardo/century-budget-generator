@@ -828,6 +828,10 @@ def create_workflow_blueprint(db):
 
         lines_data = [l.to_dict() for l in lines]
 
+        # Get ALL GL codes for reclass modal (not just pm_editable)
+        all_gls = db.session.query(BudgetLine.gl_code, BudgetLine.description, BudgetLine.category).filter_by(budget_id=budget.id).order_by(BudgetLine.gl_code).all()
+        all_gl_list = [{"gl_code": g.gl_code, "description": g.description, "category": g.category} for g in all_gls]
+
         # Derive dynamic YTD months from assumptions
         _ytd_months = 2
         try:
@@ -847,6 +851,7 @@ def create_workflow_blueprint(db):
             can_edit="true" if can_edit else "false",
             fa_notes=budget.fa_notes or "",
             lines_json=json_mod.dumps(lines_data),
+            all_gl_json=json_mod.dumps(all_gl_list),
             ytd_months=_ytd_months,
             remaining_months=_remaining_months,
             estimate_label=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][_ytd_months] + '-Dec' if _ytd_months < 12 else 'Estimate',
@@ -5203,6 +5208,42 @@ PM_EDIT_TEMPLATE = r"""
   .save-indicator.saving { color: var(--orange); }
   .save-indicator.saved { color: var(--green); }
 
+  /* ── Formula Bar ── */
+  .pm-formula-bar {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 12px;
+    padding: 10px 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    transition: all 0.2s;
+  }
+  .pm-formula-bar.active { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(90,74,63,0.08); }
+  .pm-formula-bar .fb-label { font-size: 11px; font-weight: 700; color: var(--blue); text-transform: uppercase; white-space: nowrap; min-width: 60px; }
+  .pm-formula-bar .fb-cell-ref { font-family: monospace; font-size: 13px; font-weight: 600; color: var(--gray-700); background: var(--gray-100); padding: 2px 8px; border-radius: 4px; min-width: 90px; text-align: center; }
+  .pm-formula-bar .fb-formula { font-family: 'Courier New', monospace; font-size: 13px; color: var(--gray-700); flex: 1; padding: 4px 8px; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 4px; }
+  .pm-formula-bar .fb-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+  .pm-formula-bar .fb-badge.auto { background: var(--green-light); color: var(--green); border: 1px solid var(--green); }
+
+  /* ── Reclass Modal ── */
+  .reclass-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+  .reclass-modal { background: white; border-radius: 12px; width: 560px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+  .reclass-modal .rm-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; justify-content: space-between; align-items: center; }
+  .reclass-modal .rm-header h3 { font-size: 15px; font-weight: 700; color: var(--blue); }
+  .reclass-modal .rm-search { padding: 12px 20px; border-bottom: 1px solid var(--gray-200); }
+  .reclass-modal .rm-search input { width: 100%; padding: 8px 12px; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 13px; outline: none; }
+  .reclass-modal .rm-search input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(90,74,63,0.08); }
+  .reclass-modal .rm-list { flex: 1; overflow-y: auto; max-height: 400px; }
+  .reclass-modal .rm-cat-header { padding: 6px 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--blue); background: var(--blue-light); position: sticky; top: 0; }
+  .reclass-modal .rm-gl-row { padding: 8px 20px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 13px; border-bottom: 1px solid var(--gray-100); }
+  .reclass-modal .rm-gl-row:hover { background: var(--blue-light); }
+  .reclass-modal .rm-gl-row .gl-code { font-family: monospace; font-weight: 600; min-width: 90px; }
+  .reclass-modal .rm-gl-row .gl-desc { flex: 1; color: var(--gray-700); }
+  .reclass-modal .rm-footer { padding: 12px 20px; border-top: 1px solid var(--gray-200); display: flex; gap: 8px; justify-content: flex-end; }
+
   .grid-wrapper {
     background: white;
     border-radius: 12px;
@@ -5317,6 +5358,13 @@ PM_EDIT_TEMPLATE = r"""
     </div>
   </div>
 
+  <div class="pm-formula-bar" id="pmFormulaBar">
+    <span class="fb-label">Formula</span>
+    <span class="fb-cell-ref" id="fbCellRef">—</span>
+    <span class="fb-formula" id="fbFormula" style="color:var(--gray-400);">Click any <span style="font-size:10px; color:var(--blue); background:var(--blue-light); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span> cell to view its formula</span>
+    <span class="fb-badge auto" id="fbBadge" style="display:none;">AUTO</span>
+  </div>
+
   <div class="grid-wrapper">
     <div class="grid-container">
       <table id="linesTable">
@@ -5349,6 +5397,7 @@ PM_EDIT_TEMPLATE = r"""
 const ENTITY = "{{ entity_code }}";
 const CAN_EDIT = {{ can_edit }};
 const LINES = {{ lines_json | safe }};
+const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
 const REMAINING_MONTHS = {{ remaining_months }};
 
@@ -5538,54 +5587,56 @@ function toggleZeroRows() {
     updateZeroToggle();
 }
 
-// ── PM Formula popover ───────────────────────────────────────────────
-let _activePmPopover = null;
+// ── PM Formula Bar (read-only) ───────────────────────────────────────
+let _activeFormulaCell = null;
 
 function showPmFormula(cell, type, gl) {
-    // Close any existing popover
-    if (_activePmPopover) { _activePmPopover.remove(); _activePmPopover = null; }
-
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
+
+    // Highlight active cell
+    if (_activeFormulaCell) _activeFormulaCell.style.outline = '';
+    cell.style.outline = '2px solid var(--blue)';
+    cell.style.outlineOffset = '-1px';
+    _activeFormulaCell = cell;
+
+    const bar = document.getElementById('pmFormulaBar');
+    const ref = document.getElementById('fbCellRef');
+    const fb = document.getElementById('fbFormula');
+    const badge = document.getElementById('fbBadge');
+
+    bar.classList.add('active');
+    badge.style.display = '';
 
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
     const base = ytd + accrual + unpaid;
     const prior = line.prior_year || 0;
-    const est = computeEstimate(line);
-    const fc = computeForecast(line);
-    const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
+
+    const labels = {est: 'Estimate', fc: 'Forecast', pb: 'Proposed'};
+    ref.textContent = gl + ' · ' + labels[type];
 
     let formula = '';
     if (type === 'est') {
-        if (base >= prior && prior > 0) {
-            formula = `(YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)}) / ${YTD_MONTHS} mo × ${REMAINING_MONTHS} mo = ${fmt(est)}`;
+        if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+            formula = '=IF((YTD+Accrual+Unpaid) >= Prior, ('+fmt(ytd)+'+'+fmt(accrual)+'+'+fmt(unpaid)+') / '+YTD_MONTHS+' × '+REMAINING_MONTHS+', Prior−Base) = '+fmt(computeEstimate(line));
+        } else if (prior > 0) {
+            formula = '=MAX(Prior − Base, 0) = MAX('+fmt(prior)+' − '+fmt(base)+', 0) = '+fmt(computeEstimate(line));
         } else {
-            formula = `max(Prior ${fmt(prior)} − Base ${fmt(base)}, 0) = ${fmt(est)}`;
+            formula = '=Base / YTD_MONTHS × REMAINING = '+fmt(base)+' / '+YTD_MONTHS+' × '+REMAINING_MONTHS+' = '+fmt(computeEstimate(line));
         }
     } else if (type === 'fc') {
-        formula = `YTD ${fmt(ytd)} + Adj ${fmt(accrual)} + Unpaid ${fmt(unpaid)} + Est ${fmt(est)} = ${fmt(fc)}`;
+        const est = computeEstimate(line);
+        formula = '=YTD + Accrual + Unpaid + Estimate = '+fmt(ytd)+' + '+fmt(accrual)+' + '+fmt(unpaid)+' + '+fmt(est)+' = '+fmt(computeForecast(line));
     } else if (type === 'pb') {
-        formula = `Forecast ${fmt(fc)} × (1 + ${incPct}%) = ${fmt(computeProposed(line))}`;
+        const fc = computeForecast(line);
+        const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
+        formula = '=Forecast × (1 + Increase%) = '+fmt(fc)+' × (1 + '+incPct+'%) = '+fmt(computeProposed(line));
     }
 
-    const pop = document.createElement('div');
-    pop.style.cssText = 'position:absolute; bottom:100%; left:0; right:0; background:white; border:1px solid var(--blue); border-radius:6px; padding:8px 12px; font-size:11px; color:var(--gray-700); box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:50; white-space:nowrap; min-width:220px;';
-    pop.innerHTML = '<div style="font-weight:600; color:var(--blue); margin-bottom:2px; font-size:10px; text-transform:uppercase;">Formula</div>' + formula;
-    cell.appendChild(pop);
-    _activePmPopover = pop;
-
-    // Close on click outside
-    setTimeout(() => {
-        document.addEventListener('click', function closePop(e) {
-            if (!pop.contains(e.target) && e.target !== cell) {
-                pop.remove();
-                _activePmPopover = null;
-                document.removeEventListener('click', closePop);
-            }
-        });
-    }, 10);
+    fb.textContent = formula;
+    fb.style.color = 'var(--gray-700)';
 }
 
 // Expense distribution drill-down
@@ -5645,26 +5696,26 @@ async function toggleInvoices(glCode, linkEl) {
 
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
+    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right; width:180px;">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
         html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
         html += '<td style="padding:6px 10px;">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="padding:6px 10px; font-size:11px; color:var(--gray-600); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
         html += '<td style="padding:6px 10px; font-family:monospace; font-size:11px;">' + (inv.invoice_num || '—') + '</td>';
         html += '<td style="padding:6px 10px;">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
         html += '<td style="padding:6px 10px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt(inv.amount) + '</td>';
+        html += '<td style="padding:6px 10px;">' + (inv.check_num || '—') + '</td>';
         html += '<td style="padding:6px 10px; text-align:right;">';
         if (isReclassed) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
-            html += '<select id="reclass_gl_' + inv.id + '" style="font-size:11px; padding:2px 6px; border:1px solid var(--gray-300); border-radius:4px; width:100px;">';
-            html += '<option value="">Reclass to…</option>';
-            allGLs.forEach(g => { html += '<option value="' + g + '">' + g + '</option>'; });
-            html += '</select> ';
-            html += '<button onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Go</button>';
+            html += '<span id="reclass_label_' + inv.id + '" style="font-size:11px; color:var(--gray-500); margin-right:4px;"></span>';
+            html += '<input type="hidden" id="reclass_gl_' + inv.id + '" value="">';
+            html += '<button onclick="openReclassModal(' + inv.id + ',\'' + glCode + '\',\'inline\')" style="font-size:11px; padding:2px 8px; background:var(--gray-100); color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer;">Reclass to…</button> ';
+            html += '<button id="reclass_go_' + inv.id + '" onclick="inlineReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; display:none;">Go</button>';
         }
         html += '</td></tr>';
     });
@@ -5800,18 +5851,126 @@ async function submitForReview() {
     }
 }
 
-// Reclass suggestion modal
+// ── Searchable Reclass Modal ─────────────────────────────────────────
+let _reclassCallback = null;
+
+function openReclassModal(invoiceIdOrGl, fromGL, mode) {
+    // mode: 'inline' (invoice-level) or 'line' (GL-level)
+    _reclassCallback = { id: invoiceIdOrGl, fromGL: fromGL, mode: mode };
+
+    // Build modal HTML
+    let overlay = document.getElementById('reclassOverlay');
+    if (overlay) overlay.remove();
+
+    // Group ALL_GL_CODES by category, sorted by gl_code
+    const cats = {};
+    const catOrder = [];
+    ALL_GL_CODES.filter(g => g.gl_code !== fromGL).forEach(g => {
+        const cat = g.category || 'other';
+        if (!cats[cat]) { cats[cat] = []; catOrder.push(cat); }
+        cats[cat].push(g);
+    });
+    // Sort each category's GLs
+    catOrder.forEach(c => cats[c].sort((a,b) => a.gl_code.localeCompare(b.gl_code)));
+    catOrder.sort();
+
+    // Build category label map
+    const catLabels = {supplies:'Supplies',repairs:'Repairs',maintenance:'Maintenance',payroll:'Payroll',electric:'Electric',gas:'Gas',fuel:'Fuel',water:'Water & Sewer',sewer:'Water & Sewer',insurance:'Insurance',re_taxes:'Real Estate Taxes',professional:'Professional Fees',admin:'Administrative',financial:'Financial',income:'Income',other:'Other'};
+
+    let listHtml = '';
+    catOrder.forEach(cat => {
+        listHtml += '<div class="rm-cat-header">' + (catLabels[cat] || cat) + '</div>';
+        cats[cat].forEach(g => {
+            listHtml += '<div class="rm-gl-row" data-gl="' + g.gl_code + '" data-desc="' + (g.description || '').toLowerCase() + '" data-cat="' + cat + '" onclick="selectReclassGL(\'' + g.gl_code + '\',\'' + g.description.replace(/'/g, "\\'") + '\')">';
+            listHtml += '<span class="gl-code">' + g.gl_code + '</span>';
+            listHtml += '<span class="gl-desc">' + (g.description || '') + '</span>';
+            listHtml += '</div>';
+        });
+    });
+
+    overlay = document.createElement('div');
+    overlay.id = 'reclassOverlay';
+    overlay.className = 'reclass-overlay';
+    overlay.innerHTML = `
+        <div class="reclass-modal">
+            <div class="rm-header">
+                <h3>Select Target GL Code</h3>
+                <button onclick="document.getElementById('reclassOverlay').remove()" style="background:none; border:none; font-size:18px; cursor:pointer; color:var(--gray-500);">✕</button>
+            </div>
+            <div class="rm-search">
+                <input type="text" id="reclassSearch" placeholder="Search by GL code, name, or category…" oninput="filterReclassModal(this.value)" autofocus>
+            </div>
+            <div class="rm-list" id="reclassListContainer">${listHtml}</div>
+            <div class="rm-footer">
+                <span style="font-size:12px; color:var(--gray-500);">${ALL_GL_CODES.length} GL codes available</span>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Close on overlay click
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+
+    // Focus search
+    setTimeout(() => document.getElementById('reclassSearch').focus(), 50);
+}
+
+function filterReclassModal(q) {
+    q = q.toLowerCase();
+    const container = document.getElementById('reclassListContainer');
+    const rows = container.querySelectorAll('.rm-gl-row');
+    const catHeaders = container.querySelectorAll('.rm-cat-header');
+    const catVisible = {};
+
+    rows.forEach(r => {
+        const gl = r.dataset.gl.toLowerCase();
+        const desc = r.dataset.desc;
+        const cat = r.dataset.cat;
+        const match = !q || gl.includes(q) || desc.includes(q) || (cat && cat.includes(q));
+        r.style.display = match ? '' : 'none';
+        if (match) catVisible[cat] = true;
+    });
+
+    catHeaders.forEach(h => {
+        const catName = h.textContent.toLowerCase();
+        // Show cat header if any child matches
+        const nextRows = [];
+        let sib = h.nextElementSibling;
+        while (sib && !sib.classList.contains('rm-cat-header')) { nextRows.push(sib); sib = sib.nextElementSibling; }
+        const anyVisible = nextRows.some(r => r.style.display !== 'none');
+        h.style.display = anyVisible ? '' : 'none';
+    });
+}
+
+function selectReclassGL(glCode, glDesc) {
+    if (!_reclassCallback) return;
+    const cb = _reclassCallback;
+
+    if (cb.mode === 'inline') {
+        // Set hidden input and show label
+        const hidden = document.getElementById('reclass_gl_' + cb.id);
+        const label = document.getElementById('reclass_label_' + cb.id);
+        const goBtn = document.getElementById('reclass_go_' + cb.id);
+        if (hidden) hidden.value = glCode;
+        if (label) { label.textContent = '→ ' + glCode; label.style.color = 'var(--blue)'; label.style.fontWeight = '600'; }
+        if (goBtn) goBtn.style.display = '';
+    } else if (cb.mode === 'line') {
+        // Set the hidden input for line-level reclass
+        const hidden = document.getElementById('reclass_target_' + cb.fromGL);
+        const label = document.getElementById('reclass_target_label_' + cb.fromGL);
+        if (hidden) hidden.value = glCode;
+        if (label) { label.textContent = glCode + ' — ' + glDesc; label.style.color = 'var(--blue)'; label.style.fontWeight = '600'; }
+    }
+
+    document.getElementById('reclassOverlay').remove();
+}
+
+// Line-level reclass suggestion
 function showReclass(glCode) {
     const line = LINES.find(l => l.gl_code === glCode);
     if (!line) return;
 
-    // Build GL options from RM_GL_MAP keys (all budget template GL codes)
-    const glOptions = LINES.filter(l => l.gl_code !== glCode)
-        .map(l => `<option value="${l.gl_code}">${l.gl_code} - ${l.description}</option>`)
-        .join('');
-
     const row = document.querySelector(`[data-gl="${glCode}"]`).closest('tr');
-    // Remove existing reclass form if any
     const existing = row.nextElementSibling;
     if (existing && existing.classList.contains('reclass-form-row')) {
         existing.remove();
@@ -5821,13 +5980,12 @@ function showReclass(glCode) {
     const formRow = document.createElement('tr');
     formRow.className = 'reclass-form-row';
     formRow.innerHTML = `
-        <td colspan="12" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
+        <td colspan="15" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
-                <select id="reclass_target_${glCode}" style="font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
-                    <option value="">-- Select target GL --</option>
-                    ${glOptions}
-                </select>
+                <input type="hidden" id="reclass_target_${glCode}" value="">
+                <span id="reclass_target_label_${glCode}" style="font-size:12px; color:var(--gray-500);">No GL selected</span>
+                <button onclick="openReclassModal('${glCode}','${glCode}','line')" style="font-size:12px; padding:4px 12px; background:var(--gray-100); color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer;">Choose GL…</button>
                 <input type="number" id="reclass_amount_${glCode}" placeholder="Amount" step="1" value="${Math.round(line.current_budget || 0)}"
                        style="width:100px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
                 <input type="text" id="reclass_notes_${glCode}" placeholder="Notes for FA" value="${line.reclass_notes || ''}"
