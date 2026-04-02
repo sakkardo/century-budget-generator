@@ -5704,7 +5704,7 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05); table-layout:fixed;">';
     html += '<colgroup><col style="width:18%"><col style="width:22%"><col style="width:10%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:22%"></colgroup>';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 10px;">Payee</td><td style="padding:6px 10px;">Description</td><td style="padding:6px 10px;">Invoice #</td><td style="padding:6px 10px;">Date</td><td style="padding:6px 10px; text-align:right;">Amount</td><td style="padding:6px 10px;">Check #</td><td style="padding:6px 10px; text-align:right;">Action</td></tr></thead>';
+    html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Payee</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Description</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Invoice #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Date</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Amount</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Check #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Action</div></td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
