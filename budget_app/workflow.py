@@ -4032,8 +4032,8 @@ function renderRETaxesTab(contentDiv) {
 
   let html = `
   <div style="max-width:960px; margin:0 auto;">
-    <!-- Formula bar — matches FA grid style exactly -->
-    <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+    <!-- Formula bar — matches FA grid style exactly, sticky like Excel -->
+    <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:10;">
       <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
       <span id="reTaxFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>
       <input id="reTaxFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="reTaxFormulaPreview()" onkeydown="reTaxFormulaKeydown(event)">
@@ -4231,8 +4231,13 @@ function reTaxFxClick(el) {
   el.style.borderRadius = '4px';
   el.style.background = '#ecfdf5';
 
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
+  // Scroll formula bar into view, then focus
+  const wrap = document.getElementById('reTaxFormulaBarWrap');
+  if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  setTimeout(() => {
+    bar.focus();
+    bar.setSelectionRange(bar.value.length, bar.value.length);
+  }, 100);
 }
 
 // Live preview as user types
