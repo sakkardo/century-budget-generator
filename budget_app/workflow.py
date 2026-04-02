@@ -4642,8 +4642,55 @@ function sumFxClick(el) {
   el.style.borderRadius = '4px';
   el.style.background = '#ecfdf5';
 
+  // Populate the detail breakdown
+  const detail = document.getElementById('sumFormulaDetail');
+  if (detail) {
+    detail.innerHTML = _buildSumDetail(el.id);
+    detail.style.display = detail.innerHTML ? 'block' : 'none';
+  }
+
   bar.focus({ preventScroll: true });
   bar.setSelectionRange(bar.value.length, bar.value.length);
+}
+
+// Build GL-level breakdown for detail area
+function _buildSumDetail(cellId) {
+  const data = _sumCatData[cellId];
+  if (!data || !data.lines || data.lines.length === 0) return '';
+  const field = data.field;
+  const lines = data.lines;
+
+  // For var/pct, describe what's being compared
+  if (field === 'var') return '<b>$ Variance</b> = Proposed Budget \u2212 Prior Year Actual';
+  if (field === 'pct') return '<b>% Change</b> = (Proposed / Prior \u2212 1) \u00d7 100';
+  if (field && field.startsWith('sub_')) {
+    const subField = field.replace('sub_', '');
+    if (subField === 'var') return '<b>$ Variance</b> = Proposed Budget \u2212 Prior Year Actual';
+    if (subField === 'pct') return '<b>% Change</b> = (Proposed / Prior \u2212 1) \u00d7 100';
+  }
+
+  // For value columns, show each GL line
+  const getVal = (l) => {
+    if (field === 'budget' || field === 'sub_budget') return Math.round(l.current_budget || 0);
+    if (field === 'proposed' || field === 'sub_proposed') {
+      const f = faComputeForecast(l);
+      return Math.round(l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
+    }
+    return 0;
+  };
+
+  const items = lines.map(l => ({
+    gl: l.gl_code,
+    desc: l.description || '',
+    val: getVal(l)
+  })).filter(x => x.val !== 0);
+
+  if (items.length === 0) return '<span style="color:var(--gray-400);">All GL lines are $0</span>';
+
+  const sheet = lines[0] && lines[0].sheet_name ? lines[0].sheet_name : '';
+  let html = '<b>' + (sheet ? sheet + ' \u2014 ' : '') + items.length + ' GL line' + (items.length !== 1 ? 's' : '') + ':</b> ';
+  html += items.map(x => '<span style="white-space:nowrap;">' + x.gl + ' ' + x.desc + ' <b>$' + x.val.toLocaleString() + '</b></span>').join(' + ');
+  return html;
 }
 
 function _sumFormulaPreview() {
@@ -4673,6 +4720,8 @@ function sumFormulaCancel() {
   _showSumButtons(false);
   const preview = document.getElementById('sumFormulaPreview');
   if (preview) preview.style.display = 'none';
+  const detail = document.getElementById('sumFormulaDetail');
+  if (detail) detail.style.display = 'none';
   if (_activeSumFxCell) {
     _activeSumFxCell.style.border = '';
     _activeSumFxCell.style.borderRadius = '';
@@ -4692,9 +4741,11 @@ document.addEventListener('click', function(e) {
   const bar = document.getElementById('sumFormulaBar');
   const label = document.getElementById('sumFormulaLabel');
   const preview = document.getElementById('sumFormulaPreview');
+  const detail = document.getElementById('sumFormulaDetail');
   if (bar) { bar.value = ''; bar.placeholder = 'Click any fx cell to view its formula...'; }
   if (label) label.style.display = 'none';
   if (preview) preview.style.display = 'none';
+  if (detail) detail.style.display = 'none';
   _showSumButtons(false);
 });
 
@@ -4733,7 +4784,8 @@ function renderBudgetSummary(contentDiv) {
     '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
     '<button id="sumFormulaAccept" style="display:none;">OK</button>' +
     '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
-    '</div>';
+    '</div>' +
+    '<div id="sumFormulaDetail" style="display:none; padding:6px 16px 8px; font-size:11px; color:var(--gray-600); line-height:1.6; background:#f8fafc; border:1px solid var(--gray-200); border-top:none; border-radius:0 0 8px 8px; margin-top:-13px; margin-bottom:12px; max-height:80px; overflow-y:auto;"></div>';
 
   // Table header
   html += '<table id="summaryTable" style="width:100%; border-collapse:collapse; font-size:13px;">' +
