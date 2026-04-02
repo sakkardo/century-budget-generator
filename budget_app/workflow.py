@@ -3477,7 +3477,9 @@ function fxCellFocus(el) {
   const field = el.dataset.field;
   const fieldLabel = field === 'proposed_budget' ? 'Proposed Budget' :
                      field === 'estimate_override' ? 'Estimate' :
-                     field === 'forecast_override' ? 'Forecast' : field;
+                     field === 'forecast_override' ? 'Forecast' :
+                     field === 'variance' ? '$ Variance' :
+                     field === 'pct_change' ? '% Change' : field;
   label.textContent = el.dataset.gl + ' / ' + fieldLabel;
   label.style.display = 'inline';
   bar.style.display = 'block';
@@ -3490,16 +3492,25 @@ function fxCellFocus(el) {
     bar.value = el.dataset.formula || '';
   }
   _formulaBarOriginal = bar.value;
-  const hasStoredFormula = !!(el.dataset.proposedFormula);
-  _showFormulaButtons(true, hasStoredFormula);
+  const isReadOnly = field === 'variance' || field === 'pct_change';
+  if (isReadOnly) {
+    _showFormulaButtons(false, false);
+    bar.readOnly = true;
+  } else {
+    const hasStoredFormula = !!(el.dataset.proposedFormula);
+    _showFormulaButtons(true, hasStoredFormula);
+    bar.readOnly = false;
+  }
   formulaBarPreview();
 
   el.style.border = '2px solid var(--blue)';
   el.style.borderRadius = '4px';
   el.style.background = '#ecfdf5';
 
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
+  if (!isReadOnly) {
+    bar.focus({ preventScroll: true });
+    bar.setSelectionRange(bar.value.length, bar.value.length);
+  }
 }
 
 // fxCellBlur: just restore visual styling (editing now happens via Accept)
@@ -3533,12 +3544,12 @@ function fxSubtotalFocus(td) {
   // Row label from first cell text
   let rowLabel = 'Total';
   if (row) { const fc = row.querySelector('td'); if (fc) rowLabel = fc.textContent.trim(); }
-  const colLabels = {prior:'Prior Year', ytd:'YTD Actual', ytdBudget:'YTD Budget', estimate:'Estimate', forecast:'12 Mo Forecast', budget:'Curr Budget', proposed:'Proposed', variance:'$ Variance', pctchange:'% Change'};
+  const colLabels = {prior:'Prior Year', ytd:'YTD Actual', accrual:'Accrual Adj', unpaid:'Unpaid Bills', ytdBudget:'YTD Budget', estimate:'Estimate', forecast:'12 Mo Forecast', budget:'Curr Budget', proposed:'Proposed', variance:'$ Variance', pctchange:'% Change'};
   label.textContent = rowLabel + ' / ' + (colLabels[col] || col);
   label.style.display = 'inline';
   bar.style.display = 'block';
   // Gather GL codes for this row
-  const colPrefix = {prior:'pr_', ytd:'ytd_', ytdBudget:'ytdb_', estimate:'est_', forecast:'fcst_', budget:'bud_', proposed:'prop_'};
+  const colPrefix = {prior:'pr_', ytd:'ytd_', accrual:'acc_', unpaid:'unp_', ytdBudget:'ytdb_', estimate:'est_', forecast:'fcst_', budget:'bud_', proposed:'prop_'};
   let glCodes = [];
   if (rowId === 'faSheetTotal') {
     document.querySelectorAll('tr[data-gl]').forEach(r => { if (r.style.display !== 'none') glCodes.push(r.dataset.gl); });
@@ -3860,10 +3871,22 @@ function faLineChanged(gl, field, value) {
 
   // Excel: Variance = Proposed - Prior Year; % Change = Proposed/Prior - 1
   const variance = proposed - prior;
+  const pctChange = prior ? (proposed / prior - 1) : 0;
   const varEl = document.getElementById('var_' + gl);
-  if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
+  if (varEl) {
+    varEl.value = fmt(variance);
+    varEl.dataset.raw = Math.round(variance);
+    varEl.dataset.formula = '= ' + fmt(proposed) + ' - ' + fmt(prior);
+    varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+    const varTd = varEl.closest('td');
+    if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+  }
   const pctEl = document.getElementById('pct_' + gl);
-  if (pctEl) pctEl.textContent = (prior ? ((proposed / prior - 1) * 100).toFixed(1) : '0.0') + '%';
+  if (pctEl) {
+    pctEl.value = (pctChange * 100).toFixed(1) + '%';
+    pctEl.dataset.raw = pctChange;
+    pctEl.dataset.formula = '= (' + fmt(proposed) + ' / ' + fmt(prior) + ') - 1';
+  }
 
   // Recalculate sheet totals from live cell values
   faUpdateSheetTotals();
@@ -3896,7 +3919,7 @@ function faUpdateSheetTotals() {
     const p = t.prior ? (t.proposed / t.prior - 1) : 0;
     const cells = rowEl.querySelectorAll('td');
     // With colspan="3" first cell: cells[0]=label, cells[1]=prior, cells[2]=ytd,
-    // cells[3]=accrual(empty), cells[4]=unpaid(empty), cells[5]=ytdBudget,
+    // cells[3]=accrual, cells[4]=unpaid, cells[5]=ytdBudget,
     // cells[6]=estimate, cells[7]=forecast, cells[8]=budget, cells[9]=inc%(empty),
     // cells[10]=proposed, cells[11]=variance, cells[12]=pctChange
     function setC(cell, val) {
@@ -3907,6 +3930,8 @@ function faUpdateSheetTotals() {
     if (cells.length >= 13) {
       setC(cells[1], t.prior);
       setC(cells[2], t.ytd);
+      setC(cells[3], t.accrual);
+      setC(cells[4], t.unpaid);
       setC(cells[5], t.ytdBudget);
       setC(cells[6], t.estimate);
       setC(cells[7], t.forecast);
@@ -4681,6 +4706,7 @@ function _buildSumFormula(cellId) {
 
   // For budget/proposed/prior, show SUM of GL line values
   const getVal = (l) => {
+    if (field === 'prior') return Math.round(l.prior_year || 0);
     if (field === 'budget') return Math.round(l.current_budget || 0);
     if (field === 'proposed') {
       const f = faComputeForecast(l);
@@ -4747,6 +4773,7 @@ function _buildSumDetail(cellId) {
 
   // For value columns, show each GL line
   const getVal = (l) => {
+    if (field === 'prior' || field === 'sub_prior') return Math.round(l.prior_year || 0);
     if (field === 'budget' || field === 'sub_budget') return Math.round(l.current_budget || 0);
     if (field === 'proposed' || field === 'sub_proposed') {
       const f = faComputeForecast(l);
@@ -4937,7 +4964,7 @@ function renderBudgetSummary(contentDiv) {
       html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>';
     });
 
-    html += '<td style="text-align:right; padding:10px 12px;">' + fmt(prior) + '</td>' +
+    html += sfx(fmt(prior), sr.label + ' / Prior Year', 'prior', lines) +
       sfx(fmt(budget), sr.label + ' / Curr Budget', 'budget', lines) +
       sfx(fmt(proposed), sr.label + ' / Proposed', 'proposed', lines) +
       sfx(fmt(variance), sr.label + ' / $ Var', 'var', lines, ' color:' + varColor + ';') +
@@ -4958,7 +4985,7 @@ function renderBudgetSummary(contentDiv) {
 
       html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>';
       auditTotalExpense.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
-      html += '<td style="text-align:right; padding:10px 12px;">' + fmt(tePrior) + '</td>' +
+      html += sfx(fmt(tePrior), 'Total Expenses / Prior Year', 'prior', allExpLines) +
         sfx(fmt(teBudget), 'Total Expenses / Curr Budget', 'budget', allExpLines) +
         sfx(fmt(teProposed), 'Total Expenses / Proposed', 'proposed', allExpLines) +
         sfx(fmt(teVar), 'Total Expenses / $ Var', 'var', allExpLines, teVar >= 0 ? ' color:var(--red);' : ' color:var(--green);') +
@@ -4984,7 +5011,7 @@ function renderBudgetSummary(contentDiv) {
 
       html += '<tr style="font-weight:700; background:var(--blue-light, #f5efe7); border-top:2px solid var(--blue);"><td style="padding:10px 12px;">Net Operating Income</td>';
       noiAudit.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
-      html += '<td style="text-align:right; padding:10px 12px;">' + fmt(noiPrior) + '</td>' +
+      html += sfx(fmt(noiPrior), 'NOI / Prior Year', 'prior', allIncLines.concat(allExpLines)) +
         sfx(fmt(noiBudget), 'NOI / Curr Budget', 'budget', allIncLines.concat(allExpLines)) +
         sfx(fmt(noiProposed), 'NOI / Proposed', 'proposed', allIncLines.concat(allExpLines)) +
         sfx(fmt(noiVar), 'NOI / $ Var', 'var', allIncLines.concat(allExpLines), ' color:' + noiColor + ';') +
@@ -5469,15 +5496,31 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
       fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula) +
-      '<td class="num" id="var_'+gl+'" style="color:'+varColor+';">' + fmt(variance) + '</td>' +
-      '<td class="num" id="pct_'+gl+'">' + (pctChange*100).toFixed(1) + '%</td></tr>';
+      '<td class="num" style="position:relative; cursor:pointer; color:'+varColor+';" onclick="fxCellFocus(document.getElementById(\'var_'+gl+'\'))">' +
+        '<span class="fa-fx">fx</span>' +
+        '<input id="var_'+gl+'" class="cell cell-fx" type="text" readonly' +
+        ' value="' + fmt(variance) + '"' +
+        ' data-raw="' + Math.round(variance) + '"' +
+        ' data-formula="= ' + fmt(proposed) + ' - ' + fmt(prior) + '"' +
+        ' data-gl="' + gl + '" data-field="variance"' +
+        ' style="cursor:pointer; pointer-events:none; color:'+varColor+';"></td>' +
+      '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'pct_'+gl+'\'))">' +
+        '<span class="fa-fx">fx</span>' +
+        '<input id="pct_'+gl+'" class="cell cell-fx" type="text" readonly' +
+        ' value="' + (pctChange*100).toFixed(1) + '%"' +
+        ' data-raw="' + pctChange + '"' +
+        ' data-formula="= (' + fmt(proposed) + ' / ' + fmt(prior) + ') - 1"' +
+        ' data-gl="' + gl + '" data-field="pct_change"' +
+        ' style="cursor:pointer; pointer-events:none;"></td></tr>';
   }
 
   function sumLines(lines) {
-    const t = {prior:0, ytd:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    const t = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
     lines.forEach(l => {
       t.prior += l.prior_year || 0;
       t.ytd += l.ytd_actual || 0;
+      t.accrual += l.accrual_adj || 0;
+      t.unpaid += l.unpaid_bills || 0;
       t.ytdBudget += l.ytd_budget || 0;
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
@@ -5503,7 +5546,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td colspan="3">' + label + '</td>' +
       fxTd(t.prior, 'prior') +
       fxTd(t.ytd, 'ytd') +
-      '<td class="num"></td><td class="num"></td>' +
+      fxTd(t.accrual, 'accrual') +
+      fxTd(t.unpaid, 'unpaid') +
       fxTd(t.ytdBudget, 'ytdBudget') +
       fxTd(t.estimate, 'estimate') +
       fxTd(t.forecast, 'forecast') +
