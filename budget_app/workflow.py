@@ -3352,6 +3352,13 @@ function renderAssumptionsTab(assumptions, contentDiv) {
     item('Rate Increase %', field('water_sewer','rate_increase', pctVal(ws.rate_increase), pctStyle, '%'))
   );
 
+  // Real Estate Taxes — rates flow into the RE Taxes tab
+  const rt = a.re_taxes_overrides || {};
+  html += section('Real Estate Taxes',
+    item('Tax Rate %', field('re_taxes_overrides','tax_rate', rt.tax_rate ? (rt.tax_rate * 100).toFixed(4) : '0', pctStyle, '%')) +
+    item('Est. Tax Rate %', field('re_taxes_overrides','est_tax_rate', rt.est_tax_rate ? (rt.est_tax_rate * 100).toFixed(4) : '0', pctStyle, '%'))
+  );
+
   html += '</div>';
   contentDiv.innerHTML = html;
 }
