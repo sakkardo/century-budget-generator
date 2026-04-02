@@ -4032,12 +4032,14 @@ function renderRETaxesTab(contentDiv) {
 
   let html = `
   <div style="max-width:960px; margin:0 auto;">
-    <!-- Formula bar — matches FA grid style -->
+    <!-- Formula bar — matches FA grid style exactly -->
     <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
       <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
       <span id="reTaxFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>
-      <input id="reTaxFormulaBar" type="text" readonly placeholder="Click a green formula cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white; color:var(--gray-700);">
-      <span id="reTaxFormulaResult" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>
+      <input id="reTaxFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="reTaxFormulaPreview()" onkeydown="reTaxFormulaKeydown(event)">
+      <span id="reTaxFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>
+      <button id="reTaxFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="reTaxFormulaAccept()">Accept</button>
+      <button id="reTaxFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="reTaxFormulaCancel()">Cancel</button>
     </div>
 
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
@@ -4188,35 +4190,123 @@ function reTaxBlurPct(el) {
   reCalcTaxes();
 }
 
-// ── RE Taxes formula bar interaction ───────────────────────────────────
+// ── RE Taxes formula bar interaction (matches FA grid behavior) ────────
 let _activeReTaxFxCell = null;
+let _reTaxFormulaOriginal = '';
+
+function _showReTaxButtons(show) {
+  ['reTaxFormulaPreview','reTaxFormulaAccept','reTaxFormulaCancel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = show ? 'inline-block' : 'none';
+  });
+}
 
 function reTaxFxClick(el) {
   // Deselect previous
   if (_activeReTaxFxCell && _activeReTaxFxCell !== el) {
     _activeReTaxFxCell.style.border = '';
     _activeReTaxFxCell.style.borderRadius = '';
+    _activeReTaxFxCell.style.background = el.dataset.origBg || '';
   }
   _activeReTaxFxCell = el;
   const bar = document.getElementById('reTaxFormulaBar');
   const label = document.getElementById('reTaxFormulaLabel');
-  const result = document.getElementById('reTaxFormulaResult');
   if (!bar || !label) return;
 
   label.textContent = el.dataset.label || '';
   label.style.display = 'inline';
-  bar.value = el.dataset.formula || '';
 
-  // Show computed result
-  const valSpan = el.querySelector('.re-fx-val');
-  if (result && valSpan) {
-    result.textContent = valSpan.textContent;
-    result.style.display = 'inline-block';
+  // Show formula or current override value
+  if (el.dataset.override === 'true') {
+    bar.value = el.dataset.overrideVal || '';
+  } else {
+    bar.value = el.dataset.formula || '';
   }
+  _reTaxFormulaOriginal = bar.value;
+  _showReTaxButtons(true);
+  reTaxFormulaPreview();
 
   // Highlight active cell
   el.style.border = '2px solid var(--blue)';
   el.style.borderRadius = '4px';
+  el.style.background = '#ecfdf5';
+
+  bar.focus({ preventScroll: true });
+  bar.setSelectionRange(bar.value.length, bar.value.length);
+}
+
+// Live preview as user types
+function reTaxFormulaPreview() {
+  const bar = document.getElementById('reTaxFormulaBar');
+  const preview = document.getElementById('reTaxFormulaPreview');
+  if (!bar || !preview || !_activeReTaxFxCell) return;
+
+  const typed = bar.value.trim();
+  if (!typed) {
+    preview.style.display = 'none';
+    return;
+  }
+
+  // Try to evaluate as math expression
+  const result = safeEvalFormula(typed);
+  const isChanged = typed !== _reTaxFormulaOriginal;
+  if (result !== null) {
+    preview.textContent = '= $' + Math.round(result).toLocaleString();
+    preview.style.color = isChanged ? '#059669' : 'var(--green)';
+  } else if (/^[\d$,.\-\s]+$/.test(typed)) {
+    const num = parseFloat(typed.replace(/[$,]/g, '')) || 0;
+    preview.textContent = '= $' + Math.round(num).toLocaleString();
+    preview.style.color = isChanged ? '#2563eb' : 'var(--blue)';
+  } else {
+    // Show formula text (not evaluable — like "= Prior Trans AV × Rate ÷ 2")
+    preview.textContent = _activeReTaxFxCell.querySelector('.re-fx-val') ?
+      _activeReTaxFxCell.querySelector('.re-fx-val').textContent : '';
+    preview.style.color = 'var(--green)';
+  }
+  preview.style.display = 'inline-block';
+}
+
+// Accept: apply the formula bar value to the cell
+function reTaxFormulaAccept() {
+  const bar = document.getElementById('reTaxFormulaBar');
+  if (!bar || !_activeReTaxFxCell) return;
+  const typed = bar.value.trim();
+  if (typed === _reTaxFormulaOriginal) { reTaxFormulaCancel(); return; }
+
+  // Try to evaluate
+  let num = safeEvalFormula(typed);
+  if (num === null) num = parseFloat(typed.replace(/[$,]/g, '')) || null;
+
+  if (num !== null) {
+    // Apply override to the cell
+    const valSpan = _activeReTaxFxCell.querySelector('.re-fx-val');
+    if (valSpan) valSpan.textContent = '$' + Math.round(num).toLocaleString();
+    _activeReTaxFxCell.dataset.override = 'true';
+    _activeReTaxFxCell.dataset.overrideVal = typed;
+    _reTaxFormulaOriginal = typed;
+    // Visual indicator that cell has an override
+    _activeReTaxFxCell.style.background = '#fffff0';
+  }
+  _showReTaxButtons(true);
+  reTaxFormulaPreview();
+}
+
+// Cancel: revert to original
+function reTaxFormulaCancel() {
+  const bar = document.getElementById('reTaxFormulaBar');
+  if (bar) bar.value = _reTaxFormulaOriginal;
+  reTaxFormulaPreview();
+}
+
+// Keyboard: Enter = Accept, Escape = Cancel
+function reTaxFormulaKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    reTaxFormulaAccept();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    reTaxFormulaCancel();
+  }
 }
 
 // Deselect when clicking outside
@@ -4226,16 +4316,19 @@ document.addEventListener('click', function(e) {
   if (_activeReTaxFxCell.contains(e.target)) return;
   if (wrap && wrap.contains(e.target)) return;
   // Clicked outside — deselect
+  if (_activeReTaxFxCell.dataset.override !== 'true') {
+    _activeReTaxFxCell.style.background = '';
+  }
   _activeReTaxFxCell.style.border = '';
   _activeReTaxFxCell.style.borderRadius = '';
   _activeReTaxFxCell = null;
   const bar = document.getElementById('reTaxFormulaBar');
   const label = document.getElementById('reTaxFormulaLabel');
-  const result = document.getElementById('reTaxFormulaResult');
-  if (bar) bar.value = '';
-  if (bar) bar.placeholder = 'Click a green formula cell to view its formula...';
+  const preview = document.getElementById('reTaxFormulaPreview');
+  if (bar) { bar.value = ''; bar.placeholder = 'Click a green formula cell to view its formula...'; }
   if (label) label.style.display = 'none';
-  if (result) result.style.display = 'none';
+  if (preview) preview.style.display = 'none';
+  _showReTaxButtons(false);
 });
 
 // Helper: read raw numeric value from data-raw attribute (inputs show formatted text)
