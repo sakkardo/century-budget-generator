@@ -7567,6 +7567,8 @@ async function inlineReclass(invoiceId, fromGL) {
             const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
             if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
             showToast('Invoice reclassified to ' + select.value, 'success');
+            // Re-apply YTD adjustments so totals reflect the reclass immediately
+            await applyReclassAdjustments();
         } else { showToast('Reclass failed', 'error'); }
     } catch(e) { showToast('Reclass error: ' + e.message, 'error'); }
 }
@@ -7583,6 +7585,8 @@ async function inlineUndoReclass(invoiceId, fromGL) {
             const glLink = document.querySelector('a[onclick*="' + fromGL + '"]');
             if (glLink) { toggleInvoices(fromGL, glLink); setTimeout(() => toggleInvoices(fromGL, glLink), 100); }
             showToast('Reclass undone', 'success');
+            // Re-apply YTD adjustments so totals reflect the undo immediately
+            await applyReclassAdjustments();
         } else { showToast('Undo failed', 'error'); }
     } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
 }
@@ -7850,7 +7854,7 @@ if (!CAN_EDIT) {
 // Store original DB values so saveAll() never writes adjusted figures back
 LINES.forEach(l => { l._db_ytd_actual = l.ytd_actual || 0; });
 
-(async function applyReclassAdjustments() {
+async function applyReclassAdjustments() {
     try {
         const data = await fetchExpenseData();
         if (!data || !data.gl_groups) { renderTable(); updateZeroToggle(); return; }
@@ -7869,7 +7873,8 @@ LINES.forEach(l => { l._db_ytd_actual = l.ytd_actual || 0; });
             });
         });
 
-        // Apply adjustments to LINES in memory (not saved to DB)
+        // Reset all to DB values first, then apply adjustments
+        LINES.forEach(l => { l.ytd_actual = l._db_ytd_actual; });
         if (Object.keys(adjustments).length > 0) {
             LINES.forEach(l => {
                 if (adjustments[l.gl_code]) {
@@ -7882,7 +7887,8 @@ LINES.forEach(l => { l._db_ytd_actual = l.ytd_actual || 0; });
     }
     renderTable();
     updateZeroToggle();
-})();
+}
+applyReclassAdjustments();
 </script>
 </body>
 </html>
