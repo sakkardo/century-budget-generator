@@ -1507,6 +1507,21 @@ def create_workflow_blueprint(db):
             if "category" in line_data and line_data["category"]:
                 line.category = line_data["category"]
 
+            # Override fields (PM Tier 1-5 edits)
+            if "estimate_override" in line_data:
+                val = line_data["estimate_override"]
+                line.estimate_override = float(val) if val is not None else None
+            if "forecast_override" in line_data:
+                val = line_data["forecast_override"]
+                line.forecast_override = float(val) if val is not None else None
+            if "proposed_budget" in line_data:
+                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+            if "proposed_formula" in line_data:
+                line.proposed_formula = line_data["proposed_formula"] or None
+            for fname in ("prior_year", "ytd_actual", "ytd_budget", "current_budget"):
+                if fname in line_data:
+                    setattr(line, fname, float(line_data[fname] or 0))
+
         db.session.commit()
 
         return jsonify(budget.to_dict())
@@ -1552,6 +1567,16 @@ def create_workflow_blueprint(db):
                 if old_val != (new_val or ""):
                     changes.append(("proposed_formula", old_val, new_val or ""))
                 line.proposed_formula = new_val or None
+
+            # Nullable override fields (null = use formula, number = manual override)
+            for ofield in ("estimate_override", "forecast_override"):
+                if ofield in line_data:
+                    raw = line_data[ofield]
+                    new_val = float(raw) if raw is not None else None
+                    old_val = getattr(line, ofield, None)
+                    if old_val != new_val:
+                        changes.append((ofield, str(old_val), str(new_val)))
+                    setattr(line, ofield, new_val)
 
             for field, old_v, new_v in changes:
                 db.session.add(BudgetRevision(
@@ -3430,7 +3455,9 @@ async function renderHistoryTab(contentDiv) {
 // Parse a displayed dollar value like "$1,234" or "-$500" back to a number
 function parseDollar(s) {
   if (typeof s !== 'string') return parseFloat(s) || 0;
-  return parseFloat(s.replace(/[$,\s]/g, '')) || 0;
+  const isNeg = /^\s*\(.*\)\s*$/.test(s);
+  const val = parseFloat(s.replace(/[$,\s()]/g, '')) || 0;
+  return isNeg ? -val : val;
 }
 
 // cellBlur: user finished editing a regular dollar cell — reformat and save
@@ -6238,7 +6265,9 @@ function pctFmt(n) {
 
 function parseDollar(s) {
     if (typeof s !== 'string') return parseFloat(s) || 0;
-    return parseFloat(s.replace(/[$,\s()]/g, '')) || 0;
+    const isNeg = /^\s*\(.*\)\s*$/.test(s);
+    const val = parseFloat(s.replace(/[$,\s()]/g, '')) || 0;
+    return isNeg ? -val : val;
 }
 
 function safeEvalFormula(expr) {
@@ -6336,8 +6365,8 @@ function pmFxCellFocus(el) {
     const isEditable = field === 'estimate' || field === 'forecast' || field === 'proposed' || field === 'prior_year' || field === 'ytd_actual' || field === 'accrual_adj' || field === 'unpaid_bills' || field === 'ytd_budget' || field === 'current_budget' || field === 'increase_pct';
     const isFormulaCell = field === 'estimate' || field === 'forecast' || field === 'proposed' || field === 'variance' || field === 'pct_change';
 
-    if (isFormulaCell && !isEditable) {
-        // Read-only formula cells (variance, pct_change)
+    if ((isFormulaCell && !isEditable) || !CAN_EDIT) {
+        // Read-only: non-editable formula cells OR user lacks edit permission
         bar.value = formula;
         bar.disabled = true;
         bar.style.opacity = '0.6';
@@ -6585,7 +6614,7 @@ function pmLineChanged(gl, field, value) {
     const forecast = computeForecast(line);
     const proposed = computeProposed(line);
     const variance = (line.current_budget || 0) - forecast;
-    const pctChange = forecast ? (((line.current_budget || 0) - forecast) / forecast) : 0;
+    const pctChange = (forecast && isFinite(forecast)) ? (((line.current_budget || 0) - forecast) / forecast) : 0;
 
     // Update cells in DOM
     const estEl = document.getElementById('pm_est_' + gl);
@@ -6613,7 +6642,8 @@ function pmLineChanged(gl, field, value) {
         const varTd = varEl.parentElement; if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
     }
     if (pctEl) {
-        pctEl.value = (pctChange * 100).toFixed(1) + '%'; pctEl.dataset.raw = pctChange;
+        const pctDisp = isFinite(pctChange) ? (pctChange * 100).toFixed(1) : '0.0';
+        pctEl.value = pctDisp + '%'; pctEl.dataset.raw = isFinite(pctChange) ? pctChange : 0;
         pctEl.dataset.formula = '= (' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
     }
 
@@ -7011,7 +7041,15 @@ async function saveAll() {
             accrual_adj: l.accrual_adj || 0,
             unpaid_bills: l.unpaid_bills || 0,
             notes: l.notes || '',
-            category: l.category || ''
+            category: l.category || '',
+            estimate_override: l.estimate_override !== null && l.estimate_override !== undefined ? l.estimate_override : null,
+            forecast_override: l.forecast_override !== null && l.forecast_override !== undefined ? l.forecast_override : null,
+            proposed_budget: l.proposed_budget || 0,
+            proposed_formula: l.proposed_formula || null,
+            prior_year: l.prior_year || 0,
+            ytd_actual: l.ytd_actual || 0,
+            ytd_budget: l.ytd_budget || 0,
+            current_budget: l.current_budget || 0
         }));
         const resp = await fetch('/api/lines/' + ENTITY, {
             method: 'PUT',

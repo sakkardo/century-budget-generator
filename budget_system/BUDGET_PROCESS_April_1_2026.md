@@ -77,8 +77,8 @@ The app identifies file types automatically:
 - **Estimate**: `=IF((YTD+Accrual+Unpaid) >= PriorYear, (YTD+Accrual+Unpaid)/YTD_MONTHS*REMAINING_MONTHS, PriorYear-(YTD+Accrual+Unpaid))`
 - **Forecast**: `=YTD + Accrual + Unpaid + Estimate`
 - **Proposed**: `=Forecast * (1 + Increase%)`
-- **Variance**: `=Proposed - PriorYear`
-- **% Change**: `=Proposed / PriorYear - 1`
+- **Variance**: `=Curr Budget - 12 Mo Forecast` (corrected April 3, 2026 — was incorrectly Proposed - Prior)
+- **% Change**: `=(Curr Budget - 12 Mo Forecast) / 12 Mo Forecast` (corrected April 3 — matches 204 Excel `=+(L#-J#)/J#`)
 
 #### Recalculation Cascade
 Editing any cell (accrual, unpaid, increase %, or overrides) triggers: Estimate → Forecast → Proposed → Variance → Category Subtotals → Sheet Total. Same behavior as Excel.
@@ -202,3 +202,95 @@ The 📊 Summary tab (`renderBudgetSummary`) now has a full formula bar system. 
 - `_buildSumDetail(cellId)` — builds GL code/description/amount breakdown
 - `_sumFormulaPreview()` — evaluates formula and shows result
 - `sumFormulaCancel()` — dismisses the formula bar selection
+
+---
+
+### Variance & % Change Formula Correction (April 3, 2026)
+
+#### The Bug
+All $ Variance and % Change formulas across the entire budget (FA dashboard, PM portal, Summary tab) were using the wrong formula: `Proposed - Prior Year` / `(Proposed / Prior) - 1`. The correct formula per the 204 Excel reference is:
+- **$ Variance** = `Curr Budget - 12 Mo Forecast` (Excel: `=+(L#-J#)`)
+- **% Change** = `(Curr Budget - 12 Mo Forecast) / 12 Mo Forecast` (Excel: `=+(L#-J#)/J#`)
+
+#### Locations Fixed (20+ in workflow.py)
+- `buildLineRow()` — line-level variance/pct cells + data-formula attributes
+- `faLineChanged()` — cascade recalculation
+- `subtotalRow()` / `updateTotalRow()` — category subtotals and sheet totals
+- `fxSubtotalFocus()` — formula bar labels for subtotals
+- Summary tab — category rows, Total Expenses, NOI, tooltip labels
+- `_buildSumFormula()` — Summary formula bar expressions
+- PM portal — header cards, line rows, `lineChanged()`, category/grand totals, Summary view
+
+#### Verification
+Confirmed on production: GL 4010-0000 shows formula `= $9,384,325 - $9,034,311`, header cards show Variance `$-8,506,743` / `-27.9%`.
+
+---
+
+### PM Portal Tier 1-5 Cell Functionality (April 3, 2026)
+
+#### Overview
+PM portal now has identical cell functionality to the FA dashboard. All 5 tiers implemented:
+
+#### Tier 1 — fx Badges
+- Blue `fx` badges on all formula cells: Estimate, Forecast, Proposed, $ Variance, % Change
+- fx badges on all subtotal and grand total cells
+- Badge CSS: `.pm-fx` — positioned absolute top-right, 9px font, blue background
+
+#### Tier 2 — Editable Formula Bar
+- Full formula bar matching FA: editable input, Accept/Cancel/Clear buttons, live preview
+- `pmFormulaBar`, `pmFormulaLabel`, `pmFormulaPreview`, `pmFormulaAccept`, `pmFormulaCancel`, `pmFormulaClear`
+- Click any formula cell → bar shows computable math with actual numbers (e.g., `=70611.75-(7799.23+-2350.02+3958.66)`)
+- Editable for Estimate/Forecast/Proposed; read-only display for Variance/% Change and subtotals
+- Live preview shows computed result as you type (`= $61,204`)
+- Enter = Accept, Escape = Cancel keyboard shortcuts
+
+#### Tier 3 — Editable Cells ($cell pattern)
+- All cells editable (Prior Year, YTD Actual, Accrual Adj, Unpaid Bills, YTD Budget, Curr Budget, Increase %)
+- Cells show formatted `$1,234` normally, switch to raw number on focus, reformat on blur
+- `pmCellBlur(el)` handles formatting + LINES update + cascade trigger
+- Increase % properly converts display (5.0) ↔ decimal (0.05)
+- Formula cells (Estimate/Forecast/Proposed) editable via formula bar Accept
+- Override handling: `line.estimate_override`, `line.forecast_override`, `line.proposed_budget`
+
+#### Tier 4 — Subtotal Formula Cells
+- Subtotal and grand total rows have fx badges + `data-col`/`data-raw` attributes
+- Clicking subtotal → formula bar shows read-only SUM formula
+- `pmSubtotalFocus(td)` gathers GL values and displays `= $70,612 + $7,799 + ...`
+- `pmUpdateTotals()` recalculates all subtotal and grand total rows when any cell changes
+
+#### Tier 5 — Input Alignment
+- `font-variant-numeric: tabular-nums` on `.number` and `.pm-cell` classes
+- Consistent cell sizing: `.pm-cell` (90px), `.pm-cell-pct` (60px)
+- Green formula cell background: `input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }`
+- CSS specificity fix: `input.pm-cell-fx` overrides generic `input[type="text"] { background:#fffff0 }`
+
+#### Cascade Recalculation
+`pmLineChanged(gl, field, value)` triggers full cascade:
+1. Editing any cell → updates LINES object
+2. Recalculates: Estimate → Forecast → Proposed → Variance → % Change
+3. Updates formula cells' `data-formula` attributes with new math
+4. Calls `pmUpdateTotals()` to refresh subtotal and grand total rows
+5. Triggers debounced `saveAll()` (800ms)
+
+#### Override System
+- **Type a formula** (e.g., `=50000*12`) → `safeEvalFormula()` evaluates → badge turns blue `fx`
+- **Type a number** (e.g., `600000`) → badge turns orange `✎` pencil
+- **Clear** → nulls override (`estimate_override`, `forecast_override`, `proposed_formula`), reverts to auto-calc, badge returns to default `fx`
+- Green confirmation flash on Accept
+
+#### Key Functions (all in PM `<script>` block in `workflow.py`)
+- `pmCellBlur()` — formats editable cell on blur, triggers cascade
+- `pmFxCellFocus()` — opens formula bar for formula cells
+- `pmSubtotalFocus()` — shows SUM formula for subtotals (read-only)
+- `pmFormulaBarPreview()` — live preview while typing
+- `pmFormulaBarAccept()` — commits formula/value, sets overrides, updates badge
+- `pmFormulaBarCancel()` — reverts formula bar
+- `pmFormulaBarClear()` — removes override, reverts to auto-calc
+- `pmFormulaBarKeydown()` — Enter/Escape handling
+- `pmGetFormulaTooltip()` — builds formula strings with actual numbers (matches FA's `faGetFormulaTooltip`)
+- `pmLineChanged()` — cascade recalculation + data-formula refresh
+- `pmUpdateTotals()` — recalculates all subtotal and grand total rows
+- `parseDollar()` / `safeEvalFormula()` — added to PM scope (were only in FA scope)
+
+#### Pending (on hold)
+- **Approval Workflow**: PM changes write to staging table `PendingPMChange`, FA reviews/accepts/rejects before applying to main budget. Architecture proposed but paused per user direction.
