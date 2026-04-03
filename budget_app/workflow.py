@@ -1609,6 +1609,53 @@ def create_workflow_blueprint(db):
         return jsonify(line.to_dict())
 
 
+    @bp.route("/api/reclass/accept", methods=["POST"])
+    def accept_pm_reclass():
+        """FA accepts PM's invoice reclass — moves ytd_actual between GL lines."""
+        data = request.get_json()
+        entity_code = data.get("entity_code")
+        from_gl = data.get("from_gl")
+        to_gl = data.get("to_gl")
+        amount = float(data.get("amount", 0))
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        from_line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=from_gl).first()
+        to_line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=to_gl).first()
+        if not from_line or not to_line:
+            return jsonify({"error": "GL line not found"}), 404
+
+        old_from_ytd = float(from_line.ytd_actual or 0)
+        old_to_ytd = float(to_line.ytd_actual or 0)
+
+        from_line.ytd_actual = old_from_ytd - amount
+        to_line.ytd_actual = old_to_ytd + amount
+
+        # Audit trail
+        db.session.add(BudgetRevision(
+            budget_id=budget.id, budget_line_id=from_line.id,
+            action="reclass_accept", field_name="ytd_actual",
+            old_value=str(old_from_ytd), new_value=str(from_line.ytd_actual),
+            notes=f"FA accepted reclass of ${amount:,.0f} to {to_gl}", source="web"
+        ))
+        db.session.add(BudgetRevision(
+            budget_id=budget.id, budget_line_id=to_line.id,
+            action="reclass_accept", field_name="ytd_actual",
+            old_value=str(old_to_ytd), new_value=str(to_line.ytd_actual),
+            notes=f"FA accepted reclass of ${amount:,.0f} from {from_gl}", source="web"
+        ))
+
+        db.session.commit()
+
+        return jsonify({
+            "status": "ok",
+            "from_line": from_line.to_dict(),
+            "to_line": to_line.to_dict()
+        })
+
+
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
     def get_budget_history(entity_code):
         """Get change history (revisions) for a budget."""
@@ -2687,6 +2734,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .panel-header h3 { font-size: 14px; font-weight: 600; color: var(--gray-700); margin: 0; }
   .panel-header .badge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px; }
   .badge-blue { background: var(--blue-light); color: var(--blue); }
+  @keyframes pmPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .badge-green { background: var(--green-light); color: var(--green); }
   .badge-amber { background: var(--yellow-light); color: #d97706; }
   .badge-gray { background: var(--gray-100); color: var(--gray-500); }
@@ -2879,20 +2927,42 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Reclass Suggestions — compact collapsible panel -->
-  <div class="panel" id="reclassSuggestions" style="display:none; margin-bottom:16px;">
-    <div class="panel-header" onclick="togglePanel(this)">
+  <!-- PM Review Panel — Notes + Invoice Reclasses -->
+  <div class="panel" id="pmReviewPanel" style="display:none; margin-bottom:16px;">
+    <div class="panel-header" style="background:linear-gradient(to right,#fefce8,#fef9c3); border-bottom:1px solid #fde68a;" onclick="togglePanel(this)">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3>Invoice Reclasses</h3>
-        <span class="badge badge-green" id="reclassBadge"></span>
+        <h3 style="color:var(--gray-800);">PM Review</h3>
+        <span id="pmReviewBadge" style="display:inline-flex; align-items:center; gap:4px; background:var(--orange); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:12px;"><span style="width:6px;height:6px;background:white;border-radius:50%;animation:pmPulse 1.5s infinite;"></span> <span id="pmReviewBadgeText"></span></span>
       </div>
       <span class="chevron">▾</span>
     </div>
-    <div class="panel-body">
-      <table id="reclassTable" style="width:100%; border-collapse:collapse; font-size:13px;">
-        <thead><tr><th>From GL</th><th>To GL</th><th>Amount</th><th>PM Notes</th><th>Action</th></tr></thead>
-        <tbody id="reclassBody"></tbody>
-      </table>
+    <div class="panel-body" style="padding:0;">
+      <div id="pmReviewTabs" style="display:flex; border-bottom:1px solid var(--gray-200); background:var(--gray-50);">
+        <div class="pm-tab active" onclick="switchPmTab(this,'pmNotesContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; border-bottom:2px solid var(--blue); background:white;">PM Notes <span id="pmNotesCount" style="background:var(--blue-light); color:var(--blue); font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
+        <div class="pm-tab" onclick="switchPmTab(this,'pmReclassContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--gray-500); cursor:pointer; border-bottom:2px solid transparent;">Invoice Reclasses <span id="pmReclassCount" style="background:#fef3c7; color:#92400e; font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
+      </div>
+      <!-- Tab 1: PM Notes -->
+      <div id="pmNotesContent" style="padding:16px 20px;">
+        <div id="pmNotesEmpty" style="text-align:center; padding:20px; color:var(--gray-400); font-size:13px; display:none;">No PM notes yet.</div>
+        <div id="pmNotesContainer"></div>
+      </div>
+      <!-- Tab 2: Invoice Reclasses -->
+      <div id="pmReclassContent" style="padding:16px 20px; display:none;">
+        <div id="pmReclassEmpty" style="text-align:center; padding:20px; color:var(--gray-400); font-size:13px; display:none;">No invoice reclasses pending.</div>
+        <div id="pmReclassSummary" style="display:none; display:flex; gap:20px; padding:10px 12px; background:var(--gray-50); border-radius:8px; margin-bottom:14px; font-size:12px;"></div>
+        <table id="pmReclassTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">From GL</th>
+            <th style="font-size:11px; padding:6px 4px; border-bottom:1px solid var(--gray-200);"></th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">To GL</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Invoices</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Amount</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">PM Note</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Action</th>
+          </tr></thead>
+          <tbody id="pmReclassBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -3142,25 +3212,115 @@ function renderDetail(data) {
     auditBody.appendChild(totalTr);
   }
 
-  // Reclass Suggestions
-  const reclassLines = lines.filter(l => l.reclass_to_gl);
-  if (reclassLines.length > 0) {
-    document.getElementById('reclassSuggestions').style.display = '';
-    const totalReclass = reclassLines.reduce((s, l) => s + Math.abs(l.reclass_amount || 0), 0);
-    document.getElementById('reclassBadge').textContent = reclassLines.length + ' items · ' + fmt(totalReclass);
-    const reclassBody = document.getElementById('reclassBody');
-    reclassBody.innerHTML = '';
-    reclassLines.forEach(l => {
-      const tr = document.createElement('tr');
-      tr.innerHTML =
-        '<td style="font-family:monospace;">' + l.gl_code + ' (' + l.description + ')</td>' +
-        '<td style="font-family:monospace;">' + l.reclass_to_gl + '</td>' +
-        '<td style="text-align:right">' + fmt(l.reclass_amount) + '</td>' +
-        '<td>' + (l.reclass_notes || '') + '</td>' +
-        '<td><button onclick="dismissReclass(\'' + l.gl_code + '\')" style="font-size:12px; padding:4px 8px; background:var(--gray-200); border:none; border-radius:4px; cursor:pointer;">Dismiss</button></td>';
-      reclassBody.appendChild(tr);
-    });
-  }
+  // ── PM Review Panel: Notes + Invoice Reclasses ──────────────────────
+  (async function populatePmReview() {
+    let totalItems = 0;
+    const panel = document.getElementById('pmReviewPanel');
+
+    // Section 1: PM Notes
+    const linesWithNotes = lines.filter(l => l.notes && l.notes.trim().length > 0);
+    const notesContainer = document.getElementById('pmNotesContainer');
+    const notesEmpty = document.getElementById('pmNotesEmpty');
+    const notesCount = document.getElementById('pmNotesCount');
+
+    if (linesWithNotes.length > 0) {
+      notesEmpty.style.display = 'none';
+      notesCount.textContent = linesWithNotes.length;
+      notesContainer.innerHTML = linesWithNotes.map(l =>
+        '<div style="display:flex; align-items:flex-start; gap:12px; padding:10px 12px; border-radius:8px; margin-bottom:6px;" onmouseover="this.style.background=\'var(--gray-50)\'" onmouseout="this.style.background=\'\'">' +
+          '<span onclick="scrollToGlRow(\'' + l.gl_code + '\')" style="font-family:monospace; font-size:12px; font-weight:600; color:var(--blue); background:var(--blue-light); padding:3px 8px; border-radius:4px; white-space:nowrap; cursor:pointer;" title="Click to scroll to row">' + l.gl_code + '</span>' +
+          '<span style="font-size:12px; color:var(--gray-500); min-width:140px;">' + (l.description || '') + '</span>' +
+          '<div style="flex:1; font-size:13px; color:var(--gray-700); background:#fffbeb; padding:6px 10px; border-radius:6px; border-left:3px solid #fbbf24;">' + (l.notes || '') + '</div>' +
+        '</div>'
+      ).join('');
+      totalItems += linesWithNotes.length;
+    } else {
+      notesEmpty.style.display = '';
+      notesContainer.innerHTML = '';
+      notesCount.textContent = '0';
+    }
+
+    // Section 2: Invoice Reclasses (aggregated from expense distribution data)
+    const reclassCount = document.getElementById('pmReclassCount');
+    const reclassBody = document.getElementById('pmReclassBody');
+    const reclassEmpty = document.getElementById('pmReclassEmpty');
+    const reclassSummary = document.getElementById('pmReclassSummary');
+
+    const expData = await faFetchExpenseData();
+    if (expData && expData.gl_groups) {
+      // Flatten all invoices across GL groups and find reclassed ones
+      const allInvoices = [];
+      expData.gl_groups.forEach(g => {
+        if (g.invoices) g.invoices.forEach(inv => allInvoices.push(inv));
+      });
+      const reclassed = allInvoices.filter(inv => inv.reclass_to_gl);
+
+      // Aggregate by from_gl → to_gl
+      const reclassMap = {};
+      reclassed.forEach(inv => {
+        const key = inv.gl_code + '|' + inv.reclass_to_gl;
+        if (!reclassMap[key]) {
+          reclassMap[key] = { from_gl: inv.gl_code, to_gl: inv.reclass_to_gl, invoices: [], total: 0, notes: '' };
+        }
+        reclassMap[key].invoices.push(inv);
+        reclassMap[key].total += inv.amount || 0;
+        if (inv.reclass_notes && !reclassMap[key].notes) reclassMap[key].notes = inv.reclass_notes;
+      });
+      const groups = Object.values(reclassMap);
+
+      if (groups.length > 0) {
+        reclassEmpty.style.display = 'none';
+        reclassCount.textContent = groups.length;
+        const totalAmt = groups.reduce((s, g) => s + Math.abs(g.total), 0);
+        reclassSummary.style.display = 'flex';
+        reclassSummary.innerHTML =
+          '<div><span style="color:var(--gray-500);">Invoices reclassed:</span> <span style="font-weight:700;">' + reclassed.length + '</span></div>' +
+          '<div><span style="color:var(--gray-500);">Total amount moved:</span> <span style="font-weight:700;">' + fmt(totalAmt) + '</span></div>' +
+          '<div><span style="color:var(--gray-500);">GL moves:</span> <span style="font-weight:700;">' + groups.length + '</span></div>';
+
+        reclassBody.innerHTML = '';
+        groups.forEach(g => {
+          const fromDesc = (lines.find(l => l.gl_code === g.from_gl) || {}).description || '';
+          const toDesc = (lines.find(l => l.gl_code === g.to_gl) || {}).description || '';
+          const invIds = g.invoices.map(i => i.id).join(',');
+          const tr = document.createElement('tr');
+          tr.id = 'pmrc_' + g.from_gl + '_' + g.to_gl;
+          tr.style.cssText = 'transition:background 0.15s;';
+          tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
+          tr.onmouseout = function() { this.style.background=''; };
+          tr.innerHTML =
+            '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="font-size:11px; color:var(--gray-400);">' + fromDesc + '</div></td>' +
+            '<td style="padding:10px 4px; color:var(--orange); font-weight:700; font-size:16px;">→</td>' +
+            '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.to_gl + '</span><div style="font-size:11px; color:var(--gray-400);">' + toDesc + '</div></td>' +
+            '<td style="padding:10px;"><span style="font-size:11px; background:var(--orange-light); color:var(--orange); padding:2px 8px; border-radius:10px; font-weight:600;">' + g.invoices.length + ' invoice' + (g.invoices.length !== 1 ? 's' : '') + '</span></td>' +
+            '<td style="padding:10px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">' + fmt(g.total) + '</td>' +
+            '<td style="padding:10px; font-size:12px; color:var(--gray-600); font-style:italic; max-width:200px;">' + (g.notes ? '"' + g.notes + '"' : '') + '</td>' +
+            '<td style="padding:10px; text-align:right;" id="pmrc_action_' + g.from_gl + '_' + g.to_gl + '">' +
+              '<button onclick="acceptPmReclass(\'' + g.from_gl + '\',\'' + g.to_gl + '\',' + g.total + ',\'' + invIds + '\')" style="padding:5px 12px; font-size:12px; font-weight:600; border-radius:6px; cursor:pointer; background:var(--green-light); color:var(--green); border:1px solid #86efac;">✓ Accept</button> ' +
+              '<button onclick="undoPmReclass(\'' + g.from_gl + '\',\'' + g.to_gl + '\',\'' + invIds + '\')" style="padding:5px 12px; font-size:12px; font-weight:600; border-radius:6px; cursor:pointer; background:var(--gray-100); color:var(--gray-600); border:1px solid var(--gray-300); margin-left:6px;">Undo</button>' +
+            '</td>';
+          reclassBody.appendChild(tr);
+        });
+        totalItems += groups.length;
+      } else {
+        reclassEmpty.style.display = '';
+        reclassSummary.style.display = 'none';
+        reclassBody.innerHTML = '';
+        reclassCount.textContent = '0';
+      }
+    } else {
+      reclassEmpty.style.display = '';
+      reclassSummary.style.display = 'none';
+      reclassBody.innerHTML = '';
+      reclassCount.textContent = '0';
+    }
+
+    // Show/hide the panel
+    if (totalItems > 0) {
+      panel.style.display = '';
+      document.getElementById('pmReviewBadgeText').textContent = totalItems + ' item' + (totalItems !== 1 ? 's' : '') + ' need review';
+    }
+  })();
 
   // Download Excel button
   document.getElementById('downloadExcelBtn').href = '/api/download-budget/' + entityCode;
@@ -4015,6 +4175,92 @@ async function dismissReclass(glCode) {
     body: JSON.stringify({gl_code: glCode, reclass_to_gl: '', reclass_amount: 0, reclass_notes: ''})
   });
   loadDetail();
+}
+
+// ── PM Review Panel Functions ──────────────────────────────────────
+
+function switchPmTab(button, tabId) {
+  document.getElementById('pmNotesContent').style.display = 'none';
+  document.getElementById('pmReclassContent').style.display = 'none';
+  document.querySelectorAll('#pmReviewTabs .pm-tab').forEach(t => {
+    t.style.color = 'var(--gray-500)';
+    t.style.borderBottom = '2px solid transparent';
+    t.style.background = 'transparent';
+  });
+  document.getElementById(tabId).style.display = 'block';
+  button.style.color = 'var(--blue)';
+  button.style.borderBottom = '2px solid var(--blue)';
+  button.style.background = 'white';
+}
+
+function scrollToGlRow(glCode) {
+  const row = document.querySelector('tr[data-gl="' + glCode + '"]');
+  if (row) {
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.style.transition = 'background 0.3s';
+    row.style.background = '#fef9c3';
+    setTimeout(() => { row.style.background = ''; }, 3000);
+  }
+}
+
+async function acceptPmReclass(fromGl, toGl, amount, invIdStr) {
+  if (!confirm('Accept reclass of ' + fmt(amount) + ' from ' + fromGl + ' to ' + toGl + '?\\n\\nThis will move ' + fmt(amount) + ' of YTD Actual from ' + fromGl + ' to ' + toGl + ' and recalculate both lines.')) return;
+
+  try {
+    const res = await fetch('/api/reclass/accept', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ entity_code: entityCode, from_gl: fromGl, to_gl: toGl, amount: amount })
+    });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Failed'); }
+
+    // Update action cell
+    const actionCell = document.getElementById('pmrc_action_' + fromGl + '_' + toGl);
+    if (actionCell) actionCell.innerHTML = '<span style="color:var(--green); font-weight:700; font-size:12px;">✓ Accepted</span>';
+    const row = document.getElementById('pmrc_' + fromGl + '_' + toGl);
+    if (row) row.style.background = '#f0fdf4';
+
+    // Highlight the affected GL rows in the spreadsheet
+    const fromRow = document.querySelector('tr[data-gl="' + fromGl + '"]');
+    const toRow = document.querySelector('tr[data-gl="' + toGl + '"]');
+    if (fromRow) { fromRow.style.background = '#fef2f2'; setTimeout(() => { fromRow.style.background = ''; }, 4000); }
+    if (toRow) { toRow.style.background = '#f0fdf4'; setTimeout(() => { toRow.style.background = ''; }, 4000); }
+
+    showToast('Reclass accepted — ' + fmt(amount) + ' moved from ' + fromGl + ' to ' + toGl, 'success');
+
+    // Refresh data to recalculate all numbers
+    _faExpenseCache = null;
+    loadDetail();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function undoPmReclass(fromGl, toGl, invIdStr) {
+  if (!confirm('Undo reclass from ' + fromGl + ' to ' + toGl + '?\\n\\nThis will restore the invoices to their original GL code.')) return;
+
+  try {
+    const invIds = invIdStr.split(',').map(s => parseInt(s)).filter(n => n > 0);
+    for (const invId of invIds) {
+      await fetch('/api/expense-dist/reclass/' + invId, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ reclass_to_gl: '' })
+      });
+    }
+
+    const actionCell = document.getElementById('pmrc_action_' + fromGl + '_' + toGl);
+    if (actionCell) actionCell.innerHTML = '<span style="color:var(--gray-400); font-weight:600; font-size:12px;">Undone</span>';
+    const row = document.getElementById('pmrc_' + fromGl + '_' + toGl);
+    if (row) { row.style.background = 'var(--gray-50)'; row.style.opacity = '0.5'; }
+
+    showToast('Reclass undone — invoices restored to ' + fromGl, 'success');
+
+    _faExpenseCache = null;
+    loadDetail();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
 }
 
 // Category grouping definitions per sheet
