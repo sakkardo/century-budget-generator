@@ -2975,11 +2975,12 @@ function renderDetail(data) {
 
   // Summary cards
   const lines = data.lines;
-  let totalPrior = 0, totalBudget = 0, totalPM = 0;
+  let totalPrior = 0, totalBudget = 0, totalForecast = 0, totalPM = 0;
   lines.forEach(l => {
     totalPrior += l.prior_year || 0;
     totalBudget += l.current_budget || 0;
     const forecast = computeForecast(l);
+    totalForecast += forecast;
     const proposed = forecast * (1 + (l.increase_pct || 0));
     totalPM += proposed;
   });
@@ -2994,11 +2995,11 @@ function renderDetail(data) {
       <div class="card-label">Current Budget</div>
     </div>
     <div class="summary-card">
-      <div class="card-value">${fmt(totalBudget - totalPrior)}</div>
+      <div class="card-value">${fmt(totalBudget - totalForecast)}</div>
       <div class="card-label">Variance</div>
     </div>
     <div class="summary-card">
-      <div class="card-value">${totalPrior ? ((totalBudget - totalPrior) / totalPrior * 100).toFixed(1) + '%' : '\u2014'}</div>
+      <div class="card-value">${totalForecast ? ((totalBudget - totalForecast) / totalForecast * 100).toFixed(1) + '%' : '\u2014'}</div>
       <div class="card-label">% Change</div>
     </div>
   `;
@@ -3558,9 +3559,9 @@ function fxSubtotalFocus(td) {
     glCodes = (window._catGroupGLs || {})[key] || [];
   }
   if (col === 'variance') {
-    bar.value = '= Proposed - Prior Year';
+    bar.value = '= Curr Budget - 12 Mo Forecast';
   } else if (col === 'pctchange') {
-    bar.value = '= (Proposed / Prior Year) - 1';
+    bar.value = '= (Curr Budget - 12 Mo Forecast) / 12 Mo Forecast';
   } else {
     const pfx = colPrefix[col];
     if (pfx && glCodes.length) {
@@ -3869,14 +3870,16 @@ function faLineChanged(gl, field, value) {
     faAutoSave(gl, 'proposed_budget', Math.round(proposed));
   }
 
-  // Excel: Variance = Proposed - Prior Year; % Change = Proposed/Prior - 1
-  const variance = proposed - prior;
-  const pctChange = prior ? (proposed / prior - 1) : 0;
+  // Excel: Variance = Curr Budget - 12 Mo Forecast; % Change = (Budget - Forecast) / Forecast
+  const budget = parseFloat(document.getElementById('bud_' + gl)?.dataset?.raw) || 0;
+  const forecast = parseFloat(document.getElementById('fcst_' + gl)?.dataset?.raw) || 0;
+  const variance = budget - forecast;
+  const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) {
     varEl.value = fmt(variance);
     varEl.dataset.raw = Math.round(variance);
-    varEl.dataset.formula = '= ' + fmt(proposed) + ' - ' + fmt(prior);
+    varEl.dataset.formula = '= ' + fmt(budget) + ' - ' + fmt(forecast);
     varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const varTd = varEl.closest('td');
     if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
@@ -3885,7 +3888,7 @@ function faLineChanged(gl, field, value) {
   if (pctEl) {
     pctEl.value = (pctChange * 100).toFixed(1) + '%';
     pctEl.dataset.raw = pctChange;
-    pctEl.dataset.formula = '= (' + fmt(proposed) + ' / ' + fmt(prior) + ') - 1';
+    pctEl.dataset.formula = '= (' + fmt(budget) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
   }
 
   // Recalculate sheet totals from live cell values
@@ -3915,8 +3918,8 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    const v = t.proposed - t.prior;
-    const p = t.prior ? (t.proposed / t.prior - 1) : 0;
+    const v = t.budget - t.forecast;
+    const p = t.forecast ? ((t.budget - t.forecast) / t.forecast) : 0;
     const cells = rowEl.querySelectorAll('td');
     // With colspan="3" first cell: cells[0]=label, cells[1]=prior, cells[2]=ytd,
     // cells[3]=accrual, cells[4]=unpaid, cells[5]=ytdBudget,
@@ -4688,20 +4691,14 @@ function _buildSumFormula(cellId) {
   const lines = data.lines;
 
   if (field === 'var') {
-    const proposed = Math.round(lines.reduce((s, l) => {
-      const f = faComputeForecast(l);
-      return s + (l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
-    }, 0));
-    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
-    return '= ' + proposed + ' - ' + prior;
+    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
+    const forecast = Math.round(lines.reduce((s, l) => s + faComputeForecast(l), 0));
+    return '= ' + budget + ' - ' + forecast;
   }
   if (field === 'pct') {
-    const proposed = Math.round(lines.reduce((s, l) => {
-      const f = faComputeForecast(l);
-      return s + (l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
-    }, 0));
-    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
-    return prior ? '= (' + proposed + ' / ' + prior + ' - 1) * 100' : '= 0';
+    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
+    const forecast = Math.round(lines.reduce((s, l) => s + faComputeForecast(l), 0));
+    return forecast ? '= (' + budget + ' - ' + forecast + ') / ' + forecast : '= 0';
   }
 
   // For budget/proposed/prior, show SUM of GL line values
@@ -4763,12 +4760,12 @@ function _buildSumDetail(cellId) {
   const lines = data.lines;
 
   // For var/pct, describe what's being compared
-  if (field === 'var') return '<b>$ Variance</b> = Proposed Budget \u2212 Prior Year Actual';
-  if (field === 'pct') return '<b>% Change</b> = (Proposed / Prior \u2212 1) \u00d7 100';
+  if (field === 'var') return '<b>$ Variance</b> = Curr Budget \u2212 12 Mo Forecast';
+  if (field === 'pct') return '<b>% Change</b> = (Curr Budget \u2212 12 Mo Forecast) / 12 Mo Forecast';
   if (field && field.startsWith('sub_')) {
     const subField = field.replace('sub_', '');
-    if (subField === 'var') return '<b>$ Variance</b> = Proposed Budget \u2212 Prior Year Actual';
-    if (subField === 'pct') return '<b>% Change</b> = (Proposed / Prior \u2212 1) \u00d7 100';
+    if (subField === 'var') return '<b>$ Variance</b> = Curr Budget \u2212 12 Mo Forecast';
+    if (subField === 'pct') return '<b>% Change</b> = (Curr Budget \u2212 12 Mo Forecast) / 12 Mo Forecast';
   }
 
   // For value columns, show each GL line
@@ -4907,8 +4904,8 @@ function renderBudgetSummary(contentDiv) {
     '<th style="' + thStyle + '">%<br>Change</th>' +
     '</tr></thead><tbody>';
 
-  let totalIncome = {prior:0, budget:0, proposed:0};
-  let totalExpense = {prior:0, budget:0, proposed:0};
+  let totalIncome = {prior:0, budget:0, proposed:0, forecast:0};
+  let totalExpense = {prior:0, budget:0, proposed:0, forecast:0};
   let auditTotalIncome = auditYearKeys.map(() => 0);
   let auditTotalExpense = auditYearKeys.map(() => 0);
 
@@ -4918,11 +4915,12 @@ function renderBudgetSummary(contentDiv) {
     if (sr.rowRange) {
       lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
     }
-    let prior = 0, budget = 0, proposed = 0;
+    let prior = 0, budget = 0, proposed = 0, forecastTotal = 0;
     lines.forEach(l => {
       prior += l.prior_year || 0;
       budget += l.current_budget || 0;
       const forecast = faComputeForecast(l);
+      forecastTotal += forecast;
       proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     });
 
@@ -4941,17 +4939,17 @@ function renderBudgetSummary(contentDiv) {
     const allZero = prior === 0 && budget === 0 && proposed === 0 && auditAmounts.every(a => a === 0);
     if (allZero && !showZeroRows) return; // skip zero rows
 
-    const variance = proposed - prior;
-    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const variance = budget - forecastTotal;
+    const pctChange = forecastTotal ? ((budget - forecastTotal) / forecastTotal) : 0;
     const varColor = sr.type === 'income'
       ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
       : (variance >= 0 ? 'var(--red)' : 'var(--green)');
 
     if (sr.type === 'income') {
-      totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed;
+      totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; totalIncome.forecast += forecastTotal;
       auditAmounts.forEach((a, i) => auditTotalIncome[i] += a);
     } else {
-      totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed;
+      totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; totalExpense.forecast += forecastTotal;
       auditAmounts.forEach((a, i) => auditTotalExpense[i] += a);
     }
 
@@ -4973,9 +4971,9 @@ function renderBudgetSummary(contentDiv) {
 
     // After last expense row, add totals
     if (idx === SUMMARY_ROWS.length - 1) {
-      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed;
-      const teVar = teProposed - tePrior;
-      const tePct = tePrior ? (teProposed / tePrior - 1) : 0;
+      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed, teForecast = totalExpense.forecast;
+      const teVar = teBudget - teForecast;
+      const tePct = teForecast ? ((teBudget - teForecast) / teForecast) : 0;
       // Collect all expense lines for formula
       const allExpLines = SUMMARY_ROWS.filter(r => r.type === 'expense').reduce((arr, r) => {
         let ls = allSheets[r.sheet] || [];
@@ -4996,8 +4994,9 @@ function renderBudgetSummary(contentDiv) {
       const noiPrior = totalIncome.prior - tePrior;
       const noiBudget = totalIncome.budget - teBudget;
       const noiProposed = totalIncome.proposed - teProposed;
-      const noiVar = noiProposed - noiPrior;
-      const noiPct = noiPrior ? (noiProposed / noiPrior - 1) : 0;
+      const noiForecast = totalIncome.forecast - teForecast;
+      const noiVar = noiBudget - noiForecast;
+      const noiPct = noiForecast ? ((noiBudget - noiForecast) / noiForecast) : 0;
       const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
 
       // NOI audit amounts
@@ -5438,8 +5437,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     } else {
       proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     }
-    const variance = proposed - prior;
-    const pctChange = prior ? (proposed / prior - 1) : 0;
+    const variance = budget - forecast;
+    const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
@@ -5501,7 +5500,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="var_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(variance) + '"' +
         ' data-raw="' + Math.round(variance) + '"' +
-        ' data-formula="= ' + fmt(proposed) + ' - ' + fmt(prior) + '"' +
+        ' data-formula="= ' + fmt(budget) + ' - ' + fmt(forecast) + '"' +
         ' data-gl="' + gl + '" data-field="variance"' +
         ' style="cursor:pointer; pointer-events:none; color:'+varColor+';"></td>' +
       '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'pct_'+gl+'\'))">' +
@@ -5509,7 +5508,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="pct_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + (pctChange*100).toFixed(1) + '%"' +
         ' data-raw="' + pctChange + '"' +
-        ' data-formula="= (' + fmt(proposed) + ' / ' + fmt(prior) + ') - 1"' +
+        ' data-formula="= (' + fmt(budget) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast) + '"' +
         ' data-gl="' + gl + '" data-field="pct_change"' +
         ' style="cursor:pointer; pointer-events:none;"></td></tr>';
   }
@@ -5531,8 +5530,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function subtotalRow(label, t, cls, rowId) {
-    const v = t.proposed - t.prior;
-    const p = t.prior ? (t.proposed/t.prior-1) : 0;
+    const v = t.budget - t.forecast;
+    const p = t.forecast ? ((t.budget - t.forecast)/t.forecast) : 0;
     const idAttr = rowId ? ' id="' + rowId + '"' : '';
     const isTotal = cls === 'total-row';
     const bs = isTotal ? 'background:rgba(255,255,255,0.2); color:white; border-color:rgba(255,255,255,0.4);' : '';
@@ -6283,8 +6282,8 @@ function renderTable() {
             const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            const variance = proposed - (line.prior_year || 0);
-            const pctChange = (line.prior_year || 0) ? (proposed / (line.prior_year) - 1) : 0;
+            const variance = (line.current_budget || 0) - forecast;
+            const pctChange = forecast ? (((line.current_budget || 0) - forecast) / forecast) : 0;
 
             catTotals.prior += (line.prior_year || 0);
             catTotals.ytd += (line.ytd_actual || 0);
@@ -6320,7 +6319,7 @@ function renderTable() {
         });
 
         // Subtotal
-        const catVar = catTotals.proposed - catTotals.prior;
+        const catVar = catTotals.budget - catTotals.forecast;
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
@@ -6343,8 +6342,8 @@ function renderTable() {
     }
 
     // Grand total
-    const grandVar = grandTotals.proposed - grandTotals.prior;
-    const grandPct = grandTotals.prior ? (grandTotals.proposed / grandTotals.prior - 1) : 0;
+    const grandVar = grandTotals.budget - grandTotals.forecast;
+    const grandPct = grandTotals.forecast ? ((grandTotals.budget - grandTotals.forecast) / grandTotals.forecast) : 0;
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
@@ -6587,8 +6586,8 @@ function onInput(el) {
     const est = computeEstimate(line);
     const fc = computeForecast(line);
     const pb = computeProposed(line);
-    const variance = pb - (line.prior_year || 0);
-    const pctChange = (line.prior_year || 0) ? (pb / line.prior_year - 1) : 0;
+    const variance = (line.current_budget || 0) - fc;
+    const pctChange = fc ? (((line.current_budget || 0) - fc) / fc) : 0;
 
     const estEl = document.getElementById('est_' + gl);
     const fcEl = document.getElementById('fc_' + gl);
@@ -7005,16 +7004,16 @@ function _buildSumFormula(cellId) {
   const lines = data.lines;
 
   if (field === 'var') {
-    // $ Change = Proposed - Prior
-    const proposed = Math.round(lines.reduce((s, l) => s + (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))), 0));
-    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
-    return '= ' + proposed + ' - ' + prior;
+    // $ Change = Curr Budget - 12 Mo Forecast
+    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
+    const forecast = Math.round(lines.reduce((s, l) => s + computeForecast(l), 0));
+    return '= ' + budget + ' - ' + forecast;
   }
   if (field === 'pct') {
-    // % Change = (Proposed / Prior - 1) * 100
-    const proposed = Math.round(lines.reduce((s, l) => s + (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))), 0));
-    const prior = Math.round(lines.reduce((s, l) => s + (l.prior_year || 0), 0));
-    return prior ? '= (' + proposed + ' / ' + prior + ' - 1) * 100' : '= 0';
+    // % Change = (Curr Budget - 12 Mo Forecast) / 12 Mo Forecast
+    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
+    const forecast = Math.round(lines.reduce((s, l) => s + computeForecast(l), 0));
+    return forecast ? '= (' + budget + ' - ' + forecast + ') / ' + forecast : '= 0';
   }
   if (field === 'forecast') {
     // Show SUM of GL forecasts
@@ -7057,11 +7056,11 @@ function _buildSumFormula(cellId) {
     }
     if (subField === 'var') {
       const t = sumLines(lines);
-      return '= ' + Math.round(t.proposed) + ' - ' + Math.round(t.prior);
+      return '= ' + Math.round(t.budget) + ' - ' + Math.round(t.forecast);
     }
     if (subField === 'pct') {
       const t = sumLines(lines);
-      return t.prior ? '= (' + Math.round(t.proposed) + ' / ' + Math.round(t.prior) + ' - 1) * 100' : '= 0';
+      return t.forecast ? '= (' + Math.round(t.budget) + ' - ' + Math.round(t.forecast) + ') / ' + Math.round(t.forecast) : '= 0';
     }
     // Fallback: sum all lines for the field
     const t = sumLines(lines);
@@ -7226,8 +7225,8 @@ function renderSummary() {
         const gl = sheetLines.filter(cat.match);
         if (gl.length === 0) return;
         const t = sumLines(gl);
-        const v = t.proposed - t.prior;
-        const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
+        const v = t.budget - t.forecast;
+        const p = t.forecast ? ((t.budget - t.forecast)/t.forecast)*100 : 0;
         const lbl = cat.label;
         // Track this category's cell ID base for subtotal formulas
         const baseIdx = _cellIdx + 1;
@@ -7246,8 +7245,8 @@ function renderSummary() {
       });
       // Sheet subtotal
       const st = sumLines(sheetLines);
-      const sv = st.proposed - st.prior;
-      const sp = st.prior ? ((st.proposed/st.prior-1)*100) : 0;
+      const sv = st.budget - st.forecast;
+      const sp = st.forecast ? ((st.budget - st.forecast)/st.forecast*100) : 0;
       html += '<tr class="subtotal"><td>' + s + '</td>' +
         pln(fmt(st.prior)) +
         sfx(fmt(st.ytd), s + ' Total / YTD', 'sub_ytd', sheetLines) +
@@ -7260,8 +7259,8 @@ function renderSummary() {
         '</tr>';
     } else {
       const t = sumLines(sheetLines);
-      const v = t.proposed - t.prior;
-      const p = t.prior ? (t.proposed/t.prior-1)*100 : 0;
+      const v = t.budget - t.forecast;
+      const p = t.forecast ? ((t.budget - t.forecast)/t.forecast*100) : 0;
       html += '<tr class="subtotal"><td>' + s + '</td>' +
         pln(fmt(t.prior)) +
         sfx(fmt(t.ytd), s + ' / YTD', 'ytd', sheetLines) +
@@ -7276,7 +7275,8 @@ function renderSummary() {
   });
 
   // Total Operating Expenses
-  const totalV = exp.proposed - exp.prior;
+  const totalV = exp.budget - exp.forecast;
+  const totalPct = exp.forecast ? ((exp.budget - exp.forecast)/exp.forecast*100).toFixed(1) : '0.0';
   html += '<tr class="sheet-total"><td>Total Operating Expenses</td>' +
     pln(fmt(exp.prior)) +
     sfx(fmt(exp.ytd), 'Total Expenses / YTD', 'ytd', expenseLines) +
@@ -7285,11 +7285,14 @@ function renderSummary() {
     sfx(fmt(exp.budget), 'Total Expenses / Curr Budget', 'budget', expenseLines) +
     sfx(fmt(exp.proposed), 'Total Expenses / Proposed', 'proposed', expenseLines) +
     sfx(fmt(totalV), 'Total Expenses / $ Var', 'var', expenseLines, totalV >= 0 ? 'variance-pos' : 'variance-neg') +
-    sfx((exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) : '0.0') + '%', 'Total Expenses / % Chg', 'pct', expenseLines) +
+    sfx(totalPct + '%', 'Total Expenses / % Chg', 'pct', expenseLines) +
     '</tr>';
 
   // NOI
-  const noiV = noiProposed - noiPrior;
+  const noiBudget = inc.budget - exp.budget;
+  const noiForecast = inc.forecast - exp.forecast;
+  const noiV = noiBudget - noiForecast;
+  const noiPct = noiForecast ? ((noiBudget - noiForecast)/noiForecast*100).toFixed(1) : '0.0';
   html += '<tr class="sheet-total"><td>Net Operating Income</td>' +
     pln(fmt(noiPrior)) +
     sfx(fmt(inc.ytd - exp.ytd), 'NOI / YTD', 'sub_ytd', allLines) +
@@ -7298,7 +7301,7 @@ function renderSummary() {
     sfx(fmt(inc.budget - exp.budget), 'NOI / Curr Budget', 'sub_budget', allLines) +
     sfx(fmt(noiProposed), 'NOI / Proposed', 'sub_proposed', allLines) +
     sfx(fmt(noiV), 'NOI / $ Var', 'sub_var', allLines, noiV >= 0 ? 'variance-neg' : 'variance-pos') +
-    sfx((noiPrior ? ((noiProposed/noiPrior-1)*100).toFixed(1) : '0.0') + '%', 'NOI / % Chg', 'sub_pct', allLines) +
+    sfx(noiPct + '%', 'NOI / % Chg', 'sub_pct', allLines) +
     '</tr>';
 
   html += '</tbody></table>';
@@ -7323,8 +7326,9 @@ function renderSheet(sheetName) {
     const prior = l.prior_year || 0;
     const forecast = computeForecast(l);
     const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const v = proposed - prior;
-    const p = prior ? (proposed/prior-1)*100 : 0;
+    const budget = l.current_budget || 0;
+    const v = budget - forecast;
+    const p = forecast ? ((budget - forecast)/forecast*100) : 0;
     return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
       '<td class="num">' + fmt(prior) + '</td><td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
       '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
@@ -7335,11 +7339,11 @@ function renderSheet(sheetName) {
 
   function buildSubtotal(label, ls) {
     const t = sumLines(ls);
-    const v = t.proposed - t.prior;
+    const v = t.budget - t.forecast;
     return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
       '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
       '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+      '<td class="num">' + (t.forecast ? ((t.budget - t.forecast)/t.forecast*100).toFixed(1) : '0.0') + '%</td></tr>';
   }
 
   if (cats) {
@@ -7356,11 +7360,11 @@ function renderSheet(sheetName) {
 
   // Sheet total
   const t = sumLines(lines);
-  const tv = t.proposed - t.prior;
+  const tv = t.budget - t.forecast;
   html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
     '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
     '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
-    '<td class="num">' + (t.prior ? ((t.proposed/t.prior-1)*100).toFixed(1) : '0.0') + '%</td></tr>';
+    '<td class="num">' + (t.forecast ? ((t.budget - t.forecast)/t.forecast*100).toFixed(1) : '0.0') + '%</td></tr>';
   html += '</tbody></table>';
   content.innerHTML = html;
 }
