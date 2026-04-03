@@ -1690,15 +1690,18 @@ def create_workflow_blueprint(db):
         line.fa_proposed_note = note
 
         if action == "rejected" and override_value is not None:
-            line.fa_override_value = float(override_value)
+            try:
+                override_value = float(override_value)
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid override value"}), 400
+            line.fa_override_value = override_value
             # When FA rejects with a custom value, write it as proposed_budget
-            line.proposed_budget = float(override_value)
+            line.proposed_budget = override_value
         elif action == "accepted":
             line.fa_override_value = None  # clear any prior override
 
         # Append to notes for visibility in both dashboards
-        from datetime import datetime as _dt
-        timestamp = _dt.utcnow().strftime("%m/%d %H:%M")
+        timestamp = datetime.utcnow().strftime("%m/%d %H:%M")
         if action == "rejected":
             ov_str = f" | FA override: ${override_value:,.0f}" if override_value is not None else ""
             note_entry = f"[FA REJECTED {timestamp}] {note}{ov_str}"
@@ -3388,17 +3391,19 @@ function renderDetail(data) {
           '<div><span style="color:var(--gray-500);">GL moves:</span> <span style="font-weight:700;">' + groups.length + '</span></div>';
 
         reclassBody.innerHTML = '';
-        groups.forEach(g => {
+        groups.forEach((g, gi) => {
           const fromDesc = (lines.find(l => l.gl_code === g.from_gl) || {}).description || '';
           const toDesc = (lines.find(l => l.gl_code === g.to_gl) || {}).description || '';
           const invIds = g.invoices.map(i => i.id).join(',');
+          const gid = 'farg_' + gi;
           const tr = document.createElement('tr');
           tr.id = 'pmrc_' + g.from_gl + '_' + g.to_gl;
-          tr.style.cssText = 'transition:background 0.15s;';
+          tr.style.cssText = 'transition:background 0.15s; cursor:pointer;';
           tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
           tr.onmouseout = function() { this.style.background=''; };
+          tr.onclick = function(e) { if (e.target.tagName === 'BUTTON') return; toggleReclassInvDetail(gid); };
           tr.innerHTML =
-            '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="font-size:11px; color:var(--gray-400);">' + fromDesc + '</div></td>' +
+            '<td style="padding:10px;"><span id="' + gid + '_arrow" style="display:inline-block; font-size:10px; color:var(--gray-400); transition:transform 0.2s; margin-right:6px;">▶</span><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="padding-left:20px; font-size:11px; color:var(--gray-400);">' + fromDesc + '</div></td>' +
             '<td style="padding:10px 4px; color:var(--orange); font-weight:700; font-size:16px;">→</td>' +
             '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.to_gl + '</span><div style="font-size:11px; color:var(--gray-400);">' + toDesc + '</div></td>' +
             '<td style="padding:10px;"><span style="font-size:11px; background:var(--orange-light); color:var(--orange); padding:2px 8px; border-radius:10px; font-weight:600;">' + g.invoices.length + ' invoice' + (g.invoices.length !== 1 ? 's' : '') + '</span></td>' +
@@ -3409,6 +3414,28 @@ function renderDetail(data) {
               '<button onclick="undoPmReclass(\'' + g.from_gl + '\',\'' + g.to_gl + '\',\'' + invIds + '\')" style="padding:5px 12px; font-size:12px; font-weight:600; border-radius:6px; cursor:pointer; background:var(--gray-100); color:var(--gray-600); border:1px solid var(--gray-300); margin-left:6px;">Undo</button>' +
             '</td>';
           reclassBody.appendChild(tr);
+          // Add expandable invoice detail rows (hidden by default)
+          g.invoices.forEach(inv => {
+            const itr = document.createElement('tr');
+            itr.className = 'reclass-inv-detail';
+            itr.dataset.group = gid;
+            itr.style.cssText = 'display:none; background:#fafbfc;';
+            const invDate = inv.invoice_date || inv.date || '';
+            const invNum = inv.invoice_number || inv.ref || '';
+            const invVendor = inv.vendor_name || inv.vendor || '';
+            const invDesc = inv.description || '';
+            itr.innerHTML =
+              '<td colspan="7" style="padding:8px 10px 8px 44px; border-bottom:1px solid #f0f1f3;">' +
+                '<div style="display:flex; align-items:center; gap:16px; font-size:12px;">' +
+                  (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-400);">' + invNum + '</span>' : '') +
+                  '<span style="font-weight:600; color:var(--gray-700);">' + invVendor + '</span>' +
+                  (invDesc ? '<span style="color:var(--gray-500);">— ' + invDesc + '</span>' : '') +
+                  (invDate ? '<span style="font-size:11px; color:var(--gray-400);">' + invDate + '</span>' : '') +
+                  '<span style="margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums; text-align:right;">' + fmt(inv.amount || 0) + '</span>' +
+                '</div>' +
+              '</td>';
+            reclassBody.appendChild(itr);
+          });
         });
         totalItems += groups.length;
       } else {
@@ -4383,6 +4410,15 @@ function switchPmTab(button, tabId) {
   button.style.color = 'var(--blue)';
   button.style.borderBottom = '2px solid var(--blue)';
   button.style.background = 'white';
+}
+
+function toggleReclassInvDetail(gid) {
+  const rows = document.querySelectorAll('tr[data-group="' + gid + '"]');
+  const arrow = document.getElementById(gid + '_arrow');
+  if (!rows.length) return;
+  const showing = rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  if (arrow) arrow.style.transform = showing ? '' : 'rotate(90deg)';
 }
 
 function scrollToGlRow(glCode) {
@@ -8021,12 +8057,12 @@ function switchPmMcTab(button, tabId) {
       reclassEmpty.style.display = 'none';
       reclassCount.textContent = groups.length;
       reclassBody.innerHTML = '';
-      groups.forEach(g => {
+      groups.forEach((g, gi) => {
         const fromLine = LINES.find(l => l.gl_code === g.from_gl);
         const fromDesc = fromLine ? fromLine.description : '';
-        // to_gl may not be in PM's LINES (could be a different sheet), so show code only
         const toLine = LINES.find(l => l.gl_code === g.to_gl);
         const toDesc = toLine ? toLine.description : '';
+        const gid = 'pmrg_' + gi;
 
         // Determine FA status from the notes of the from_gl line
         let faStatus = '<span style="background:#fff7ed; color:#b45309; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">● Pending</span>';
@@ -8034,11 +8070,12 @@ function switchPmMcTab(button, tabId) {
         if (fromNotes.includes('[FA ACCEPTED')) faStatus = '<span style="background:#dcfce7; color:#166534; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✓ Accepted</span>';
 
         const tr = document.createElement('tr');
-        tr.style.cssText = 'transition:background 0.15s;';
+        tr.style.cssText = 'transition:background 0.15s; cursor:pointer;';
         tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
         tr.onmouseout = function() { this.style.background=''; };
+        tr.onclick = function() { pmToggleReclassInv(gid); };
         tr.innerHTML =
-          '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="font-size:11px; color:var(--gray-500);">' + fromDesc + '</div></td>' +
+          '<td style="padding:10px;"><span id="' + gid + '_arrow" style="display:inline-block; font-size:10px; color:var(--gray-500); transition:transform 0.2s; margin-right:6px;">▶</span><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="padding-left:20px; font-size:11px; color:var(--gray-500);">' + fromDesc + '</div></td>' +
           '<td style="padding:10px 4px; color:var(--orange); font-weight:700; font-size:16px;">→</td>' +
           '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.to_gl + '</span><div style="font-size:11px; color:var(--gray-500);">' + toDesc + '</div></td>' +
           '<td style="padding:10px;"><span style="font-size:11px; background:var(--orange-light); color:var(--orange); padding:2px 8px; border-radius:10px; font-weight:600;">' + g.invoices.length + ' invoice' + (g.invoices.length !== 1 ? 's' : '') + '</span></td>' +
@@ -8046,6 +8083,27 @@ function switchPmMcTab(button, tabId) {
           '<td style="padding:10px; font-size:12px; color:var(--gray-600); font-style:italic; max-width:200px;">' + (g.notes ? '"' + g.notes + '"' : '') + '</td>' +
           '<td style="padding:10px; text-align:center;">' + faStatus + '</td>';
         reclassBody.appendChild(tr);
+        // Expandable invoice detail rows
+        g.invoices.forEach(inv => {
+          const itr = document.createElement('tr');
+          itr.dataset.group = gid;
+          itr.style.cssText = 'display:none; background:#fafbfc;';
+          const invDate = inv.invoice_date || inv.date || '';
+          const invNum = inv.invoice_number || inv.ref || '';
+          const invVendor = inv.vendor_name || inv.vendor || '';
+          const invDesc = inv.description || '';
+          itr.innerHTML =
+            '<td colspan="7" style="padding:8px 10px 8px 44px; border-bottom:1px solid #f0f1f3;">' +
+              '<div style="display:flex; align-items:center; gap:16px; font-size:12px;">' +
+                (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-500);">' + invNum + '</span>' : '') +
+                '<span style="font-weight:600; color:var(--gray-700);">' + invVendor + '</span>' +
+                (invDesc ? '<span style="color:var(--gray-500);">— ' + invDesc + '</span>' : '') +
+                (invDate ? '<span style="font-size:11px; color:var(--gray-500);">' + invDate + '</span>' : '') +
+                '<span style="margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums;">' + fmt(inv.amount || 0) + '</span>' +
+              '</div>' +
+            '</td>';
+          reclassBody.appendChild(itr);
+        });
       });
       totalItems += groups.length;
     } else {
@@ -8065,6 +8123,15 @@ function switchPmMcTab(button, tabId) {
     document.getElementById('pmMyChangesBadge').textContent = totalItems + ' item' + (totalItems !== 1 ? 's' : '');
   }
 })();
+
+function pmToggleReclassInv(gid) {
+  const rows = document.querySelectorAll('tr[data-group="' + gid + '"]');
+  const arrow = document.getElementById(gid + '_arrow');
+  if (!rows.length) return;
+  const showing = rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  if (arrow) arrow.style.transform = showing ? '' : 'rotate(90deg)';
+}
 </script>
 </body>
 </html>
