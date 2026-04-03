@@ -6114,8 +6114,8 @@ PM_EDIT_TEMPLATE = r"""
   /* PM Cell Styles */
   .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; }
   .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
-  .pm-cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
-  .pm-cell-fx:focus { background:#ecfdf5; }
+  input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }
+  input.pm-cell-fx:focus { background:#ecfdf5; }
   .pm-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
   .pm-cell-pct { width:60px; }
 </style>
