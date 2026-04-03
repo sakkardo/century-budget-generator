@@ -3871,8 +3871,6 @@ function faLineChanged(gl, field, value) {
   }
 
   // Excel: Variance = Curr Budget - 12 Mo Forecast; % Change = (Budget - Forecast) / Forecast
-  const budget = parseFloat(document.getElementById('bud_' + gl)?.dataset?.raw) || 0;
-  const forecast = parseFloat(document.getElementById('fcst_' + gl)?.dataset?.raw) || 0;
   const variance = budget - forecast;
   const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
   const varEl = document.getElementById('var_' + gl);
