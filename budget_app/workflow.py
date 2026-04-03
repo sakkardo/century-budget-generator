@@ -6236,6 +6236,23 @@ function pctFmt(n) {
     return (n * 100).toFixed(1) + '%';
 }
 
+function parseDollar(s) {
+    if (typeof s !== 'string') return parseFloat(s) || 0;
+    return parseFloat(s.replace(/[$,\s()]/g, '')) || 0;
+}
+
+function safeEvalFormula(expr) {
+    let s = expr.trim();
+    if (s.startsWith('=')) s = s.substring(1);
+    s = s.replace(/([\d.]+)\s*%/g, '($1/100)');
+    if (!/^[\d\s+\-*\/().]+$/.test(s)) return null;
+    try {
+        const result = new Function('return (' + s + ')')();
+        if (typeof result !== 'number' || !isFinite(result)) return null;
+        return result;
+    } catch (e) { return null; }
+}
+
 function computeEstimate(line) {
     if (line.estimate_override !== null && line.estimate_override !== undefined) return line.estimate_override;
     const ytd = line.ytd_actual || 0;
@@ -6270,15 +6287,25 @@ let _pmOriginalFormula = '';
 
 // Editable $cell: formats value on blur, triggers cascade on change
 function pmCellBlur(el) {
-    const val = parseDollar(el.value);
-    el.value = fmt(val);
     const gl = el.dataset.gl;
     const field = el.dataset.field;
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
-    if (line[field] === val) return; // No change
-    line[field] = val;
-    pmLineChanged(gl, field, val);
+
+    if (field === 'increase_pct') {
+        const pctVal = parseFloat(el.value) || 0;
+        el.dataset.raw = pctVal.toFixed(1);
+        el.value = pctVal.toFixed(1) + '%';
+        if (line.increase_pct === pctVal / 100) return;
+        line.increase_pct = pctVal / 100;
+    } else {
+        const val = parseDollar(el.value);
+        el.dataset.raw = Math.round(val);
+        el.value = fmt(val);
+        if (line[field] === val) return;
+        line[field] = val;
+    }
+    pmLineChanged(gl, field, null);
 }
 
 // Formula cell focus: opens formula bar for editing (if editable) or read-only display
@@ -6365,16 +6392,23 @@ function pmSubtotalFocus(td) {
 function pmFormulaBarPreview() {
     const bar = document.getElementById('pmFormulaBar');
     const preview = document.getElementById('pmFormulaPreview');
-    if (_pmEditMode && bar.value.startsWith('=')) {
-        const result = safeEvalFormula(bar.value);
-        if (result !== null) {
-            preview.textContent = fmt(result);
-            preview.style.display = '';
-        } else {
-            preview.style.display = 'none';
-        }
+    if (!_pmEditMode) { preview.style.display = 'none'; return; }
+    const typed = bar.value.trim();
+    if (!typed || typed === _pmOriginalFormula) { preview.style.display = 'none'; return; }
+    const result = safeEvalFormula(typed);
+    if (result !== null) {
+        preview.textContent = '= ' + fmt(result);
+        preview.style.color = '#059669';
+        preview.style.display = '';
+    } else if (/^[\d$,.\-\s]+$/.test(typed)) {
+        const num = parseDollar(typed);
+        preview.textContent = '= ' + fmt(num);
+        preview.style.color = '#2563eb';
+        preview.style.display = '';
     } else {
-        preview.style.display = 'none';
+        preview.textContent = 'Invalid formula';
+        preview.style.color = 'var(--red)';
+        preview.style.display = '';
     }
 }
 
@@ -6387,30 +6421,45 @@ function pmFormulaBarAccept() {
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
 
-    if (bar.value.startsWith('=')) {
-        // Formula entry
-        const result = safeEvalFormula(bar.value);
-        if (result === null) { showToast('Invalid formula', 'error'); return; }
-        if (field === 'proposed_budget') {
-            line.proposed_formula = bar.value;
-        }
-        _pmCurrentCell.dataset.formula = bar.value;
-        _pmCurrentCell.value = fmt(result);
-        _pmCurrentCell.dataset.raw = Math.round(result);
+    const typed = bar.value.trim();
+    const isFormula = typed.startsWith('=') || /[+\-*\/()]/.test(typed);
+    const formulaResult = safeEvalFormula(typed);
+    const numericVal = parseDollar(typed);
+
+    let finalVal;
+    if (isFormula && formulaResult !== null) {
+        finalVal = formulaResult;
+    } else if (!isNaN(numericVal)) {
+        finalVal = numericVal;
     } else {
-        // Direct value entry
-        const val = parseDollar(bar.value);
-        _pmCurrentCell.value = fmt(val);
-        _pmCurrentCell.dataset.raw = Math.round(val);
-        line[field] = val;
+        showToast('Invalid formula or value', 'error');
+        return;
     }
+
+    // Set override on LINES object based on field
+    if (field === 'estimate') {
+        line.estimate_override = Math.round(finalVal);
+    } else if (field === 'forecast') {
+        line.forecast_override = Math.round(finalVal);
+    } else if (field === 'proposed') {
+        line.proposed_budget = Math.round(finalVal);
+        if (isFormula && formulaResult !== null) {
+            line.proposed_formula = typed.startsWith('=') ? typed : '=' + typed;
+        } else {
+            line.proposed_formula = null;
+        }
+    }
+
+    _pmCurrentCell.dataset.formula = typed;
+    _pmCurrentCell.value = fmt(finalVal);
+    _pmCurrentCell.dataset.raw = Math.round(finalVal);
 
     // Update badge: fx for formula, ✎ for manual override
     const badge = _pmCurrentCell.parentElement.querySelector('.pm-fx');
     if (badge) {
-        if (bar.value.startsWith('=')) {
+        if (isFormula && formulaResult !== null) {
             badge.textContent = 'fx';
-            badge.style.background = 'var(--blue-light, #e1effe)';
+            badge.style.background = '#dbeafe';
             badge.style.color = 'var(--blue)';
             badge.style.borderColor = 'var(--blue)';
         } else {
@@ -6420,6 +6469,10 @@ function pmFormulaBarAccept() {
             badge.style.borderColor = '#d97706';
         }
     }
+
+    // Flash green confirmation
+    _pmCurrentCell.style.outline = '2px solid var(--green)';
+    setTimeout(() => { if (_pmCurrentCell) _pmCurrentCell.style.outline = ''; }, 1200);
 
     pmLineChanged(gl, field, null);
     pmFormulaBarCancel();
@@ -6500,19 +6553,24 @@ function pmGetFormulaTooltip(line, type) {
     const unpaid = line.unpaid_bills || 0;
     const base = ytd + accrual + unpaid;
     const prior = line.prior_year || 0;
+    const estimate = computeEstimate(line);
+    const forecast = computeForecast(line);
+    const incPct = line.increase_pct || 0;
 
     if (type === 'estimate') {
-        if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
-            return '=IF((YTD+Accrual+Unpaid) >= Prior, ('+fmt(ytd)+'+'+fmt(accrual)+'+'+fmt(unpaid)+') / '+YTD_MONTHS+' × '+REMAINING_MONTHS+', Prior−Base)';
-        } else if (prior > 0) {
-            return '=MAX(Prior − Base, 0)';
-        } else {
-            return '=Base / YTD_MONTHS × REMAINING';
-        }
-    } else if (type === 'forecast') {
-        return '=YTD + Accrual + Unpaid + Estimate';
-    } else if (type === 'proposed') {
-        return '=Forecast × (1 + Increase%)';
+        if (base >= prior && prior > 0 && YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+        if (prior > 0) return '=' + prior + '-(' + ytd + '+' + accrual + '+' + unpaid + ')';
+        if (base > 0 && YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+        return '=0';
+    }
+    if (type === 'forecast') {
+        const estExpr = (ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
+        return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
+    }
+    if (type === 'proposed') {
+        if (line.proposed_formula) return line.proposed_formula;
+        const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((ytd > 0 && YTD_MONTHS > 0) ? ytd + '/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
+        return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
     }
     return '';
 }
@@ -6536,11 +6594,28 @@ function pmLineChanged(gl, field, value) {
     const varEl = document.getElementById('pm_var_' + gl);
     const pctEl = document.getElementById('pm_pct_' + gl);
 
-    if (estEl && estEl.dataset.field === 'estimate') { estEl.value = fmt(estimate); estEl.dataset.raw = Math.round(estimate); }
-    if (fcEl && fcEl.dataset.field === 'forecast') { fcEl.value = fmt(forecast); fcEl.dataset.raw = Math.round(forecast); }
-    if (propEl && propEl.dataset.field === 'proposed') { propEl.value = fmt(proposed); propEl.dataset.raw = Math.round(proposed); }
-    if (varEl) { varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
-    if (pctEl) { pctEl.value = (pctChange * 100).toFixed(1) + '%'; pctEl.dataset.raw = pctChange; }
+    if (estEl && estEl.dataset.field === 'estimate') {
+        estEl.value = fmt(estimate); estEl.dataset.raw = Math.round(estimate);
+        if (!(line.estimate_override !== null && line.estimate_override !== undefined)) estEl.dataset.formula = pmGetFormulaTooltip(line, 'estimate');
+    }
+    if (fcEl && fcEl.dataset.field === 'forecast') {
+        fcEl.value = fmt(forecast); fcEl.dataset.raw = Math.round(forecast);
+        if (!(line.forecast_override !== null && line.forecast_override !== undefined)) fcEl.dataset.formula = pmGetFormulaTooltip(line, 'forecast');
+    }
+    if (propEl && propEl.dataset.field === 'proposed') {
+        propEl.value = fmt(proposed); propEl.dataset.raw = Math.round(proposed);
+        if (!line.proposed_formula) propEl.dataset.formula = pmGetFormulaTooltip(line, 'proposed');
+    }
+    if (varEl) {
+        varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance);
+        varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+        varEl.dataset.formula = '= ' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast);
+        const varTd = varEl.parentElement; if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+    }
+    if (pctEl) {
+        pctEl.value = (pctChange * 100).toFixed(1) + '%'; pctEl.dataset.raw = pctChange;
+        pctEl.dataset.formula = '= (' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
+    }
 
     // Update subtotals and grand totals
     pmUpdateTotals();
