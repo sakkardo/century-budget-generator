@@ -6110,6 +6110,14 @@ PM_EDIT_TEMPLATE = r"""
 
   .invoice-detail-row td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
+
+  /* PM Cell Styles */
+  .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; }
+  .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
+  .pm-cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
+  .pm-cell-fx:focus { background:#ecfdf5; }
+  .pm-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
+  .pm-cell-pct { width:60px; }
 </style>
 </head>
 <body>
@@ -6152,11 +6160,14 @@ PM_EDIT_TEMPLATE = r"""
     </div>
   </div>
 
-  <div class="pm-formula-bar" id="pmFormulaBar">
-    <span class="fb-label">Formula</span>
-    <span class="fb-cell-ref" id="fbCellRef">—</span>
-    <span class="fb-formula" id="fbFormula" style="color:var(--gray-400);">Click any <span style="font-size:10px; color:var(--blue); background:var(--blue-light); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span> cell to view its formula</span>
-    <span class="fb-badge auto" id="fbBadge" style="display:none;">AUTO</span>
+  <div id="pmFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+    <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
+    <span id="pmFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>
+    <input id="pmFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="pmFormulaBarPreview()" onkeydown="pmFormulaBarKeydown(event)">
+    <span id="pmFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>
+    <button id="pmFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarAccept()">Accept</button>
+    <button id="pmFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarCancel()">Cancel</button>
+    <button id="pmFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>
   </div>
 
   <div class="grid-wrapper">
@@ -6252,6 +6263,368 @@ function computeProposed(line) {
     return forecast * (1 + (line.increase_pct || 0));
 }
 
+// ── PM Cell Helper Functions ──────────────────────────────────────
+let _pmCurrentCell = null;
+let _pmEditMode = false;
+let _pmOriginalFormula = '';
+
+// Editable $cell: formats value on blur, triggers cascade on change
+function pmCellBlur(el) {
+    const val = parseDollar(el.value);
+    el.value = fmt(val);
+    const gl = el.dataset.gl;
+    const field = el.dataset.field;
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+    if (line[field] === val) return; // No change
+    line[field] = val;
+    pmLineChanged(gl, field, val);
+}
+
+// Formula cell focus: opens formula bar for editing (if editable) or read-only display
+function pmFxCellFocus(el) {
+    const gl = el.dataset.gl;
+    const field = el.dataset.field;
+    const formula = el.dataset.formula || '';
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+
+    // Highlight cell
+    if (_pmCurrentCell) _pmCurrentCell.style.outline = '';
+    el.style.outline = '2px solid var(--blue)';
+    el.style.outlineOffset = '-1px';
+    _pmCurrentCell = el;
+
+    const bar = document.getElementById('pmFormulaBar');
+    const label = document.getElementById('pmFormulaLabel');
+    const preview = document.getElementById('pmFormulaPreview');
+    const accept = document.getElementById('pmFormulaAccept');
+    const cancel = document.getElementById('pmFormulaCancel');
+    const clear = document.getElementById('pmFormulaClear');
+
+    label.textContent = gl + ' · ' + field.replace('_', ' ');
+    label.style.display = '';
+
+    // Check if field is editable (estimate, forecast, proposed) vs read-only (variance, pct_change)
+    const isEditable = field === 'estimate' || field === 'forecast' || field === 'proposed' || field === 'prior_year' || field === 'ytd_actual' || field === 'accrual_adj' || field === 'unpaid_bills' || field === 'ytd_budget' || field === 'current_budget' || field === 'increase_pct';
+    const isFormulaCell = field === 'estimate' || field === 'forecast' || field === 'proposed' || field === 'variance' || field === 'pct_change';
+
+    if (isFormulaCell && !isEditable) {
+        // Read-only formula cells (variance, pct_change)
+        bar.value = formula;
+        bar.disabled = true;
+        bar.style.opacity = '0.6';
+        bar.style.cursor = 'not-allowed';
+        accept.style.display = 'none';
+        cancel.style.display = 'none';
+        clear.style.display = 'none';
+        preview.style.display = 'none';
+        _pmEditMode = false;
+    } else {
+        // Editable cells
+        bar.value = el.dataset.proposedFormula || formula;
+        bar.disabled = false;
+        bar.style.opacity = '1';
+        bar.style.cursor = 'text';
+        accept.style.display = '';
+        cancel.style.display = '';
+        clear.style.display = el.dataset.proposedFormula ? '' : 'none';
+        _pmEditMode = true;
+        _pmOriginalFormula = bar.value;
+    }
+}
+
+// Formula cell blur: remove outline
+function pmFxCellBlur(el) {
+    if (_pmCurrentCell === el) _pmCurrentCell.style.outline = '';
+}
+
+// Subtotal focus: show SUM formula (read-only)
+function pmSubtotalFocus(td) {
+    const col = td.dataset.col;
+    const raw = parseFloat(td.dataset.raw) || 0;
+    const bar = document.getElementById('pmFormulaBar');
+    const label = document.getElementById('pmFormulaLabel');
+    const preview = document.getElementById('pmFormulaPreview');
+    const accept = document.getElementById('pmFormulaAccept');
+    const cancel = document.getElementById('pmFormulaCancel');
+    const clear = document.getElementById('pmFormulaClear');
+
+    bar.value = '=SUM(...)';
+    bar.disabled = true;
+    bar.style.opacity = '0.6';
+    label.textContent = 'Subtotal · ' + col;
+    label.style.display = '';
+    accept.style.display = 'none';
+    cancel.style.display = 'none';
+    clear.style.display = 'none';
+    preview.style.display = 'none';
+}
+
+// Live preview while typing in formula bar
+function pmFormulaBarPreview() {
+    const bar = document.getElementById('pmFormulaBar');
+    const preview = document.getElementById('pmFormulaPreview');
+    if (_pmEditMode && bar.value.startsWith('=')) {
+        const result = safeEvalFormula(bar.value);
+        if (result !== null) {
+            preview.textContent = fmt(result);
+            preview.style.display = '';
+        } else {
+            preview.style.display = 'none';
+        }
+    } else {
+        preview.style.display = 'none';
+    }
+}
+
+// Accept formula/value from formula bar
+function pmFormulaBarAccept() {
+    if (!_pmCurrentCell) return;
+    const bar = document.getElementById('pmFormulaBar');
+    const gl = _pmCurrentCell.dataset.gl;
+    const field = _pmCurrentCell.dataset.field;
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+
+    if (bar.value.startsWith('=')) {
+        // Formula entry
+        const result = safeEvalFormula(bar.value);
+        if (result === null) { showToast('Invalid formula', 'error'); return; }
+        if (field === 'proposed_budget') {
+            line.proposed_formula = bar.value;
+        }
+        _pmCurrentCell.dataset.formula = bar.value;
+        _pmCurrentCell.value = fmt(result);
+        _pmCurrentCell.dataset.raw = Math.round(result);
+    } else {
+        // Direct value entry
+        const val = parseDollar(bar.value);
+        _pmCurrentCell.value = fmt(val);
+        _pmCurrentCell.dataset.raw = Math.round(val);
+        line[field] = val;
+    }
+
+    // Update badge: fx for formula, ✎ for manual override
+    const badge = _pmCurrentCell.parentElement.querySelector('.pm-fx');
+    if (badge) {
+        if (bar.value.startsWith('=')) {
+            badge.textContent = 'fx';
+            badge.style.background = 'var(--blue-light, #e1effe)';
+            badge.style.color = 'var(--blue)';
+            badge.style.borderColor = 'var(--blue)';
+        } else {
+            badge.textContent = '✎';
+            badge.style.background = '#fef3c7';
+            badge.style.color = '#d97706';
+            badge.style.borderColor = '#d97706';
+        }
+    }
+
+    pmLineChanged(gl, field, null);
+    pmFormulaBarCancel();
+}
+
+// Cancel formula bar edits
+function pmFormulaBarCancel() {
+    const bar = document.getElementById('pmFormulaBar');
+    const label = document.getElementById('pmFormulaLabel');
+    const preview = document.getElementById('pmFormulaPreview');
+    const accept = document.getElementById('pmFormulaAccept');
+    const cancel = document.getElementById('pmFormulaCancel');
+    const clear = document.getElementById('pmFormulaClear');
+
+    bar.value = '';
+    label.style.display = 'none';
+    preview.style.display = 'none';
+    accept.style.display = 'none';
+    cancel.style.display = 'none';
+    clear.style.display = 'none';
+    _pmEditMode = false;
+}
+
+// Clear formula/override, revert to auto-calc
+function pmFormulaBarClear() {
+    if (!_pmCurrentCell) return;
+    const gl = _pmCurrentCell.dataset.gl;
+    const field = _pmCurrentCell.dataset.field;
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+
+    if (field === 'estimate' && line.estimate_override !== null && line.estimate_override !== undefined) {
+        line.estimate_override = null;
+    } else if (field === 'forecast' && line.forecast_override !== null && line.forecast_override !== undefined) {
+        line.forecast_override = null;
+    } else if (field === 'proposed' && line.proposed_formula) {
+        line.proposed_formula = null;
+    }
+
+    // Recalculate and update cell
+    let newVal;
+    if (field === 'estimate') {
+        newVal = computeEstimate(line);
+    } else if (field === 'forecast') {
+        newVal = computeForecast(line);
+    } else if (field === 'proposed') {
+        newVal = computeProposed(line);
+    }
+
+    _pmCurrentCell.value = fmt(newVal);
+    _pmCurrentCell.dataset.raw = Math.round(newVal);
+
+    const badge = _pmCurrentCell.parentElement.querySelector('.pm-fx');
+    if (badge) {
+        badge.textContent = 'fx';
+        badge.style.background = 'var(--blue-light, #e1effe)';
+        badge.style.color = 'var(--blue)';
+        badge.style.borderColor = 'var(--blue)';
+    }
+
+    pmLineChanged(gl, field, newVal);
+    pmFormulaBarCancel();
+}
+
+// Keyboard navigation in formula bar
+function pmFormulaBarKeydown(e) {
+    if (e.key === 'Enter') {
+        pmFormulaBarAccept();
+    } else if (e.key === 'Escape') {
+        pmFormulaBarCancel();
+    }
+}
+
+// Get formula tooltip string for cell
+function pmGetFormulaTooltip(line, type) {
+    const ytd = line.ytd_actual || 0;
+    const accrual = line.accrual_adj || 0;
+    const unpaid = line.unpaid_bills || 0;
+    const base = ytd + accrual + unpaid;
+    const prior = line.prior_year || 0;
+
+    if (type === 'estimate') {
+        if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
+            return '=IF((YTD+Accrual+Unpaid) >= Prior, ('+fmt(ytd)+'+'+fmt(accrual)+'+'+fmt(unpaid)+') / '+YTD_MONTHS+' × '+REMAINING_MONTHS+', Prior−Base)';
+        } else if (prior > 0) {
+            return '=MAX(Prior − Base, 0)';
+        } else {
+            return '=Base / YTD_MONTHS × REMAINING';
+        }
+    } else if (type === 'forecast') {
+        return '=YTD + Accrual + Unpaid + Estimate';
+    } else if (type === 'proposed') {
+        return '=Forecast × (1 + Increase%)';
+    }
+    return '';
+}
+
+// Cascade recalculation when any cell changes
+function pmLineChanged(gl, field, value) {
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+
+    // Recalculate dependent fields
+    const estimate = computeEstimate(line);
+    const forecast = computeForecast(line);
+    const proposed = computeProposed(line);
+    const variance = (line.current_budget || 0) - forecast;
+    const pctChange = forecast ? (((line.current_budget || 0) - forecast) / forecast) : 0;
+
+    // Update cells in DOM
+    const estEl = document.getElementById('pm_est_' + gl);
+    const fcEl = document.getElementById('pm_fc_' + gl);
+    const propEl = document.getElementById('pm_prop_' + gl);
+    const varEl = document.getElementById('pm_var_' + gl);
+    const pctEl = document.getElementById('pm_pct_' + gl);
+
+    if (estEl && estEl.dataset.field === 'estimate') { estEl.value = fmt(estimate); estEl.dataset.raw = Math.round(estimate); }
+    if (fcEl && fcEl.dataset.field === 'forecast') { fcEl.value = fmt(forecast); fcEl.dataset.raw = Math.round(forecast); }
+    if (propEl && propEl.dataset.field === 'proposed') { propEl.value = fmt(proposed); propEl.dataset.raw = Math.round(proposed); }
+    if (varEl) { varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
+    if (pctEl) { pctEl.value = (pctChange * 100).toFixed(1) + '%'; pctEl.dataset.raw = pctChange; }
+
+    // Update subtotals and grand totals
+    pmUpdateTotals();
+
+    // Debounced save
+    if (saveTimer) clearTimeout(saveTimer);
+    indicator.textContent = 'Unsaved changes...';
+    indicator.className = 'save-indicator saving';
+    saveTimer = setTimeout(saveAll, 800);
+}
+
+// Update all subtotal and grand total rows
+function pmUpdateTotals() {
+    const categories = {supplies: [], repairs: [], maintenance: []};
+    const catLabels = {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance Contracts'};
+    LINES.forEach(l => {
+        if (categories[l.category]) categories[l.category].push(l);
+    });
+
+    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+
+    for (const [cat, catLines] of Object.entries(categories)) {
+        if (catLines.length === 0) continue;
+
+        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+        catLines.forEach(l => {
+            catTotals.prior += (l.prior_year || 0);
+            catTotals.ytd += (l.ytd_actual || 0);
+            catTotals.accrual += (l.accrual_adj || 0);
+            catTotals.unpaid += (l.unpaid_bills || 0);
+            catTotals.ytdBudget += (l.ytd_budget || 0);
+            catTotals.estimate += computeEstimate(l);
+            catTotals.forecast += computeForecast(l);
+            catTotals.budget += (l.current_budget || 0);
+            catTotals.proposed += computeProposed(l);
+        });
+
+        // Update subtotal cells
+        const subPrior = document.getElementById('pm_subtotal_prior_' + cat);
+        const subYtd = document.getElementById('pm_subtotal_ytd_' + cat);
+        const subYtdBudget = document.getElementById('pm_subtotal_ytdbudget_' + cat);
+        const subEstimate = document.getElementById('pm_subtotal_estimate_' + cat);
+        const subForecast = document.getElementById('pm_subtotal_forecast_' + cat);
+        const subBudget = document.getElementById('pm_subtotal_budget_' + cat);
+        const subProposed = document.getElementById('pm_subtotal_proposed_' + cat);
+        const subVar = document.getElementById('pm_subtotal_variance_' + cat);
+
+        if (subPrior) subPrior.textContent = fmt(catTotals.prior);
+        if (subYtd) subYtd.textContent = fmt(catTotals.ytd);
+        if (subYtdBudget) subYtdBudget.textContent = fmt(catTotals.ytdBudget);
+        if (subEstimate) subEstimate.textContent = fmt(catTotals.estimate);
+        if (subForecast) subForecast.textContent = fmt(catTotals.forecast);
+        if (subBudget) subBudget.textContent = fmt(catTotals.budget);
+        if (subProposed) subProposed.textContent = fmt(catTotals.proposed);
+        const catVar = catTotals.budget - catTotals.forecast;
+        if (subVar) { subVar.textContent = fmt(catVar); subVar.style.color = catVar >= 0 ? 'var(--red)' : 'var(--green)'; }
+
+        Object.keys(grandTotals).forEach(k => grandTotals[k] += catTotals[k]);
+    }
+
+    // Update grand total cells
+    const grandPrior = document.getElementById('pm_grandtotal_prior');
+    const grandYtd = document.getElementById('pm_grandtotal_ytd');
+    const grandYtdBudget = document.getElementById('pm_grandtotal_ytdbudget');
+    const grandEstimate = document.getElementById('pm_grandtotal_estimate');
+    const grandForecast = document.getElementById('pm_grandtotal_forecast');
+    const grandBudget = document.getElementById('pm_grandtotal_budget');
+    const grandProposed = document.getElementById('pm_grandtotal_proposed');
+    const grandVar = document.getElementById('pm_grandtotal_variance');
+    const grandPct = document.getElementById('pm_grandtotal_pct');
+
+    if (grandPrior) grandPrior.textContent = fmt(grandTotals.prior);
+    if (grandYtd) grandYtd.textContent = fmt(grandTotals.ytd);
+    if (grandYtdBudget) grandYtdBudget.textContent = fmt(grandTotals.ytdBudget);
+    if (grandEstimate) grandEstimate.textContent = fmt(grandTotals.estimate);
+    if (grandForecast) grandForecast.textContent = fmt(grandTotals.forecast);
+    if (grandBudget) grandBudget.textContent = fmt(grandTotals.budget);
+    if (grandProposed) grandProposed.textContent = fmt(grandTotals.proposed);
+    const gVar = grandTotals.budget - grandTotals.forecast;
+    const gPct = grandTotals.forecast ? ((grandTotals.budget - grandTotals.forecast) / grandTotals.forecast) : 0;
+    if (grandVar) { grandVar.textContent = fmt(gVar); grandVar.style.color = gVar >= 0 ? 'var(--red)' : 'var(--green)'; }
+    if (grandPct) grandPct.textContent = (gPct * 100).toFixed(1) + '%';
+}
+
 function renderTable() {
     const tbody = document.getElementById('linesBody');
     tbody.innerHTML = '';
@@ -6296,22 +6669,43 @@ function renderTable() {
             const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.ytd_budget || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
+
+            const gl = line.gl_code;
+            const estFormula = pmGetFormulaTooltip(line, 'estimate');
+            const fcstFormula = pmGetFormulaTooltip(line, 'forecast');
+            const propFormula = pmGetFormulaTooltip(line, 'proposed');
+
             tr.innerHTML = `
-                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${line.gl_code}</a>${reclassBadge}</td>
-                <td><a href="#" onclick="toggleInvoices('${line.gl_code}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
-                <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${line.gl_code}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
-                <td class="number">${fmt(line.prior_year)}</td>
-                <td class="number">${fmt(line.ytd_actual)}</td>
-                <td class="number"><input type="number" step="1" value="${Math.round(line.accrual_adj || 0)}" data-gl="${line.gl_code}" data-field="accrual_adj" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input type="number" step="1" value="${Math.round(line.unpaid_bills || 0)}" data-gl="${line.gl_code}" data-field="unpaid_bills" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number">${fmt(line.ytd_budget)}</td>
-                <td class="number" id="est_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'est', '${line.gl_code}')" title="Click to see formula">${fmt(estimate)}</td>
-                <td class="number" id="fc_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'fc', '${line.gl_code}')" title="Click to see formula">${fmt(forecast)}</td>
-                <td class="number">${fmt(line.current_budget)}</td>
-                <td class="number"><input type="number" step="0.1" value="${((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${line.gl_code}" data-field="increase_pct" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="width:70px;"></td>
-                <td class="number" id="pb_${line.gl_code}" style="cursor:pointer; position:relative;" onclick="showPmFormula(this, 'pb', '${line.gl_code}')" title="Click to see formula">${fmt(proposed)}</td>
-                <td class="number" id="var_${line.gl_code}" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(variance)}</td>
-                <td class="number" id="pct_${line.gl_code}">${(pctChange * 100).toFixed(1)}%</td>
+                <td><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
+                <td><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
+                <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" onchange="pmLineChanged('${gl}', 'notes', this.value)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
+                <td class="number"><input id="pm_pr_${gl}" class="pm-cell" type="text" value="${fmt(line.prior_year)}" data-raw="${Math.round(line.prior_year || 0)}" data-gl="${gl}" data-field="prior_year" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_acc_${gl}" class="pm-cell" type="text" value="${fmt(line.accrual_adj)}" data-raw="${Math.round(line.accrual_adj || 0)}" data-gl="${gl}" data-field="accrual_adj" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_unp_${gl}" class="pm-cell" type="text" value="${fmt(line.unpaid_bills)}" data-raw="${Math.round(line.unpaid_bills || 0)}" data-gl="${gl}" data-field="unpaid_bills" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_ytdb_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_budget)}" data-raw="${Math.round(line.ytd_budget || 0)}" data-gl="${gl}" data-field="ytd_budget" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_est_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_est_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(estimate)}" data-raw="${Math.round(estimate)}" data-formula="${estFormula}" data-gl="${gl}" data-field="estimate" style="cursor:pointer; pointer-events:none;">
+                </td>
+                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_fc_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_fc_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(forecast)}" data-raw="${Math.round(forecast)}" data-formula="${fcstFormula}" data-gl="${gl}" data-field="forecast" style="cursor:pointer; pointer-events:none;">
+                </td>
+                <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${((line.increase_pct || 0) * 100).toFixed(1)}%" data-raw="${((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_prop_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_prop_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(proposed)}" data-raw="${Math.round(proposed)}" data-formula="${propFormula}" data-gl="${gl}" data-field="proposed" style="cursor:pointer; pointer-events:none;">
+                </td>
+                <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_var_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_var_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(variance)}" data-raw="${Math.round(variance)}" data-formula="= ${fmt(line.current_budget || 0)} - ${fmt(forecast)}" data-gl="${gl}" data-field="variance" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
+                </td>
+                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_pct_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
+                </td>
             `;
             tbody.appendChild(tr);
         });
@@ -6322,16 +6716,16 @@ function renderTable() {
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
             <td></td><td>Total ${catLabels[cat]}</td><td></td>
-            <td class="number">${fmt(catTotals.prior)}</td>
-            <td class="number">${fmt(catTotals.ytd)}</td>
+            <td class="number" id="pm_subtotal_prior_${cat}" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(catTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.prior)}</span></td>
+            <td class="number" id="pm_subtotal_ytd_${cat}" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(catTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytd)}</span></td>
             <td></td><td></td>
-            <td class="number">${fmt(catTotals.ytdBudget)}</td>
-            <td class="number">${fmt(catTotals.estimate)}</td>
-            <td class="number">${fmt(catTotals.forecast)}</td>
-            <td class="number">${fmt(catTotals.budget)}</td>
+            <td class="number" id="pm_subtotal_ytdbudget_${cat}" style="position:relative; cursor:pointer;" data-col="ytdbudget" data-raw="${Math.round(catTotals.ytdBudget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytdBudget)}</span></td>
+            <td class="number" id="pm_subtotal_estimate_${cat}" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(catTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.estimate)}</span></td>
+            <td class="number" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
+            <td class="number" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.budget)}</span></td>
             <td></td>
-            <td class="number">${fmt(catTotals.proposed)}</td>
-            <td class="number">${fmt(catVar)}</td>
+            <td class="number" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
+            <td class="number" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catVar)}</span></td>
             <td></td>
         `;
         tbody.appendChild(subRow);
@@ -6346,17 +6740,17 @@ function renderTable() {
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
         <td></td><td>GRAND TOTAL R&M</td><td></td>
-        <td class="number">${fmt(grandTotals.prior)}</td>
-        <td class="number">${fmt(grandTotals.ytd)}</td>
+        <td class="number" id="pm_grandtotal_prior" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(grandTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.prior)}</span></td>
+        <td class="number" id="pm_grandtotal_ytd" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(grandTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytd)}</span></td>
         <td></td><td></td>
-        <td class="number">${fmt(grandTotals.ytdBudget)}</td>
-        <td class="number">${fmt(grandTotals.estimate)}</td>
-        <td class="number">${fmt(grandTotals.forecast)}</td>
-        <td class="number">${fmt(grandTotals.budget)}</td>
+        <td class="number" id="pm_grandtotal_ytdbudget" style="position:relative; cursor:pointer;" data-col="ytdbudget" data-raw="${Math.round(grandTotals.ytdBudget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytdBudget)}</span></td>
+        <td class="number" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
+        <td class="number" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
+        <td class="number" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
         <td></td>
-        <td class="number">${fmt(grandTotals.proposed)}</td>
-        <td class="number">${fmt(grandVar)}</td>
-        <td class="number">${(grandPct * 100).toFixed(1)}%</td>
+        <td class="number" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
+        <td class="number" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandVar)}</span></td>
+        <td class="number" id="pm_grandtotal_pct">${(grandPct * 100).toFixed(1)}%</td>
     `;
     tbody.appendChild(grandRow);
 }
@@ -6386,58 +6780,6 @@ function toggleZeroRows() {
         row.style.display = _showZeroRows ? '' : 'none';
     });
     updateZeroToggle();
-}
-
-// ── PM Formula Bar (read-only) ───────────────────────────────────────
-let _activeFormulaCell = null;
-
-function showPmFormula(cell, type, gl) {
-    const line = LINES.find(l => l.gl_code === gl);
-    if (!line) return;
-
-    // Highlight active cell
-    if (_activeFormulaCell) _activeFormulaCell.style.outline = '';
-    cell.style.outline = '2px solid var(--blue)';
-    cell.style.outlineOffset = '-1px';
-    _activeFormulaCell = cell;
-
-    const bar = document.getElementById('pmFormulaBar');
-    const ref = document.getElementById('fbCellRef');
-    const fb = document.getElementById('fbFormula');
-    const badge = document.getElementById('fbBadge');
-
-    bar.classList.add('active');
-    badge.style.display = '';
-
-    const ytd = line.ytd_actual || 0;
-    const accrual = line.accrual_adj || 0;
-    const unpaid = line.unpaid_bills || 0;
-    const base = ytd + accrual + unpaid;
-    const prior = line.prior_year || 0;
-
-    const labels = {est: 'Estimate', fc: 'Forecast', pb: 'Proposed'};
-    ref.textContent = gl + ' · ' + labels[type];
-
-    let formula = '';
-    if (type === 'est') {
-        if (base >= prior && prior > 0 && YTD_MONTHS > 0) {
-            formula = '=IF((YTD+Accrual+Unpaid) >= Prior, ('+fmt(ytd)+'+'+fmt(accrual)+'+'+fmt(unpaid)+') / '+YTD_MONTHS+' × '+REMAINING_MONTHS+', Prior−Base) = '+fmt(computeEstimate(line));
-        } else if (prior > 0) {
-            formula = '=MAX(Prior − Base, 0) = MAX('+fmt(prior)+' − '+fmt(base)+', 0) = '+fmt(computeEstimate(line));
-        } else {
-            formula = '=Base / YTD_MONTHS × REMAINING = '+fmt(base)+' / '+YTD_MONTHS+' × '+REMAINING_MONTHS+' = '+fmt(computeEstimate(line));
-        }
-    } else if (type === 'fc') {
-        const est = computeEstimate(line);
-        formula = '=YTD + Accrual + Unpaid + Estimate = '+fmt(ytd)+' + '+fmt(accrual)+' + '+fmt(unpaid)+' + '+fmt(est)+' = '+fmt(computeForecast(line));
-    } else if (type === 'pb') {
-        const fc = computeForecast(line);
-        const incPct = ((line.increase_pct || 0) * 100).toFixed(1);
-        formula = '=Forecast × (1 + Increase%) = '+fmt(fc)+' × (1 + '+incPct+'%) = '+fmt(computeProposed(line));
-    }
-
-    fb.textContent = formula;
-    fb.style.color = 'var(--gray-700)';
 }
 
 // Expense distribution drill-down
@@ -6562,6 +6904,7 @@ async function inlineUndoReclass(invoiceId, fromGL) {
     } catch(e) { showToast('Undo error: ' + e.message, 'error'); }
 }
 
+// Legacy stub — now uses pmLineChanged for cascade system
 function onInput(el) {
     const gl = el.dataset.gl;
     const field = el.dataset.field;
@@ -6580,29 +6923,7 @@ function onInput(el) {
         line.category = el.value;
     }
 
-    // Update computed columns
-    const est = computeEstimate(line);
-    const fc = computeForecast(line);
-    const pb = computeProposed(line);
-    const variance = (line.current_budget || 0) - fc;
-    const pctChange = fc ? (((line.current_budget || 0) - fc) / fc) : 0;
-
-    const estEl = document.getElementById('est_' + gl);
-    const fcEl = document.getElementById('fc_' + gl);
-    const pbEl = document.getElementById('pb_' + gl);
-    const varEl = document.getElementById('var_' + gl);
-    const pctEl = document.getElementById('pct_' + gl);
-    if (estEl) estEl.textContent = fmt(est);
-    if (fcEl) fcEl.textContent = fmt(fc);
-    if (pbEl) pbEl.textContent = fmt(pb);
-    if (varEl) { varEl.textContent = fmt(variance); varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)'; }
-    if (pctEl) pctEl.textContent = (pctChange * 100).toFixed(1) + '%';
-
-    // Debounced auto-save
-    if (saveTimer) clearTimeout(saveTimer);
-    indicator.textContent = 'Unsaved changes...';
-    indicator.className = 'save-indicator saving';
-    saveTimer = setTimeout(saveAll, 800);
+    pmLineChanged(gl, field, el.value);
 }
 
 async function saveAll() {
