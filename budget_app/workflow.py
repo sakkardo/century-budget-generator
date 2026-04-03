@@ -7293,7 +7293,7 @@ async function saveAll() {
             proposed_budget: l.proposed_budget || 0,
             proposed_formula: l.proposed_formula || null,
             prior_year: l.prior_year || 0,
-            ytd_actual: l.ytd_actual || 0,
+            ytd_actual: l._db_ytd_actual !== undefined ? l._db_ytd_actual : (l.ytd_actual || 0),
             ytd_budget: l.ytd_budget || 0,
             current_budget: l.current_budget || 0
         }));
@@ -7514,8 +7514,43 @@ if (!CAN_EDIT) {
     if (btn) btn.disabled = true;
 }
 
-renderTable();
-updateZeroToggle();
+// Adjust LINES ytd_actual based on invoice-level reclasses (frontend only — DB unchanged until FA accepts)
+// Store original DB values so saveAll() never writes adjusted figures back
+LINES.forEach(l => { l._db_ytd_actual = l.ytd_actual || 0; });
+
+(async function applyReclassAdjustments() {
+    try {
+        const data = await fetchExpenseData();
+        if (!data || !data.gl_groups) { renderTable(); updateZeroToggle(); return; }
+
+        // Flatten all invoices and find reclassed ones
+        const adjustments = {};  // gl_code -> net adjustment
+        data.gl_groups.forEach(g => {
+            if (!g.invoices) return;
+            g.invoices.forEach(inv => {
+                if (!inv.reclass_to_gl || inv.reclass_to_gl === inv.gl_code) return;
+                const amt = inv.amount || 0;
+                // Subtract from original GL
+                adjustments[inv.gl_code] = (adjustments[inv.gl_code] || 0) - amt;
+                // Add to target GL
+                adjustments[inv.reclass_to_gl] = (adjustments[inv.reclass_to_gl] || 0) + amt;
+            });
+        });
+
+        // Apply adjustments to LINES in memory (not saved to DB)
+        if (Object.keys(adjustments).length > 0) {
+            LINES.forEach(l => {
+                if (adjustments[l.gl_code]) {
+                    l.ytd_actual = l._db_ytd_actual + adjustments[l.gl_code];
+                }
+            });
+        }
+    } catch(e) {
+        // If expense data fails to load, just render with original figures
+    }
+    renderTable();
+    updateZeroToggle();
+})();
 </script>
 </body>
 </html>
