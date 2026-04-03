@@ -6775,6 +6775,51 @@ PM_EDIT_TEMPLATE = r"""
     <button id="pmFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>
   </div>
 
+  <!-- My Changes Summary Panel (read-only) -->
+  <div id="pmMyChangesPanel" style="display:none; background:white; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.1); border:1px solid var(--gray-200); margin-bottom:16px;">
+    <div onclick="this.nextElementSibling.classList.toggle('pm-panel-hidden'); this.querySelector('.pm-chev').classList.toggle('pm-chev-closed');" style="display:flex; align-items:center; justify-content:space-between; padding:14px 20px; cursor:pointer; background:linear-gradient(135deg, var(--blue-light) 0%, #e8e0d4 100%); border-radius:12px 12px 0 0; border-bottom:1px solid var(--gray-200);">
+      <h3 style="font-size:14px; font-weight:700; color:var(--blue); display:flex; align-items:center; gap:8px;">
+        My Changes
+        <span id="pmMyChangesBadge" style="background:var(--blue); color:white; font-size:11px; font-weight:700; padding:2px 10px; border-radius:10px;"></span>
+      </h3>
+      <span class="pm-chev" style="font-size:12px; color:var(--gray-500); transition:transform 0.2s;">▾</span>
+    </div>
+    <div class="pm-panel-body">
+      <div id="pmMyChangesTabs" style="display:flex; border-bottom:1px solid var(--gray-200); background:var(--gray-50);">
+        <div class="pm-mc-tab active" onclick="switchPmMcTab(this,'pmMyNotesContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; border-bottom:2px solid var(--blue); background:white;">My Notes <span id="pmMyNotesCount" style="background:var(--blue-light); color:var(--blue); font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
+        <div class="pm-mc-tab" onclick="switchPmMcTab(this,'pmMyReclassContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--gray-500); cursor:pointer; border-bottom:2px solid transparent;">My Reclasses <span id="pmMyReclassCount" style="background:#fef3c7; color:#92400e; font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
+      </div>
+      <!-- My Notes Tab -->
+      <div id="pmMyNotesContent" style="padding:16px 20px;">
+        <div id="pmMyNotesEmpty" style="text-align:center; padding:20px; color:var(--gray-500); font-size:13px; display:none;">You haven't added any notes yet.</div>
+        <div id="pmMyNotesContainer"></div>
+      </div>
+      <!-- My Reclasses Tab -->
+      <div id="pmMyReclassContent" style="padding:16px 20px; display:none;">
+        <div id="pmMyReclassEmpty" style="text-align:center; padding:20px; color:var(--gray-500); font-size:13px; display:none;">No invoice reclasses yet.</div>
+        <table id="pmMyReclassTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">From GL</th>
+            <th style="font-size:11px; padding:6px 4px; border-bottom:1px solid var(--gray-200);"></th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">To GL</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Invoices</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Amount</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">My Note</th>
+            <th style="text-align:center; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">FA Status</th>
+          </tr></thead>
+          <tbody id="pmMyReclassBody"></tbody>
+        </table>
+      </div>
+      <div style="padding:10px 20px; background:var(--gray-50); border-top:1px solid var(--gray-200); border-radius:0 0 12px 12px; font-size:11px; color:var(--gray-500);">
+        Read-only summary of your changes. FA will review and accept/reject in their dashboard.
+      </div>
+    </div>
+  </div>
+  <style>
+    .pm-panel-hidden { display: none !important; }
+    .pm-chev-closed { transform: rotate(-90deg); }
+  </style>
+
   <div class="grid-wrapper">
     <div class="grid-container">
       <table id="linesTable">
@@ -7889,6 +7934,137 @@ async function applyReclassAdjustments() {
     updateZeroToggle();
 }
 applyReclassAdjustments();
+
+// ─── My Changes panel (read-only summary) ───────────────────────────────
+function switchPmMcTab(button, tabId) {
+  document.getElementById('pmMyNotesContent').style.display = 'none';
+  document.getElementById('pmMyReclassContent').style.display = 'none';
+  document.querySelectorAll('#pmMyChangesTabs .pm-mc-tab').forEach(t => {
+    t.style.color = 'var(--gray-500)';
+    t.style.borderBottom = '2px solid transparent';
+    t.style.background = 'transparent';
+  });
+  document.getElementById(tabId).style.display = 'block';
+  button.style.color = 'var(--blue)';
+  button.style.borderBottom = '2px solid var(--blue)';
+  button.style.background = 'white';
+}
+
+(async function populateMyChanges() {
+  let totalItems = 0;
+  const panel = document.getElementById('pmMyChangesPanel');
+
+  // Tab 1: My Notes
+  const linesWithNotes = LINES.filter(l => l.notes && l.notes.trim().length > 0);
+  const notesContainer = document.getElementById('pmMyNotesContainer');
+  const notesEmpty = document.getElementById('pmMyNotesEmpty');
+  const notesCount = document.getElementById('pmMyNotesCount');
+
+  if (linesWithNotes.length > 0) {
+    notesEmpty.style.display = 'none';
+    notesCount.textContent = linesWithNotes.length;
+    notesContainer.innerHTML = linesWithNotes.map(l => {
+      // Split notes into PM notes vs FA responses
+      const parts = (l.notes || '').split('\n');
+      let pmHtml = '';
+      let faHtml = '';
+      parts.forEach(p => {
+        if (p.match(/^\[FA (REJECTED|COMMENT|ACCEPTED)/)) {
+          faHtml += '<div style="flex:1; font-size:12px; color:var(--gray-600); background:#f0f4ff; padding:6px 10px; border-radius:6px; border-left:3px solid var(--blue); margin-top:4px;">' +
+            '<strong>FA Response:</strong> ' + p + '</div>';
+        } else if (p.trim()) {
+          pmHtml += (pmHtml ? '<br>' : '') + p;
+        }
+      });
+      return '<div style="display:flex; align-items:flex-start; gap:12px; padding:10px 12px; border-radius:8px; margin-bottom:6px;" onmouseover="this.style.background=\'var(--gray-50)\'" onmouseout="this.style.background=\'\'">' +
+        '<span style="font-family:monospace; font-size:12px; font-weight:600; color:var(--blue); background:var(--blue-light); padding:3px 8px; border-radius:4px; white-space:nowrap;">' + l.gl_code + '</span>' +
+        '<span style="font-size:12px; color:var(--gray-500); min-width:140px;">' + (l.description || '') + '</span>' +
+        '<div style="flex:1;">' +
+          (pmHtml ? '<div style="font-size:13px; color:var(--gray-700); background:#fffbeb; padding:6px 10px; border-radius:6px; border-left:3px solid #fbbf24;">' + pmHtml + '</div>' : '') +
+          faHtml +
+        '</div>' +
+      '</div>';
+    }).join('');
+    totalItems += linesWithNotes.length;
+  } else {
+    notesEmpty.style.display = '';
+    notesContainer.innerHTML = '';
+    notesCount.textContent = '0';
+  }
+
+  // Tab 2: My Reclasses
+  const reclassCount = document.getElementById('pmMyReclassCount');
+  const reclassBody = document.getElementById('pmMyReclassBody');
+  const reclassEmpty = document.getElementById('pmMyReclassEmpty');
+
+  const expData = await fetchExpenseData();
+  if (expData && expData.gl_groups) {
+    const allInvoices = [];
+    expData.gl_groups.forEach(g => {
+      if (g.invoices) g.invoices.forEach(inv => allInvoices.push(inv));
+    });
+    const reclassed = allInvoices.filter(inv => inv.reclass_to_gl);
+
+    const reclassMap = {};
+    reclassed.forEach(inv => {
+      const key = inv.gl_code + '|' + inv.reclass_to_gl;
+      if (!reclassMap[key]) {
+        reclassMap[key] = { from_gl: inv.gl_code, to_gl: inv.reclass_to_gl, invoices: [], total: 0, notes: '' };
+      }
+      reclassMap[key].invoices.push(inv);
+      reclassMap[key].total += inv.amount || 0;
+      if (inv.reclass_notes && !reclassMap[key].notes) reclassMap[key].notes = inv.reclass_notes;
+    });
+    const groups = Object.values(reclassMap);
+
+    if (groups.length > 0) {
+      reclassEmpty.style.display = 'none';
+      reclassCount.textContent = groups.length;
+      reclassBody.innerHTML = '';
+      groups.forEach(g => {
+        const fromLine = LINES.find(l => l.gl_code === g.from_gl);
+        const fromDesc = fromLine ? fromLine.description : '';
+        // to_gl may not be in PM's LINES (could be a different sheet), so show code only
+        const toLine = LINES.find(l => l.gl_code === g.to_gl);
+        const toDesc = toLine ? toLine.description : '';
+
+        // Determine FA status from the notes of the from_gl line
+        let faStatus = '<span style="background:#fff7ed; color:#b45309; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">● Pending</span>';
+        const fromNotes = fromLine ? (fromLine.notes || '') : '';
+        if (fromNotes.includes('[FA ACCEPTED')) faStatus = '<span style="background:#dcfce7; color:#166534; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✓ Accepted</span>';
+
+        const tr = document.createElement('tr');
+        tr.style.cssText = 'transition:background 0.15s;';
+        tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
+        tr.onmouseout = function() { this.style.background=''; };
+        tr.innerHTML =
+          '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.from_gl + '</span><div style="font-size:11px; color:var(--gray-500);">' + fromDesc + '</div></td>' +
+          '<td style="padding:10px 4px; color:var(--orange); font-weight:700; font-size:16px;">→</td>' +
+          '<td style="padding:10px;"><span style="font-family:monospace; font-size:12px; font-weight:700;">' + g.to_gl + '</span><div style="font-size:11px; color:var(--gray-500);">' + toDesc + '</div></td>' +
+          '<td style="padding:10px;"><span style="font-size:11px; background:var(--orange-light); color:var(--orange); padding:2px 8px; border-radius:10px; font-weight:600;">' + g.invoices.length + ' invoice' + (g.invoices.length !== 1 ? 's' : '') + '</span></td>' +
+          '<td style="padding:10px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">' + fmt(g.total) + '</td>' +
+          '<td style="padding:10px; font-size:12px; color:var(--gray-600); font-style:italic; max-width:200px;">' + (g.notes ? '"' + g.notes + '"' : '') + '</td>' +
+          '<td style="padding:10px; text-align:center;">' + faStatus + '</td>';
+        reclassBody.appendChild(tr);
+      });
+      totalItems += groups.length;
+    } else {
+      reclassEmpty.style.display = '';
+      reclassBody.innerHTML = '';
+      reclassCount.textContent = '0';
+    }
+  } else {
+    reclassEmpty.style.display = '';
+    reclassBody.innerHTML = '';
+    reclassCount.textContent = '0';
+  }
+
+  // Show panel if there are items
+  if (totalItems > 0) {
+    panel.style.display = '';
+    document.getElementById('pmMyChangesBadge').textContent = totalItems + ' item' + (totalItems !== 1 ? 's' : '');
+  }
+})();
 </script>
 </body>
 </html>
