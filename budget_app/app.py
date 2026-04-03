@@ -141,6 +141,9 @@ with app.app_context():
             ("budgets", "building_type", "VARCHAR(50) DEFAULT ''"),
             ("budget_lines", "proposed_formula", "TEXT"),
             ("budgets", "version", "INTEGER DEFAULT 1"),
+            ("budget_lines", "fa_proposed_status", "VARCHAR(20)"),
+            ("budget_lines", "fa_proposed_note", "TEXT DEFAULT ''"),
+            ("budget_lines", "fa_override_value", "FLOAT"),
         ]
         for table, col, col_type in _migrations:
             try:

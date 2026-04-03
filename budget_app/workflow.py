@@ -277,6 +277,11 @@ def create_workflow_blueprint(db):
         proposed_budget = db.Column(db.Float, default=0.0)
         proposed_formula = db.Column(db.Text, nullable=True)  # e.g. "=3462.12*1.04*12"
 
+        # FA review of PM proposals
+        fa_proposed_status = db.Column(db.String(20), nullable=True)  # null=pending, accepted, rejected, commented
+        fa_proposed_note = db.Column(db.Text, default="")
+        fa_override_value = db.Column(db.Float, nullable=True)  # FA's override when rejecting
+
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
         # Relationships
@@ -307,6 +312,9 @@ def create_workflow_blueprint(db):
                 "proposed_formula": self.proposed_formula or "",
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
+                "fa_proposed_status": self.fa_proposed_status,
+                "fa_proposed_note": self.fa_proposed_note or "",
+                "fa_override_value": self.fa_override_value,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
@@ -1656,6 +1664,69 @@ def create_workflow_blueprint(db):
         })
 
 
+    @bp.route("/api/budget-proposal/review", methods=["POST"])
+    def review_budget_proposal():
+        """FA accepts, rejects, or comments on a PM budget proposal for a GL line."""
+        data = request.get_json()
+        entity_code = data.get("entity_code")
+        gl_code = data.get("gl_code")
+        action = data.get("action")          # "accepted", "rejected", "commented"
+        note = data.get("note", "")
+        override_value = data.get("override_value")  # only for reject
+
+        if action not in ("accepted", "rejected", "commented"):
+            return jsonify({"error": "Invalid action"}), 400
+
+        budget = Budget.query.filter_by(entity_code=entity_code).order_by(Budget.id.desc()).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
+        if not line:
+            return jsonify({"error": "GL line not found"}), 404
+
+        old_status = line.fa_proposed_status or "pending"
+        line.fa_proposed_status = action
+        line.fa_proposed_note = note
+
+        if action == "rejected" and override_value is not None:
+            line.fa_override_value = float(override_value)
+            # When FA rejects with a custom value, write it as proposed_budget
+            line.proposed_budget = float(override_value)
+        elif action == "accepted":
+            line.fa_override_value = None  # clear any prior override
+
+        # Append to notes for visibility in both dashboards
+        from datetime import datetime as _dt
+        timestamp = _dt.utcnow().strftime("%m/%d %H:%M")
+        if action == "rejected":
+            ov_str = f" | FA override: ${override_value:,.0f}" if override_value is not None else ""
+            note_entry = f"[FA REJECTED {timestamp}] {note}{ov_str}"
+        elif action == "commented":
+            note_entry = f"[FA COMMENT {timestamp}] {note}"
+        else:
+            note_entry = f"[FA ACCEPTED {timestamp}]"
+
+        existing_notes = line.notes or ""
+        line.notes = f"{existing_notes}\n{note_entry}".strip() if existing_notes else note_entry
+
+        # Audit trail
+        rev = BudgetRevision(
+            budget_id=budget.id,
+            budget_line_id=line.id,
+            action="fa_proposal_review",
+            field_name="fa_proposed_status",
+            old_value=old_status,
+            new_value=action,
+            notes=note or "",
+            source="web"
+        )
+        db.session.add(rev)
+        db.session.commit()
+
+        return jsonify({"status": "ok", "line": line.to_dict()})
+
+
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
     def get_budget_history(entity_code):
         """Get change history (revisions) for a budget."""
@@ -2940,6 +3011,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
       <div id="pmReviewTabs" style="display:flex; border-bottom:1px solid var(--gray-200); background:var(--gray-50);">
         <div class="pm-tab active" onclick="switchPmTab(this,'pmNotesContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; border-bottom:2px solid var(--blue); background:white;">PM Notes <span id="pmNotesCount" style="background:var(--blue-light); color:var(--blue); font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
         <div class="pm-tab" onclick="switchPmTab(this,'pmReclassContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--gray-500); cursor:pointer; border-bottom:2px solid transparent;">Invoice Reclasses <span id="pmReclassCount" style="background:#fef3c7; color:#92400e; font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
+        <div class="pm-tab" onclick="switchPmTab(this,'pmProposalsContent')" style="padding:10px 20px; font-size:13px; font-weight:600; color:var(--gray-500); cursor:pointer; border-bottom:2px solid transparent;">Budget Proposals <span id="pmProposalsCount" style="background:#dbeafe; color:#1e40af; font-size:11px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:4px;"></span></div>
       </div>
       <!-- Tab 1: PM Notes -->
       <div id="pmNotesContent" style="padding:16px 20px;">
@@ -2962,6 +3034,43 @@ BUILDING_DETAIL_TEMPLATE = r"""
           </tr></thead>
           <tbody id="pmReclassBody"></tbody>
         </table>
+      </div>
+      <!-- Tab 3: Budget Proposals -->
+      <div id="pmProposalsContent" style="padding:16px 20px; display:none;">
+        <div id="pmProposalsEmpty" style="text-align:center; padding:20px; color:var(--gray-400); font-size:13px; display:none;">No PM budget proposals to review.</div>
+        <div id="pmProposalsSummary" style="display:none; gap:20px; padding:10px 12px; background:var(--gray-50); border-radius:8px; margin-bottom:14px; font-size:12px;"></div>
+        <table id="pmProposalsTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">GL Code</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Description</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Current Budget</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">PM Proposed</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Change</th>
+            <th style="text-align:left; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Method</th>
+            <th style="text-align:center; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Status</th>
+            <th style="text-align:right; font-size:11px; font-weight:600; color:var(--gray-500); text-transform:uppercase; padding:6px 10px; border-bottom:1px solid var(--gray-200);">Action</th>
+          </tr></thead>
+          <tbody id="pmProposalsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reject/Comment Modal -->
+  <div id="proposalModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:white; border-radius:12px; padding:24px; max-width:420px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 id="proposalModalTitle" style="margin:0 0 16px; font-size:16px;"></h3>
+      <div id="proposalModalOverrideRow" style="margin-bottom:12px; display:none;">
+        <label style="font-size:12px; font-weight:600; color:var(--gray-500);">Override Budget Figure ($)</label>
+        <input id="proposalModalOverride" type="text" style="width:100%; padding:8px 12px; border:1px solid var(--gray-200); border-radius:6px; margin-top:4px; font-size:14px;" placeholder="Leave blank to revert to formula">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:12px; font-weight:600; color:var(--gray-500);">Note / Reason</label>
+        <textarea id="proposalModalNote" rows="3" style="width:100%; padding:8px 12px; border:1px solid var(--gray-200); border-radius:6px; margin-top:4px; font-size:14px; resize:vertical;" placeholder="Add context for this decision..."></textarea>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button onclick="closeProposalModal()" style="padding:8px 16px; border:1px solid var(--gray-200); border-radius:6px; background:white; cursor:pointer; font-size:13px;">Cancel</button>
+        <button id="proposalModalSubmit" onclick="submitProposalReview()" style="padding:8px 16px; border:none; border-radius:6px; color:white; cursor:pointer; font-size:13px; font-weight:600;"></button>
       </div>
     </div>
   </div>
@@ -3313,6 +3422,88 @@ function renderDetail(data) {
       reclassSummary.style.display = 'none';
       reclassBody.innerHTML = '';
       reclassCount.textContent = '0';
+    }
+
+    // Section 3: Budget Proposals (PM changes to budget figures)
+    const proposalsCount = document.getElementById('pmProposalsCount');
+    const proposalsBody = document.getElementById('pmProposalsBody');
+    const proposalsEmpty = document.getElementById('pmProposalsEmpty');
+    const proposalsSummary = document.getElementById('pmProposalsSummary');
+
+    // Detect PM proposals: lines where PM changed the budget via increase_pct, override, or direct proposed_budget
+    const proposals = lines.filter(l => {
+      if (l.fa_proposed_status === 'accepted' || l.fa_proposed_status === 'rejected') return true;  // show resolved ones too
+      const hasPct = (l.increase_pct || 0) !== 0;
+      const hasOverride = l.estimate_override !== null && l.estimate_override !== undefined;
+      const hasForecastOvr = l.forecast_override !== null && l.forecast_override !== undefined;
+      const hasProposed = (l.proposed_budget || 0) !== 0 && Math.abs((l.proposed_budget || 0) - (l.current_budget || 0)) > 0.01;
+      return hasPct || hasOverride || hasForecastOvr || hasProposed;
+    });
+
+    if (proposals.length > 0) {
+      proposalsEmpty.style.display = 'none';
+      proposalsCount.textContent = proposals.filter(l => !l.fa_proposed_status || l.fa_proposed_status === 'commented').length;
+      const pending = proposals.filter(l => !l.fa_proposed_status || l.fa_proposed_status === 'commented').length;
+      const accepted = proposals.filter(l => l.fa_proposed_status === 'accepted').length;
+      const rejected = proposals.filter(l => l.fa_proposed_status === 'rejected').length;
+      proposalsSummary.style.display = 'flex';
+      proposalsSummary.innerHTML =
+        '<div><span style="color:var(--gray-500);">Total proposals:</span> <span style="font-weight:700;">' + proposals.length + '</span></div>' +
+        '<div><span style="color:var(--gray-500);">Pending:</span> <span style="font-weight:700; color:#b45309;">' + pending + '</span></div>' +
+        '<div><span style="color:var(--gray-500);">Accepted:</span> <span style="font-weight:700; color:var(--green);">' + accepted + '</span></div>' +
+        (rejected > 0 ? '<div><span style="color:var(--gray-500);">Rejected:</span> <span style="font-weight:700; color:var(--red);">' + rejected + '</span></div>' : '');
+
+      proposalsBody.innerHTML = '';
+      proposals.forEach(l => {
+        const proposed = l.proposed_budget || 0;
+        const current = l.current_budget || 0;
+        const change = proposed - current;
+        const pct = current !== 0 ? ((change / current) * 100).toFixed(1) : '—';
+        let method = '';
+        if ((l.increase_pct || 0) !== 0) method = (l.increase_pct > 0 ? '+' : '') + l.increase_pct.toFixed(1) + '% increase';
+        else if (l.estimate_override !== null && l.estimate_override !== undefined) method = 'Manual override';
+        else method = 'Direct edit';
+
+        const status = l.fa_proposed_status || 'pending';
+        let statusBadge = '';
+        let actionHtml = '';
+        if (status === 'accepted') {
+          statusBadge = '<span style="background:#dcfce7; color:#166534; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✓ Accepted</span>';
+          actionHtml = '<span style="color:var(--gray-400); font-size:11px;">Done</span>';
+        } else if (status === 'rejected') {
+          statusBadge = '<span style="background:#fef2f2; color:#991b1b; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✗ Rejected</span>';
+          actionHtml = '<span style="color:var(--gray-400); font-size:11px;">Done</span>';
+        } else if (status === 'commented') {
+          statusBadge = '<span style="background:#fef3c7; color:#92400e; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">💬 Commented</span>';
+          actionHtml = proposalActionButtons(l.gl_code);
+        } else {
+          statusBadge = '<span style="background:#fff7ed; color:#b45309; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">● Pending</span>';
+          actionHtml = proposalActionButtons(l.gl_code);
+        }
+
+        const tr = document.createElement('tr');
+        tr.id = 'prop_' + l.gl_code;
+        tr.style.cssText = 'transition:background 0.15s;';
+        tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
+        tr.onmouseout = function() { this.style.background=''; };
+        const changeColor = change > 0 ? 'var(--red)' : change < 0 ? 'var(--green)' : 'var(--gray-500)';
+        tr.innerHTML =
+          '<td style="padding:10px;"><span onclick="scrollToGlRow(\'' + l.gl_code + '\')" style="font-family:monospace; font-size:12px; font-weight:700; color:var(--blue); cursor:pointer;">' + l.gl_code + '</span></td>' +
+          '<td style="padding:10px; font-size:12px; color:var(--gray-600); max-width:180px;">' + (l.description || '') + '</td>' +
+          '<td style="padding:10px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px;">' + fmt(current) + '</td>' +
+          '<td style="padding:10px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; font-size:13px;">' + fmt(proposed) + '</td>' +
+          '<td style="padding:10px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; color:' + changeColor + ';">' + (change >= 0 ? '+' : '') + fmt(change) + ' (' + pct + '%)</td>' +
+          '<td style="padding:10px; font-size:11px; color:var(--gray-500);">' + method + '</td>' +
+          '<td style="padding:10px; text-align:center;">' + statusBadge + '</td>' +
+          '<td style="padding:10px; text-align:right; white-space:nowrap;">' + actionHtml + '</td>';
+        proposalsBody.appendChild(tr);
+      });
+      totalItems += pending;
+    } else {
+      proposalsEmpty.style.display = '';
+      proposalsSummary.style.display = 'none';
+      proposalsBody.innerHTML = '';
+      proposalsCount.textContent = '0';
     }
 
     // Show/hide the panel
@@ -4182,6 +4373,7 @@ async function dismissReclass(glCode) {
 function switchPmTab(button, tabId) {
   document.getElementById('pmNotesContent').style.display = 'none';
   document.getElementById('pmReclassContent').style.display = 'none';
+  document.getElementById('pmProposalsContent').style.display = 'none';
   document.querySelectorAll('#pmReviewTabs .pm-tab').forEach(t => {
     t.style.color = 'var(--gray-500)';
     t.style.borderBottom = '2px solid transparent';
@@ -4261,6 +4453,146 @@ async function undoPmReclass(fromGl, toGl, invIdStr) {
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }
+}
+
+// ─── Budget Proposals helpers ────────────────────────────────────────────
+let _proposalModalGl = null;
+let _proposalModalAction = null;
+
+function proposalActionButtons(glCode) {
+  return '<button onclick="acceptProposal(\'' + glCode + '\')" style="padding:4px 10px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:#dcfce7; color:#166534; border:1px solid #86efac;">✓ Accept</button> ' +
+    '<button onclick="openProposalModal(\'' + glCode + '\',\'rejected\')" style="padding:4px 10px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:#fef2f2; color:#991b1b; border:1px solid #fca5a5; margin-left:4px;">✗ Reject</button> ' +
+    '<button onclick="openProposalModal(\'' + glCode + '\',\'commented\')" style="padding:4px 10px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:#fef3c7; color:#92400e; border:1px solid #fde68a; margin-left:4px;">💬</button>';
+}
+
+async function acceptProposal(glCode) {
+  if (!confirm('Accept PM budget proposal for ' + glCode + '?')) return;
+  try {
+    const resp = await fetch('/api/budget-proposal/review', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ entity_code: entityCode, gl_code: glCode, action: 'accepted', note: '' })
+    });
+    const result = await resp.json();
+    if (result.error) { showToast(result.error, 'error'); return; }
+
+    // Update row in place
+    const row = document.getElementById('prop_' + glCode);
+    if (row) {
+      const cells = row.querySelectorAll('td');
+      cells[6].innerHTML = '<span style="background:#dcfce7; color:#166534; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✓ Accepted</span>';
+      cells[7].innerHTML = '<span style="color:var(--gray-400); font-size:11px;">Done</span>';
+    }
+    showToast('Proposal accepted for ' + glCode, 'success');
+    updateProposalBadge();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+function openProposalModal(glCode, action) {
+  _proposalModalGl = glCode;
+  _proposalModalAction = action;
+  const modal = document.getElementById('proposalModal');
+  const title = document.getElementById('proposalModalTitle');
+  const overrideRow = document.getElementById('proposalModalOverrideRow');
+  const submitBtn = document.getElementById('proposalModalSubmit');
+  const noteEl = document.getElementById('proposalModalNote');
+  const overrideEl = document.getElementById('proposalModalOverride');
+
+  noteEl.value = '';
+  overrideEl.value = '';
+
+  if (action === 'rejected') {
+    title.textContent = 'Reject Proposal — ' + glCode;
+    overrideRow.style.display = '';
+    submitBtn.textContent = 'Reject & Save';
+    submitBtn.style.background = '#dc2626';
+  } else {
+    title.textContent = 'Comment on Proposal — ' + glCode;
+    overrideRow.style.display = 'none';
+    submitBtn.textContent = 'Save Comment';
+    submitBtn.style.background = '#b45309';
+  }
+  modal.style.display = 'flex';
+}
+
+function closeProposalModal() {
+  document.getElementById('proposalModal').style.display = 'none';
+  _proposalModalGl = null;
+  _proposalModalAction = null;
+}
+
+async function submitProposalReview() {
+  const note = document.getElementById('proposalModalNote').value.trim();
+  const overrideRaw = document.getElementById('proposalModalOverride').value.trim();
+  const overrideValue = overrideRaw ? parseFloat(overrideRaw.replace(/[$,]/g, '')) : null;
+
+  if (!note && _proposalModalAction === 'commented') {
+    showToast('Please enter a comment', 'error');
+    return;
+  }
+
+  try {
+    const payload = {
+      entity_code: entityCode,
+      gl_code: _proposalModalGl,
+      action: _proposalModalAction,
+      note: note
+    };
+    if (_proposalModalAction === 'rejected' && overrideValue !== null && !isNaN(overrideValue)) {
+      payload.override_value = overrideValue;
+    }
+
+    const resp = await fetch('/api/budget-proposal/review', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const result = await resp.json();
+    if (result.error) { showToast(result.error, 'error'); return; }
+
+    // Update row in place
+    const row = document.getElementById('prop_' + _proposalModalGl);
+    if (row) {
+      const cells = row.querySelectorAll('td');
+      if (_proposalModalAction === 'rejected') {
+        cells[6].innerHTML = '<span style="background:#fef2f2; color:#991b1b; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✗ Rejected</span>';
+        cells[7].innerHTML = '<span style="color:var(--gray-400); font-size:11px;">Done</span>';
+        // If FA provided override, update the proposed column
+        if (overrideValue !== null && !isNaN(overrideValue)) {
+          cells[3].innerHTML = '<span style="color:var(--blue); font-weight:700;">' + fmt(overrideValue) + '</span> <span style="font-size:10px; color:var(--gray-400);">FA override</span>';
+        }
+      } else {
+        cells[6].innerHTML = '<span style="background:#fef3c7; color:#92400e; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">💬 Commented</span>';
+        // Keep action buttons for commented status
+      }
+    }
+
+    closeProposalModal();
+    const verb = _proposalModalAction === 'rejected' ? 'rejected' : 'comment saved on';
+    showToast('Proposal ' + verb + ' ' + _proposalModalGl, 'success');
+    updateProposalBadge();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+function updateProposalBadge() {
+  // Recount pending proposals from the DOM
+  const rows = document.querySelectorAll('#pmProposalsBody tr');
+  let pending = 0;
+  rows.forEach(r => {
+    const statusCell = r.querySelectorAll('td')[6];
+    if (statusCell && statusCell.textContent.includes('Pending')) pending++;
+    if (statusCell && statusCell.textContent.includes('Commented')) pending++;
+  });
+  document.getElementById('pmProposalsCount').textContent = pending || '';
+  // Update main badge
+  const reclassCount = parseInt(document.getElementById('pmReclassCount').textContent) || 0;
+  const notesCount = parseInt(document.getElementById('pmNotesCount').textContent) || 0;
+  const total = notesCount + reclassCount + pending;
+  document.getElementById('pmReviewBadgeText').textContent = total + ' item' + (total !== 1 ? 's' : '') + ' need review';
 }
 
 // Category grouping definitions per sheet
