@@ -144,6 +144,7 @@ with app.app_context():
             ("budget_lines", "fa_proposed_status", "VARCHAR(20)"),
             ("budget_lines", "fa_proposed_note", "TEXT DEFAULT ''"),
             ("budget_lines", "fa_override_value", "FLOAT"),
+            ("payroll_positions", "bonus_per_employee", "FLOAT DEFAULT 0"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [

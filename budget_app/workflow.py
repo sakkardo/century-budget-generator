@@ -479,6 +479,7 @@ def create_workflow_blueprint(db):
         position_name = db.Column(db.String(100), nullable=False)
         employee_count = db.Column(db.Integer, default=0)
         hourly_rate = db.Column(db.Float, default=0.0)
+        bonus_per_employee = db.Column(db.Float, default=0.0)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -490,6 +491,7 @@ def create_workflow_blueprint(db):
                 "position_name": self.position_name,
                 "employee_count": self.employee_count,
                 "hourly_rate": float(self.hourly_rate or 0),
+                "bonus_per_employee": float(self.bonus_per_employee or 0),
                 "sort_order": self.sort_order
             }
 
@@ -1859,6 +1861,7 @@ def create_workflow_blueprint(db):
                 position_name=p.get("position_name", "").strip(),
                 employee_count=int(p.get("employee_count", 0) or 0),
                 hourly_rate=float(p.get("hourly_rate", 0) or 0),
+                bonus_per_employee=float(p.get("bonus_per_employee", 0) or 0),
                 sort_order=i
             )
             db.session.add(pos)
@@ -6216,8 +6219,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   // If no positions saved yet, seed with 2 placeholder rows
   if (_payrollPositions.length === 0) {
     _payrollPositions = [
-      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, sort_order: 0},
-      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, sort_order: 1}
+      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: 0},
+      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: 1}
     ];
   }
 
@@ -6304,6 +6307,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); min-width:140px;">Position</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:40px;">#</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Hourly Rate</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Bonus $/Emp</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Weekly Pay <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Pre-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Post-Incr Rate <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
@@ -6454,11 +6458,13 @@ function prRosterChanged() {
     const nameInput = tr.querySelector('.pr-pos-name');
     const countInput = tr.querySelector('.pr-pos-count');
     const rateInput = tr.querySelector('.pr-pos-rate');
+    const bonusInput = tr.querySelector('.pr-pos-bonus');
     if (!nameInput) return;
     _payrollPositions.push({
       position_name: nameInput.value.trim(),
       employee_count: parseInt(countInput.value) || 0,
       hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
+      bonus_per_employee: bonusInput ? (parseFloat(bonusInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
       sort_order: i
     });
   });
@@ -6481,7 +6487,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -6509,11 +6515,13 @@ function recalcPayroll() {
   let totalOT = 0;
   let totalVSH = 0;
   let totalComp = 0;
+  let totalBonus = 0;
 
   // Calculate per-position wages
   const posCalcs = _payrollPositions.map(p => {
     const count = p.employee_count || 0;
     const rate = p.hourly_rate || 0;
+    const bonusPerEmp = p.bonus_per_employee || 0;
     const weeklyPay = rate * 40;
     const preIncrWages = weeklyPay * preWks * count;
     const postIncrRate = rate * (1 + wageInc);
@@ -6521,6 +6529,7 @@ function recalcPayroll() {
     const annualBase = preIncrWages + postIncrWages;
     const ot = annualBase * otFactor;
     const vsh = annualBase * vshFactor;
+    const bonus = bonusPerEmp * count;
     const comp = annualBase + ot + vsh;
 
     totalEmployees += count;
@@ -6528,8 +6537,9 @@ function recalcPayroll() {
     totalOT += ot;
     totalVSH += vsh;
     totalComp += comp;
+    totalBonus += bonus;
 
-    return { count, rate, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, comp };
+    return { count, rate, bonusPerEmp, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
   });
 
   // Calculate taxes & benefits
@@ -6563,6 +6573,7 @@ function recalcPayroll() {
     vsh_vacation: totalVSH / 3,
     vsh_holiday: totalVSH / 3,
     vsh_sick: totalVSH / 3,
+    bonus: totalBonus,
     employer_taxes: ficaAmt + suiAmt + fuiAmt + mtaAmt,
     workers_comp: wcAmt,
     nys_disability: nysDisAmt,
@@ -6623,6 +6634,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fffff0;"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + gs + '">' + fD(c.weeklyPay || 0) + '</td>' +
       '<td style="' + ns + gs + '">' + fD(c.preIncrWages || 0) + '</td>' +
       '<td style="' + ns + gs + '">$' + (c.postIncrRate || 0).toFixed(2) + '</td>' +
@@ -6642,6 +6654,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">TOTAL</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p)=> s+((p.bonus_per_employee||0)*(p.employee_count||0)),0)) + '</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
@@ -6652,7 +6665,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '</tr>' +
-    '<tr><td colspan="12" style="padding:8px 10px;">' +
+    '<tr><td colspan="13" style="padding:8px 10px;">' +
     '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
     '<span style="margin-left:12px; font-size:10px; color:var(--gray-400); font-style:italic;">Flexible positions — each building can have different roles</span>' +
     '</td></tr>';
@@ -6746,6 +6759,7 @@ const PAYROLL_COMPONENT_MAP = {
   '5105-0015': 'vsh_vacation',     // Vacation Pay (1/3 of VSH)
   '5105-0020': 'vsh_holiday',      // Holiday Pay (1/3 of VSH)
   '5105-0025': 'vsh_sick',         // Sick Pay (1/3 of VSH)
+  '5105-0035': 'bonus',            // Bonus (flat $/employee × count, per position)
   '5145-0000': 'employer_taxes',   // Employer Payroll Taxes (FICA+SUI+FUI+MTA)
   '5165-0000': 'workers_comp',     // Workers Comp Insurance
   '5166-0000': 'nys_disability',   // Disability Insurance
@@ -6850,6 +6864,23 @@ function renderPayrollGL() {
       const pctInputAttrs = isLinked
         ? 'disabled title="Locked — driven by roster calculation" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#f3f4f6; color:#9ca3af; cursor:not-allowed;"'
         : 'style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"';
+
+      // Build human-readable formulas for tooltips (mirrors faComputeEstimate/Forecast)
+      const pyr = float(l.prior_year), yta = float(l.ytd_actual), acc = float(l.accrual_adj), unp = float(l.unpaid_bills);
+      const base = yta + acc + unp;
+      const estFormula = (base >= pyr && pyr > 0)
+        ? '=(YTD+Accrual+Unpaid)/' + (YTD_MONTHS||2) + '*' + (REMAINING_MONTHS||10)
+        : '=MAX(Prior-(YTD+Accrual+Unpaid),0)';
+      const fcstFormula = '=YTD+Accrual+Unpaid+Estimate';
+      const componentKey = PAYROLL_COMPONENT_MAP[l.gl_code];
+      const propFormula = isLinked
+        ? '=Roster.' + componentKey + ' (auto-linked)'
+        : '=Forecast*(1+IncreasePct)';
+
+      // fx badge style (matches R&S tab)
+      const fxBadge = '<span title="Computed formula" style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">fx</span>';
+      const fxBadgeLinked = '<span title="Driven by roster" style="font-size:8px; font-weight:800; color:#fff; background:#2563eb; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">🔗fx</span>';
+
       const propCellStyle = isLinked
         ? ns + ' color:#1e40af; font-weight:700; background:#eff6ff;'
         : ns + ' color:#16a34a; font-weight:600;';
@@ -6863,11 +6894,11 @@ function renderPayrollGL() {
         '<td style="' + ns + '">' + fD(l.accrual_adj) + '</td>' +
         '<td style="' + ns + '">' + fD(l.unpaid_bills) + '</td>' +
         '<td style="' + ns + '">' + fD(l.ytd_budget) + '</td>' +
-        '<td style="' + ns + ' color:#16a34a;">' + fD(est) + '</td>' +
-        '<td style="' + ns + ' color:#16a34a;">' + fD(fc) + '</td>' +
+        '<td style="' + ns + ' color:#16a34a;" title="' + estFormula + '">' + fD(est) + ' <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></td>' +
+        '<td style="' + ns + ' color:#16a34a;" title="' + fcstFormula + '">' + fD(fc) + ' <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></td>' +
         '<td style="' + ns + '">' + fD(curr) + '</td>' +
         '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
-        '<td style="' + propCellStyle + '">' + fD(prop) + '</td>' +
+        '<td style="' + propCellStyle + '" title="' + propFormula + '">' + fD(prop) + ' ' + (isLinked ? fxBadgeLinked : fxBadge) + '</td>' +
         '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
         '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
         '</tr>';
