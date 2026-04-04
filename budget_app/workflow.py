@@ -1577,7 +1577,13 @@ def create_workflow_blueprint(db):
                 if fname in line_data:
                     setattr(line, fname, float(line_data[fname] or 0))
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.getLogger(__name__).error(f'PM lines save failed: {e}')
+            return jsonify({"error": "Failed to save changes"}), 500
 
         return jsonify(budget.to_dict())
 
@@ -1640,7 +1646,13 @@ def create_workflow_blueprint(db):
                     old_value=old_v, new_value=new_v, source="web"
                 ))
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.getLogger(__name__).error(f'FA lines save failed: {e}')
+            return jsonify({"error": "Failed to save changes"}), 500
         return jsonify({"status": "ok"})
 
 
@@ -4503,21 +4515,37 @@ function faUpdateSheetTotals() {
   updateTotalRow(document.getElementById('faSheetTotal'), sumGLs(allGLs));
 }
 
+let _faSavePending = {};
 let _faSaveTimer = null;
 function faAutoSave(gl, field, value) {
+  if (!_faSavePending[gl]) _faSavePending[gl] = {};
+  _faSavePending[gl][field] = value;
   clearTimeout(_faSaveTimer);
   _faSaveTimer = setTimeout(async () => {
+    const lines = Object.entries(_faSavePending).map(function(entry) {
+      var obj = {gl_code: entry[0]};
+      var fields = entry[1];
+      for (var k in fields) { if (fields.hasOwnProperty(k)) obj[k] = fields[k]; }
+      return obj;
+    });
+    _faSavePending = {};
     const indicator = document.getElementById('faSaveIndicator');
     indicator.textContent = 'Saving...';
-    const lineData = {gl_code: gl};
-    lineData[field] = value;
-    await fetch('/api/fa-lines/' + entityCode, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({lines: [lineData]})
-    });
-    indicator.textContent = 'Saved';
-    setTimeout(() => { indicator.textContent = ''; }, 2000);
+    try {
+      const resp = await fetch('/api/fa-lines/' + entityCode, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({lines: lines})
+      });
+      if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+      indicator.textContent = 'Saved';
+    } catch(e) {
+      indicator.textContent = 'Save failed!';
+      indicator.style.color = '#dc2626';
+      console.error('FA save error:', e);
+      setTimeout(function() { indicator.style.color = ''; }, 3000);
+    }
+    setTimeout(function() { indicator.textContent = ''; }, 2000);
   }, 800);
 }
 
