@@ -480,6 +480,7 @@ def create_workflow_blueprint(db):
         employee_count = db.Column(db.Integer, default=0)
         hourly_rate = db.Column(db.Float, default=0.0)
         bonus_per_employee = db.Column(db.Float, default=0.0)
+        effective_week_override = db.Column(db.Float, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -492,6 +493,7 @@ def create_workflow_blueprint(db):
                 "employee_count": self.employee_count,
                 "hourly_rate": float(self.hourly_rate or 0),
                 "bonus_per_employee": float(self.bonus_per_employee or 0),
+                "effective_week_override": float(self.effective_week_override) if self.effective_week_override is not None else None,
                 "sort_order": self.sort_order
             }
 
@@ -1862,6 +1864,7 @@ def create_workflow_blueprint(db):
                 employee_count=int(p.get("employee_count", 0) or 0),
                 hourly_rate=float(p.get("hourly_rate", 0) or 0),
                 bonus_per_employee=float(p.get("bonus_per_employee", 0) or 0),
+                effective_week_override=(float(p["effective_week_override"]) if p.get("effective_week_override") not in (None, "", 0) else None),
                 sort_order=i
             )
             db.session.add(pos)
@@ -6225,8 +6228,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   // If no positions saved yet, seed with 2 placeholder rows
   if (_payrollPositions.length === 0) {
     _payrollPositions = [
-      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: 0},
-      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: 1}
+      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: 0},
+      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: 1}
     ];
   }
 
@@ -6240,7 +6243,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
 
   // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
   html += '<style>' +
-    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; }' +
+    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
@@ -6342,6 +6345,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:40px;">#</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Hourly Rate</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Bonus $/Emp</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:70px;" title="Override the global Effective Week for this position only. Leave blank to use global.">Eff Wk Override</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Weekly Pay <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Pre-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Post-Incr Rate <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
@@ -6418,7 +6422,7 @@ function prAssumpRow(label, key, val, suffix) {
     '<span style="color:var(--gray-600);">' + label + '</span>' +
     '<div style="display:flex; align-items:center; gap:2px;">' +
     '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums;">' +
-    (suffix ? '<span style="font-size:11px; color:var(--gray-400); width:12px;">' + suffix + '</span>' : '') +
+    '<span style="font-size:11px; color:var(--gray-400); width:12px; display:inline-block;">' + (suffix || '') + '</span>' +
     '</div></div>';
 }
 
@@ -6495,12 +6499,15 @@ function prRosterChanged() {
     const countInput = tr.querySelector('.pr-pos-count');
     const rateInput = tr.querySelector('.pr-pos-rate');
     const bonusInput = tr.querySelector('.pr-pos-bonus');
+    const effWkInput = tr.querySelector('.pr-pos-effwk');
     if (!nameInput) return;
+    const effWkRaw = effWkInput ? effWkInput.value.trim() : '';
     _payrollPositions.push({
       position_name: nameInput.value.trim(),
       employee_count: parseInt(countInput.value) || 0,
       hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
       bonus_per_employee: bonusInput ? (parseFloat(bonusInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
+      effective_week_override: effWkRaw === '' ? null : (parseFloat(effWkRaw) || null),
       sort_order: i
     });
   });
@@ -6523,7 +6530,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -6558,10 +6565,16 @@ function recalcPayroll() {
     const count = p.employee_count || 0;
     const rate = p.hourly_rate || 0;
     const bonusPerEmp = p.bonus_per_employee || 0;
+    // Per-position effective week override (e.g. one Resident Manager getting a late raise)
+    let posPreWks = preWks, posPostWks = postWks;
+    if (p.effective_week_override && p.effective_week_override > 0) {
+      posPreWks = Math.max(p.effective_week_override - 1, 0);
+      posPostWks = 52 - posPreWks;
+    }
     const weeklyPay = rate * 40;
-    const preIncrWages = weeklyPay * preWks * count;
+    const preIncrWages = weeklyPay * posPreWks * count;
     const postIncrRate = rate * (1 + wageInc);
-    const postIncrWages = (postIncrRate * 40) * postWks * count;
+    const postIncrWages = (postIncrRate * 40) * posPostWks * count;
     const annualBase = preIncrWages + postIncrWages;
     const ot = annualBase * otFactor;
     const vsh = annualBase * vshFactor;
@@ -6575,7 +6588,7 @@ function recalcPayroll() {
     totalComp += comp;
     totalBonus += bonus;
 
-    return { count, rate, bonusPerEmp, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
+    return { count, rate, bonusPerEmp, posPreWks, posPostWks, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
   });
 
   // Calculate taxes & benefits
@@ -6661,7 +6674,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
 
   const ctx = assumpCtx || {preWks:15, postWks:37, wageInc:0, otFactor:0.002, vshFactor:0.10};
   const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
-  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
   const gs = 'color:#16a34a; font-weight:600;';
   const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;';
 
@@ -6672,7 +6685,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     const badge = '<span class="fa-fx" style="position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; z-index:5;">fx</span>';
     const displayVal = (field === 'postIncrRate') ? '$' + val.toFixed(2) : fD(val);
     const tdStyle = 'padding:7px 10px; border-bottom:1px solid #f3f4f6; text-align:right; position:relative; cursor:pointer;';
-    const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px; border:1px solid #bbf7d0; border-radius:4px; background:#f0fdf4; text-align:right; font-family:"SF Mono","Fira Code",monospace; font-size:12px; font-variant-numeric:tabular-nums; ' + (bgColor || 'color:#16a34a;') + ' ' + (fontWeight || 'font-weight:600;');
+    const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px; border:1px solid #bbf7d0; border-radius:4px; background:#f0fdf4; text-align:right; font-family:inherit; font-size:12px; font-variant-numeric:tabular-nums; ' + (bgColor || 'color:#16a34a;') + ' ' + (fontWeight || 'font-weight:600;');
     return '<td style="' + tdStyle + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' +
       badge +
       '<input id="' + id + '" type="text" readonly ' +
@@ -6693,10 +6706,13 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     const count = p.employee_count || 0;
     const rate = p.hourly_rate || 0;
     // Build formulas as parseable math strings with literal values (safeEvalFormula compatible)
+    // Uses per-position week overrides if set, otherwise global ctx values
+    const usedPreWks = c.posPreWks !== undefined ? c.posPreWks : ctx.preWks;
+    const usedPostWks = c.posPostWks !== undefined ? c.posPostWks : ctx.postWks;
     const fWeekly = '=' + rate + '*40';
-    const fPreWages = '=' + (c.weeklyPay||0) + '*' + ctx.preWks + '*' + count;
+    const fPreWages = '=' + (c.weeklyPay||0) + '*' + usedPreWks + '*' + count;
     const fPostRate = '=' + rate + '*(1+' + ctx.wageInc.toFixed(4) + ')';
-    const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + ctx.postWks + '*' + count;
+    const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + usedPostWks + '*' + count;
     const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0);
     const fOT = '=' + (c.annualBase||0) + '*' + ctx.otFactor.toFixed(4);
     const fVSH = '=' + (c.annualBase||0) + '*' + ctx.vshFactor.toFixed(4);
@@ -6707,6 +6723,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged()" title="Override global Effective Week for this position only" style="' + is + ' width:55px;"></td>' +
       rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
       rosterFx('pr_rost_pre_'+i, 'preIncrWages', c.preIncrWages||0, fPreWages, i) +
       rosterFx('pr_rost_pr_'+i, 'postIncrRate', c.postIncrRate||0, fPostRate, i) +
@@ -6727,6 +6744,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p)=> s+((p.bonus_per_employee||0)*(p.employee_count||0)),0)) + '</td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
@@ -6737,7 +6755,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '</tr>' +
-    '<tr><td colspan="13" style="padding:8px 10px;">' +
+    '<tr><td colspan="14" style="padding:8px 10px;">' +
     '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
     '<span style="margin-left:12px; font-size:10px; color:var(--gray-400); font-style:italic;">Flexible positions — each building can have different roles</span>' +
     '</td></tr>';
@@ -6928,7 +6946,7 @@ function renderPayrollGL() {
 
       const hidden = g.key !== 'wages' ? ' style="display:none;"' : '';
       const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
-      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
 
       // Linked rows are auto-driven by roster — show 🔗 icon, lock Inc%, highlight Proposed
       const isLinked = !!l._linked;
