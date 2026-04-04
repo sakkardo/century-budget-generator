@@ -4094,7 +4094,7 @@ function fxCellFocus(el) {
     bar.value = el.dataset.formula || '';
   }
   _formulaBarOriginal = bar.value;
-  const isReadOnly = field === 'variance' || field === 'pct_change';
+  const isReadOnly = field === 'variance' || field === 'pct_change' || el.dataset.readonly === 'true';
   if (isReadOnly) {
     _showFormulaButtons(false, false);
     bar.readOnly = true;
@@ -6622,8 +6622,9 @@ function recalcPayroll() {
     profit_sharing: profitShareAmt
   };
 
-  // Render roster
-  renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp);
+  // Render roster (pass assumption values for formula strings)
+  renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp,
+    {preWks, postWks, wageInc, otFactor, vshFactor});
 
   // Render taxes
   renderPayrollTaxes({ficaAmt, suiAmt, fuiAmt, mtaAmt, nysDisAmt, pflAmt, totalPayrollTax, wcAmt,
@@ -6649,7 +6650,7 @@ function recalcPayroll() {
 
 // ── Render Roster Table ───────────────────────────────────────────────────
 
-function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp) {
+function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp, assumpCtx) {
   const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
   const body = document.getElementById('prRosterBody');
   const foot = document.getElementById('prRosterFoot');
@@ -6658,27 +6659,59 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   // If no calcs passed, just render empty inputs
   if (!posCalcs) posCalcs = _payrollPositions.map(() => ({count:0,rate:0,weeklyPay:0,preIncrWages:0,postIncrRate:0,postIncrWages:0,annualBase:0,ot:0,vsh:0,comp:0}));
 
+  const ctx = assumpCtx || {preWks:15, postWks:37, wageInc:0, otFactor:0.002, vshFactor:0.10};
   const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
   const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
   const gs = 'color:#16a34a; font-weight:600;';
   const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;';
 
+  // fx cell helper for roster calculated fields (click to view formula, read-only)
+  // Renders a clickable cell with fx badge + invisible input holding data attributes
+  const rosterFx = (id, field, val, formula, posIdx, bgColor, fontWeight) => {
+    const badge = '<span class="fa-fx" style="position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; z-index:5;">fx</span>';
+    const displayVal = (field === 'postIncrRate') ? '$' + val.toFixed(2) : fD(val);
+    return '<td style="' + ns + ' ' + (bgColor || 'color:#16a34a;') + ' ' + (fontWeight || 'font-weight:600;') + ' position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' +
+      badge +
+      '<input id="' + id + '" type="text" readonly ' +
+        'data-readonly="true" ' +
+        'data-gl="Roster[' + posIdx + ']" ' +
+        'data-field="' + field + '" ' +
+        'data-raw="' + Math.round(val) + '" ' +
+        'data-formula="' + formula.replace(/"/g, '&quot;') + '" ' +
+        'value="' + displayVal + '" ' +
+        'onblur="fxCellBlur(this)" ' +
+        'style="cursor:pointer; pointer-events:none; width:100%; border:none; background:transparent; text-align:right; padding:0; font-family:inherit; font-size:inherit; color:inherit; font-weight:inherit;">' +
+      '</td>';
+  };
+
   let rows = '';
   _payrollPositions.forEach((p, i) => {
     const c = posCalcs[i] || {};
+    const count = p.employee_count || 0;
+    const rate = p.hourly_rate || 0;
+    // Build formulas as parseable math strings with literal values (safeEvalFormula compatible)
+    const fWeekly = '=' + rate + '*40';
+    const fPreWages = '=' + (c.weeklyPay||0) + '*' + ctx.preWks + '*' + count;
+    const fPostRate = '=' + rate + '*(1+' + ctx.wageInc.toFixed(4) + ')';
+    const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + ctx.postWks + '*' + count;
+    const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0);
+    const fOT = '=' + (c.annualBase||0) + '*' + ctx.otFactor.toFixed(4);
+    const fVSH = '=' + (c.annualBase||0) + '*' + ctx.vshFactor.toFixed(4);
+    const fComp = '=' + (c.annualBase||0) + '+' + (c.ot||0) + '+' + (c.vsh||0);
+
     rows += '<tr>' +
       '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fffff0;"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
-      '<td style="' + ns + gs + '">' + fD(c.weeklyPay || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.preIncrWages || 0) + '</td>' +
-      '<td style="' + ns + gs + '">$' + (c.postIncrRate || 0).toFixed(2) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.postIncrWages || 0) + '</td>' +
-      '<td style="' + ns + ' font-weight:700;">' + fD(c.annualBase || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.ot || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.vsh || 0) + '</td>' +
-      '<td style="' + ns + ' font-weight:800; color:#1e40af;">' + fD(c.comp || 0) + '</td>' +
+      rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
+      rosterFx('pr_rost_pre_'+i, 'preIncrWages', c.preIncrWages||0, fPreWages, i) +
+      rosterFx('pr_rost_pr_'+i, 'postIncrRate', c.postIncrRate||0, fPostRate, i) +
+      rosterFx('pr_rost_post_'+i, 'postIncrWages', c.postIncrWages||0, fPostWages, i) +
+      rosterFx('pr_rost_base_'+i, 'annualBase', c.annualBase||0, fAnnualBase, i, 'color:#1f2937;', 'font-weight:700;') +
+      rosterFx('pr_rost_ot_'+i, 'ot', c.ot||0, fOT, i) +
+      rosterFx('pr_rost_vsh_'+i, 'vsh', c.vsh||0, fVSH, i) +
+      rosterFx('pr_rost_comp_'+i, 'comp', c.comp||0, fComp, i, 'color:#1e40af;', 'font-weight:800;') +
       '<td style="padding:7px 4px; border-bottom:1px solid #f3f4f6;"><button onclick="removePayrollPosition(' + i + ')" style="padding:2px 6px; font-size:10px; cursor:pointer; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; border-radius:4px;">✕</button></td>' +
       '</tr>';
   });
