@@ -145,6 +145,33 @@ with app.app_context():
             ("budget_lines", "fa_proposed_note", "TEXT DEFAULT ''"),
             ("budget_lines", "fa_override_value", "FLOAT"),
         ]
+        # Create payroll tables if they don't exist
+        _payroll_tables = [
+            """CREATE TABLE IF NOT EXISTS payroll_positions (
+                id SERIAL PRIMARY KEY,
+                entity_code VARCHAR(50) NOT NULL,
+                budget_year INTEGER NOT NULL,
+                position_name VARCHAR(100) NOT NULL,
+                employee_count INTEGER DEFAULT 0,
+                hourly_rate FLOAT DEFAULT 0,
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS payroll_assumptions (
+                id SERIAL PRIMARY KEY,
+                entity_code VARCHAR(50) NOT NULL,
+                budget_year INTEGER NOT NULL,
+                assumptions_json TEXT DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+        ]
+        for ddl in _payroll_tables:
+            try:
+                db.session.execute(db.text(ddl))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
         for table, col, col_type in _migrations:
             try:
                 db.session.execute(db.text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))

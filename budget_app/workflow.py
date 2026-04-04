@@ -467,6 +467,53 @@ def create_workflow_blueprint(db):
             }
 
 
+    # ─── Payroll Models ───────────────────────────────────────────────────
+
+    class PayrollPosition(db.Model):
+        """Employee positions for the payroll wage calculation engine."""
+        __tablename__ = "payroll_positions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False)
+        budget_year = db.Column(db.Integer, nullable=False)
+        position_name = db.Column(db.String(100), nullable=False)
+        employee_count = db.Column(db.Integer, default=0)
+        hourly_rate = db.Column(db.Float, default=0.0)
+        sort_order = db.Column(db.Integer, default=0)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        def to_dict(self):
+            return {
+                "id": self.id, "entity_code": self.entity_code,
+                "budget_year": self.budget_year,
+                "position_name": self.position_name,
+                "employee_count": self.employee_count,
+                "hourly_rate": float(self.hourly_rate or 0),
+                "sort_order": self.sort_order
+            }
+
+
+    class PayrollAssumption(db.Model):
+        """Payroll-tab-specific assumption overrides (seeded from main assumptions)."""
+        __tablename__ = "payroll_assumptions"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False)
+        budget_year = db.Column(db.Integer, nullable=False)
+        assumptions_json = db.Column(db.Text, default="{}")
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        def to_dict(self):
+            import json as _json
+            return {
+                "id": self.id, "entity_code": self.entity_code,
+                "budget_year": self.budget_year,
+                "assumptions": _json.loads(self.assumptions_json or "{}"),
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None
+            }
+
+
     # ─── Helper Functions ────────────────────────────────────────────────────
 
     def store_rm_lines(entity_code, building_name, gl_data):
@@ -1730,6 +1777,94 @@ def create_workflow_blueprint(db):
         return jsonify({"status": "ok", "line": line.to_dict()})
 
 
+    # ─── Payroll Roster & Assumptions API ────────────────────────────────────
+
+    @bp.route("/api/payroll/positions/<entity_code>", methods=["GET"])
+    def get_payroll_positions(entity_code):
+        """Get all payroll positions for an entity."""
+        positions = PayrollPosition.query.filter_by(
+            entity_code=entity_code, budget_year=2027
+        ).order_by(PayrollPosition.sort_order).all()
+        return jsonify([p.to_dict() for p in positions])
+
+    @bp.route("/api/payroll/positions/<entity_code>", methods=["POST"])
+    def save_payroll_positions(entity_code):
+        """Save/update all payroll positions for an entity (full replace)."""
+        data = request.get_json()
+        positions_data = data.get("positions", [])
+        # Delete existing and re-insert
+        PayrollPosition.query.filter_by(entity_code=entity_code, budget_year=2027).delete()
+        for i, p in enumerate(positions_data):
+            pos = PayrollPosition(
+                entity_code=entity_code,
+                budget_year=2027,
+                position_name=p.get("position_name", "").strip(),
+                employee_count=int(p.get("employee_count", 0) or 0),
+                hourly_rate=float(p.get("hourly_rate", 0) or 0),
+                sort_order=i
+            )
+            db.session.add(pos)
+        db.session.commit()
+        positions = PayrollPosition.query.filter_by(
+            entity_code=entity_code, budget_year=2027
+        ).order_by(PayrollPosition.sort_order).all()
+        return jsonify({"status": "ok", "positions": [p.to_dict() for p in positions]})
+
+    @bp.route("/api/payroll/assumptions/<entity_code>", methods=["GET"])
+    def get_payroll_assumptions(entity_code):
+        """Get payroll-tab-specific assumptions. Falls back to main assumptions if none saved."""
+        pa = PayrollAssumption.query.filter_by(entity_code=entity_code, budget_year=2027).first()
+        if pa:
+            return jsonify(pa.to_dict())
+        # Fall back: seed from main assumptions tab
+        budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+        if not budget:
+            return jsonify({"assumptions": {}})
+        import json as _json
+        main_a = _json.loads(budget.assumptions_json or "{}")
+        # Build payroll-specific structure from main assumptions
+        pt = main_a.get("payroll_tax", {})
+        ub = main_a.get("union_benefits", {})
+        wc = main_a.get("workers_comp", {})
+        wi = main_a.get("wage_increase", {})
+        seeded = {
+            "wage_increase_pct": float(wi.get("percent", 0) or 0),
+            "effective_week": wi.get("effective_week", "16"),
+            "pre_increase_weeks": int(wi.get("pre_increase_weeks", 15) or 15),
+            "post_increase_weeks": int(wi.get("post_increase_weeks", 37) or 37),
+            "ot_factor": 0.002,
+            "vac_sick_hol_factor": 0.10,
+            "fica": float(pt.get("FICA", 0) or 0),
+            "sui": float(pt.get("SUI", 0) or 0),
+            "fui": float(pt.get("FUI", 0) or 0),
+            "mta": float(pt.get("MTA", 0) or 0),
+            "nys_disability": float(pt.get("NYS_Disability", 0) or 0),
+            "pfl": float(pt.get("PFL", 0) or 0),
+            "workers_comp": float(wc.get("percent", 0) or 0),
+            "welfare_monthly": float(ub.get("welfare_monthly", 0) or 0),
+            "pension_weekly": float(ub.get("pension_weekly", 0) or 0),
+            "supp_retirement_weekly": float(ub.get("supp_retirement_weekly", 0) or 0),
+            "legal_monthly": float(ub.get("legal_monthly", 0) or 0),
+            "training_monthly": float(ub.get("training_monthly", 0) or 0),
+            "profit_sharing_quarterly": float(ub.get("profit_sharing_quarterly", 0) or 0),
+        }
+        return jsonify({"assumptions": seeded, "source": "main_assumptions"})
+
+    @bp.route("/api/payroll/assumptions/<entity_code>", methods=["POST"])
+    def save_payroll_assumptions(entity_code):
+        """Save payroll-tab-specific assumptions (override main assumptions for this tab)."""
+        data = request.get_json()
+        assumptions = data.get("assumptions", {})
+        import json as _json
+        pa = PayrollAssumption.query.filter_by(entity_code=entity_code, budget_year=2027).first()
+        if not pa:
+            pa = PayrollAssumption(entity_code=entity_code, budget_year=2027)
+            db.session.add(pa)
+        pa.assumptions_json = _json.dumps(assumptions)
+        db.session.commit()
+        return jsonify({"status": "ok", "assumptions": assumptions})
+
+
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
     def get_budget_history(entity_code):
         """Get change history (revisions) for a budget."""
@@ -1888,7 +2023,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
@@ -4732,6 +4867,12 @@ function renderSheet(sheetName, sheetLines, tabEl) {
     return;
   }
 
+  // Handle Payroll tab — enhanced with roster calc engine, assumptions, and GL grouping
+  if (sheetName === 'Payroll') {
+    renderPayrollTab(sheetLines, contentDiv);
+    return;
+  }
+
   if (!sheetLines || sheetLines.length === 0) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No data for this sheet.</p>';
     return;
@@ -5977,6 +6118,756 @@ function faToggleZeroRows() {
   });
   faUpdateZeroToggle();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAYROLL TAB — Enhanced with Assumptions, Roster Calc, GL Grouping
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _payrollAssumptions = {};
+let _payrollPositions = [];
+let _payrollGLLines = [];
+
+async function renderPayrollTab(sheetLines, contentDiv) {
+  _payrollGLLines = sheetLines || [];
+  const ec = entityCode;
+
+  // Load assumptions and positions in parallel
+  const [aResp, pResp] = await Promise.all([
+    fetch('/api/payroll/assumptions/' + ec).then(r => r.json()),
+    fetch('/api/payroll/positions/' + ec).then(r => r.json())
+  ]);
+  _payrollAssumptions = aResp.assumptions || {};
+  _payrollPositions = pResp || [];
+
+  // If no positions saved yet, seed with 2 placeholder rows
+  if (_payrollPositions.length === 0) {
+    _payrollPositions = [
+      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, sort_order: 0},
+      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, sort_order: 1}
+    ];
+  }
+
+  const a = _payrollAssumptions;
+  const fmtD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const fmtPct = v => (v * 100).toFixed(2) + '%';
+  const fmtPctInput = v => (v * 100).toFixed(3);
+
+  let html = '<div style="max-width:1200px; margin:0 auto;">';
+
+  // ── Section 0: Payroll Assumptions (Editable) ──────────────────────────
+  html += `
+  <div id="payrollAssumptionsSection" style="background:white; border-radius:10px; border:1px solid var(--gray-200); margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <div onclick="togglePayrollSection('prAssump')" style="display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:#f5f3ff; border-bottom:1px solid #ddd6fe; border-radius:10px 10px 0 0; cursor:pointer; user-select:none;">
+      <h3 style="font-size:13px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:0.5px; margin:0;">Payroll Assumptions <span style="font-size:9px; font-weight:800; color:white; background:#7c3aed; border-radius:3px; padding:1px 5px; margin-left:6px; vertical-align:middle;">EDITABLE</span></h3>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#f5f3ff; color:#7c3aed; border:1px solid #c4b5fd;">Changes flow through all sections below</span>
+        <span style="font-size:12px; color:var(--gray-400);" id="prAssumpChev">▾</span>
+      </div>
+    </div>
+    <div id="prAssump">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0;">
+
+        <!-- Column 1: Wage & Schedule -->
+        <div style="padding:14px 20px; border-right:1px solid var(--gray-200);">
+          <div style="font-size:10px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5f3ff;">Wage & Schedule</div>
+          ${prAssumpRow('Wage Increase %', 'wage_increase_pct', fmtPctInput(a.wage_increase_pct || 0), '%')}
+          ${prAssumpRow('Effective Week', 'effective_week', a.effective_week || '16', '')}
+          ${prAssumpRowCalc('Pre-Incr Weeks', a.pre_increase_weeks || 15)}
+          ${prAssumpRowCalc('Post-Incr Weeks', a.post_increase_weeks || 37)}
+          ${prAssumpRow('OT Factor %', 'ot_factor', ((a.ot_factor || 0.002) * 100).toFixed(1), '%')}
+          ${prAssumpRow('Vac/Sick/Hol %', 'vac_sick_hol_factor', ((a.vac_sick_hol_factor || 0.10) * 100).toFixed(1), '%')}
+          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Pre/Post weeks auto-calculate from Effective Week</div>
+        </div>
+
+        <!-- Column 2: Payroll Tax Rates -->
+        <div style="padding:14px 20px; border-right:1px solid var(--gray-200);">
+          <div style="font-size:10px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5f3ff;">Payroll Tax Rates</div>
+          ${prAssumpRow('FICA', 'fica', fmtPctInput(a.fica || 0), '%')}
+          ${prAssumpRow('SUI', 'sui', fmtPctInput(a.sui || 0), '%')}
+          ${prAssumpRow('FUI', 'fui', fmtPctInput(a.fui || 0), '%')}
+          ${prAssumpRow('MTA', 'mta', fmtPctInput(a.mta || 0), '%')}
+          ${prAssumpRow('NYS Disability', 'nys_disability', fmtPctInput(a.nys_disability || 0), '%')}
+          ${prAssumpRow('Paid Family Leave', 'pfl', fmtPctInput(a.pfl || 0), '%')}
+          ${prAssumpRow('Workers Comp', 'workers_comp', fmtPctInput(a.workers_comp || 0), '%')}
+          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">SUI base: $12,000 · FUI base: $7,000</div>
+        </div>
+
+        <!-- Column 3: Union Benefits -->
+        <div style="padding:14px 20px;">
+          <div style="font-size:10px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5f3ff;">Union Benefits (32BJ)</div>
+          ${prAssumpRow('Welfare ($/mo)', 'welfare_monthly', (a.welfare_monthly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Pension ($/wk)', 'pension_weekly', (a.pension_weekly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Supp Retirement ($/wk)', 'supp_retirement_weekly', (a.supp_retirement_weekly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Legal ($/mo)', 'legal_monthly', (a.legal_monthly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Training ($/mo)', 'training_monthly', (a.training_monthly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Profit Sharing ($/qtr)', 'profit_sharing_quarterly', (a.profit_sharing_quarterly || 0).toFixed(2), '$')}
+          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Rates × headcount × period multiplier = total</div>
+        </div>
+      </div>
+      <div style="padding:8px 20px; background:#f5f3ff; border-top:1px solid #ddd6fe; display:flex; align-items:center; gap:12px; border-radius:0 0 10px 10px;">
+        <span id="prAssumpStatus" style="font-size:11px; color:#7c3aed; font-weight:600;">Seeded from Assumptions tab</span>
+      </div>
+    </div>
+  </div>`;
+
+  // ── Section 1: Employee Roster & Wage Calculation ──────────────────────
+  html += `
+  <div style="background:white; border-radius:10px; border:1px solid var(--gray-200); margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <div onclick="togglePayrollSection('prRoster')" style="display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:var(--gray-50); border-bottom:1px solid var(--gray-200); border-radius:10px 10px 0 0; cursor:pointer; user-select:none;">
+      <h3 style="font-size:13px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin:0;">Employee Roster & Wage Calculation</h3>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span id="prRosterBadge" style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#eff6ff; color:#2563eb;">0 employees</span>
+        <span id="prRosterTotal" style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#dcfce7; color:#16a34a;">Total: $0</span>
+        <span style="font-size:12px; color:var(--gray-400);" id="prRosterChev">▾</span>
+      </div>
+    </div>
+    <div id="prRoster">
+      <div id="prRosterInfo" style="padding:10px 20px 6px; display:flex; gap:16px; align-items:center; background:#fafbfc; border-bottom:1px solid var(--gray-200);"></div>
+      <div style="overflow-x:auto;">
+        <table id="prRosterTable" style="width:100%; border-collapse:collapse; font-size:12px; min-width:1050px;">
+          <thead>
+            <tr style="background:var(--gray-50);">
+              <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); min-width:140px;">Position</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:40px;">#</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Hourly Rate</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Weekly Pay <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Pre-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Post-Incr Rate <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Post-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Annual Base <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:70px;">OT <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Vac/Sick/Hol <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px; font-weight:800;">Total Comp <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th style="width:30px; padding:8px 4px; border-bottom:2px solid var(--gray-200);"></th>
+            </tr>
+          </thead>
+          <tbody id="prRosterBody"></tbody>
+          <tfoot id="prRosterFoot"></tfoot>
+        </table>
+      </div>
+    </div>
+  </div>`;
+
+  // ── Section 2: Payroll Taxes, Workers Comp & Union Benefits ────────────
+  html += `
+  <div style="background:white; border-radius:10px; border:1px solid var(--gray-200); margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <div onclick="togglePayrollSection('prTaxes')" style="display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:var(--gray-50); border-bottom:1px solid var(--gray-200); border-radius:10px 10px 0 0; cursor:pointer; user-select:none;">
+      <h3 style="font-size:13px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin:0;">Payroll Taxes, Workers Comp & Union Benefits</h3>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#fff7ed; color:#ea580c;">Auto-calculated from Assumptions + Roster</span>
+        <span id="prTaxTotal" style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#dcfce7; color:#16a34a;">Total: $0</span>
+        <span style="font-size:12px; color:var(--gray-400);" id="prTaxesChev">▾</span>
+      </div>
+    </div>
+    <div id="prTaxes">
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr style="background:var(--gray-50);">
+            <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:200px;">Category</th>
+            <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Rate</th>
+            <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:220px;">Basis</th>
+            <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:120px;">Calculated Total <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+          </tr>
+        </thead>
+        <tbody id="prTaxBody"></tbody>
+        <tfoot id="prTaxFoot"></tfoot>
+      </table>
+    </div>
+  </div>`;
+
+  // ── Section 3: GL Detail with expandable sub-categories ────────────────
+  html += `
+  <div style="background:white; border-radius:10px; border:1px solid var(--gray-200); margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <div onclick="togglePayrollSection('prGL')" style="display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:var(--gray-50); border-bottom:1px solid var(--gray-200); border-radius:10px 10px 0 0; cursor:pointer; user-select:none;">
+      <h3 style="font-size:13px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin:0;">GL Detail — Yardi Actuals & Budget</h3>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:11px; font-weight:600; padding:2px 10px; border-radius:10px; background:#f5efe7; color:#5a4a3f;">${_payrollGLLines.length} GL lines in 4 groups</span>
+        <span style="font-size:12px; color:var(--gray-400);" id="prGLChev">▾</span>
+      </div>
+    </div>
+    <div id="prGL">
+      <div id="prGLContent" style="overflow-x:auto;"></div>
+      <div id="prTieOut"></div>
+    </div>
+  </div>`;
+
+  html += '</div>';
+  contentDiv.innerHTML = html;
+
+  // Now populate dynamic sections
+  recalcPayroll();
+  renderPayrollGL();
+}
+
+// ── Assumption row helpers ────────────────────────────────────────────────
+
+function prAssumpRow(label, key, val, suffix) {
+  return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
+    '<span style="color:var(--gray-600);">' + label + '</span>' +
+    '<div style="display:flex; align-items:center; gap:2px;">' +
+    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums;">' +
+    (suffix ? '<span style="font-size:11px; color:var(--gray-400); width:12px;">' + suffix + '</span>' : '') +
+    '</div></div>';
+}
+
+function prAssumpRowCalc(label, val) {
+  return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
+    '<span style="color:var(--gray-600);">' + label + '</span>' +
+    '<span style="font-size:12px; font-weight:600; color:#16a34a; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:4px; padding:3px 8px; width:90px; text-align:right; display:inline-block;">' + val + '</span>' +
+    '</div>';
+}
+
+function togglePayrollSection(id) {
+  const el = document.getElementById(id);
+  const chev = document.getElementById(id + 'Chev');
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    if (chev) chev.textContent = '▾';
+  } else {
+    el.style.display = 'none';
+    if (chev) chev.textContent = '▸';
+  }
+}
+
+// ── Assumption change handler ─────────────────────────────────────────────
+
+let _prAssumpSaveTimer = null;
+function payrollAssumptionChanged(el) {
+  const key = el.dataset.key;
+  let val = el.value.trim();
+
+  // Parse value depending on type
+  if (key === 'effective_week') {
+    _payrollAssumptions[key] = val;
+    // Auto-calc pre/post weeks
+    const wk = parseInt(val) || 16;
+    _payrollAssumptions.pre_increase_weeks = Math.max(wk - 1, 0);
+    _payrollAssumptions.post_increase_weeks = 52 - _payrollAssumptions.pre_increase_weeks;
+  } else if (['wage_increase_pct','fica','sui','fui','mta','nys_disability','pfl','workers_comp','ot_factor','vac_sick_hol_factor'].includes(key)) {
+    _payrollAssumptions[key] = parseFloat(val) / 100 || 0;
+  } else {
+    _payrollAssumptions[key] = parseFloat(val) || 0;
+  }
+
+  recalcPayroll();
+
+  // Debounced auto-save
+  clearTimeout(_prAssumpSaveTimer);
+  _prAssumpSaveTimer = setTimeout(savePayrollAssumptions, 800);
+}
+
+async function savePayrollAssumptions() {
+  const ec = entityCode;
+  try {
+    await fetch('/api/payroll/assumptions/' + ec, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({assumptions: _payrollAssumptions})
+    });
+    const st = document.getElementById('prAssumpStatus');
+    if (st) st.textContent = 'Saved ✓ — ' + new Date().toLocaleTimeString();
+  } catch(e) { console.error('Failed to save payroll assumptions:', e); }
+}
+
+// ── Roster change & save ──────────────────────────────────────────────────
+
+function prRosterChanged() {
+  // Read all rows from DOM
+  const rows = document.querySelectorAll('#prRosterBody tr');
+  _payrollPositions = [];
+  rows.forEach((tr, i) => {
+    const nameInput = tr.querySelector('.pr-pos-name');
+    const countInput = tr.querySelector('.pr-pos-count');
+    const rateInput = tr.querySelector('.pr-pos-rate');
+    if (!nameInput) return;
+    _payrollPositions.push({
+      position_name: nameInput.value.trim(),
+      employee_count: parseInt(countInput.value) || 0,
+      hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
+      sort_order: i
+    });
+  });
+  recalcPayroll();
+
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
+let _prRosterSaveTimer = null;
+async function savePayrollPositions() {
+  const ec = entityCode;
+  try {
+    await fetch('/api/payroll/positions/' + ec, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({positions: _payrollPositions})
+    });
+  } catch(e) { console.error('Failed to save payroll positions:', e); }
+}
+
+function addPayrollPosition() {
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, sort_order: _payrollPositions.length});
+  renderPayrollRoster();
+  recalcPayroll();
+}
+
+function removePayrollPosition(idx) {
+  _payrollPositions.splice(idx, 1);
+  renderPayrollRoster();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 400);
+}
+
+// ── Core Recalculation ────────────────────────────────────────────────────
+
+function recalcPayroll() {
+  const a = _payrollAssumptions;
+  const wageInc = a.wage_increase_pct || 0;
+  const preWks = a.pre_increase_weeks || 15;
+  const postWks = a.post_increase_weeks || 37;
+  const otFactor = a.ot_factor || 0.002;
+  const vshFactor = a.vac_sick_hol_factor || 0.10;
+
+  let totalEmployees = 0;
+  let totalAnnualBase = 0;
+  let totalOT = 0;
+  let totalVSH = 0;
+  let totalComp = 0;
+
+  // Calculate per-position wages
+  const posCalcs = _payrollPositions.map(p => {
+    const count = p.employee_count || 0;
+    const rate = p.hourly_rate || 0;
+    const weeklyPay = rate * 40;
+    const preIncrWages = weeklyPay * preWks * count;
+    const postIncrRate = rate * (1 + wageInc);
+    const postIncrWages = (postIncrRate * 40) * postWks * count;
+    const annualBase = preIncrWages + postIncrWages;
+    const ot = annualBase * otFactor;
+    const vsh = annualBase * vshFactor;
+    const comp = annualBase + ot + vsh;
+
+    totalEmployees += count;
+    totalAnnualBase += annualBase;
+    totalOT += ot;
+    totalVSH += vsh;
+    totalComp += comp;
+
+    return { count, rate, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, comp };
+  });
+
+  // Calculate taxes & benefits
+  const grossWages = totalAnnualBase + totalOT + totalVSH;
+  const ficaAmt = grossWages * (a.fica || 0);
+  const suiAmt = 12000 * (a.sui || 0) * totalEmployees;
+  const fuiAmt = 7000 * (a.fui || 0) * totalEmployees;
+  const mtaAmt = grossWages * (a.mta || 0);
+  const nysDisAmt = (a.nys_disability || 0) * totalEmployees;
+  const pflAmt = grossWages * (a.pfl || 0);
+  const totalPayrollTax = ficaAmt + suiAmt + fuiAmt + mtaAmt + nysDisAmt + pflAmt;
+  const wcAmt = (a.workers_comp || 0) * grossWages;
+
+  const welfareAmt = (a.welfare_monthly || 0) * totalEmployees * 12;
+  const pensionAmt = (a.pension_weekly || 0) * totalEmployees * 52;
+  const suppRetAmt = (a.supp_retirement_weekly || 0) * totalEmployees * 52;
+  const legalAmt = (a.legal_monthly || 0) * totalEmployees * 12;
+  const trainingAmt = (a.training_monthly || 0) * totalEmployees * 12;
+  const profitShareAmt = (a.profit_sharing_quarterly || 0) * totalEmployees * 4;
+  const totalUnion = welfareAmt + pensionAmt + suppRetAmt + legalAmt + trainingAmt + profitShareAmt;
+
+  const totalLaborCalc = grossWages + totalPayrollTax + wcAmt + totalUnion;
+
+  // Store for tie-out
+  window._payrollCalcTotal = totalLaborCalc;
+
+  // Render roster
+  renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp);
+
+  // Render taxes
+  renderPayrollTaxes({ficaAmt, suiAmt, fuiAmt, mtaAmt, nysDisAmt, pflAmt, totalPayrollTax, wcAmt,
+    welfareAmt, pensionAmt, suppRetAmt, legalAmt, trainingAmt, profitShareAmt, totalUnion, totalLaborCalc,
+    grossWages, totalEmployees});
+
+  // Update tie-out
+  renderPayrollTieOut(totalLaborCalc);
+
+  // Update info bar
+  const infoDiv = document.getElementById('prRosterInfo');
+  if (infoDiv) {
+    infoDiv.innerHTML =
+      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Wage Increase:</span> <strong style="color:#7c3aed;">' + ((wageInc)*100).toFixed(1) + '%</strong> <span style="font-size:8px; font-weight:800; color:#7c3aed; background:#f5f3ff; border:1px solid #7c3aed; border-radius:3px; padding:0 3px; vertical-align:super;">from assumptions</span></div>' +
+      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Effective:</span> <strong>Wk ' + (a.effective_week || '16') + '</strong></div>' +
+      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Pre-Incr Weeks:</span> <strong>' + preWks + '</strong></div>' +
+      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Post-Incr Weeks:</span> <strong>' + postWks + '</strong></div>';
+  }
+}
+
+// ── Render Roster Table ───────────────────────────────────────────────────
+
+function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp) {
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const body = document.getElementById('prRosterBody');
+  const foot = document.getElementById('prRosterFoot');
+  if (!body) return;
+
+  // If no calcs passed, just render empty inputs
+  if (!posCalcs) posCalcs = _payrollPositions.map(() => ({count:0,rate:0,weeklyPay:0,preIncrWages:0,postIncrRate:0,postIncrWages:0,annualBase:0,ot:0,vsh:0,comp:0}));
+
+  const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
+  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+  const gs = 'color:#16a34a; font-weight:600;';
+  const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;';
+
+  let rows = '';
+  _payrollPositions.forEach((p, i) => {
+    const c = posCalcs[i] || {};
+    rows += '<tr>' +
+      '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fffff0;"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + ns + gs + '">' + fD(c.weeklyPay || 0) + '</td>' +
+      '<td style="' + ns + gs + '">' + fD(c.preIncrWages || 0) + '</td>' +
+      '<td style="' + ns + gs + '">$' + (c.postIncrRate || 0).toFixed(2) + '</td>' +
+      '<td style="' + ns + gs + '">' + fD(c.postIncrWages || 0) + '</td>' +
+      '<td style="' + ns + ' font-weight:700;">' + fD(c.annualBase || 0) + '</td>' +
+      '<td style="' + ns + gs + '">' + fD(c.ot || 0) + '</td>' +
+      '<td style="' + ns + gs + '">' + fD(c.vsh || 0) + '</td>' +
+      '<td style="' + ns + ' font-weight:800; color:#1e40af;">' + fD(c.comp || 0) + '</td>' +
+      '<td style="padding:7px 4px; border-bottom:1px solid #f3f4f6;"><button onclick="removePayrollPosition(' + i + ')" style="padding:2px 6px; font-size:10px; cursor:pointer; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; border-radius:4px;">✕</button></td>' +
+      '</tr>';
+  });
+  body.innerHTML = rows;
+
+  // Footer totals
+  foot.innerHTML =
+    '<tr style="background:var(--gray-50); font-weight:700;">' +
+    '<td style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">TOTAL</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.postIncrWages||0),0)) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800;">' + fD(totalBase || 0) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(totalOT || 0) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(totalVSH || 0) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '</tr>' +
+    '<tr><td colspan="12" style="padding:8px 10px;">' +
+    '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
+    '<span style="margin-left:12px; font-size:10px; color:var(--gray-400); font-style:italic;">Flexible positions — each building can have different roles</span>' +
+    '</td></tr>';
+
+  // Update badges
+  const badge = document.getElementById('prRosterBadge');
+  const totBadge = document.getElementById('prRosterTotal');
+  if (badge) badge.textContent = (totalEmp || 0) + ' employees';
+  if (totBadge) totBadge.textContent = 'Total: ' + fD(totalComp || 0);
+}
+
+// ── Render Taxes/Benefits Table ───────────────────────────────────────────
+
+function renderPayrollTaxes(t) {
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const fP = v => (v * 100).toFixed(3) + '%';
+  const body = document.getElementById('prTaxBody');
+  const foot = document.getElementById('prTaxFoot');
+  if (!body) return;
+
+  const a = _payrollAssumptions;
+  const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
+  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums;';
+  const gs = 'color:#16a34a; font-weight:600;';
+  const ps = 'color:#7c3aed;';
+  const catHdr = 'background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; padding:8px 10px; border-bottom:2px solid #e5e7eb;';
+  const subRow = 'background:var(--gray-50); font-weight:700; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; padding:8px 10px;';
+
+  let html = '';
+  // Payroll Taxes
+  html += '<tr><td colspan="4" style="' + catHdr + '">Payroll Taxes</td></tr>';
+  html += taxRow('FICA', fP(a.fica||0), 'Gross Wages × Rate', fD(t.ficaAmt));
+  html += taxRow('SUI', fP(a.sui||0), '$12,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.suiAmt));
+  html += taxRow('FUI', fP(a.fui||0), '$7,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.fuiAmt));
+  html += taxRow('MTA', fP(a.mta||0), 'Gross Wages × Rate', fD(t.mtaAmt));
+  html += taxRow('NYS Disability', fP(a.nys_disability||0), 'Per employee/year', fD(t.nysDisAmt));
+  html += taxRow('Paid Family Leave', fP(a.pfl||0), 'Gross Wages × Rate', fD(t.pflAmt));
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Payroll Taxes</td><td style="' + subRow + ' text-align:right; font-weight:800;">' + fD(t.totalPayrollTax) + '</td></tr>';
+
+  // Workers Comp
+  html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
+  html += '<tr><td style="' + cs + ' font-weight:600;">Workers Compensation</td><td style="' + ns + ps + '">' + fP(a.workers_comp||0) + '</td><td style="' + cs + ' font-size:10px; color:var(--gray-400); font-style:italic;">Gross Wages × Rate</td><td style="' + ns + gs + ' font-weight:700;">' + fD(t.wcAmt) + '</td></tr>';
+
+  // Union Benefits
+  html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
+  html += '<tr><td colspan="4" style="' + catHdr + '">Union Benefits (32BJ)</td></tr>';
+  html += taxRow('Welfare', '$' + (a.welfare_monthly||0).toFixed(2) + '/mo', '$' + (a.welfare_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.welfareAmt));
+  html += taxRow('Pension', '$' + (a.pension_weekly||0).toFixed(2) + '/wk', '$' + (a.pension_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.pensionAmt));
+  html += taxRow('Supp. Retirement', '$' + (a.supp_retirement_weekly||0).toFixed(2) + '/wk', '$' + (a.supp_retirement_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.suppRetAmt));
+  html += taxRow('Legal Fund', '$' + (a.legal_monthly||0).toFixed(2) + '/mo', '$' + (a.legal_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.legalAmt));
+  html += taxRow('Training Fund', '$' + (a.training_monthly||0).toFixed(2) + '/mo', '$' + (a.training_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.trainingAmt));
+  html += taxRow('Profit Sharing', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + '/qtr', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 4 qtr', fD(t.profitShareAmt));
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Union Benefits</td><td style="' + subRow + ' text-align:right; font-weight:800;">' + fD(t.totalUnion) + '</td></tr>';
+
+  body.innerHTML = html;
+
+  // Grand total footer
+  foot.innerHTML = '<tr style="background:#f5efe7; font-weight:800; font-size:13px;">' +
+    '<td colspan="3" style="border-top:3px double #5a4a3f; padding:10px;">TOTAL LABOR & RELATED (calculated)</td>' +
+    '<td style="border-top:3px double #5a4a3f; padding:10px; text-align:right; font-size:14px;">' + fD(t.totalLaborCalc) + '</td></tr>';
+
+  // Update badge
+  const badge = document.getElementById('prTaxTotal');
+  if (badge) badge.textContent = 'Total: ' + fD(t.totalPayrollTax + t.wcAmt + t.totalUnion);
+}
+
+function taxRow(label, rate, basis, total) {
+  const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
+  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums;';
+  return '<tr><td style="' + cs + '">' + label + '</td>' +
+    '<td style="' + ns + ' color:#7c3aed;">' + rate + '</td>' +
+    '<td style="' + cs + ' font-size:10px; color:var(--gray-400); font-style:italic;">' + basis + '</td>' +
+    '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + total + '</td></tr>';
+}
+
+// ── Render GL Detail with Expandable Groups ───────────────────────────────
+
+const PAYROLL_GL_GROUPS = [
+  {key: 'wages', label: 'Wages', glPrefixes: ['5105']},
+  {key: 'payroll_taxes', label: 'Payroll Taxes', glPrefixes: ['5140','5145']},
+  {key: 'benefits', label: 'Benefits', glPrefixes: ['5150','5155','5160']},
+  {key: 'other_payroll', label: 'Other Payroll', glPrefixes: ['5162','5165','5166','5168','5172']}
+];
+
+function getPayrollGroup(glCode) {
+  const prefix = (glCode || '').split('-')[0];
+  for (const g of PAYROLL_GL_GROUPS) {
+    if (g.glPrefixes.includes(prefix)) return g.key;
+  }
+  return 'other_payroll';
+}
+
+function renderPayrollGL() {
+  const contentDiv = document.getElementById('prGLContent');
+  if (!contentDiv) return;
+
+  const lines = _payrollGLLines;
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const fP = v => ((v||0) * 100).toFixed(1) + '%';
+  const estLbl = typeof estimateLabel === 'function' ? estimateLabel() : 'Sep-Dec Est';
+
+  // Group lines
+  const grouped = {};
+  PAYROLL_GL_GROUPS.forEach(g => { grouped[g.key] = []; });
+  lines.forEach(l => {
+    const gk = getPayrollGroup(l.gl_code);
+    grouped[gk].push(l);
+  });
+
+  const ths = 'padding:8px 10px; text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.3px; border-bottom:2px solid var(--gray-200); background:var(--gray-50); white-space:nowrap;';
+  const thR = ths + ' text-align:right;';
+  const fxB = '<span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super;">fx</span>';
+
+  let html = '<table style="width:100%; border-collapse:collapse; font-size:12px; min-width:1100px;">';
+  html += '<thead><tr>' +
+    '<th style="' + ths + ' min-width:80px;">GL Code</th>' +
+    '<th style="' + ths + ' min-width:140px;">Description</th>' +
+    '<th style="' + ths + ' min-width:80px;">Notes</th>' +
+    '<th style="' + thR + '">Prior Year</th>' +
+    '<th style="' + thR + '">YTD Actual</th>' +
+    '<th style="' + thR + '">Accrual Adj</th>' +
+    '<th style="' + thR + '">Unpaid Bills</th>' +
+    '<th style="' + thR + '">YTD Budget</th>' +
+    '<th style="' + thR + '">' + estLbl + ' ' + fxB + '</th>' +
+    '<th style="' + thR + '">Forecast ' + fxB + '</th>' +
+    '<th style="' + thR + '">Curr Budget</th>' +
+    '<th style="' + thR + '">Inc %</th>' +
+    '<th style="' + thR + '">Proposed ' + fxB + '</th>' +
+    '<th style="' + thR + '">$ Var ' + fxB + '</th>' +
+    '<th style="' + thR + '">% Chg ' + fxB + '</th>' +
+    '</tr></thead><tbody>';
+
+  let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, currBudget:0, proposed:0};
+
+  PAYROLL_GL_GROUPS.forEach(g => {
+    const gLines = grouped[g.key];
+    if (gLines.length === 0) return;
+
+    // Category header (clickable)
+    html += '<tr onclick="togglePrGLGroup(\'' + g.key + '\')" style="background:#f5efe7; cursor:pointer; user-select:none;">' +
+      '<td colspan="15" style="font-weight:700; color:#5a4a3f; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; padding:8px 10px; border-bottom:2px solid #e5e7eb;">' +
+      '<span id="prgl_' + g.key + '_arrow" style="display:inline-block; transition:transform 0.2s; margin-right:6px; font-size:10px;">▶</span>' +
+      g.label + '<span style="font-size:10px; font-weight:500; color:var(--gray-400); margin-left:8px; text-transform:none; letter-spacing:0;">' + gLines.length + ' GL lines</span>' +
+      '</td></tr>';
+
+    // Individual GL lines (hidden by default, except wages)
+    let subTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, currBudget:0, proposed:0};
+
+    gLines.forEach(l => {
+      const est = faComputeEstimate(l);
+      const fc = faComputeForecast(l);
+      const prop = float(l.proposed_budget || 0);
+      const curr = float(l.current_budget || 0);
+      const varD = prop - curr;
+      const varP = curr !== 0 ? varD / curr : 0;
+
+      subTotals.prior += float(l.prior_year);
+      subTotals.ytd += float(l.ytd_actual);
+      subTotals.accrual += float(l.accrual_adj);
+      subTotals.unpaid += float(l.unpaid_bills);
+      subTotals.ytdBudget += float(l.ytd_budget);
+      subTotals.estimate += est;
+      subTotals.forecast += fc;
+      subTotals.currBudget += curr;
+      subTotals.proposed += prop;
+
+      const hidden = g.key !== 'wages' ? ' style="display:none;"' : '';
+      const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
+      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+
+      html += '<tr class="prgl-row" data-prgroup="' + g.key + '"' + hidden + '>' +
+        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + l.gl_code + '</td>' +
+        '<td style="' + cs + '">' + (l.description || '') + '</td>' +
+        '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
+        '<td style="' + ns + '">' + fD(l.prior_year) + '</td>' +
+        '<td style="' + ns + '">' + fD(l.ytd_actual) + '</td>' +
+        '<td style="' + ns + '">' + fD(l.accrual_adj) + '</td>' +
+        '<td style="' + ns + '">' + fD(l.unpaid_bills) + '</td>' +
+        '<td style="' + ns + '">' + fD(l.ytd_budget) + '</td>' +
+        '<td style="' + ns + ' color:#16a34a;">' + fD(est) + '</td>' +
+        '<td style="' + ns + ' color:#16a34a;">' + fD(fc) + '</td>' +
+        '<td style="' + ns + '">' + fD(curr) + '</td>' +
+        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"></td>' +
+        '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + fD(prop) + '</td>' +
+        '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
+        '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
+        '</tr>';
+    });
+
+    // Subtotal row
+    html += '<tr style="background:var(--gray-50); font-weight:700;">' +
+      '<td colspan="3" style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">Total ' + g.label + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.prior) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.ytd) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.accrual) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.unpaid) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.ytdBudget) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.estimate) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.forecast) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.currBudget) + '</td>' +
+      '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800;">' + fD(subTotals.proposed) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.proposed - subTotals.currBudget) + '</td>' +
+      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + (subTotals.currBudget ? ((subTotals.proposed - subTotals.currBudget) / subTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+      '</tr>';
+
+    // Accumulate grand totals
+    Object.keys(grandTotals).forEach(k => { grandTotals[k] += subTotals[k]; });
+  });
+
+  // Grand total row
+  html += '<tr style="background:#1e3a5f; color:white; font-weight:700; font-size:14px;">' +
+    '<td colspan="3" style="padding:10px 12px;">TOTAL PAYROLL</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.prior) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.ytd) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.accrual) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.unpaid) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.ytdBudget) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.estimate) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.forecast) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.currBudget) + '</td>' +
+    '<td style="padding:10px 12px;"></td>' +
+    '<td style="padding:10px 12px; text-align:right; font-size:14px;">' + fD(grandTotals.proposed) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</td>' +
+    '<td style="padding:10px 12px; text-align:right;">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+    '</tr>';
+
+  html += '</tbody></table>';
+  contentDiv.innerHTML = html;
+
+  // Auto-expand wages group arrow
+  const wArrow = document.getElementById('prgl_wages_arrow');
+  if (wArrow) wArrow.style.transform = 'rotate(90deg)';
+
+  // Store GL total for tie-out
+  window._payrollGLTotal = grandTotals.proposed;
+  renderPayrollTieOut(window._payrollCalcTotal || 0);
+}
+
+function float(v) { return parseFloat(v) || 0; }
+
+function togglePrGLGroup(groupKey) {
+  const rows = document.querySelectorAll('tr[data-prgroup="' + groupKey + '"]');
+  const arrow = document.getElementById('prgl_' + groupKey + '_arrow');
+  if (!rows.length) return;
+  const isHidden = rows[0].style.display === 'none';
+  rows.forEach(r => { r.style.display = isHidden ? '' : 'none'; });
+  if (arrow) arrow.style.transform = isHidden ? 'rotate(90deg)' : '';
+}
+
+// ── Tie-Out Bar ───────────────────────────────────────────────────────────
+
+function renderPayrollTieOut(calcTotal) {
+  const div = document.getElementById('prTieOut');
+  if (!div) return;
+  const glTotal = window._payrollGLTotal || 0;
+  const diff = calcTotal - glTotal;
+  const match = Math.abs(diff) < 1;
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+
+  const bg = match ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)' : 'linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%)';
+  const border = match ? '2px solid #86efac' : '2px solid #fca5a5';
+
+  div.innerHTML = '<div style="display:flex; gap:24px; padding:16px 20px; background:' + bg + '; border-top:' + border + '; border-radius:0 0 10px 10px; align-items:center;">' +
+    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calculated Total</div><div style="font-size:18px; font-weight:800; color:#2563eb;">' + fD(calcTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From Sections 1 + 2</div></div>' +
+    '<div style="font-size:24px; color:#d1d5db;">vs</div>' +
+    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">GL Proposed Total</div><div style="font-size:18px; font-weight:800; color:#5a4a3f;">' + fD(glTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From GL lines above</div></div>' +
+    '<div style="font-size:24px; color:#d1d5db;">→</div>' +
+    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Variance</div><div style="font-size:18px; font-weight:800; color:' + (match ? '#16a34a' : '#dc2626') + ';">' + (match ? '✓ Matched' : fD(diff)) + '</div>' +
+    (match ? '' : '<div style="font-size:10px; color:#dc2626; font-style:italic;">Review roster positions or adjust GL proposed values</div>') +
+    '</div></div>';
+}
+
+// ── GL Note & Increase Save Helpers ───────────────────────────────────────
+
+async function savePrGLNote(el) {
+  const glCode = el.dataset.gl;
+  const note = el.value;
+  const ec = entityCode;
+  try {
+    await fetch('/api/fa-lines/' + ec, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: [{gl_code: glCode, notes: note}]})
+    });
+  } catch(e) { console.error('Failed to save GL note:', e); }
+}
+
+async function savePrGLIncrease(el) {
+  const glCode = el.dataset.gl;
+  const pctStr = el.value.replace('%', '').trim();
+  const pct = parseFloat(pctStr) / 100 || 0;
+  const ec = entityCode;
+  const line = _payrollGLLines.find(l => l.gl_code === glCode);
+  if (!line) return;
+  line.increase_pct = pct;
+  const curr = float(line.current_budget);
+  line.proposed_budget = curr * (1 + pct);
+  try {
+    await fetch('/api/fa-lines/' + ec, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: [{gl_code: glCode, increase_pct: pct, proposed_budget: line.proposed_budget}]})
+    });
+    renderPayrollGL();
+  } catch(e) { console.error('Failed to save GL increase:', e); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// END PAYROLL TAB
+// ═══════════════════════════════════════════════════════════════════════════
 
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   const NC = 15;

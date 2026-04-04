@@ -294,3 +294,104 @@ PM portal now has identical cell functionality to the FA dashboard. All 5 tiers 
 
 #### Pending (on hold)
 - **Approval Workflow**: PM changes write to staging table `PendingPMChange`, FA reviews/accepts/rejects before applying to main budget. Architecture proposed but paused per user direction.
+
+---
+
+### PM/FA Collaborative Review System (April 3, 2026)
+
+#### Overview
+Full collaborative workflow where PM makes changes (notes, reclasses, budget proposals) and FA reviews, accepts, rejects, or comments. All actions visible in both dashboards with audit trail.
+
+#### FA Dashboard — PM Review Panel (3 Tabs)
+Collapsible panel above the Budget Workbook with yellow gradient header and pulsing badge showing total items needing review.
+
+**Tab 1: PM Notes**
+- Displays all GL lines where PM left notes
+- Clickable GL code badges scroll to the row in the workbook
+- Shows description + note text in amber callout
+
+**Tab 2: Invoice Reclasses**
+- Aggregates invoice-level reclasses by from_gl → to_gl pairs
+- Shows invoice count, total amount, PM note
+- **Expandable rows**: click any group to reveal individual invoices (vendor, description, invoice #, date, amount)
+- Accept button: moves ytd_actual between GLs via `/api/reclass/accept` with BudgetRevision audit trail
+- Undo button: restores invoices to original GL code
+
+**Tab 3: Budget Proposals**
+- Detects PM changes: `increase_pct != 0`, estimate/forecast overrides, or proposed_budget differs from current_budget
+- Shows: GL code, description, current budget, PM proposed, $ change (% change), method used, status
+- **Accept**: one-click, sets `fa_proposed_status = 'accepted'`, appends `[FA ACCEPTED]` to notes
+- **Reject**: modal with optional override value + reason. FA's override replaces proposed_budget. Appends `[FA REJECTED]` with details to notes
+- **Comment**: modal for note only. Status shows "Commented", action buttons stay available
+- All actions create `BudgetRevision` audit entries
+
+#### PM Dashboard — My Changes Panel (2 Tabs)
+Read-only collapsible panel above the spreadsheet with blue gradient header.
+
+**Tab 1: My Notes**
+- Shows all GLs where PM left notes
+- FA responses (ACCEPTED/REJECTED/COMMENT) displayed inline in blue callout below PM's note
+- Splits note text by line: PM notes in amber, FA responses in blue
+
+**Tab 2: My Reclasses**
+- Shows grouped invoice reclasses with from_gl → to_gl
+- **Expandable rows**: click to see individual invoices (same as FA version)
+- FA Status badge: Pending (amber) or Accepted (green)
+- Read-only — no action buttons
+
+#### PM Dashboard — YTD Reclass Adjustment Fix
+- `applyReclassAdjustments()` refactored from IIFE to named async function
+- Resets all YTD values to `_db_ytd_actual` before reapplying adjustments (prevents double-counting)
+- Called after every `inlineReclass()` and `inlineUndoReclass()` with `await`
+- Expense cache (`_expenseCache`) cleared before re-run
+- YTD totals now update immediately after each reclass action (previously only on page load)
+
+#### New BudgetLine Fields
+```python
+fa_proposed_status = db.Column(db.String(20), nullable=True)  # null=pending, accepted, rejected, commented
+fa_proposed_note = db.Column(db.Text, default="")
+fa_override_value = db.Column(db.Float, nullable=True)  # FA's override when rejecting
+```
+- Auto-migration entries in `app.py` `_migrations` list
+- Included in `to_dict()` serialization
+
+#### New API Endpoints
+- **`POST /api/budget-proposal/review`** — FA accept/reject/comment on PM budget proposals
+  - Validates action ∈ {accepted, rejected, commented}
+  - Float conversion with try/except for override_value
+  - Appends timestamped note entry to line.notes
+  - Creates BudgetRevision audit entry
+  - Uses module-level datetime import (not inline)
+
+- **`POST /api/reclass/accept`** (existing) — FA accepts invoice reclass, moves ytd_actual between GLs
+
+#### Key JS Functions — FA Dashboard
+- `switchPmTab(button, tabId)` — handles 3-tab switching (Notes, Reclasses, Proposals)
+- `toggleReclassInvDetail(gid)` — expand/collapse invoice detail rows in reclass tab
+- `proposalActionButtons(glCode)` — generates Accept/Reject/Comment buttons
+- `acceptProposal(glCode)` — one-click accept with API call
+- `openProposalModal(glCode, action)` — opens reject/comment modal
+- `closeProposalModal()` — dismisses modal
+- `submitProposalReview()` — sends reject/comment to API, updates DOM
+- `updateProposalBadge()` — recounts pending items, updates badge text
+
+#### Key JS Functions — PM Dashboard
+- `switchPmMcTab(button, tabId)` — handles 2-tab switching (Notes, Reclasses)
+- `pmToggleReclassInv(gid)` — expand/collapse invoice detail rows
+- `populateMyChanges()` — async IIFE that populates both tabs on load
+- `applyReclassAdjustments()` — named async function for YTD adjustment
+
+#### Commit Trail (April 3 session)
+| Commit | Description |
+|--------|-------------|
+| `4465417` | Last stable before session |
+| `fc0477d` | Budget Proposals tab on FA |
+| `5e4fa11` | PM YTD reclass fix |
+| `503d11a` | PM My Changes panel |
+| `d7d0707` | Invoice detail expansion + debug fixes |
+
+#### Debug Findings (April 3)
+- Float conversion in `/api/budget-proposal/review` had no error handling — fixed with try/except returning 400
+- Redundant inline `from datetime import datetime as _dt` — removed, uses module-level import
+- PM reclass onclick "missing button guard" — confirmed not needed (PM reclasses are read-only, no buttons)
+- XSS in description fields — low risk (internal users only, Yardi data pipeline)
