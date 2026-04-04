@@ -6235,7 +6235,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   const fmtPct = v => (v * 100).toFixed(2) + '%';
   const fmtPctInput = v => (v * 100).toFixed(3);
 
-  let html = '<div style="max-width:1200px; margin:0 auto;">';
+  // Scrollable wrapper so sticky formula bar has a scroll context (matches R&S behavior)
+  let html = '<div style="max-width:1200px; margin:0 auto; max-height:calc(100vh - 220px); overflow-y:auto; padding-right:8px;">';
 
   // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
   html += '<style>' +
