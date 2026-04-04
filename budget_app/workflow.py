@@ -6421,7 +6421,7 @@ function prAssumpRow(label, key, val, suffix) {
   return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
     '<span style="color:var(--gray-600);">' + label + '</span>' +
     '<div style="display:flex; align-items:center; gap:2px;">' +
-    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums;">' +
+    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums; font-family:inherit;">' +
     '<span style="font-size:11px; color:var(--gray-400); width:12px; display:inline-block;">' + (suffix || '') + '</span>' +
     '</div></div>';
 }
