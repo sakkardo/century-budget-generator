@@ -4301,6 +4301,12 @@ function formulaBarAccept() {
   }
   _showFormulaButtons(false, false);
   _formulaBarOriginal = bar.value.trim();
+
+  // Payroll-specific hook: if cell is in prGLContent, sync _payrollGLLines + re-render
+  if (el && typeof el.closest === 'function' && el.closest('#prGLContent') && typeof payrollCellEdited === 'function') {
+    payrollCellEdited(el, gl, field);
+  }
+
   setTimeout(() => {
     el.style.border = '';
     el.style.borderRadius = '';
@@ -6865,27 +6871,75 @@ function renderPayrollGL() {
         ? 'disabled title="Locked — driven by roster calculation" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#f3f4f6; color:#9ca3af; cursor:not-allowed;"'
         : 'style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"';
 
-      // Build human-readable formulas for tooltips (mirrors faComputeEstimate/Forecast)
+      // Build human-readable formulas (mirrors faComputeEstimate/Forecast)
       const pyr = float(l.prior_year), yta = float(l.ytd_actual), acc = float(l.accrual_adj), unp = float(l.unpaid_bills);
       const base = yta + acc + unp;
       const estFormula = (base >= pyr && pyr > 0)
-        ? '=(YTD+Accrual+Unpaid)/' + (YTD_MONTHS||2) + '*' + (REMAINING_MONTHS||10)
-        : '=MAX(Prior-(YTD+Accrual+Unpaid),0)';
-      const fcstFormula = '=YTD+Accrual+Unpaid+Estimate';
+        ? '=(' + yta + '+' + acc + '+' + unp + ')/' + (YTD_MONTHS||2) + '*' + (REMAINING_MONTHS||10)
+        : '=MAX(' + pyr + '-(' + yta + '+' + acc + '+' + unp + '),0)';
+      const fcstFormula = '=' + yta + '+' + acc + '+' + unp + '+Estimate';
       const componentKey = PAYROLL_COMPONENT_MAP[l.gl_code];
-      const propFormula = isLinked
+      const propFormulaDisplay = isLinked
         ? '=Roster.' + componentKey + ' (auto-linked)'
         : '=Forecast*(1+IncreasePct)';
 
-      // fx badge style (matches R&S tab)
-      const fxBadge = '<span title="Computed formula" style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">fx</span>';
-      const fxBadgeLinked = '<span title="Driven by roster" style="font-size:8px; font-weight:800; color:#fff; background:#2563eb; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">🔗fx</span>';
+      // Determine override states
+      const estOverride = l.estimate_override !== null && l.estimate_override !== undefined;
+      const fcstOverride = l.forecast_override !== null && l.forecast_override !== undefined;
+      const propHasFormula = !!(l.proposed_formula && l.proposed_formula !== 'manual');
+      const propManualOverride = l.proposed_formula === 'manual';
+
+      // Cell IDs
+      const estId = 'pr_est_' + l.gl_code;
+      const fcstId = 'pr_fcst_' + l.gl_code;
+      const propId = 'pr_prop_' + l.gl_code;
+
+      // Helper: build fx cell input matching R&S style
+      const fxInput = (id, val, formula, field, overrideFlag, extraAttr) => {
+        const badgeText = overrideFlag ? '✎' : 'fx';
+        const badgeStyle = overrideFlag
+          ? 'background:#fef3c7; color:#d97706; border-color:#d97706;'
+          : 'background:#eff6ff; color:#2563eb; border-color:#2563eb;';
+        const badge = '<span class="fa-fx" style="font-size:8px; font-weight:800; border:1px solid; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; ' + badgeStyle + '">' + badgeText + '</span>';
+        return badge +
+          '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
+          ' value="' + fD(val) + '"' +
+          ' data-raw="' + Math.round(val) + '"' +
+          ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
+          ' data-override="' + (overrideFlag ? 'true' : 'false') + '"' +
+          (extraAttr || '') +
+          ' data-gl="' + l.gl_code + '" data-field="' + field + '"' +
+          ' onblur="fxCellBlur(this)"' +
+          ' style="cursor:pointer; pointer-events:none; width:100%; border:none; background:transparent; text-align:right; padding:0; font-family:inherit; font-size:inherit; color:inherit; font-weight:inherit;">';
+      };
+
+      // Linked-row 🔗fx badge (non-interactive)
+      const fxBadgeLinked = '<span title="Driven by roster — change via roster/assumptions" style="font-size:8px; font-weight:800; color:#fff; background:#2563eb; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">🔗fx</span>';
 
       const propCellStyle = isLinked
         ? ns + ' color:#1e40af; font-weight:700; background:#eff6ff;'
         : ns + ' color:#16a34a; font-weight:600;';
 
-      html += '<tr class="prgl-row" data-prgroup="' + g.key + '"' + hidden + '>' +
+      // Estimate cell — always editable via formula bar
+      const estCellHtml = '<td class="num" style="' + ns + ' color:#16a34a; position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + estId + '\'))">' +
+        fxInput(estId, est, estFormula, 'estimate_override', estOverride) + '</td>';
+
+      // Forecast cell — always editable via formula bar
+      const fcstCellHtml = '<td class="num" style="' + ns + ' color:#16a34a; position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + fcstId + '\'))">' +
+        fxInput(fcstId, fc, fcstFormula, 'forecast_override', fcstOverride) + '</td>';
+
+      // Proposed cell: non-linked rows are editable via formula bar; linked rows are read-only display
+      let propCellHtml;
+      if (isLinked) {
+        propCellHtml = '<td style="' + propCellStyle + '" title="' + propFormulaDisplay + '">' + fD(prop) + ' ' + fxBadgeLinked + '</td>';
+      } else {
+        const pfAttr = propHasFormula ? ' data-proposed-formula="' + l.proposed_formula.replace(/"/g, '&quot;') + '"' : '';
+        const propOverride = propHasFormula || propManualOverride;
+        propCellHtml = '<td class="num" style="' + propCellStyle + ' position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + propId + '\'))">' +
+          fxInput(propId, prop, propFormulaDisplay, 'proposed_budget', propOverride, pfAttr) + '</td>';
+      }
+
+      html += '<tr class="prgl-row" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
         '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
         '<td style="' + cs + '">' + (l.description || '') + '</td>' +
         '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
@@ -6894,11 +6948,11 @@ function renderPayrollGL() {
         '<td style="' + ns + '">' + fD(l.accrual_adj) + '</td>' +
         '<td style="' + ns + '">' + fD(l.unpaid_bills) + '</td>' +
         '<td style="' + ns + '">' + fD(l.ytd_budget) + '</td>' +
-        '<td style="' + ns + ' color:#16a34a;" title="' + estFormula + '">' + fD(est) + ' <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></td>' +
-        '<td style="' + ns + ' color:#16a34a;" title="' + fcstFormula + '">' + fD(fc) + ' <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></td>' +
+        estCellHtml +
+        fcstCellHtml +
         '<td style="' + ns + '">' + fD(curr) + '</td>' +
         '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
-        '<td style="' + propCellStyle + '" title="' + propFormula + '">' + fD(prop) + ' ' + (isLinked ? fxBadgeLinked : fxBadge) + '</td>' +
+        propCellHtml +
         '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
         '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
         '</tr>';
@@ -6983,6 +7037,11 @@ function pushRosterToGL() {
       line._linked = false;
       return;
     }
+    // Skip rows the user has manually overridden (proposed_formula set)
+    if (line.proposed_formula) {
+      line._linked = false;
+      return;
+    }
     const newProposed = Math.round(comps[componentKey]);
     const oldProposed = Math.round(line.proposed_budget || 0);
     line._linked = true;
@@ -7015,6 +7074,35 @@ function pushRosterToGL() {
         });
       } catch(e) { console.error('Failed to save roster-linked GL values:', e); }
     }, 800);
+  }
+}
+
+// Called from formulaBarAccept when a Payroll GL cell is edited.
+// Syncs the in-memory _payrollGLLines array and triggers re-render.
+function payrollCellEdited(el, glCode, field) {
+  const line = _payrollGLLines.find(l => l.gl_code === glCode);
+  if (!line) return;
+  const raw = parseFloat(el.dataset.raw) || 0;
+  const overrideSet = el.dataset.override === 'true';
+
+  if (field === 'estimate_override') {
+    line.estimate_override = overrideSet ? raw : null;
+  } else if (field === 'forecast_override') {
+    line.forecast_override = overrideSet ? raw : null;
+  } else if (field === 'proposed_budget') {
+    line.proposed_budget = raw;
+    // Mark as user-overridden so pushRosterToGL won't re-link
+    line.proposed_formula = el.dataset.proposedFormula || 'manual';
+    line._linked = false;
+    // Back-calc increase_pct to keep column accurate
+    const curr = float(line.current_budget || 0);
+    line.increase_pct = curr ? (raw / curr - 1) : 0;
+  }
+
+  // Re-render to refresh totals and any dependent displays
+  renderPayrollGL();
+  if (window._payrollCalcTotal !== undefined) {
+    renderPayrollTieOut(window._payrollCalcTotal);
   }
 }
 
