@@ -7192,10 +7192,10 @@ function renderPayrollTieOut(calcTotal) {
 
   div.innerHTML = '<div style="padding:16px 20px; background:linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%); border-top:2px solid #93c5fd; border-radius:0 0 10px 10px;">' +
     '<div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">' +
-      '<div style="flex:1; min-width:140px;">' +
-        '<div style="font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px;">🔗 Linked GLs (Auto)</div>' +
+      '<div onclick="togglePrLinkedBreakdown()" style="flex:1; min-width:140px; cursor:pointer; padding:8px; margin:-8px; border-radius:6px; transition:background 0.15s;" onmouseover="this.style.background=\'rgba(255,255,255,0.5)\'" onmouseout="this.style.background=\'transparent\'" title="Click to see all linked GLs">' +
+        '<div style="font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px;">🔗 Linked GLs (Auto) <span id="prLinkedArrow" style="display:inline-block; transition:transform 0.2s; font-size:9px; margin-left:3px;">▶</span></div>' +
         '<div style="font-size:20px; font-weight:800; color:#1e40af;">' + fD(linkedTotal) + '</div>' +
-        '<div style="font-size:10px; color:#3b82f6; font-style:italic;">' + linkedCount + ' GLs driven by roster</div>' +
+        '<div style="font-size:10px; color:#3b82f6; font-style:italic;">' + linkedCount + ' GLs driven by roster — click to view</div>' +
       '</div>' +
       '<div style="font-size:24px; color:#9ca3af;">+</div>' +
       '<div style="flex:1; min-width:140px;">' +
@@ -7212,7 +7212,99 @@ function renderPayrollTieOut(calcTotal) {
         '<div style="font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calc Check</div>' +
         '<div style="font-size:14px; font-weight:700; color:' + (linkedMatch ? '#059669' : '#dc2626') + ';">' + (linkedMatch ? '✓ Matches ' : '⚠ Diff: ') + fD(calcTotal) + '</div>' +
       '</div>' +
-    '</div></div>';
+    '</div>' +
+    '<div id="prLinkedBreakdown" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid #bfdbfe;">' + buildLinkedBreakdownHTML() + '</div>' +
+    '</div>';
+}
+
+// Build breakdown table showing each linked GL with override controls
+function buildLinkedBreakdownHTML() {
+  if (!Array.isArray(_payrollGLLines)) return '';
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const linkedLines = _payrollGLLines.filter(l => l._linked);
+  if (linkedLines.length === 0) {
+    return '<div style="font-size:12px; color:#6b7280; font-style:italic; text-align:center; padding:12px;">No linked GLs yet — update the roster or assumptions to drive GL values.</div>';
+  }
+
+  let html = '<div style="font-size:11px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Linked GL Breakdown</div>';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+  html += '<thead><tr style="background:rgba(255,255,255,0.6);">' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">GL Code</th>' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Description</th>' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Roster Component</th>' +
+    '<th style="text-align:right; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Current Value</th>' +
+    '<th style="text-align:center; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Override</th>' +
+    '</tr></thead><tbody>';
+
+  linkedLines.forEach(l => {
+    const compKey = PAYROLL_COMPONENT_MAP[l.gl_code] || '—';
+    const val = Math.round(l.proposed_budget || 0);
+    html += '<tr style="border-top:1px solid rgba(147,197,253,0.3);">' +
+      '<td style="padding:6px 10px; font-family:monospace; font-size:11px; font-weight:600; color:#1e40af;">🔗 ' + l.gl_code + '</td>' +
+      '<td style="padding:6px 10px; font-size:12px; color:#1f2937;">' + (l.description || '') + '</td>' +
+      '<td style="padding:6px 10px; font-size:11px; color:#3b82f6; font-family:monospace;">' + compKey + '</td>' +
+      '<td style="padding:6px 10px; text-align:right; font-weight:700; color:#1e40af; font-variant-numeric:tabular-nums;">' + fD(val) + '</td>' +
+      '<td style="padding:6px 10px; text-align:center;">' +
+        '<input type="text" placeholder="Enter $" data-gl="' + l.gl_code + '" ' +
+          'style="width:90px; padding:3px 6px; border:1px solid #93c5fd; border-radius:4px; font-size:11px; text-align:right; background:white;" ' +
+          'onkeydown="if(event.key===\'Enter\'){prOverrideLinkedGL(this);}"> ' +
+        '<button onclick="prOverrideLinkedGL(this.previousElementSibling)" ' +
+          'style="padding:3px 10px; font-size:10px; font-weight:600; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer; margin-left:4px;">Override</button>' +
+      '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  html += '<div style="margin-top:8px; font-size:10px; color:#6b7280; font-style:italic;">Entering an override value unlinks the row — it will keep that value until you click Clear on the Proposed cell.</div>';
+  return html;
+}
+
+// Toggle the expand/collapse of the linked GL breakdown
+function togglePrLinkedBreakdown() {
+  const panel = document.getElementById('prLinkedBreakdown');
+  const arrow = document.getElementById('prLinkedArrow');
+  if (!panel) return;
+  const isShown = panel.style.display !== 'none';
+  panel.style.display = isShown ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isShown ? '' : 'rotate(90deg)';
+}
+
+// Apply a manual override on a linked GL from the breakdown panel
+async function prOverrideLinkedGL(input) {
+  const gl = input.dataset.gl;
+  const raw = parseDollar(input.value);
+  if (!raw || isNaN(raw)) { input.focus(); return; }
+  const line = _payrollGLLines.find(l => l.gl_code === gl);
+  if (!line) return;
+  const rounded = Math.round(raw);
+  line.proposed_budget = rounded;
+  line.proposed_formula = 'manual';
+  line._linked = false;
+  const curr = float(line.current_budget || 0);
+  line.increase_pct = curr ? (rounded / curr - 1) : 0;
+
+  // Persist to DB
+  try {
+    await fetch('/api/fa-lines/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: [{
+        gl_code: gl,
+        proposed_budget: rounded,
+        proposed_formula: 'manual',
+        increase_pct: line.increase_pct
+      }]})
+    });
+  } catch(e) { console.error('Override save failed:', e); }
+
+  // Re-render GL + tie-out
+  renderPayrollGL();
+  renderPayrollTieOut(window._payrollCalcTotal || 0);
+  // Re-open breakdown since render just replaced it
+  const panel = document.getElementById('prLinkedBreakdown');
+  if (panel) panel.style.display = 'block';
+  const arrow = document.getElementById('prLinkedArrow');
+  if (arrow) arrow.style.transform = 'rotate(90deg)';
 }
 
 // ── GL Note & Increase Save Helpers ───────────────────────────────────────
