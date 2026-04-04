@@ -6882,13 +6882,20 @@ function renderPayrollGL() {
         ? 'disabled title="Locked — driven by roster calculation" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#f3f4f6; color:#9ca3af; cursor:not-allowed;"'
         : 'style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"';
 
-      // Build human-readable formulas (mirrors faComputeEstimate/Forecast)
+      // Build human-readable formulas (matches R&S tab formula syntax for safeEvalFormula)
       const pyr = float(l.prior_year), yta = float(l.ytd_actual), acc = float(l.accrual_adj), unp = float(l.unpaid_bills);
-      const base = yta + acc + unp;
-      const estFormula = (base >= pyr && pyr > 0)
-        ? '=(' + yta + '+' + acc + '+' + unp + ')/' + (YTD_MONTHS||2) + '*' + (REMAINING_MONTHS||10)
-        : '=MAX(' + pyr + '-(' + yta + '+' + acc + '+' + unp + '),0)';
-      const fcstFormula = '=' + yta + '+' + acc + '+' + unp + '+Estimate';
+      const baseSum = yta + acc + unp;
+      let estFormula;
+      if (baseSum >= pyr && pyr > 0 && YTD_MONTHS > 0) {
+        estFormula = '=(' + yta + '+' + acc + '+' + unp + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+      } else if (pyr > 0) {
+        estFormula = '=' + pyr + '-(' + yta + '+' + acc + '+' + unp + ')';
+      } else if (baseSum > 0 && YTD_MONTHS > 0) {
+        estFormula = '=(' + yta + '+' + acc + '+' + unp + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+      } else {
+        estFormula = '=0';
+      }
+      const fcstFormula = '=' + yta + '+(' + acc + ')+(' + unp + ')+' + Math.round(est);
       const componentKey = PAYROLL_COMPONENT_MAP[l.gl_code];
       const propFormulaDisplay = isLinked
         ? '=Roster.' + componentKey + ' (auto-linked)'
