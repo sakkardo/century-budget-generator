@@ -1555,27 +1555,73 @@ def create_workflow_blueprint(db):
             if not line:
                 continue
 
-            line.accrual_adj = float(line_data.get("accrual_adj", 0) or 0)
-            line.unpaid_bills = float(line_data.get("unpaid_bills", 0) or 0)
-            line.increase_pct = float(line_data.get("increase_pct", 0) or 0)
-            line.notes = line_data.get("notes", "")
-            if "category" in line_data and line_data["category"]:
-                line.category = line_data["category"]
+            # Track changes for PM audit trail
+            changes = []
 
-            # Override fields (PM Tier 1-5 edits)
-            if "estimate_override" in line_data:
-                val = line_data["estimate_override"]
-                line.estimate_override = float(val) if val is not None else None
-            if "forecast_override" in line_data:
-                val = line_data["forecast_override"]
-                line.forecast_override = float(val) if val is not None else None
+            # Float fields that are always present in PM payload
+            for fname in ("accrual_adj", "unpaid_bills", "increase_pct"):
+                if fname in line_data:
+                    new_val = float(line_data.get(fname, 0) or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
+                    setattr(line, fname, new_val)
+
+            # Notes
+            if "notes" in line_data:
+                new_val = line_data.get("notes", "")
+                if (line.notes or "") != new_val:
+                    changes.append(("notes", line.notes or "", new_val))
+                line.notes = new_val
+
+            # Category
+            if "category" in line_data and line_data["category"]:
+                old_val = line.category or ""
+                new_val = line_data["category"]
+                if old_val != new_val:
+                    changes.append(("category", old_val, new_val))
+                line.category = new_val
+
+            # Nullable override fields
+            for ofield in ("estimate_override", "forecast_override"):
+                if ofield in line_data:
+                    raw = line_data[ofield]
+                    new_val = float(raw) if raw is not None else None
+                    old_val = getattr(line, ofield, None)
+                    if old_val != new_val:
+                        changes.append((ofield, str(old_val), str(new_val)))
+                    setattr(line, ofield, new_val)
+
+            # Proposed budget and formula
             if "proposed_budget" in line_data:
-                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+                new_val = float(line_data["proposed_budget"] or 0)
+                old_val = line.proposed_budget or 0
+                if old_val != new_val:
+                    changes.append(("proposed_budget", str(old_val), str(new_val)))
+                line.proposed_budget = new_val
             if "proposed_formula" in line_data:
-                line.proposed_formula = line_data["proposed_formula"] or None
+                new_val = line_data["proposed_formula"] or None
+                old_val = line.proposed_formula or ""
+                if old_val != (new_val or ""):
+                    changes.append(("proposed_formula", old_val, new_val or ""))
+                line.proposed_formula = new_val
+
+            # Other numeric fields
             for fname in ("prior_year", "ytd_actual", "ytd_budget", "current_budget"):
                 if fname in line_data:
-                    setattr(line, fname, float(line_data[fname] or 0))
+                    new_val = float(line_data[fname] or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
+                    setattr(line, fname, new_val)
+
+            # Write audit trail entries
+            for field, old_v, new_v in changes:
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id, budget_line_id=line.id,
+                    action="update", field_name=field,
+                    old_value=old_v, new_value=new_v, source="pm"
+                ))
 
         try:
             db.session.commit()
