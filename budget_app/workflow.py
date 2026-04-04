@@ -6266,11 +6266,11 @@ async function renderPayrollTab(sheetLines, contentDiv) {
           <div style="font-size:10px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5f3ff;">Wage & Schedule</div>
           ${prAssumpRow('Wage Increase %', 'wage_increase_pct', fmtPctInput(a.wage_increase_pct || 0), '%')}
           ${prAssumpRow('Effective Week', 'effective_week', a.effective_week || '16', '')}
-          ${prAssumpRowCalc('Pre-Incr Weeks', a.pre_increase_weeks || 15)}
-          ${prAssumpRowCalc('Post-Incr Weeks', a.post_increase_weeks || 37)}
+          ${prAssumpRow('Pre-Incr Weeks', 'pre_increase_weeks', a.pre_increase_weeks || 15, '')}
+          ${prAssumpRow('Post-Incr Weeks', 'post_increase_weeks', a.post_increase_weeks || 37, '')}
           ${prAssumpRow('OT Factor %', 'ot_factor', ((a.ot_factor || 0.002) * 100).toFixed(1), '%')}
           ${prAssumpRow('Vac/Sick/Hol %', 'vac_sick_hol_factor', ((a.vac_sick_hol_factor || 0.10) * 100).toFixed(1), '%')}
-          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Pre/Post weeks auto-calculate from Effective Week</div>
+          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Changing Effective Week auto-updates Pre/Post weeks — you can also edit them directly</div>
         </div>
 
         <!-- Column 2: Payroll Tax Rates -->
@@ -6441,6 +6441,8 @@ function payrollAssumptionChanged(el) {
     _payrollAssumptions.post_increase_weeks = 52 - _payrollAssumptions.pre_increase_weeks;
   } else if (['wage_increase_pct','fica','sui','fui','mta','nys_disability','pfl','workers_comp','ot_factor','vac_sick_hol_factor'].includes(key)) {
     _payrollAssumptions[key] = parseFloat(val) / 100 || 0;
+  } else if (key === 'pre_increase_weeks' || key === 'post_increase_weeks') {
+    _payrollAssumptions[key] = parseInt(val) || 0;
   } else {
     _payrollAssumptions[key] = parseFloat(val) || 0;
   }
