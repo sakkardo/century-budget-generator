@@ -6556,6 +6556,25 @@ function recalcPayroll() {
   // Store for tie-out
   window._payrollCalcTotal = totalLaborCalc;
 
+  // Publish component breakdown for GL linkage
+  window._payrollComponents = {
+    annual_base: totalAnnualBase,
+    ot: totalOT,
+    vsh_vacation: totalVSH / 3,
+    vsh_holiday: totalVSH / 3,
+    vsh_sick: totalVSH / 3,
+    employer_taxes: ficaAmt + suiAmt + fuiAmt + mtaAmt,
+    workers_comp: wcAmt,
+    nys_disability: nysDisAmt,
+    pfl: pflAmt,
+    welfare: welfareAmt,
+    pension: pensionAmt,
+    supp_retirement: suppRetAmt,
+    legal_fund: legalAmt,
+    training_fund: trainingAmt,
+    profit_sharing: profitShareAmt
+  };
+
   // Render roster
   renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp);
 
@@ -6563,6 +6582,9 @@ function recalcPayroll() {
   renderPayrollTaxes({ficaAmt, suiAmt, fuiAmt, mtaAmt, nysDisAmt, pflAmt, totalPayrollTax, wcAmt,
     welfareAmt, pensionAmt, suppRetAmt, legalAmt, trainingAmt, profitShareAmt, totalUnion, totalLaborCalc,
     grossWages, totalEmployees});
+
+  // Push roster-derived component values to linked GL lines
+  pushRosterToGL();
 
   // Update tie-out
   renderPayrollTieOut(totalLaborCalc);
@@ -6715,6 +6737,27 @@ const PAYROLL_GL_GROUPS = [
   {key: 'other_payroll', label: 'Other Payroll', glPrefixes: ['5162','5165','5166','5168','5172']}
 ];
 
+// Maps GL codes to roster/assumption calc components. Mapped GLs have their
+// proposed_budget driven automatically by Section 1-2 calculations; unmapped
+// GLs retain the manual flat-% behavior.
+const PAYROLL_COMPONENT_MAP = {
+  '5105-0000': 'annual_base',      // Gross Payroll
+  '5105-0010': 'ot',               // Overtime Pay
+  '5105-0015': 'vsh_vacation',     // Vacation Pay (1/3 of VSH)
+  '5105-0020': 'vsh_holiday',      // Holiday Pay (1/3 of VSH)
+  '5105-0025': 'vsh_sick',         // Sick Pay (1/3 of VSH)
+  '5145-0000': 'employer_taxes',   // Employer Payroll Taxes (FICA+SUI+FUI+MTA)
+  '5165-0000': 'workers_comp',     // Workers Comp Insurance
+  '5166-0000': 'nys_disability',   // Disability Insurance
+  '5168-0000': 'pfl',              // Paid Family Leave
+  '5155-0015': 'welfare',          // Health Insurance (welfare)
+  '5160-0010': 'pension',          // Pension Fund
+  '5160-0020': 'supp_retirement',  // Annuity Fund
+  '5160-0025': 'legal_fund',       // Legal Fund
+  '5160-0030': 'training_fund',    // Training Fund
+  '5160-0035': 'profit_sharing'    // Profit Sharing
+};
+
 function getPayrollGroup(glCode) {
   const prefix = (glCode || '').split('-')[0];
   for (const g of PAYROLL_GL_GROUPS) {
@@ -6801,8 +6844,18 @@ function renderPayrollGL() {
       const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
       const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
 
+      // Linked rows are auto-driven by roster — show 🔗 icon, lock Inc%, highlight Proposed
+      const isLinked = !!l._linked;
+      const linkIcon = isLinked ? '<span title="Driven by roster calculation" style="color:#2563eb; font-size:11px; margin-right:3px;">🔗</span>' : '';
+      const pctInputAttrs = isLinked
+        ? 'disabled title="Locked — driven by roster calculation" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#f3f4f6; color:#9ca3af; cursor:not-allowed;"'
+        : 'style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"';
+      const propCellStyle = isLinked
+        ? ns + ' color:#1e40af; font-weight:700; background:#eff6ff;'
+        : ns + ' color:#16a34a; font-weight:600;';
+
       html += '<tr class="prgl-row" data-prgroup="' + g.key + '"' + hidden + '>' +
-        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + l.gl_code + '</td>' +
+        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
         '<td style="' + cs + '">' + (l.description || '') + '</td>' +
         '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
         '<td style="' + ns + '">' + fD(l.prior_year) + '</td>' +
@@ -6813,8 +6866,8 @@ function renderPayrollGL() {
         '<td style="' + ns + ' color:#16a34a;">' + fD(est) + '</td>' +
         '<td style="' + ns + ' color:#16a34a;">' + fD(fc) + '</td>' +
         '<td style="' + ns + '">' + fD(curr) + '</td>' +
-        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"></td>' +
-        '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + fD(prop) + '</td>' +
+        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
+        '<td style="' + propCellStyle + '">' + fD(prop) + '</td>' +
         '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
         '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
         '</tr>';
@@ -6883,24 +6936,101 @@ function togglePrGLGroup(groupKey) {
 
 // ── Tie-Out Bar ───────────────────────────────────────────────────────────
 
+// Push roster-derived component values to linked GL lines.
+// Updates _payrollGLLines in memory, then persists to DB via /api/fa-lines.
+let _prPushSaveTimer = null;
+function pushRosterToGL() {
+  const comps = window._payrollComponents;
+  if (!comps || !Array.isArray(_payrollGLLines)) return;
+
+  const savePayload = [];
+  let changed = false;
+
+  _payrollGLLines.forEach(line => {
+    const componentKey = PAYROLL_COMPONENT_MAP[line.gl_code];
+    if (!componentKey || comps[componentKey] === undefined) {
+      line._linked = false;
+      return;
+    }
+    const newProposed = Math.round(comps[componentKey]);
+    const oldProposed = Math.round(line.proposed_budget || 0);
+    line._linked = true;
+    line.proposed_budget = newProposed;
+    // Back-calc increase_pct from curr_budget so the column stays accurate
+    const curr = float(line.current_budget || 0);
+    line.increase_pct = curr ? (newProposed / curr - 1) : 0;
+    if (newProposed !== oldProposed) {
+      changed = true;
+      savePayload.push({
+        gl_code: line.gl_code,
+        proposed_budget: newProposed,
+        increase_pct: line.increase_pct
+      });
+    }
+  });
+
+  // Re-render GL section to reflect updated values + linked indicators
+  renderPayrollGL();
+
+  // Debounced persist — batches changes from rapid roster edits
+  if (changed && savePayload.length > 0) {
+    clearTimeout(_prPushSaveTimer);
+    _prPushSaveTimer = setTimeout(async () => {
+      try {
+        await fetch('/api/fa-lines/' + entityCode, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({lines: savePayload})
+        });
+      } catch(e) { console.error('Failed to save roster-linked GL values:', e); }
+    }, 800);
+  }
+}
+
 function renderPayrollTieOut(calcTotal) {
   const div = document.getElementById('prTieOut');
   if (!div) return;
-  const glTotal = window._payrollGLTotal || 0;
-  const diff = calcTotal - glTotal;
-  const match = Math.abs(diff) < 1;
   const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
 
-  const bg = match ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)' : 'linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%)';
-  const border = match ? '2px solid #86efac' : '2px solid #fca5a5';
+  // Break down GL total into linked (roster-driven) vs manual (flat %)
+  let linkedTotal = 0;
+  let manualTotal = 0;
+  let linkedCount = 0;
+  if (Array.isArray(_payrollGLLines)) {
+    _payrollGLLines.forEach(l => {
+      const prop = Math.round(l.proposed_budget || 0);
+      if (l._linked) { linkedTotal += prop; linkedCount++; }
+      else { manualTotal += prop; }
+    });
+  }
+  const glTotal = linkedTotal + manualTotal;
+  window._payrollGLTotal = glTotal;
 
-  div.innerHTML = '<div style="display:flex; gap:24px; padding:16px 20px; background:' + bg + '; border-top:' + border + '; border-radius:0 0 10px 10px; align-items:center;">' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calculated Total</div><div style="font-size:18px; font-weight:800; color:#2563eb;">' + fD(calcTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From Sections 1 + 2</div></div>' +
-    '<div style="font-size:24px; color:#d1d5db;">vs</div>' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">GL Proposed Total</div><div style="font-size:18px; font-weight:800; color:#5a4a3f;">' + fD(glTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From GL lines above</div></div>' +
-    '<div style="font-size:24px; color:#d1d5db;">→</div>' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Variance</div><div style="font-size:18px; font-weight:800; color:' + (match ? '#16a34a' : '#dc2626') + ';">' + (match ? '✓ Matched' : fD(diff)) + '</div>' +
-    (match ? '' : '<div style="font-size:10px; color:#dc2626; font-style:italic;">Review roster positions or adjust GL proposed values</div>') +
+  // Match: linked total should equal roster calc total (by construction)
+  const linkedMatch = Math.abs(linkedTotal - calcTotal) < 1;
+
+  div.innerHTML = '<div style="padding:16px 20px; background:linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%); border-top:2px solid #93c5fd; border-radius:0 0 10px 10px;">' +
+    '<div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">' +
+      '<div style="flex:1; min-width:140px;">' +
+        '<div style="font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px;">🔗 Linked GLs (Auto)</div>' +
+        '<div style="font-size:20px; font-weight:800; color:#1e40af;">' + fD(linkedTotal) + '</div>' +
+        '<div style="font-size:10px; color:#3b82f6; font-style:italic;">' + linkedCount + ' GLs driven by roster</div>' +
+      '</div>' +
+      '<div style="font-size:24px; color:#9ca3af;">+</div>' +
+      '<div style="flex:1; min-width:140px;">' +
+        '<div style="font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Manual GLs</div>' +
+        '<div style="font-size:20px; font-weight:800; color:#374151;">' + fD(manualTotal) + '</div>' +
+        '<div style="font-size:10px; color:var(--gray-400); font-style:italic;">Flat % applied</div>' +
+      '</div>' +
+      '<div style="font-size:24px; color:#9ca3af;">=</div>' +
+      '<div style="flex:1; min-width:140px;">' +
+        '<div style="font-size:10px; font-weight:700; color:#1f2937; text-transform:uppercase; letter-spacing:0.5px;">Total Payroll</div>' +
+        '<div style="font-size:22px; font-weight:800; color:#1f2937;">' + fD(glTotal) + '</div>' +
+      '</div>' +
+      '<div style="margin-left:auto; text-align:right;">' +
+        '<div style="font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calc Check</div>' +
+        '<div style="font-size:14px; font-weight:700; color:' + (linkedMatch ? '#059669' : '#dc2626') + ';">' + (linkedMatch ? '✓ Matches ' : '⚠ Diff: ') + fD(calcTotal) + '</div>' +
+      '</div>' +
     '</div></div>';
 }
 
