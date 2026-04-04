@@ -6238,7 +6238,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   let html = '<div style="max-width:1200px; margin:0 auto;">';
 
   // Formula bar — Excel-style with live preview + Accept/Cancel (same as other tabs)
-  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
+  // Sticky positioning so it stays visible as user scrolls through GL detail
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
     '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
     '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
     '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
@@ -6959,18 +6960,27 @@ function renderPayrollGL() {
           fxInput(propId, prop, propFormulaDisplay, 'proposed_budget', propOverride, pfAttr) + '</td>';
       }
 
+      // Editable $ cell (Prior, YTD, Accrual, Unpaid, YTD Budget, Curr Budget) — matches R&S
+      const prDollarCell = (field, val) => {
+        return '<td class="num" style="' + ns + '"><input class="pr-gl-dollar" type="text" ' +
+          'data-gl="' + l.gl_code + '" data-field="' + field + '" ' +
+          'value="' + fD(val) + '" data-raw="' + Math.round(val || 0) + '" ' +
+          'onfocus="this.value=this.dataset.raw" onblur="prDollarCellBlur(this)" ' +
+          'style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:12px; background:white; text-align:right; font-family:inherit; font-variant-numeric:tabular-nums;"></td>';
+      };
+
       html += '<tr class="prgl-row" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
         '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
         '<td style="' + cs + '">' + (l.description || '') + '</td>' +
         '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
-        '<td style="' + ns + '">' + fD(l.prior_year) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.ytd_actual) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.accrual_adj) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.unpaid_bills) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.ytd_budget) + '</td>' +
+        prDollarCell('prior_year', l.prior_year) +
+        prDollarCell('ytd_actual', l.ytd_actual) +
+        prDollarCell('accrual_adj', l.accrual_adj) +
+        prDollarCell('unpaid_bills', l.unpaid_bills) +
+        prDollarCell('ytd_budget', l.ytd_budget) +
         estCellHtml +
         fcstCellHtml +
-        '<td style="' + ns + '">' + fD(curr) + '</td>' +
+        prDollarCell('current_budget', curr) +
         '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
         propCellHtml +
         '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
@@ -7094,6 +7104,26 @@ function pushRosterToGL() {
         });
       } catch(e) { console.error('Failed to save roster-linked GL values:', e); }
     }, 800);
+  }
+}
+
+// Called when a Payroll dollar cell (Prior, YTD, Accrual, Unpaid, YTD Budget, Curr Budget)
+// loses focus. Parses, saves via faAutoSave, updates _payrollGLLines, and re-renders.
+function prDollarCellBlur(el) {
+  const raw = parseDollar(el.value);
+  const rounded = Math.round(raw);
+  el.dataset.raw = rounded;
+  const gl = el.dataset.gl, field = el.dataset.field;
+  // Save via existing fa-lines endpoint (uses accumulator)
+  faAutoSave(gl, field, rounded);
+  // Update in-memory line + re-render Payroll GL
+  const line = _payrollGLLines.find(l => l.gl_code === gl);
+  if (line) {
+    line[field] = rounded;
+    renderPayrollGL();
+    if (window._payrollCalcTotal !== undefined) {
+      renderPayrollTieOut(window._payrollCalcTotal);
+    }
   }
 }
 
