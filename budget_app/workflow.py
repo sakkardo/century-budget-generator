@@ -6237,6 +6237,21 @@ async function renderPayrollTab(sheetLines, contentDiv) {
 
   let html = '<div style="max-width:1200px; margin:0 auto;">';
 
+  // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
+  html += '<style>' +
+    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; }' +
+    '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
+    '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
+    '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
+    '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
+    '#prGLContent .fa-fx { position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }' +
+    '#prGLContent .fa-fx-override { color:#d97706; background:#fef3c7; border-color:#d97706; }' +
+    '#prGLContent .fa-fx-linked { color:#fff; background:#2563eb; border-color:#2563eb; }' +
+    '#prGLContent .cell-pct { width:55px; }' +
+    '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
+    '#prGLContent td.num { position:relative; padding:5px 8px !important; }' +
+    '</style>';
+
   // Formula bar — Excel-style with live preview + Accept/Cancel (same as other tabs)
   // Sticky positioning so it stays visible as user scrolls through GL detail
   html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
@@ -6882,8 +6897,8 @@ function renderPayrollGL() {
       const isLinked = !!l._linked;
       const linkIcon = isLinked ? '<span title="Driven by roster calculation" style="color:#2563eb; font-size:11px; margin-right:3px;">🔗</span>' : '';
       const pctInputAttrs = isLinked
-        ? 'disabled title="Locked — driven by roster calculation" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#f3f4f6; color:#9ca3af; cursor:not-allowed;"'
-        : 'style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"';
+        ? 'class="cell cell-pct" disabled title="Locked — driven by roster calculation"'
+        : 'class="cell cell-pct"';
 
       // Build human-readable formulas (matches R&S tab formula syntax for safeEvalFormula)
       const pyr = float(l.prior_year), yta = float(l.ytd_actual), acc = float(l.accrual_adj), unp = float(l.unpaid_bills);
@@ -6915,15 +6930,14 @@ function renderPayrollGL() {
       const fcstId = 'pr_fcst_' + l.gl_code;
       const propId = 'pr_prop_' + l.gl_code;
 
-      // Helper: build fx cell input matching R&S style
-      const fxInput = (id, val, formula, field, overrideFlag, extraAttr) => {
-        const badgeText = overrideFlag ? '✎' : 'fx';
-        const badgeStyle = overrideFlag
-          ? 'background:#fef3c7; color:#d97706; border-color:#d97706;'
-          : 'background:#eff6ff; color:#2563eb; border-color:#2563eb;';
-        const badge = '<span class="fa-fx" style="font-size:8px; font-weight:800; border:1px solid; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; ' + badgeStyle + '">' + badgeText + '</span>';
+      // Helper: build fx cell input matching R&S style (class="cell cell-fx" + top-right fx badge)
+      const fxInput = (id, val, formula, field, overrideFlag, extraAttr, linkedFlag) => {
+        const badgeClass = linkedFlag ? 'fa-fx fa-fx-linked' : (overrideFlag ? 'fa-fx fa-fx-override' : 'fa-fx');
+        const badgeText = linkedFlag ? '🔗fx' : (overrideFlag ? '✎' : 'fx');
+        const cellClass = linkedFlag ? 'cell cell-fx cell-fx-linked' : 'cell cell-fx';
+        const badge = '<span class="' + badgeClass + '">' + badgeText + '</span>';
         return badge +
-          '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
+          '<input id="' + id + '" class="' + cellClass + '" type="text" readonly' +
           ' value="' + fD(val) + '"' +
           ' data-raw="' + Math.round(val) + '"' +
           ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
@@ -6931,42 +6945,39 @@ function renderPayrollGL() {
           (extraAttr || '') +
           ' data-gl="' + l.gl_code + '" data-field="' + field + '"' +
           ' onblur="fxCellBlur(this)"' +
-          ' style="cursor:pointer; pointer-events:none; width:100%; border:none; background:transparent; text-align:right; padding:0; font-family:inherit; font-size:inherit; color:inherit; font-weight:inherit;">';
+          ' style="cursor:pointer; pointer-events:none;">';
       };
 
-      // Linked-row 🔗fx badge (non-interactive)
-      const fxBadgeLinked = '<span title="Driven by roster — change via roster/assumptions" style="font-size:8px; font-weight:800; color:#fff; background:#2563eb; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super; cursor:help;">🔗fx</span>';
-
-      const propCellStyle = isLinked
-        ? ns + ' color:#1e40af; font-weight:700; background:#eff6ff;'
-        : ns + ' color:#16a34a; font-weight:600;';
-
       // Estimate cell — always editable via formula bar
-      const estCellHtml = '<td class="num" style="' + ns + ' color:#16a34a; position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + estId + '\'))">' +
+      const estCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + estId + '\'))">' +
         fxInput(estId, est, estFormula, 'estimate_override', estOverride) + '</td>';
 
       // Forecast cell — always editable via formula bar
-      const fcstCellHtml = '<td class="num" style="' + ns + ' color:#16a34a; position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + fcstId + '\'))">' +
+      const fcstCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + fcstId + '\'))">' +
         fxInput(fcstId, fc, fcstFormula, 'forecast_override', fcstOverride) + '</td>';
 
-      // Proposed cell: non-linked rows are editable via formula bar; linked rows are read-only display
+      // Proposed cell: non-linked rows editable via formula bar; linked rows are read-only linked
       let propCellHtml;
       if (isLinked) {
-        propCellHtml = '<td style="' + propCellStyle + '" title="' + propFormulaDisplay + '">' + fD(prop) + ' ' + fxBadgeLinked + '</td>';
+        // Linked row: read-only blue-styled cell with 🔗fx badge — no click handler (not editable)
+        propCellHtml = '<td class="num" title="' + propFormulaDisplay + '" style="position:relative;">' +
+          '<span class="fa-fx fa-fx-linked">🔗fx</span>' +
+          '<input class="cell cell-fx cell-fx-linked" type="text" readonly value="' + fD(prop) + '" data-raw="' + Math.round(prop) + '"' +
+          ' style="cursor:not-allowed; pointer-events:none;">' +
+          '</td>';
       } else {
         const pfAttr = propHasFormula ? ' data-proposed-formula="' + l.proposed_formula.replace(/"/g, '&quot;') + '"' : '';
         const propOverride = propHasFormula || propManualOverride;
-        propCellHtml = '<td class="num" style="' + propCellStyle + ' position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + propId + '\'))">' +
+        propCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + propId + '\'))">' +
           fxInput(propId, prop, propFormulaDisplay, 'proposed_budget', propOverride, pfAttr) + '</td>';
       }
 
       // Editable $ cell (Prior, YTD, Accrual, Unpaid, YTD Budget, Curr Budget) — matches R&S
       const prDollarCell = (field, val) => {
-        return '<td class="num" style="' + ns + '"><input class="pr-gl-dollar" type="text" ' +
+        return '<td class="num"><input class="cell pr-gl-dollar" type="text" ' +
           'data-gl="' + l.gl_code + '" data-field="' + field + '" ' +
           'value="' + fD(val) + '" data-raw="' + Math.round(val || 0) + '" ' +
-          'onfocus="this.value=this.dataset.raw" onblur="prDollarCellBlur(this)" ' +
-          'style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:12px; background:white; text-align:right; font-family:inherit; font-variant-numeric:tabular-nums;"></td>';
+          'onfocus="this.value=this.dataset.raw" onblur="prDollarCellBlur(this)"></td>';
       };
 
       html += '<tr class="prgl-row" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
