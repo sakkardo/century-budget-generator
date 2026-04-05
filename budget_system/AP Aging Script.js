@@ -153,6 +153,24 @@
       setAllFields(entity);
       logFormState('Pre-export');
 
+      // STEP 6b: FINAL GUARD — verify DOM state is correct before export.
+      // Previous runs returned Expense Distribution data for entity 204
+      // because RT and/or property silently reverted. Abort early if state
+      // is wrong rather than save a misnamed garbage file.
+      const rtGuard = wDoc().querySelector('select[name*="ReportType"]')?.value;
+      const propGuard = wDoc().querySelector('input[name*="PropertyLookup"][name*="LookupCode"]')?.value;
+      if (rtGuard !== '3') {
+        log(`  ✗ ${entity} ABORT — RT=${rtGuard} at export time, expected 3`);
+        results.failed.push({ entity, ok: false, reason: `pre_export_rt_${rtGuard}` });
+        continue;
+      }
+      if (String(propGuard) !== String(entity)) {
+        log(`  ✗ ${entity} ABORT — Property="${propGuard}" at export time, expected "${entity}"`);
+        results.failed.push({ entity, ok: false, reason: `pre_export_prop_${propGuard}` });
+        continue;
+      }
+      log(`  Guard passed: RT=3, Property=${propGuard}`);
+
       // STEP 7: Excel export via FormData
       const form = wDoc().querySelector('form');
       const fd = new FormData(form);
@@ -170,6 +188,16 @@
       }
       log(`  Forced ${rtFieldCount} RT field(s) to "3" in FormData`);
 
+      // Also force Property lookup in FormData (belt + suspenders)
+      let propFieldCount = 0;
+      for (const [key, val] of [...fd.entries()]) {
+        if (key.includes('PropertyLookup') && key.includes('LookupCode')) {
+          fd.set(key, String(entity));
+          propFieldCount++;
+        }
+      }
+      log(`  Forced ${propFieldCount} Property field(s) to "${entity}" in FormData`);
+
       // Also log ViewState length for debugging
       const vs = fd.get('__VIEWSTATE') || fd.get('__VIEWSTATE__') || '';
       log(`  ViewState length: ${vs.length}`);
@@ -178,6 +206,16 @@
       const ct = resp.headers.get('content-type') || '';
       const cd = resp.headers.get('content-disposition') || '';
       log(`  Response: ${resp.status} ct=${ct.substring(0, 50)} cd=${cd.substring(0, 50)}`);
+
+      // Sanity-check response: reject if server filename indicates a
+      // different report type (e.g. ExpenseDistribution / ExpDist). This
+      // catches cases where Yardi silently ignored our RT=3 override.
+      const cdLower = cd.toLowerCase();
+      if (cdLower.includes('expensedistribution') || cdLower.includes('expdist') || cdLower.includes('expense_dist')) {
+        log(`  ✗ ${entity} REJECT — server returned Expense Distribution report (RT override ignored)`);
+        results.failed.push({ entity, ok: false, reason: 'wrong_report_type_returned' });
+        continue;
+      }
 
       let blob = null;
       if (ct.includes('spreadsheet') || ct.includes('excel') || ct.includes('octet-stream') || cd.includes('attachment')) {

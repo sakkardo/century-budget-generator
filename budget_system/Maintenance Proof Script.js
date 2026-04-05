@@ -110,8 +110,32 @@
       // STEP 2: Set all form fields
       setFields(entity);
 
+      // STEP 2b: Validate Property lookup via postback so Yardi binds the
+      // entity server-side BEFORE submit. Without this, the server reused
+      // the last entity's cached context and could return data for the
+      // wrong entity under the new entity's filename.
+      log(`  ${entity}: Property lookup postback...`);
+      try {
+        wWin().__doPostBack('Ysi2376:LookupCode', '');
+        await new Promise(r => { workFrame.onload = r; });
+        await sleep(500);
+      } catch (e) {
+        log(`  ${entity}: Property postback warning: ${e.message}`);
+      }
+
+      // STEP 2c: Re-set all fields — postback replaces form HTML
+      setFields(entity);
+
+      // STEP 2d: Guard — verify Property value stuck after the postback
+      const propCheck = wDoc().querySelector('input[name="Ysi2376:LookupCode"]')?.value;
+      if (String(propCheck) !== String(entity)) {
+        log(`  ✗ ${entity} ABORT — Property="${propCheck}" after lookup postback, expected "${entity}"`);
+        results.failed.push({ entity, ok: false, reason: `property_bind_${propCheck}` });
+        continue;
+      }
+
       // STEP 3: Click Generate via __doPostBack
-      log(`  ${entity}: Clicking Generate...`);
+      log(`  ${entity}: Clicking Generate (property=${propCheck})...`);
       wWin().__doPostBack('btnSubmit', '');
       await new Promise(r => { workFrame.onload = r; });
       await sleep(2000);  // Give report time to generate
