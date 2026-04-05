@@ -114,6 +114,14 @@ EXPENSE_SUMMARY_ROWS = {"Payroll & Related", "Energy", "Water & Sewer", "Repairs
                          "Financial Expenses", "Non-Operating Expense"}
 
 
+def _category_section(century_category):
+    """Return 'revenue' or 'expense' for a given Century category, based on
+    CENTURY_TO_SUMMARY. Unknown categories default to 'expense'."""
+    if CENTURY_TO_SUMMARY.get(century_category, "") in INCOME_SUMMARY_ROWS:
+        return "revenue"
+    return "expense"
+
+
 def create_audited_financials_blueprint(db):
     """
     Create and configure the audited financials blueprint.
@@ -245,9 +253,13 @@ def create_audited_financials_blueprint(db):
         return data_dir
 
 
-    def fuzzy_match_rule(line_item, rules):
+    def fuzzy_match_rule(line_item, rules, section=None):
         """
         Find best matching rule for a line item (case-insensitive, whitespace-normalized).
+        If section ('revenue'|'expense') is provided, only rules whose target
+        century_category belongs to that section are considered. This prevents
+        crosstalk when the same description (e.g. "Cable service") appears in
+        both the revenue and expense sections of an audit.
         Returns (rule, confidence) or (None, 0).
         """
         normalized_item = line_item.lower().strip()
@@ -255,6 +267,8 @@ def create_audited_financials_blueprint(db):
         best_score = 0
 
         for rule in rules:
+            if section is not None and _category_section(rule.century_category) != section:
+                continue
             normalized_rule = rule.auditor_line_item.lower().strip()
             # Simple containment matching; could be enhanced with Levenshtein
             if normalized_item == normalized_rule:
@@ -302,7 +316,7 @@ def create_audited_financials_blueprint(db):
             for item in extracted["revenue"]["items"]:
                 description = item.get("description", "")
                 amounts = item.get("amounts", [])
-                rule, confidence = fuzzy_match_rule(description, rules)
+                rule, confidence = fuzzy_match_rule(description, rules, section="revenue")
 
                 if rule and confidence > 0.5:
                     cat = rule.century_category
@@ -325,7 +339,7 @@ def create_audited_financials_blueprint(db):
                 for item in cat_group.get("items", []):
                     description = item.get("description", "")
                     amounts = item.get("amounts", [])
-                    rule, confidence = fuzzy_match_rule(description, rules)
+                    rule, confidence = fuzzy_match_rule(description, rules, section="expense")
 
                     if rule and confidence > 0.5:
                         cat = rule.century_category
@@ -1484,16 +1498,24 @@ Be precise with numbers. Include all line items found.
 
         data = request.get_json()
 
-        # Single rule add/update (from review page) — upsert by (profile_id, auditor_line_item)
+        # Single rule add/update (from review page) — upsert by
+        # (profile_id, auditor_line_item, section) so the same description
+        # (e.g. "Cable service") can have separate rules for the revenue
+        # and expense sections of the audit.
         if "auditor_line_item" in data:
             line_item = data.get("auditor_line_item")
-            existing = MappingRule.query.filter_by(
+            new_cat = data.get("century_category")
+            new_section = _category_section(new_cat)
+            existing_all = MappingRule.query.filter_by(
                 profile_id=profile_id,
                 auditor_line_item=line_item
             ).all()
-            # Keep one, delete the rest (cleans up prior duplicates)
-            rule = existing[0] if existing else None
-            for dup in existing[1:]:
+            # Keep one rule per section. Upsert the matching-section rule;
+            # leave rules for the OTHER section untouched. Delete any extra
+            # duplicates within our section.
+            same_section = [r for r in existing_all if _category_section(r.century_category) == new_section]
+            rule = same_section[0] if same_section else None
+            for dup in same_section[1:]:
                 db.session.delete(dup)
             if rule:
                 rule.auditor_category = data.get("auditor_category", "")
