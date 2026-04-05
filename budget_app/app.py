@@ -460,6 +460,46 @@ def assumptions_buildings():
     )
 
 
+@app.route("/assumptions/workbench")
+def assumptions_workbench():
+    """Unified assumptions workbench — portfolio defaults + per-building overrides in one view."""
+    defaults = load_portfolio_defaults()
+    bldgs = load_buildings()
+    all_bldg = load_building_assumptions()
+    policies = INSURANCE_POLICIES
+
+    # Compute override counts per building for sidebar badges.
+    # Count non-empty/non-zero overrides in energy + water_sewer sections
+    # (those are the only overridable fields surfaced in the current UI).
+    override_counts = {}
+    for b in bldgs:
+        code = b["entity_code"]
+        bd = all_bldg.get(code, {})
+        count = 0
+        for section_key in ("energy", "water_sewer"):
+            section = bd.get(section_key, {}) or {}
+            for k, v in section.items():
+                if k == "consumption_basis":
+                    if v:
+                        count += 1
+                else:
+                    try:
+                        if v not in (None, "", 0, 0.0) and float(v) != 0:
+                            count += 1
+                    except (TypeError, ValueError):
+                        if v:
+                            count += 1
+        override_counts[code] = count
+
+    return render_template_string(
+        ASSUMPTIONS_WORKBENCH_TEMPLATE,
+        defaults=json.dumps(defaults),
+        buildings=json.dumps(bldgs),
+        policies=json.dumps(policies),
+        override_counts=json.dumps(override_counts),
+    )
+
+
 # ─── API Routes ───────────────────────────────────────────────────────────────
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -2114,16 +2154,10 @@ HOME_TEMPLATE = r"""
     <div class="section-group">
       <div class="section-label">Configuration</div>
       <div class="nav-grid">
-        <a href="/assumptions" class="nav-card">
+        <a href="/assumptions/workbench" class="nav-card">
           <div class="icon">⚙️</div>
-          <h2>Portfolio Defaults</h2>
-          <p>Manage portfolio-wide default values for all buildings.</p>
-          <span class="arrow">→</span>
-        </a>
-        <a href="/assumptions/buildings" class="nav-card">
-          <div class="icon">📋</div>
-          <h2>Building Assumptions</h2>
-          <p>View and edit assumptions for individual buildings.</p>
+          <h2>Assumptions</h2>
+          <p>Portfolio defaults and per-building overrides in one unified workbench.</p>
           <span class="arrow">→</span>
         </a>
       </div>
@@ -4179,6 +4213,666 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
 
         loadBuildingsList();
     </script>
+</body>
+</html>
+"""
+
+
+ASSUMPTIONS_WORKBENCH_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Assumptions Workbench — Century Management</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; color: #222; font-size: 14px; }
+  header { background: #5a4a3f; color: white; padding: 18px 24px; display: flex; align-items: center; gap: 20px; }
+  header .back-link { color: white; text-decoration: none; font-size: 13px; opacity: 0.85; }
+  header .back-link:hover { opacity: 1; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .hint { margin-left: auto; font-size: 12px; opacity: 0.7; font-style: italic; }
+  .main { display: flex; height: calc(100vh - 60px); }
+  .sidebar { width: 300px; background: white; border-right: 1px solid #e0e0e0; overflow-y: auto; display: flex; flex-direction: column; }
+  .defaults-pin { padding: 14px 16px; background: linear-gradient(135deg, #f8f5f1 0%, #ede5d9 100%); border-bottom: 2px solid #d4c5ae; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .defaults-pin:hover { background: linear-gradient(135deg, #f0ebe3 0%, #e5dbc9 100%); }
+  .defaults-pin.active { background: #5a4a3f; color: white; border-bottom-color: #3d342c; }
+  .defaults-pin .icon { font-size: 18px; }
+  .defaults-pin .label { font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .defaults-pin .sub { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+  .sidebar-search { padding: 12px 16px 8px; }
+  .sidebar-search input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+  .sidebar-search input:focus { outline: none; border-color: #5a4a3f; box-shadow: 0 0 0 2px rgba(90,74,63,0.1); }
+  .sidebar-list { flex: 1; padding: 0 8px 12px; overflow-y: auto; }
+  .building-item { padding: 10px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+  .building-item:hover { background: #f5f0e9; }
+  .building-item.active { background: #5a4a3f; color: white; }
+  .building-item .building-code { font-weight: 600; margin-right: 8px; }
+  .override-badge { background: #e8935a; color: white; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; min-width: 18px; text-align: center; }
+  .building-item.active .override-badge { background: #ffb680; color: #3d342c; }
+  .content { flex: 1; overflow-y: auto; padding: 28px 36px; max-width: 1100px; }
+  .panel-title { font-size: 22px; font-weight: 700; color: #2d2520; margin-bottom: 4px; }
+  .panel-sub { font-size: 13px; color: #666; margin-bottom: 24px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e0e0e0; margin-bottom: 24px; overflow-x: auto; }
+  .tab { padding: 10px 16px; border: none; background: none; cursor: pointer; font-size: 13px; font-weight: 500; color: #666; border-bottom: 2px solid transparent; white-space: nowrap; font-family: inherit; }
+  .tab:hover { color: #5a4a3f; }
+  .tab.active { color: #5a4a3f; border-bottom-color: #5a4a3f; }
+  .tab .badge-inline { background: #e8935a; color: white; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
+  .section { background: white; border-radius: 8px; padding: 20px 24px; margin-bottom: 18px; border: 1px solid #e0e0e0; }
+  .section h2 { font-size: 15px; color: #5a4a3f; margin-bottom: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+  .section h3 { font-size: 14px; color: #5a4a3f; margin-bottom: 12px; font-weight: 600; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .form-group { display: flex; flex-direction: column; }
+  .form-group label { font-size: 12px; font-weight: 500; color: #555; margin-bottom: 5px; }
+  .form-group input, .form-group select { padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; font-family: 'Courier New', monospace; }
+  .form-group input:focus, .form-group select:focus { outline: none; border-color: #5a4a3f; box-shadow: 0 0 0 2px rgba(90,74,63,0.1); }
+  .override-field { padding: 12px; border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa; }
+  .override-field.has-override { background: #fff7ef; border-left: 3px solid #e8935a; border-color: #f0d4b3 #f0d4b3 #f0d4b3 #e8935a; }
+  .override-field label { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; display: block; }
+  .override-field .default-chip { font-size: 11px; color: #666; margin-bottom: 6px; }
+  .override-field .default-chip .val { font-family: 'Courier New', monospace; font-weight: 600; color: #2d2520; }
+  .override-field input, .override-field select { width: 100%; padding: 7px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; font-family: 'Courier New', monospace; background: white; }
+  .override-field.has-override input, .override-field.has-override select { border-color: #e8935a; background: #fffaf3; }
+  .override-field .status { font-size: 11px; margin-top: 5px; display: flex; align-items: center; gap: 5px; }
+  .override-field .status.override { color: #c96a1e; font-weight: 600; }
+  .override-field .status.using-default { color: #888; font-style: italic; }
+  .override-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #f5f0e9; padding: 10px; text-align: left; font-weight: 600; color: #3d342c; border-bottom: 1px solid #d4c5ae; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+  td { padding: 10px; border-bottom: 1px solid #eee; }
+  td input { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 3px; font-size: 13px; font-family: 'Courier New', monospace; }
+  td input[type="text"] { font-family: inherit; }
+  .button-row { display: flex; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e0e0e0; }
+  button { padding: 9px 18px; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-primary { background: #5a4a3f; color: white; }
+  .btn-primary:hover { background: #3d342c; }
+  .btn-ghost { background: transparent; color: #c96a1e; border: 1px solid #e8935a; }
+  .btn-ghost:hover { background: #fff7ef; }
+  .summary-row { display: grid; grid-template-columns: 2fr 1fr 1fr 60px; gap: 16px; padding: 12px 0; border-bottom: 1px solid #eee; align-items: center; font-size: 13px; }
+  .summary-row:last-child { border-bottom: none; }
+  .summary-row .field-label { font-weight: 500; }
+  .summary-row .field-path { font-size: 11px; color: #888; }
+  .summary-row .val { font-family: 'Courier New', monospace; }
+  .summary-row .default-val { color: #888; }
+  .summary-row .override-val { color: #c96a1e; font-weight: 600; }
+  .summary-row .arrow { color: #888; text-align: center; }
+  .summary-header { display: grid; grid-template-columns: 2fr 1fr 1fr 60px; gap: 16px; padding: 10px 0; border-bottom: 2px solid #5a4a3f; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; color: #5a4a3f; }
+  .empty { text-align: center; padding: 60px 20px; color: #999; }
+  .empty-icon { font-size: 42px; margin-bottom: 12px; opacity: 0.3; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: #4caf50; color: white; padding: 14px 20px; border-radius: 5px; display: none; z-index: 1000; font-weight: 500; }
+  .toast.show { display: block; animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { transform: translateX(400px); } to { transform: translateX(0); } }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="back-link">← Home</a>
+  <h1>Assumptions</h1>
+  <span class="hint">Portfolio defaults + building overrides</span>
+</header>
+<div class="main">
+  <div class="sidebar">
+    <div class="defaults-pin active" id="pinDefaults" onclick="selectDefaults()">
+      <div class="icon">📌</div>
+      <div>
+        <div class="label">Portfolio Defaults</div>
+        <div class="sub">Applies to all buildings</div>
+      </div>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" id="search" placeholder="Search buildings..." oninput="filterBuildings()" />
+    </div>
+    <div class="sidebar-list" id="buildingList"></div>
+  </div>
+  <div class="content" id="content"></div>
+</div>
+<div class="toast" id="toast">✓ Saved</div>
+
+<script>
+const defaults = {{ defaults | safe }};
+const buildings = {{ buildings | safe }};
+const policies = {{ policies | safe }};
+let overrideCounts = {{ override_counts | safe }};
+let currentView = 'defaults';
+let currentTab = 'utilities';
+let currentBldgData = {};
+let debounceTimer = null;
+
+const ENERGY_GL_ACCOUNTS = [
+  { gl: '5252-0000', desc: 'Gas - Heating' },
+  { gl: '5252-0001', desc: 'Gas - Cooking' },
+  { gl: '5252-0010', desc: 'Gas - Common Area' },
+  { gl: '5253-0000', desc: 'Oil / Fuel' },
+  { gl: '5250-0000', desc: 'Electric' }
+];
+const WATER_GL_ACCOUNTS = [
+  { gl: '6305-0000', desc: 'Water/Sewer' },
+  { gl: '6305-0010', desc: 'Water - Common Area' },
+  { gl: '6305-0020', desc: 'Sewer Charges' }
+];
+
+const OVERRIDE_FIELDS = [
+  { id: 'util_gas_esco_rate', label: 'Gas ESCO Rate', unit: '$/Therm', defaultPath: 'energy.gas_esco_rate', saveKey: 'energy.gas_esco_rate', type: 'number', step: '0.0001' },
+  { id: 'util_electric_esco_rate', label: 'Electric ESCO Rate', unit: '$/kWh', defaultPath: 'energy.electric_esco_rate', saveKey: 'energy.electric_esco_rate', type: 'number', step: '0.0001' },
+  { id: 'util_oil_price', label: 'Oil/Fuel Price', unit: '$/Gallon', defaultPath: 'energy.oil_price', saveKey: 'energy.oil_price_per_gallon', type: 'number', step: '0.01' },
+  { id: 'util_gas_rate_increase', label: 'Gas Rate Increase', unit: '%', defaultPath: 'energy.gas_rate_increase', saveKey: 'energy.gas_rate_increase', type: 'number', step: '0.0001' },
+  { id: 'util_electric_rate_increase', label: 'Electric Rate Increase', unit: '%', defaultPath: 'energy.electric_rate_increase', saveKey: 'energy.electric_rate_increase', type: 'number', step: '0.0001' },
+  { id: 'util_oil_rate_increase', label: 'Oil Rate Increase', unit: '%', defaultPath: 'energy.oil_rate_increase', saveKey: 'energy.oil_rate_increase', type: 'number', step: '0.0001' },
+  { id: 'util_consumption_basis', label: 'Consumption Basis', unit: '', defaultPath: 'energy.consumption_basis', saveKey: 'energy.consumption_basis', type: 'select', options: ['2-Year Average','Prior Year','Custom'] },
+  { id: 'util_water_rate_increase', label: 'Water/Sewer Rate Increase', unit: '%', defaultPath: 'water_sewer.rate_increase', saveKey: 'water_sewer.rate_increase', type: 'number', step: '0.0001' }
+];
+
+function getPath(obj, path) { return path.split('.').reduce((o,k) => o && o[k] !== undefined ? o[k] : undefined, obj); }
+function setPath(obj, path, val) { const keys = path.split('.'); let o = obj; for (let i=0;i<keys.length-1;i++){ if(!o[keys[i]]) o[keys[i]]={}; o=o[keys[i]];} o[keys[keys.length-1]] = val; }
+
+function computeOverrideCount(bd) {
+  let count = 0;
+  for (const f of OVERRIDE_FIELDS) {
+    const v = getPath(bd, f.saveKey);
+    if (f.type === 'select') { if (v) count++; }
+    else { if (v !== undefined && v !== null && v !== '' && parseFloat(v) !== 0) count++; }
+  }
+  return count;
+}
+
+function renderSidebar(filter) {
+  filter = (filter || '').toLowerCase();
+  const list = document.getElementById('buildingList');
+  list.innerHTML = buildings
+    .filter(b => !filter || b.entity_code.includes(filter) || (b.building_name||'').toLowerCase().includes(filter))
+    .map(b => {
+      const c = overrideCounts[b.entity_code] || 0;
+      const active = currentView === b.entity_code ? 'active' : '';
+      const nameEsc = (b.building_name||'').replace(/"/g,'&quot;');
+      return `<div class="building-item ${active}" onclick="selectBuilding('${b.entity_code}','${nameEsc}')">
+        <div><span class="building-code">${b.entity_code}</span>${(b.building_name||'').substring(0,30)}</div>
+        ${c>0 ? `<span class="override-badge" title="${c} override(s)">${c}</span>` : ''}
+      </div>`;
+    }).join('');
+  document.getElementById('pinDefaults').classList.toggle('active', currentView === 'defaults');
+}
+function filterBuildings() { renderSidebar(document.getElementById('search').value); }
+
+function selectDefaults() {
+  currentView = 'defaults';
+  renderSidebar(document.getElementById('search').value);
+  renderDefaultsPanel();
+}
+
+function selectBuilding(code, name) {
+  currentView = code;
+  currentBldgData = {};
+  renderSidebar(document.getElementById('search').value);
+  fetch('/api/building-assumptions/' + code).then(r => r.json()).then(data => {
+    currentBldgData = data || {};
+    renderBuildingPanel(code, name);
+  });
+}
+
+function renderDefaultsPanel() {
+  const d = defaults;
+  const pt = d.payroll_tax || {};
+  const ub = d.union_benefits || {};
+  const wc = d.workers_comp || {};
+  const wi = d.wage_increase || {};
+  const ir = d.insurance_renewal || {};
+  const en = d.energy || {};
+  const ws = d.water_sewer || {};
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="panel-title">Portfolio Defaults</div>
+    <div class="panel-sub">These values apply to all buildings unless overridden. Edit a building to override energy/water fields per-property.</div>
+    <div class="section">
+      <h2>Payroll Tax Rates</h2>
+      <div class="form-grid">
+        ${fg('FICA','d_fica',pt.FICA,'number','0.0001')}
+        ${fg('SUI','d_sui',pt.SUI,'number','0.0001')}
+        ${fg('FUI','d_fui',pt.FUI,'number','0.0001')}
+        ${fg('MTA','d_mta',pt.MTA,'number','0.0001')}
+        ${fg('NYS Disability','d_nysd',pt.NYS_Disability,'number','0.0001')}
+        ${fg('Paid Family Leave','d_pfl',pt.PFL,'number','0.0001')}
+      </div>
+    </div>
+    <div class="section">
+      <h2>32BJ Union Benefits</h2>
+      <div class="form-grid">
+        ${fg('Welfare ($/mo)','d_welf',ub.welfare_monthly,'number','0.01')}
+        ${fg('Pension ($/wk)','d_pens',ub.pension_weekly,'number','0.01')}
+        ${fg('Supp Retirement ($/wk)','d_supp',ub.supp_retirement_weekly,'number','0.01')}
+        ${fg('Legal ($/mo)','d_legal',ub.legal_monthly,'number','0.01')}
+        ${fg('Training ($/mo)','d_train',ub.training_monthly,'number','0.01')}
+        ${fg('Profit Sharing ($/qtr)','d_prof',ub.profit_sharing_quarterly,'number','0.01')}
+      </div>
+    </div>
+    <div class="section">
+      <h2>Workers Comp</h2>
+      <div class="form-grid">${fg('Workers Comp %','d_wc',wc.percent,'number','0.0001')}</div>
+    </div>
+    <div class="section">
+      <h2>Mid-Year Wage Increase</h2>
+      <div class="form-grid">
+        ${fg('Increase %','d_winc',wi.percent,'number','0.0001')}
+        ${fg('Effective Week','d_wwk',wi.effective_week,'text')}
+        ${fg('Pre-increase Weeks','d_wpre',wi.pre_increase_weeks,'number')}
+        ${fg('Post-increase Weeks','d_wpost',wi.post_increase_weeks,'number')}
+      </div>
+    </div>
+    <div class="section">
+      <h2>Insurance Renewal</h2>
+      <div class="form-grid">
+        ${fg('Renewal Increase %','d_iinc',ir.increase_percent,'number','0.0001')}
+        ${fg('Renewal Effective Date','d_idate',ir.effective_date,'text')}
+        ${fg('Pre-renewal Months','d_ipre',ir.pre_renewal_months,'number')}
+        ${fg('Post-renewal Months','d_ipost',ir.post_renewal_months,'number')}
+      </div>
+    </div>
+    <div class="section">
+      <h2>Energy Rates <span style="font-size:10px;color:#e8935a;font-weight:700;margin-left:8px;">↓ OVERRIDABLE PER BUILDING</span></h2>
+      <div class="form-grid">
+        ${fg('Gas ESCO Rate ($/Therm)','d_gas',en.gas_esco_rate,'number','0.0001')}
+        ${fg('Electric ESCO Rate ($/kWh)','d_elec',en.electric_esco_rate,'number','0.0001')}
+        ${fg('Oil/Fuel Price ($/Gal)','d_oil',en.oil_price,'number','0.01')}
+        ${fg('Gas Rate Increase %','d_ginc',en.gas_rate_increase,'number','0.0001')}
+        ${fg('Electric Rate Increase %','d_einc',en.electric_rate_increase,'number','0.0001')}
+        ${fg('Oil Rate Increase %','d_oinc',en.oil_rate_increase,'number','0.0001')}
+        ${selectField('Consumption Basis','d_cbasis',en.consumption_basis||'2-Year Average',['2-Year Average','Prior Year','Custom'])}
+      </div>
+    </div>
+    <div class="section">
+      <h2>Water & Sewer <span style="font-size:10px;color:#e8935a;font-weight:700;margin-left:8px;">↓ OVERRIDABLE PER BUILDING</span></h2>
+      <div class="form-grid">${fg('Rate Increase %','d_water',ws.rate_increase,'number','0.0001')}</div>
+    </div>
+    <div class="button-row">
+      <button class="btn-primary" onclick="saveDefaults()">Save Defaults</button>
+    </div>
+  `;
+}
+
+function fg(label, id, val, type, step) {
+  const v = (val===undefined||val===null)?'':val;
+  const st = step?`step="${step}"`:'';
+  return `<div class="form-group"><label>${label}</label><input type="${type}" id="${id}" value="${v}" ${st} /></div>`;
+}
+function selectField(label, id, val, options) {
+  return `<div class="form-group"><label>${label}</label><select id="${id}">${options.map(o=>`<option ${o===val?'selected':''}>${o}</option>`).join('')}</select></div>`;
+}
+
+function saveDefaults() {
+  const v = id => parseFloat(document.getElementById(id).value) || 0;
+  const t = id => document.getElementById(id).value;
+  const n = id => parseInt(document.getElementById(id).value) || 0;
+  const payload = {
+    payroll_tax: { FICA:v('d_fica'), SUI:v('d_sui'), FUI:v('d_fui'), MTA:v('d_mta'), NYS_Disability:v('d_nysd'), PFL:v('d_pfl') },
+    union_benefits: { welfare_monthly:v('d_welf'), pension_weekly:v('d_pens'), supp_retirement_weekly:v('d_supp'), legal_monthly:v('d_legal'), training_monthly:v('d_train'), profit_sharing_quarterly:v('d_prof') },
+    workers_comp: { percent:v('d_wc') },
+    wage_increase: { percent:v('d_winc'), effective_week:t('d_wwk'), pre_increase_weeks:n('d_wpre'), post_increase_weeks:n('d_wpost') },
+    insurance_renewal: { increase_percent:v('d_iinc'), effective_date:t('d_idate'), pre_renewal_months:n('d_ipre'), post_renewal_months:n('d_ipost') },
+    energy: { gas_esco_rate:v('d_gas'), electric_esco_rate:v('d_elec'), oil_price:v('d_oil'), gas_rate_increase:v('d_ginc'), electric_rate_increase:v('d_einc'), oil_rate_increase:v('d_oinc'), consumption_basis:t('d_cbasis') },
+    water_sewer: { rate_increase:v('d_water') }
+  };
+  fetch('/api/defaults', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+    .then(r => r.json()).then(() => { Object.assign(defaults, payload); toast('Defaults saved'); });
+}
+
+function renderBuildingPanel(code, name) {
+  const count = overrideCounts[code] || 0;
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="panel-title">${code} — ${name}</div>
+    <div class="panel-sub">Entity Code: ${code} · <span id="overrideCountDisplay">${count}</span> override<span id="overrideCountPlural">${count===1?'':'s'}</span> active</div>
+    <div class="tabs" id="tabs">
+      <button class="tab" data-tab="payroll" onclick="setTab('payroll')">Payroll</button>
+      <button class="tab" data-tab="income" onclick="setTab('income')">Income</button>
+      <button class="tab" data-tab="insurance" onclick="setTab('insurance')">Insurance</button>
+      <button class="tab" data-tab="utilities" onclick="setTab('utilities')">Utilities<span class="badge-inline" id="utilBadge" style="${count>0?'':'display:none'}">${count}</span></button>
+      <button class="tab" data-tab="summary" onclick="setTab('summary')">Summary<span class="badge-inline" id="summBadge" style="${count>0?'':'display:none'}">${count}</span></button>
+    </div>
+    <div id="tabContent"></div>
+  `;
+  setTab(currentTab);
+}
+
+function setTab(name) {
+  currentTab = name;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  const tc = document.getElementById('tabContent');
+  if (name === 'payroll') { tc.innerHTML = payrollTabHTML(); initPayrollTab(); }
+  else if (name === 'income') { tc.innerHTML = incomeTabHTML(); initIncomeTab(); }
+  else if (name === 'insurance') { tc.innerHTML = insuranceTabHTML(); initInsuranceTab(); }
+  else if (name === 'utilities') { tc.innerHTML = utilitiesTabHTML(); initUtilitiesTab(); }
+  else if (name === 'summary') { tc.innerHTML = summaryTabHTML(); }
+}
+
+function payrollTabHTML() {
+  return `<div class="section"><h3>Position Details</h3>
+    <table><thead><tr><th>Position</th><th style="width:140px"># Employees</th><th style="width:160px">Hourly Rate</th></tr></thead>
+    <tbody id="payrollTable"></tbody></table></div>`;
+}
+function initPayrollTab() {
+  const positions = (currentBldgData.payroll && currentBldgData.payroll.positions) || [
+    { name: 'Resident Manager', employee_count: 0, hourly_rate: 0 },
+    { name: 'Handyman', employee_count: 0, hourly_rate: 0 },
+    { name: 'Porter/Doorman', employee_count: 0, hourly_rate: 0 },
+    { name: 'Porter 80%', employee_count: 0, hourly_rate: 0 },
+    { name: 'Employee 5', employee_count: 0, hourly_rate: 0 },
+    { name: 'Employee 6', employee_count: 0, hourly_rate: 0 },
+    { name: 'Employee 7', employee_count: 0, hourly_rate: 0 },
+    { name: 'Employee 8', employee_count: 0, hourly_rate: 0 }
+  ];
+  const table = document.getElementById('payrollTable');
+  table.innerHTML = positions.map((p, i) => `<tr>
+    <td><input type="text" value="${(p.name||'').replace(/"/g,'&quot;')}" class="payroll-name" data-idx="${i}" /></td>
+    <td><input type="number" value="${p.employee_count||0}" class="payroll-count" data-idx="${i}" /></td>
+    <td><input type="number" step="0.01" value="${p.hourly_rate||0}" class="payroll-rate" data-idx="${i}" /></td>
+  </tr>`).join('');
+  document.querySelectorAll('.payroll-name, .payroll-count, .payroll-rate').forEach(el => { el.addEventListener('change', savePayroll); });
+}
+function savePayroll() {
+  const positions = [];
+  document.querySelectorAll('#payrollTable tr').forEach(tr => {
+    positions.push({
+      name: tr.querySelector('.payroll-name').value,
+      employee_count: parseInt(tr.querySelector('.payroll-count').value) || 0,
+      hourly_rate: parseFloat(tr.querySelector('.payroll-rate').value) || 0
+    });
+  });
+  currentBldgData.payroll = { positions };
+  debouncedSave();
+}
+
+function incomeTabHTML() {
+  return `
+    <div class="section"><h3>Maintenance</h3><div class="form-grid">
+      <div class="form-group"><label>Total Shares</label><input type="number" id="income_maint_shares" /></div>
+      <div class="form-group"><label>$/Share/Mo</label><input type="number" step="0.01" id="income_maint_per_share" /></div>
+      <div class="form-group"><label>Increase %</label><input type="number" step="0.0001" id="income_maint_increase" /></div>
+    </div></div>
+    <div class="section"><h3>Storage Units</h3>
+    <table><thead><tr><th>Size Label</th><th># Units</th><th># Occupied</th><th>$/Month</th></tr></thead>
+    <tbody id="storageTable"></tbody></table></div>
+    <div class="section"><h3>Bike Storage</h3><div class="form-grid">
+      <div class="form-group"><label># Racks</label><input type="number" id="income_bike_racks" /></div>
+      <div class="form-group"><label># Occupied</label><input type="number" id="income_bike_occupied" /></div>
+      <div class="form-group"><label>$/Month</label><input type="number" step="0.01" id="income_bike_monthly" /></div>
+    </div></div>
+    <div class="section"><h3>Laundry/Vending</h3><div class="form-grid">
+      <div class="form-group"><label>Contract Description</label><input type="text" id="income_laundry_desc" /></div>
+      <div class="form-group"><label>Monthly Amount</label><input type="number" step="0.01" id="income_laundry_monthly" /></div>
+    </div></div>`;
+}
+function initIncomeTab() {
+  const income = currentBldgData.income || {};
+  const maint = income.maintenance || {};
+  const storage = income.storage || [];
+  const bike = income.bike_storage || {};
+  const laundry = income.laundry_vending || {};
+  document.getElementById('income_maint_shares').value = maint.total_shares || 0;
+  document.getElementById('income_maint_per_share').value = maint.per_share_monthly || 0;
+  document.getElementById('income_maint_increase').value = maint.increase_percent || 0;
+  const rows = storage.length > 0 ? storage : [
+    { size_label: 'Small', units: 0, occupied: 0, monthly: 0 },
+    { size_label: 'Medium', units: 0, occupied: 0, monthly: 0 },
+    { size_label: 'Large', units: 0, occupied: 0, monthly: 0 },
+    { size_label: 'XL', units: 0, occupied: 0, monthly: 0 }
+  ];
+  document.getElementById('storageTable').innerHTML = rows.map((s, i) => `<tr>
+    <td><input type="text" value="${s.size_label||''}" class="storage-label" data-idx="${i}" /></td>
+    <td><input type="number" value="${s.units||0}" class="storage-units" data-idx="${i}" /></td>
+    <td><input type="number" value="${s.occupied||0}" class="storage-occupied" data-idx="${i}" /></td>
+    <td><input type="number" step="0.01" value="${s.monthly||0}" class="storage-monthly" data-idx="${i}" /></td>
+  </tr>`).join('');
+  document.getElementById('income_bike_racks').value = bike.racks || 0;
+  document.getElementById('income_bike_occupied').value = bike.occupied || 0;
+  document.getElementById('income_bike_monthly').value = bike.monthly || 0;
+  document.getElementById('income_laundry_desc').value = laundry.description || '';
+  document.getElementById('income_laundry_monthly').value = laundry.monthly || 0;
+  document.querySelectorAll('.storage-label,.storage-units,.storage-occupied,.storage-monthly,#income_maint_shares,#income_maint_per_share,#income_maint_increase,#income_bike_racks,#income_bike_occupied,#income_bike_monthly,#income_laundry_desc,#income_laundry_monthly').forEach(el => { el.addEventListener('change', saveIncome); });
+}
+function saveIncome() {
+  currentBldgData.income = {
+    maintenance: {
+      total_shares: parseFloat(document.getElementById('income_maint_shares').value) || 0,
+      per_share_monthly: parseFloat(document.getElementById('income_maint_per_share').value) || 0,
+      increase_percent: parseFloat(document.getElementById('income_maint_increase').value) || 0
+    },
+    storage: Array.from(document.querySelectorAll('#storageTable tr')).map(tr => ({
+      size_label: tr.querySelector('.storage-label').value,
+      units: parseInt(tr.querySelector('.storage-units').value) || 0,
+      occupied: parseInt(tr.querySelector('.storage-occupied').value) || 0,
+      monthly: parseFloat(tr.querySelector('.storage-monthly').value) || 0
+    })),
+    bike_storage: {
+      racks: parseInt(document.getElementById('income_bike_racks').value) || 0,
+      occupied: parseInt(document.getElementById('income_bike_occupied').value) || 0,
+      monthly: parseFloat(document.getElementById('income_bike_monthly').value) || 0
+    },
+    laundry_vending: {
+      description: document.getElementById('income_laundry_desc').value,
+      monthly: parseFloat(document.getElementById('income_laundry_monthly').value) || 0
+    }
+  };
+  debouncedSave();
+}
+
+function insuranceTabHTML() {
+  return `<div class="section"><h3>Insurance Policies</h3>
+    <table><thead><tr><th>GL Code</th><th>Policy Name</th><th>Current Annual Premium</th><th>Current Year Budget</th><th>Expiration Date</th><th>Override Increase %</th></tr></thead>
+    <tbody id="insuranceTable"></tbody></table></div>`;
+}
+function initInsuranceTab() {
+  const insurance = currentBldgData.insurance || [];
+  const table = document.getElementById('insuranceTable');
+  table.innerHTML = policies.map(p => {
+    const ex = insurance.find(x => x.gl_code === p.gl_code) || {};
+    return `<tr>
+      <td>${p.gl_code}</td>
+      <td>${p.name}</td>
+      <td><input type="number" step="0.01" value="${ex.current_premium||0}" class="ins-cur" data-gl="${p.gl_code}" /></td>
+      <td><input type="number" step="0.01" value="${ex.current_budget||0}" class="ins-bud" data-gl="${p.gl_code}" /></td>
+      <td><input type="text" value="${ex.expiration_date||''}" class="ins-exp" data-gl="${p.gl_code}" /></td>
+      <td><input type="number" step="0.0001" value="${ex.override_increase||0}" class="ins-inc" data-gl="${p.gl_code}" /></td>
+    </tr>`;
+  }).join('');
+  document.querySelectorAll('.ins-cur,.ins-bud,.ins-exp,.ins-inc').forEach(el => { el.addEventListener('change', saveInsurance); });
+}
+function saveInsurance() {
+  currentBldgData.insurance = policies.map(p => ({
+    gl_code: p.gl_code,
+    name: p.name,
+    current_premium: parseFloat(document.querySelector(`.ins-cur[data-gl="${p.gl_code}"]`).value) || 0,
+    current_budget: parseFloat(document.querySelector(`.ins-bud[data-gl="${p.gl_code}"]`).value) || 0,
+    expiration_date: document.querySelector(`.ins-exp[data-gl="${p.gl_code}"]`).value,
+    override_increase: parseFloat(document.querySelector(`.ins-inc[data-gl="${p.gl_code}"]`).value) || 0
+  }));
+  debouncedSave();
+}
+
+function utilitiesTabHTML() {
+  const fields = OVERRIDE_FIELDS.map(f => overrideFieldHTML(f)).join('');
+  return `<div class="section">
+    <h3>Energy & Water — Rate Overrides</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:14px;">Defaults come from <strong>Portfolio Defaults</strong>. Override only where this building differs. Blank or 0 = use default.</p>
+    <div class="override-field-grid" id="overrideGrid">${fields}</div>
+  </div>
+  <div class="section"><h3>Energy — GL Account Adjustments</h3>
+    <table><thead><tr><th>GL Code</th><th>Description</th><th>Accrual Adjustment</th><th>Unpaid Bills</th><th>Rate Increase % Override</th></tr></thead>
+    <tbody id="energyGLTable"></tbody></table></div>
+  <div class="section"><h3>Water & Sewer — GL Account Adjustments</h3>
+    <table><thead><tr><th>GL Code</th><th>Description</th><th>Accrual Adjustment</th><th>Unpaid Bills</th><th>Rate Increase % Override</th></tr></thead>
+    <tbody id="waterGLTable"></tbody></table></div>
+  <div class="button-row">
+    <button class="btn-ghost" onclick="resetOverrides()">Reset All Overrides to Defaults</button>
+  </div>`;
+}
+function overrideFieldHTML(f) {
+  const dv = getPath(defaults, f.defaultPath);
+  const ov = getPath(currentBldgData, f.saveKey);
+  const hasOverride = f.type === 'select' ? !!ov : (ov !== undefined && ov !== null && ov !== '' && parseFloat(ov) !== 0);
+  const dvDisplay = dv === undefined || dv === null ? '—' : dv;
+  let input;
+  if (f.type === 'select') {
+    input = `<select id="${f.id}" onchange="onOverrideChange()"><option value="">— use default —</option>${f.options.map(o => `<option ${ov===o?'selected':''}>${o}</option>`).join('')}</select>`;
+  } else {
+    const val = hasOverride ? ov : '';
+    input = `<input type="number" step="${f.step}" id="${f.id}" placeholder="(use default)" value="${val}" oninput="onOverrideChange()" />`;
+  }
+  const status = hasOverride
+    ? `<div class="status override">◉ Overrides default (${dvDisplay})</div>`
+    : `<div class="status using-default">○ Using portfolio default</div>`;
+  return `<div class="override-field ${hasOverride?'has-override':''}" data-field="${f.id}">
+    <label>${f.label}${f.unit?` <span style="color:#888;font-weight:400">(${f.unit})</span>`:''}</label>
+    <div class="default-chip">Default: <span class="val">${dvDisplay}</span></div>
+    ${input}${status}
+  </div>`;
+}
+function initUtilitiesTab() {
+  // Energy GL table
+  const energyAdj = (currentBldgData.energy && currentBldgData.energy.gl_adjustments) || {};
+  document.getElementById('energyGLTable').innerHTML = ENERGY_GL_ACCOUNTS.map(a => {
+    const adj = energyAdj[a.gl] || {};
+    return `<tr>
+      <td>${a.gl}</td><td>${a.desc}</td>
+      <td><input type="number" step="0.01" value="${adj.accrual||0}" class="energy-accrual" data-gl="${a.gl}" /></td>
+      <td><input type="number" step="0.01" value="${adj.unpaid||0}" class="energy-unpaid" data-gl="${a.gl}" /></td>
+      <td><input type="number" step="0.0001" value="${adj.rate_increase||0}" class="energy-gl-rate" data-gl="${a.gl}" /></td>
+    </tr>`;
+  }).join('');
+  const waterAdj = (currentBldgData.water_sewer && currentBldgData.water_sewer.gl_adjustments) || {};
+  document.getElementById('waterGLTable').innerHTML = WATER_GL_ACCOUNTS.map(a => {
+    const adj = waterAdj[a.gl] || {};
+    return `<tr>
+      <td>${a.gl}</td><td>${a.desc}</td>
+      <td><input type="number" step="0.01" value="${adj.accrual||0}" class="water-accrual" data-gl="${a.gl}" /></td>
+      <td><input type="number" step="0.01" value="${adj.unpaid||0}" class="water-unpaid" data-gl="${a.gl}" /></td>
+      <td><input type="number" step="0.0001" value="${adj.rate_increase||0}" class="water-gl-rate" data-gl="${a.gl}" /></td>
+    </tr>`;
+  }).join('');
+  document.querySelectorAll('.energy-accrual,.energy-unpaid,.energy-gl-rate,.water-accrual,.water-unpaid,.water-gl-rate').forEach(el => { el.addEventListener('change', saveUtilities); });
+}
+function onOverrideChange() { saveUtilities(); refreshOverrideUI(); }
+
+function saveUtilities() {
+  // Collect override fields
+  const energy = { gl_adjustments: {} };
+  const water = { gl_adjustments: {} };
+  for (const f of OVERRIDE_FIELDS) {
+    const el = document.getElementById(f.id);
+    if (!el) continue;
+    let v = el.value;
+    if (f.type === 'number') v = parseFloat(v) || 0;
+    setPath({ energy, water_sewer: water }, f.saveKey, v);
+  }
+  // Collect GL adjustments
+  ENERGY_GL_ACCOUNTS.forEach(a => {
+    energy.gl_adjustments[a.gl] = {
+      accrual: parseFloat(document.querySelector(`.energy-accrual[data-gl="${a.gl}"]`).value) || 0,
+      unpaid: parseFloat(document.querySelector(`.energy-unpaid[data-gl="${a.gl}"]`).value) || 0,
+      rate_increase: parseFloat(document.querySelector(`.energy-gl-rate[data-gl="${a.gl}"]`).value) || 0
+    };
+  });
+  WATER_GL_ACCOUNTS.forEach(a => {
+    water.gl_adjustments[a.gl] = {
+      accrual: parseFloat(document.querySelector(`.water-accrual[data-gl="${a.gl}"]`).value) || 0,
+      unpaid: parseFloat(document.querySelector(`.water-unpaid[data-gl="${a.gl}"]`).value) || 0,
+      rate_increase: parseFloat(document.querySelector(`.water-gl-rate[data-gl="${a.gl}"]`).value) || 0
+    };
+  });
+  currentBldgData.energy = energy;
+  currentBldgData.water_sewer = water;
+  debouncedSave();
+}
+
+function refreshOverrideUI() {
+  // Re-render override fields to update status chips and amber highlights, without losing focus
+  const grid = document.getElementById('overrideGrid');
+  if (!grid) return;
+  const focusId = document.activeElement && document.activeElement.id;
+  const selStart = document.activeElement && document.activeElement.selectionStart;
+  grid.innerHTML = OVERRIDE_FIELDS.map(f => overrideFieldHTML(f)).join('');
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) { el.focus(); try { el.setSelectionRange(selStart, selStart); } catch(e){} }
+  }
+  updateOverrideCount();
+}
+
+function updateOverrideCount() {
+  const c = computeOverrideCount(currentBldgData);
+  overrideCounts[currentView] = c;
+  const disp = document.getElementById('overrideCountDisplay');
+  const plural = document.getElementById('overrideCountPlural');
+  const uBadge = document.getElementById('utilBadge');
+  const sBadge = document.getElementById('summBadge');
+  if (disp) disp.textContent = c;
+  if (plural) plural.textContent = c === 1 ? '' : 's';
+  if (uBadge) { uBadge.textContent = c; uBadge.style.display = c > 0 ? '' : 'none'; }
+  if (sBadge) { sBadge.textContent = c; sBadge.style.display = c > 0 ? '' : 'none'; }
+  renderSidebar(document.getElementById('search').value);
+}
+
+function summaryTabHTML() {
+  const activeEntries = OVERRIDE_FIELDS
+    .map(f => ({ f, ov: getPath(currentBldgData, f.saveKey), dv: getPath(defaults, f.defaultPath) }))
+    .filter(e => e.f.type === 'select' ? !!e.ov : (e.ov !== undefined && e.ov !== null && e.ov !== '' && parseFloat(e.ov) !== 0));
+  if (activeEntries.length === 0) {
+    return `<div class="section"><div class="empty"><div class="empty-icon">✓</div><div><strong>No overrides</strong></div><div style="margin-top:6px;font-size:13px">This building uses all portfolio defaults.</div></div></div>`;
+  }
+  const rows = activeEntries.map(({f, ov, dv}) => `<div class="summary-row">
+    <div><div class="field-label">${f.label}</div><div class="field-path">Utilities · ${f.unit||''}</div></div>
+    <div class="val default-val">${dv===undefined||dv===null?'—':dv}</div>
+    <div class="val override-val">${ov}</div>
+    <div class="arrow">→</div>
+  </div>`).join('');
+  return `<div class="section"><h3>Overrides Summary — ${activeEntries.length} field${activeEntries.length===1?'':'s'}</h3>
+    <div class="summary-header"><div>Field</div><div>Default</div><div>Override</div><div></div></div>
+    ${rows}
+    <div class="button-row"><button class="btn-ghost" onclick="resetOverrides()">Reset All Overrides to Defaults</button></div>
+  </div>`;
+}
+
+function resetOverrides() {
+  const count = overrideCounts[currentView] || 0;
+  if (count === 0) { toast('No overrides to reset'); return; }
+  if (!confirm(`Reset all ${count} override(s) for ${currentView}? Portfolio defaults will be used everywhere.`)) return;
+  // Clear scalar overrides, keep GL adjustments
+  if (currentBldgData.energy) {
+    const keep = { gl_adjustments: currentBldgData.energy.gl_adjustments || {} };
+    currentBldgData.energy = keep;
+  }
+  if (currentBldgData.water_sewer) {
+    const keep = { gl_adjustments: currentBldgData.water_sewer.gl_adjustments || {} };
+    currentBldgData.water_sewer = keep;
+  }
+  debouncedSave();
+  setTab(currentTab);
+  updateOverrideCount();
+  toast('Overrides reset');
+}
+
+function debouncedSave() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    fetch('/api/building-assumptions/' + currentView, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentBldgData)
+    }).then(() => { toast('Saved'); updateOverrideCount(); });
+  }, 500);
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = '✓ ' + msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+renderSidebar();
+renderDefaultsPanel();
+</script>
 </body>
 </html>
 """
