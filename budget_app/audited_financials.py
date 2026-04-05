@@ -1089,20 +1089,32 @@ Be precise with numbers. Include all line items found.
             const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
 
             let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="renderReconciliation()"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
-            html += '<option value="">— unmapped —</option>';
-            for (let cat of centuryCategories) {
-                const sel = (cat === currentMapping) ? ' selected' : '';
-                html += '<option value="' + cat + '"' + sel + '>' + cat + '</option>';
-            }
-            html += '</select></div>';
+            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + currentMapping + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
+            html += '</div>';
             return html;
+        }
+
+        function validateCatInput(el) {
+            const v = el.value.trim();
+            if (v === '') { el.style.background = ''; return; }
+            if (centuryCategories.indexOf(v) === -1) {
+                el.value = '';
+                el.style.background = '';
+                alert('"' + v + '" is not a valid Century category. Pick from the list.');
+            } else {
+                el.style.background = '#d4edda';
+            }
         }
 
         function renderRawData() {
             const container = document.getElementById('rawData');
             const years = rawExtraction.fiscal_years || [];
             let html = '';
+
+            // Shared datalist for all mapping dropdowns (alphabetical + searchable)
+            html += '<datalist id="centuryCatsList">';
+            for (let cat of centuryCategories) { html += '<option value="' + cat + '">'; }
+            html += '</datalist>';
 
             if (years.length > 0) {
                 html += '<div style="background:#e8f0fe; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-weight:bold;">Fiscal Years: ' + years.join(', ') + '</div>';
@@ -1201,7 +1213,7 @@ Be precise with numbers. Include all line items found.
             let unmappedRevenue = 0;
             let unmappedExpense = 0;
 
-            const allSelects = document.querySelectorAll('select[id^="map_"]');
+            const allSelects = document.querySelectorAll('input[id^="map_"]');
             allSelects.forEach(s => {
                 const amount = parseFloat(s.dataset.amount) || 0;
                 if (!s.value) {
@@ -1276,7 +1288,7 @@ Be precise with numbers. Include all line items found.
         function saveAllRules() {
             if (!profileId) { alert('No auditor profile assigned'); return; }
 
-            const selects = document.querySelectorAll('select[id^="map_"]');
+            const selects = document.querySelectorAll('input[id^="map_"]');
             const rules = [];
             selects.forEach(s => {
                 if (s.value) {
@@ -1350,7 +1362,7 @@ Be precise with numbers. Include all line items found.
         html = html.replace("{{ raw_json }}", json.dumps(raw_extraction))
         html = html.replace("{{ mapped_json }}", json.dumps(mapped_data))
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
-        html = html.replace("{{ century_categories_json }}", json.dumps(CENTURY_CATEGORIES))
+        html = html.replace("{{ century_categories_json }}", json.dumps(sorted(CENTURY_CATEGORIES)))
         html = html.replace("{{ century_to_summary_json }}", json.dumps(CENTURY_TO_SUMMARY))
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
