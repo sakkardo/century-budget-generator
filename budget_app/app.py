@@ -1000,8 +1000,11 @@ def auto_process():
         return jsonify({"message": f"Auto-processed {len(file_list)} files", **results}), 200
 
 
-@app.route("/api/generate-script", methods=["POST"])
+@app.route("/api/generate-script", methods=["POST", "OPTIONS"])
+@cors_headers
 def generate_script():
+    if request.method == "OPTIONS":
+        return make_response(""), 200
     """Generate a customized Console script for selected buildings.
 
     Combines both the YSL Annual Budget and Expense Distribution scripts
