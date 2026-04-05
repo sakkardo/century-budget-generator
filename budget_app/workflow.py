@@ -4257,7 +4257,7 @@ function formulaBarAccept() {
         el.dataset.proposedFormula = '';
         el.value = fmt(num);
         const badge = el.parentElement.querySelector('.fa-fx');
-        if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+        if (badge) { badge.textContent = '✎'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
         faAutoSave(gl, 'proposed_budget', Math.round(num));
         faAutoSave(gl, 'proposed_formula', null);
         faUpdateSheetTotals();
@@ -4281,7 +4281,7 @@ function formulaBarAccept() {
       el.dataset.override = 'true';
       el.value = fmt(numericVal);
       const badge = el.parentElement.querySelector('.fa-fx');
-      if (badge) { badge.textContent = '✎'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+      if (badge) { badge.textContent = '✎'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
       faLineChanged(gl, field, numericVal);
       faAutoSave(gl, field, Math.round(numericVal));
     } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
@@ -5332,7 +5332,7 @@ function reTaxFormulaAccept() {
     el.dataset.overrideVal = typed;
     // Badge → pencil (manual override)
     const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = '\u270e'; badge.style.background = '#fef3c7'; badge.style.color = '#d97706'; badge.style.borderColor = '#d97706'; }
+    if (badge) { badge.textContent = '\u270e'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
   } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
     // Revert to auto formula
     el.dataset.override = 'false';
@@ -6249,7 +6249,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
     '#prGLContent .fa-fx { position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }' +
-    '#prGLContent .fa-fx-override { color:#d97706; background:#fef3c7; border-color:#d97706; }' +
+    '#prGLContent .fa-fx-override { color:#fff; background:#f97316; border-color:#ea580c; }' +
     '#prGLContent .fa-fx-linked { color:#fff; background:#2563eb; border-color:#2563eb; }' +
     '#prGLContent .cell-pct { width:55px; }' +
     '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
@@ -7525,7 +7525,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       if (hasUserFormula) {
         badge = '<span class="fa-fx" style="background:#dbeafe; color:var(--blue); border-color:var(--blue);">fx</span>';
       } else if (isOverride) {
-        badge = '<span class="fa-fx" style="background:#fef3c7; color:#d97706; border-color:#d97706;">✎</span>';
+        badge = '<span class="fa-fx" style="background:#f97316; color:#fff; border-color:#ea580c;">✎</span>';
       } else {
         badge = '<span class="fa-fx">fx</span>';
       }
@@ -8574,9 +8574,9 @@ function pmFormulaBarAccept() {
             badge.style.borderColor = 'var(--blue)';
         } else {
             badge.textContent = '✎';
-            badge.style.background = '#fef3c7';
-            badge.style.color = '#d97706';
-            badge.style.borderColor = '#d97706';
+            badge.style.background = '#f97316';
+            badge.style.color = '#fff';
+            badge.style.borderColor = '#ea580c';
         }
     }
 
