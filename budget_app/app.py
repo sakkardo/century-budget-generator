@@ -247,7 +247,6 @@ DEFAULT_SAVE_DIR = str(BUDGET_SYSTEM / "budgets")
 # Console JS script templates — entities/email/period get injected
 # Normalize CRLF→LF so string replace patches work on all platforms
 CONSOLE_SCRIPT = (BUDGET_SYSTEM / "YSL Budget Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
-EXPENSE_DIST_SCRIPT = (BUDGET_SYSTEM / "Expense Distribution Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
 MAINT_PROOF_SCRIPT = (BUDGET_SYSTEM / "Maintenance Proof Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
 try:
     AP_AGING_SCRIPT = (BUDGET_SYSTEM / "AP Aging Script.js").read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -940,12 +939,7 @@ def generate_script():
         f"const EMAIL = '{email}';"
     )
 
-    # Expense Distribution removed from combined script — runs separately
-    # because ASP.NET ViewState reverts RT=1 to RT=3.
-    # See /api/generate-expense-dist-script.
-
-    # Build AP Aging script with user settings (back in combined — safe now
-    # that Expense Distribution is separate, so no RT contamination)
+    # Build AP Aging script with user settings
     ap_script = ""
     if AP_AGING_SCRIPT:
         ap_script = AP_AGING_SCRIPT
@@ -1174,134 +1168,6 @@ def generate_script():
 
     return jsonify({"script": combined})
 
-
-@app.route("/api/generate-expense-dist-script", methods=["POST"])
-def generate_expense_dist_script():
-    """Generate a standalone Expense Distribution script.
-
-    Separated from the combined script because ASP.NET ViewState on
-    APAnalytics.aspx reverts ReportType=1 to RT=3 (Aging) during postbacks.
-    The standalone script runs directly on the page after the user manually
-    selects "Expense Distribution" in the dropdown.
-    """
-    data = request.json
-    entities = data.get("entities", [])
-    email = data.get("email", "")
-    period = data.get("period", "02/2026")
-
-    if not entities:
-        return jsonify({"error": "No buildings selected"}), 400
-
-    entities_js = ', '.join(str(e) for e in entities)
-
-    exp_script = EXPENSE_DIST_SCRIPT
-    exp_script = exp_script.replace(
-        "const ENTITIES = [148, 204, 206, 805];",
-        f"const ENTITIES = [{entities_js}];"
-    )
-    exp_script = exp_script.replace(
-        "const PERIOD_FROM = '01/2026';",
-        f"const PERIOD_FROM = '{period}';"
-    )
-    exp_script = exp_script.replace(
-        "const PERIOD_TO   = '03/2026';",
-        f"const PERIOD_TO   = '{period}';"
-    )
-
-    # Get the Railway app URL for auto-upload target
-    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if railway_url and not railway_url.startswith("http"):
-        railway_url = f"https://{railway_url}"
-    if not railway_url:
-        railway_url = "https://century-budget-generator-production.up.railway.app"
-
-    # Inject auto-upload into triggerDownload
-    exp_script = exp_script.replace(
-        "    URL.revokeObjectURL(a.href);\n  }",
-        "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'expense');\n  }"
-    )
-
-    # Wrap with auto-upload helper and auto-process
-    standalone = f"""/**
- * Century Budget — Expense Distribution Standalone Script
- * IMPORTANT: Open APAnalytics in Yardi and select "Expense Distribution"
- * from the Report Type dropdown BEFORE pasting this script.
- * Entities: {entities_js}
- * Period: {period}
- */
-(async function() {{
-  'use strict';
-  const _uploadedFiles = [];
-  const _SESSION_ID = 'yardi_' + Date.now();
-  const _BUDGET_APP = '{railway_url}';
-
-  async function _autoUpload(blob, filename, entity, fileType) {{
-    try {{
-      const formData = new FormData();
-      formData.append('file', blob, filename);
-      const resp = await fetch(_BUDGET_APP + '/api/auto-upload', {{
-        method: 'POST',
-        headers: {{
-          'X-Upload-Session': _SESSION_ID,
-          'X-Entity-Code': String(entity),
-          'X-File-Type': fileType,
-          'X-Filename': filename,
-        }},
-        body: formData,
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        _uploadedFiles.push(filename);
-        console.log('  \\u2191 Auto-uploaded: ' + filename);
-      }}
-    }} catch (err) {{
-      console.warn('  Auto-upload failed for ' + filename + ':', err.message);
-    }}
-  }}
-
-  async function _autoProcess() {{
-    if (!_uploadedFiles.length) return;
-    console.log('\\n>>> Auto-processing ' + _uploadedFiles.length + ' files on server... <<<');
-    try {{
-      const resp = await fetch(_BUDGET_APP + '/api/auto-process', {{
-        method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: JSON.stringify({{ session_id: _SESSION_ID, period: '{period}' }})
-      }});
-      const data = await resp.json();
-      if (resp.ok) {{
-        console.log('\\u2713 Server processed files successfully!');
-        const banner = document.createElement('div');
-        banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;background:#065f46;color:white;padding:16px 24px;border-radius:12px;font-family:system-ui;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);';
-        banner.innerHTML = '<div style="font-weight:700;">\\u2713 Expense data uploaded</div><div style="font-size:12px;margin-top:4px;">' + _uploadedFiles.length + ' files processed</div>';
-        document.body.appendChild(banner);
-        setTimeout(() => banner.remove(), 15000);
-      }}
-    }} catch (err) {{
-      console.error('Auto-process error:', err.message);
-    }}
-  }}
-
-  console.log('='.repeat(60));
-  console.log('Expense Distribution — Standalone Download + Auto-Upload');
-  console.log('Target: ' + _BUDGET_APP);
-  console.log('='.repeat(60));
-
-  try {{
-    await {exp_script}
-    console.log('\\n>>> Expense Distribution completed successfully <<<');
-  }} catch (e) {{
-    console.error('>>> Expense Distribution FAILED:', e.message);
-  }}
-
-  await _autoProcess();
-
-  console.log('\\n' + '='.repeat(60));
-  console.log('Expense Distribution DONE — ' + _uploadedFiles.length + ' files uploaded.');
-  console.log('='.repeat(60));
-}})();"""
-
-    return jsonify({"script": standalone})
 
 
 @app.route("/api/generate-ap-aging-script", methods=["POST"])
@@ -2535,24 +2401,12 @@ GENERATE_TEMPLATE = r"""
         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>
         Generate Yardi Script
       </button>
-      <button class="btn btn-primary" onclick="generateExpenseDistScript()" id="expBtn" style="background:var(--teal-600, #0d9488);">
-        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 7h6m0 10v-3m-3 3v-6m-3 6v-1M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/></svg>
-        Expense Distribution
-      </button>
     </div>
-    <p style="font-size:11px; color:var(--gray-500); margin-top:6px;">1. Run main script (YSL + Maint Proof + AP Aging). 2. Open APAnalytics in Yardi, select "Expense Distribution", run that script separately.</p>
+    <p style="font-size:11px; color:var(--gray-500); margin-top:6px;">Runs YSL + Maint Proof + AP Aging. Expense Distribution is run manually in Yardi and uploaded via Manual Upload below.</p>
 
     <div class="script-box" id="scriptBox">
       <button class="copy-btn" id="copyBtn" onclick="copyScript()">Copy</button>
       <code id="scriptCode"></code>
-    </div>
-
-    <div class="script-box" id="expScriptBox" style="display:none; border-color:var(--teal-200, #99f6e4);">
-      <div style="background:#f0fdfa; padding:8px 12px; margin:-12px -12px 12px; border-radius:6px 6px 0 0; border-bottom:1px solid #99f6e4;">
-        <strong style="color:#0d9488;">Expense Distribution</strong> — Open APAnalytics in Yardi, select "Expense Distribution" from the Report Type dropdown, then paste this script in the console (F12).
-      </div>
-      <button class="copy-btn" id="expCopyBtn" onclick="copyExpScript()">Copy Expense Dist</button>
-      <code id="expScriptCode"></code>
     </div>
 
     <!-- AP Aging script box hidden — AP Aging is now in the combined script -->
@@ -2666,36 +2520,6 @@ function copyScript() {
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
-  });
-}
-
-async function generateExpenseDistScript() {
-  const entities = getSelected();
-  const email = document.getElementById('email').value;
-  const period = document.getElementById('period').value;
-
-  if (!entities.length) { alert('Select at least one building'); return; }
-
-  const resp = await fetch('/api/generate-expense-dist-script', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entities, email, period }),
-  });
-
-  const data = await resp.json();
-  if (data.error) { alert(data.error); return; }
-
-  document.getElementById('expScriptCode').textContent = data.script;
-  document.getElementById('expScriptBox').style.display = 'block';
-}
-
-function copyExpScript() {
-  const code = document.getElementById('expScriptCode').textContent;
-  navigator.clipboard.writeText(code).then(() => {
-    const btn = document.getElementById('expCopyBtn');
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = 'Copy Expense Dist'; btn.classList.remove('copied'); }, 2000);
   });
 }
 
