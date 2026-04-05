@@ -1223,7 +1223,8 @@ def create_workflow_blueprint(db):
                 for row in audit_rows:
                     if not row[0]:
                         continue
-                    mapped = _json.loads(row[0])
+                    # JSONB columns come back as dict already; plain JSON/TEXT come back as str
+                    mapped = row[0] if isinstance(row[0], dict) else _json.loads(row[0])
                     fiscal_year = row[1] or "Unknown"
                     # Extract year_totals[0] for each category (the primary year)
                     year_cats = {}
