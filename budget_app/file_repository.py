@@ -241,7 +241,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <body>
 <div class="top-bar">
   <h1>File Repository</h1>
-  <div><a href="/">← Back to Dashboard</a></div>
+  <div><a href="/">← Home</a></div>
 </div>
 
 <div class="container">

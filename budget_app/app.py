@@ -2922,7 +2922,7 @@ _MANAGE_REMOVED = """
       <h1>Manage Buildings</h1>
       <p class="subtitle">Add, edit, or remove buildings from the budget generator.</p>
     </div>
-    <a href="/" class="back-link">← Back to Home</a>
+    <a href="/" class="back-link">← Home</a>
   </div>
 
   <div id="alert" class="alert"></div>
@@ -3250,7 +3250,7 @@ ASSUMPTIONS_TEMPLATE = """
         <h1>Portfolio Defaults</h1>
     </header>
     <div class="container">
-        <a href="/" class="back-link">← Back to Home</a>
+        <a href="/" class="back-link">← Home</a>
 
         <div class="section">
             <h2>Payroll Tax Rates</h2>
@@ -3644,7 +3644,7 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
             <div class="sidebar-list" id="buildingList"></div>
         </div>
         <div class="content">
-            <a href="/" class="back-link">← Back to Home</a>
+            <a href="/" class="back-link">← Home</a>
 
             <div id="noBuildingSelected" class="empty">
                 <p>Select a building from the list to view and edit assumptions</p>
