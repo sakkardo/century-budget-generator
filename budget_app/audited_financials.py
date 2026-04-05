@@ -1688,11 +1688,13 @@ Be precise with numbers. Include all line items found.
                     for cat, info in mapped_data.items():
                         if not isinstance(info, dict):
                             continue
-                        total = info.get("total", 0) or 0
+                        # Use year_totals[0] (most recent year) to compare against extracted total[0]
+                        year_totals = info.get("year_totals") or []
+                        year0 = year_totals[0] if year_totals else (info.get("total", 0) or 0)
                         if CENTURY_TO_SUMMARY.get(cat, "") in income_summary_rows:
-                            mapped_revenue += total
+                            mapped_revenue += year0
                         else:
-                            mapped_expense += total
+                            mapped_expense += year0
 
                     # Check deltas within $1 tolerance
                     tolerance = 1
