@@ -1001,12 +1001,18 @@ Be precise with numbers. Include all line items found.
             raw_extraction = {}
             mapped_data = {}
 
-        # Find unmapped items and build existing rules lookup
+        # Find unmapped items and build existing rules lookup.
+        # Section-aware: {description: {"revenue": cat, "expense": cat}} so the
+        # same description can pre-populate different dropdowns per section.
         unmapped = []
         existing_rules = {}
         if upload.profile:
             for rule in upload.profile.rules:
-                existing_rules[rule.auditor_line_item.lower().strip()] = rule.century_category
+                key = rule.auditor_line_item.lower().strip()
+                rule_section = _category_section(rule.century_category)
+                if key not in existing_rules:
+                    existing_rules[key] = {}
+                existing_rules[key][rule_section] = rule.century_category
             if upload.status in ["mapped", "confirmed"]:
                 _, unmapped = apply_mapping_rules(upload.raw_extraction, upload.profile.id)
 
@@ -1099,7 +1105,13 @@ Be precise with numbers. Include all line items found.
         function makeDropdown(description, amount, section) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
-            const currentMapping = existingRules[normalized] || '';
+            const rulesForDesc = existingRules[normalized] || {};
+            // Section-aware: only pre-fill with a rule whose category matches
+            // this input's section. A rule for the OTHER section stays out to
+            // avoid the revenue/expense crosstalk it caused previously.
+            const currentMapping = (typeof rulesForDesc === 'string')
+                ? rulesForDesc
+                : (rulesForDesc[section] || '');
             const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
 
             let html = '<div data-section="' + (section || 'expense') + '">';
