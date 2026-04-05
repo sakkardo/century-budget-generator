@@ -1056,27 +1056,26 @@ def create_workflow_blueprint(db):
     def list_budgets():
         """List all budgets with status and completeness data."""
         budgets = Budget.query.all()
+        # Batch-fetch entities with expenses / audits in one query each (avoids session poisoning from per-row errors)
+        try:
+            expense_entities = {r[0] for r in db.session.execute(
+                db.text("SELECT DISTINCT entity_code FROM expense_reports")
+            ).fetchall()}
+        except Exception:
+            db.session.rollback()
+            expense_entities = set()
+        try:
+            audit_entities = {r[0] for r in db.session.execute(
+                db.text("SELECT DISTINCT entity_code FROM audit_upload WHERE status = 'confirmed'")
+            ).fetchall()}
+        except Exception:
+            db.session.rollback()
+            audit_entities = set()
         result = []
         for b in budgets:
             d = b.to_dict()
-            # Check expense report exists
-            try:
-                has_expenses = db.session.execute(
-                    db.text("SELECT 1 FROM expense_reports WHERE entity_code = :ec LIMIT 1"),
-                    {"ec": b.entity_code}
-                ).fetchone() is not None
-            except Exception:
-                has_expenses = False
-            # Check confirmed audit exists
-            try:
-                has_audit = db.session.execute(
-                    db.text("SELECT 1 FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' LIMIT 1"),
-                    {"ec": b.entity_code}
-                ).fetchone() is not None
-            except Exception:
-                has_audit = False
-            d["has_expenses"] = has_expenses
-            d["has_audit"] = has_audit
+            d["has_expenses"] = b.entity_code in expense_entities
+            d["has_audit"] = b.entity_code in audit_entities
             result.append(d)
         return jsonify(result)
 
