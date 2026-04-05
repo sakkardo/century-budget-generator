@@ -2570,7 +2570,29 @@ GENERATE_TEMPLATE = r"""
   <!-- Manual upload fallback -->
   <div style="margin-top:24px; padding:16px; background:#f8f5f0; border:1px solid #e8e0d4; border-radius:8px;">
     <p style="margin:0 0 8px; font-weight:600; color:#5a4a3f;">Manual Upload</p>
-    <p style="margin:0 0 12px; font-size:12px; color:#8a7a6f;">Upload Yardi Excel files directly (YSL, Expense Distribution, AP Aging, Maintenance Proof). The app auto-detects file types.</p>
+    <p style="margin:0 0 12px; font-size:12px; color:#8a7a6f;">Upload Yardi Excel files directly. The app auto-detects file types — select one or all four at once.</p>
+    <!-- Visual stepper (decorative — all 4 file types can be uploaded together) -->
+    <div style="display:flex; align-items:center; gap:4px; margin-bottom:14px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="width:26px; height:26px; border-radius:50%; background:#5a4a3f; color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;">1</div>
+        <span style="font-size:12px; color:#5a4a3f; font-weight:500;">YSL</span>
+      </div>
+      <div style="flex:0 0 24px; height:2px; background:#d5cfc5; margin:0 4px;"></div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="width:26px; height:26px; border-radius:50%; background:#5a4a3f; color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;">2</div>
+        <span style="font-size:12px; color:#5a4a3f; font-weight:500;">AP Aging</span>
+      </div>
+      <div style="flex:0 0 24px; height:2px; background:#d5cfc5; margin:0 4px;"></div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="width:26px; height:26px; border-radius:50%; background:#5a4a3f; color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;">3</div>
+        <span style="font-size:12px; color:#5a4a3f; font-weight:500;">Maint Proof</span>
+      </div>
+      <div style="flex:0 0 24px; height:2px; background:#d5cfc5; margin:0 4px;"></div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="width:26px; height:26px; border-radius:50%; background:#5a4a3f; color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;">4</div>
+        <span style="font-size:12px; color:#5a4a3f; font-weight:500;">Exp Dist</span>
+      </div>
+    </div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <input type="file" id="manualFiles" multiple accept=".xlsx,.xls" style="font-size:13px;">
       <button class="btn btn-primary" id="uploadBtn" onclick="manualUpload()" style="background:#5a4a3f;">Upload &amp; Process</button>
