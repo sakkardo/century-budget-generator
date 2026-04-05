@@ -134,14 +134,25 @@
         continue;
       }
 
-      // STEP 3: Click Generate via __doPostBack
-      log(`  ${entity}: Clicking Generate (property=${propCheck})...`);
-      wWin().__doPostBack('btnSubmit', '');
-      await new Promise(r => { workFrame.onload = r; });
-      await sleep(2000);  // Give report time to generate
-
-      // STEP 4: Look for shuttle download links in response
-      const responseHtml = wDoc()?.documentElement?.innerHTML || '';
+      // STEP 3: Submit Generate via fetch POST (NOT iframe postback).
+      // ROOT CAUSE FIX: Iframe __doPostBack('btnSubmit') caused Yardi to
+      // respond with Content-Disposition: attachment, triggering a native
+      // browser download using Yardi's internal filename (e.g. Adhoc_AMP_433)
+      // BEFORE our shuttle-link logic could run. That produced a duplicate
+      // byte-identical file with the wrong name on every run.
+      // Fetch POST with RequestAction=AutoPostBack parses the response HTML
+      // without navigating the iframe, so no auto-download fires.
+      log(`  ${entity}: Generating via fetch POST (property=${propCheck})...`);
+      const form = wDoc().querySelector('form');
+      const fd = new FormData(form);
+      fd.set('__EVENTTARGET', 'btnSubmit');
+      fd.set('__EVENTARGUMENT', '');
+      fd.set('RequestAction', 'AutoPostBack');
+      fd.set('BDATACHANGED', '1');
+      const actionUrl = form.action || `${BASE}/CustomCorrespGenerate.aspx?ReportCode=Adhoc_AMP`;
+      const genResp = await fetch(actionUrl, { method: 'POST', body: fd, credentials: 'include' });
+      const responseHtml = await genResp.text();
+      await sleep(500);
 
       // Look for the merged report "here" link first (most reliable)
       // Pattern: SysShuttleDisplayHandler.ashx?sFileName=XXX
@@ -193,9 +204,8 @@
             results.failed.push({ entity, ok: false, reason: 'monitor_timeout' });
           }
         } else {
-          // Check if the page shows an error or "no data" message
-          const bodyText = wDoc()?.body?.textContent || '';
-          if (bodyText.includes('No records found') || bodyText.includes('no data')) {
+          // Check if the response shows an error or "no data" message
+          if (responseHtml.includes('No records found') || responseHtml.includes('no data')) {
             log(`  ✗ ${entity} — no records found for this entity/charge code`);
             results.failed.push({ entity, ok: false, reason: 'no_records' });
           } else {
