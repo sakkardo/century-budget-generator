@@ -172,10 +172,18 @@
       log(`  Guard passed: RT=3, Property=${propGuard}`);
 
       // STEP 7: Excel export via FormData
+      // ROOT CAUSE FIX: Yardi's server ignores posted RT value unless
+      // RequestAction='AutoPostBack' is set. When user clicks Excel in the
+      // UI, __doPostBack sets RequestAction='AutoPostBack' which tells the
+      // server to process submitted form values. Without it, server reads
+      // from __VIEWSTATE__ which was built for RT=2 (ExpDist) on page load,
+      // returning the wrong report. Verified live via interceptor 2026-04-05.
       const form = wDoc().querySelector('form');
       const fd = new FormData(form);
       fd.set('__EVENTTARGET', 'Excel');
       fd.set('__EVENTARGUMENT', '');
+      fd.set('RequestAction', 'AutoPostBack');
+      fd.set('BDATACHANGED', '1');
 
       // Log and force all ReportType fields in FormData
       let rtFieldCount = 0;
@@ -198,11 +206,10 @@
       }
       log(`  Forced ${propFieldCount} Property field(s) to "${entity}" in FormData`);
 
-      // Also log ViewState length for debugging
-      const vs = fd.get('__VIEWSTATE') || fd.get('__VIEWSTATE__') || '';
-      log(`  ViewState length: ${vs.length}`);
+      const vs = fd.get('__VIEWSTATE__') || fd.get('__VIEWSTATE') || '';
+      log(`  ViewState length: ${vs.length}, RequestAction=AutoPostBack`);
 
-      const resp = await fetch(form.action || PAGE_URL, { method: 'POST', body: fd });
+      const resp = await fetch(form.action, { method: 'POST', body: fd });
       const ct = resp.headers.get('content-type') || '';
       const cd = resp.headers.get('content-disposition') || '';
       log(`  Response: ${resp.status} ct=${ct.substring(0, 50)} cd=${cd.substring(0, 50)}`);
