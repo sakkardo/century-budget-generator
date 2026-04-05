@@ -1066,7 +1066,7 @@ def create_workflow_blueprint(db):
             expense_entities = set()
         try:
             audit_entities = {r[0] for r in db.session.execute(
-                db.text("SELECT DISTINCT entity_code FROM audit_upload WHERE status = 'confirmed'")
+                db.text("SELECT DISTINCT entity_code FROM audit_uploads WHERE status = 'confirmed'")
             ).fetchall()}
         except Exception:
             db.session.rollback()
@@ -1214,7 +1214,7 @@ def create_workflow_blueprint(db):
             from budget_app.audited_financials import CENTURY_TO_SUMMARY
 
             audit_rows = db.session.execute(
-                db.text("SELECT mapped_data, fiscal_year_end FROM audit_upload WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
+                db.text("SELECT mapped_data, fiscal_year_end FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY fiscal_year_end DESC"),
                 {"ec": entity_code}
             ).fetchall()
             if audit_rows:
