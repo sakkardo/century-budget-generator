@@ -1102,6 +1102,22 @@ Be precise with numbers. Include all line items found.
             return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
         }
 
+        // Decorate a Century category with an (inc.)/(exp.) suffix so users
+        // can visually tell income vs expense categories in the datalist.
+        // The suffix is strictly a display/UX affordance — it's stripped
+        // before comparing to CENTURY_TO_SUMMARY, saving rules, etc.
+        const INCOME_ROWS = new Set(["Total Operating Income", "Non-Operating Income"]);
+        function displayCat(cat) {
+            if (!cat) return '';
+            const summary = CENTURY_TO_SUMMARY[cat] || '';
+            const tag = INCOME_ROWS.has(summary) ? ' (inc.)' : ' (exp.)';
+            return cat + tag;
+        }
+        function stripCatSuffix(v) {
+            if (!v) return '';
+            return v.replace(/\s*\((?:inc|exp)\.\)\s*$/, '').trim();
+        }
+
         function makeDropdown(description, amount, section) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
@@ -1112,22 +1128,27 @@ Be precise with numbers. Include all line items found.
             const currentMapping = (typeof rulesForDesc === 'string')
                 ? rulesForDesc
                 : (rulesForDesc[section] || '');
+            const displayValue = displayCat(currentMapping);
             const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
 
             let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + currentMapping + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
+            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + displayValue + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
             html += '</div>';
             return html;
         }
 
         function validateCatInput(el) {
-            const v = el.value.trim();
-            if (v === '') { el.style.background = ''; return; }
-            if (centuryCategories.indexOf(v) === -1) {
+            const raw = el.value.trim();
+            if (raw === '') { el.style.background = ''; return; }
+            // Allow both suffixed ("Payroll (exp.)") and bare ("Payroll") entries.
+            const bare = stripCatSuffix(raw);
+            if (centuryCategories.indexOf(bare) === -1) {
                 el.value = '';
                 el.style.background = '';
-                alert('"' + v + '" is not a valid Century category. Pick from the list.');
+                alert('"' + raw + '" is not a valid Century category. Pick from the list.');
             } else {
+                // Normalize to the suffixed display form.
+                el.value = displayCat(bare);
                 el.style.background = '#d4edda';
             }
         }
@@ -1139,7 +1160,7 @@ Be precise with numbers. Include all line items found.
 
             // Shared datalist for all mapping dropdowns (alphabetical + searchable)
             html += '<datalist id="centuryCatsList">';
-            for (let cat of centuryCategories) { html += '<option value="' + cat + '">'; }
+            for (let cat of centuryCategories) { html += '<option value="' + displayCat(cat) + '">'; }
             html += '</datalist>';
 
             if (years.length > 0) {
@@ -1252,7 +1273,8 @@ Be precise with numbers. Include all line items found.
                     if (sectionType === 'revenue') unmappedRevenue += amount;
                     else unmappedExpense += amount;
                 } else {
-                    const summaryRow = centuryToSummary[s.value] || '';
+                    const bareCat = stripCatSuffix(s.value);
+                    const summaryRow = centuryToSummary[bareCat] || '';
                     const isRevenueCat = incomeSummaryRows.has(summaryRow);
                     const isRevenueSection = sectionType === 'revenue';
                     if (isRevenueCat !== isRevenueSection) {
@@ -1262,7 +1284,7 @@ Be precise with numbers. Include all line items found.
                             desc: s.dataset.desc,
                             amount: amount,
                             section: sectionType,
-                            cat: s.value,
+                            cat: bareCat,
                             catType: isRevenueCat ? 'revenue' : 'expense'
                         });
                     }
@@ -1346,7 +1368,7 @@ Be precise with numbers. Include all line items found.
                 if (s.value) {
                     rules.push({
                         auditor_line_item: s.dataset.desc,
-                        century_category: s.value,
+                        century_category: stripCatSuffix(s.value),
                         split_pct: 1.0
                     });
                 }
