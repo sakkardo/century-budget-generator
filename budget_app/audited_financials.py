@@ -1214,21 +1214,34 @@ Be precise with numbers. Include all line items found.
             let unmappedExpense = 0;
 
             const allSelects = document.querySelectorAll('input[id^="map_"]');
+            const mismatches = [];
             allSelects.forEach(s => {
+                // Clear any prior mismatch styling (idempotent)
+                s.style.borderLeft = '';
                 const amount = parseFloat(s.dataset.amount) || 0;
+                const sectionEl = s.closest('[data-section]');
+                const sectionType = sectionEl ? sectionEl.dataset.section : 'expense';
                 if (!s.value) {
                     unmappedCount++;
-                    // Try to figure out if this is revenue or expense from its position
-                    const section = s.closest('[data-section]');
-                    if (section && section.dataset.section === 'revenue') unmappedRevenue += amount;
+                    if (sectionType === 'revenue') unmappedRevenue += amount;
                     else unmappedExpense += amount;
                 } else {
                     const summaryRow = centuryToSummary[s.value] || '';
-                    if (incomeSummaryRows.has(summaryRow)) {
-                        mappedRevenue += amount;
-                    } else {
-                        mappedExpense += amount;
+                    const isRevenueCat = incomeSummaryRows.has(summaryRow);
+                    const isRevenueSection = sectionType === 'revenue';
+                    if (isRevenueCat !== isRevenueSection) {
+                        // Section/category type mismatch — flag it
+                        s.style.borderLeft = '4px solid #dc2626';
+                        mismatches.push({
+                            desc: s.dataset.desc,
+                            amount: amount,
+                            section: sectionType,
+                            cat: s.value,
+                            catType: isRevenueCat ? 'revenue' : 'expense'
+                        });
                     }
+                    if (isRevenueCat) mappedRevenue += amount;
+                    else mappedExpense += amount;
                 }
             });
 
@@ -1265,6 +1278,19 @@ Be precise with numbers. Include all line items found.
             // Unmapped
             if (unmappedCount > 0) {
                 html += '<div style="color:var(--red); font-weight:600; margin-bottom:8px;">⚠ ' + unmappedCount + ' items still unmapped</div>';
+            }
+
+            // Section/category mismatches
+            if (mismatches.length > 0) {
+                html += '<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:10px 12px; margin-bottom:8px;">';
+                html += '<div style="color:#dc2626; font-weight:700; margin-bottom:6px;">⚠ ' + mismatches.length + ' section/category mismatch' + (mismatches.length > 1 ? 'es' : '') + '</div>';
+                html += '<div style="font-size:11px; color:#991b1b; margin-bottom:8px;">Items below are in the <b>revenue</b> section but mapped to an <b>expense</b> category (or vice versa). Remap or leave blank.</div>';
+                mismatches.forEach(m => {
+                    html += '<div style="font-size:11px; padding:3px 0; border-top:1px dotted #fecaca;">';
+                    html += '<b>' + m.desc + '</b> (' + formatAmount(m.amount) + ') — in <i>' + m.section + '</i> section → mapped to <i>' + m.cat + '</i> (' + m.catType + ' category)';
+                    html += '</div>';
+                });
+                html += '</div>';
             }
 
             // Status
