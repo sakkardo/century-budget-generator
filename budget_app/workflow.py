@@ -479,6 +479,8 @@ def create_workflow_blueprint(db):
         position_name = db.Column(db.String(100), nullable=False)
         employee_count = db.Column(db.Integer, default=0)
         hourly_rate = db.Column(db.Float, default=0.0)
+        bonus_per_employee = db.Column(db.Float, default=0.0)
+        effective_week_override = db.Column(db.Float, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -490,6 +492,8 @@ def create_workflow_blueprint(db):
                 "position_name": self.position_name,
                 "employee_count": self.employee_count,
                 "hourly_rate": float(self.hourly_rate or 0),
+                "bonus_per_employee": float(self.bonus_per_employee or 0),
+                "effective_week_override": float(self.effective_week_override) if self.effective_week_override is not None else None,
                 "sort_order": self.sort_order
             }
 
@@ -1555,29 +1559,81 @@ def create_workflow_blueprint(db):
             if not line:
                 continue
 
-            line.accrual_adj = float(line_data.get("accrual_adj", 0) or 0)
-            line.unpaid_bills = float(line_data.get("unpaid_bills", 0) or 0)
-            line.increase_pct = float(line_data.get("increase_pct", 0) or 0)
-            line.notes = line_data.get("notes", "")
-            if "category" in line_data and line_data["category"]:
-                line.category = line_data["category"]
+            # Track changes for PM audit trail
+            changes = []
 
-            # Override fields (PM Tier 1-5 edits)
-            if "estimate_override" in line_data:
-                val = line_data["estimate_override"]
-                line.estimate_override = float(val) if val is not None else None
-            if "forecast_override" in line_data:
-                val = line_data["forecast_override"]
-                line.forecast_override = float(val) if val is not None else None
+            # Float fields that are always present in PM payload
+            for fname in ("accrual_adj", "unpaid_bills", "increase_pct"):
+                if fname in line_data:
+                    new_val = float(line_data.get(fname, 0) or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
+                    setattr(line, fname, new_val)
+
+            # Notes
+            if "notes" in line_data:
+                new_val = line_data.get("notes", "")
+                if (line.notes or "") != new_val:
+                    changes.append(("notes", line.notes or "", new_val))
+                line.notes = new_val
+
+            # Category
+            if "category" in line_data and line_data["category"]:
+                old_val = line.category or ""
+                new_val = line_data["category"]
+                if old_val != new_val:
+                    changes.append(("category", old_val, new_val))
+                line.category = new_val
+
+            # Nullable override fields
+            for ofield in ("estimate_override", "forecast_override"):
+                if ofield in line_data:
+                    raw = line_data[ofield]
+                    new_val = float(raw) if raw is not None else None
+                    old_val = getattr(line, ofield, None)
+                    if old_val != new_val:
+                        changes.append((ofield, str(old_val), str(new_val)))
+                    setattr(line, ofield, new_val)
+
+            # Proposed budget and formula
             if "proposed_budget" in line_data:
-                line.proposed_budget = float(line_data["proposed_budget"] or 0)
+                new_val = float(line_data["proposed_budget"] or 0)
+                old_val = line.proposed_budget or 0
+                if old_val != new_val:
+                    changes.append(("proposed_budget", str(old_val), str(new_val)))
+                line.proposed_budget = new_val
             if "proposed_formula" in line_data:
-                line.proposed_formula = line_data["proposed_formula"] or None
+                new_val = line_data["proposed_formula"] or None
+                old_val = line.proposed_formula or ""
+                if old_val != (new_val or ""):
+                    changes.append(("proposed_formula", old_val, new_val or ""))
+                line.proposed_formula = new_val
+
+            # Other numeric fields
             for fname in ("prior_year", "ytd_actual", "ytd_budget", "current_budget"):
                 if fname in line_data:
-                    setattr(line, fname, float(line_data[fname] or 0))
+                    new_val = float(line_data[fname] or 0)
+                    old_val = getattr(line, fname, None) or 0
+                    if old_val != new_val:
+                        changes.append((fname, str(old_val), str(new_val)))
+                    setattr(line, fname, new_val)
 
-        db.session.commit()
+            # Write audit trail entries
+            for field, old_v, new_v in changes:
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id, budget_line_id=line.id,
+                    action="update", field_name=field,
+                    old_value=old_v, new_value=new_v, source="pm"
+                ))
+
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.getLogger(__name__).error(f'PM lines save failed: {e}')
+            return jsonify({"error": "Failed to save changes"}), 500
 
         return jsonify(budget.to_dict())
 
@@ -1640,7 +1696,13 @@ def create_workflow_blueprint(db):
                     old_value=old_v, new_value=new_v, source="web"
                 ))
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            import logging
+            logging.getLogger(__name__).error(f'FA lines save failed: {e}')
+            return jsonify({"error": "Failed to save changes"}), 500
         return jsonify({"status": "ok"})
 
 
@@ -1801,6 +1863,8 @@ def create_workflow_blueprint(db):
                 position_name=p.get("position_name", "").strip(),
                 employee_count=int(p.get("employee_count", 0) or 0),
                 hourly_rate=float(p.get("hourly_rate", 0) or 0),
+                bonus_per_employee=float(p.get("bonus_per_employee", 0) or 0),
+                effective_week_override=(float(p["effective_week_override"]) if p.get("effective_week_override") not in (None, "", 0) else None),
                 sort_order=i
             )
             db.session.add(pos)
@@ -4033,7 +4097,7 @@ function fxCellFocus(el) {
     bar.value = el.dataset.formula || '';
   }
   _formulaBarOriginal = bar.value;
-  const isReadOnly = field === 'variance' || field === 'pct_change';
+  const isReadOnly = field === 'variance' || field === 'pct_change' || el.dataset.readonly === 'true';
   if (isReadOnly) {
     _showFormulaButtons(false, false);
     bar.readOnly = true;
@@ -4240,6 +4304,12 @@ function formulaBarAccept() {
   }
   _showFormulaButtons(false, false);
   _formulaBarOriginal = bar.value.trim();
+
+  // Payroll-specific hook: if cell is in prGLContent, sync _payrollGLLines + re-render
+  if (el && typeof el.closest === 'function' && el.closest('#prGLContent') && typeof payrollCellEdited === 'function') {
+    payrollCellEdited(el, gl, field);
+  }
+
   setTimeout(() => {
     el.style.border = '';
     el.style.borderRadius = '';
@@ -4503,21 +4573,37 @@ function faUpdateSheetTotals() {
   updateTotalRow(document.getElementById('faSheetTotal'), sumGLs(allGLs));
 }
 
+let _faSavePending = {};
 let _faSaveTimer = null;
 function faAutoSave(gl, field, value) {
+  if (!_faSavePending[gl]) _faSavePending[gl] = {};
+  _faSavePending[gl][field] = value;
   clearTimeout(_faSaveTimer);
   _faSaveTimer = setTimeout(async () => {
+    const lines = Object.entries(_faSavePending).map(function(entry) {
+      var obj = {gl_code: entry[0]};
+      var fields = entry[1];
+      for (var k in fields) { if (fields.hasOwnProperty(k)) obj[k] = fields[k]; }
+      return obj;
+    });
+    _faSavePending = {};
     const indicator = document.getElementById('faSaveIndicator');
     indicator.textContent = 'Saving...';
-    const lineData = {gl_code: gl};
-    lineData[field] = value;
-    await fetch('/api/fa-lines/' + entityCode, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({lines: [lineData]})
-    });
-    indicator.textContent = 'Saved';
-    setTimeout(() => { indicator.textContent = ''; }, 2000);
+    try {
+      const resp = await fetch('/api/fa-lines/' + entityCode, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({lines: lines})
+      });
+      if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+      indicator.textContent = 'Saved';
+    } catch(e) {
+      indicator.textContent = 'Save failed!';
+      indicator.style.color = '#dc2626';
+      console.error('FA save error:', e);
+      setTimeout(function() { indicator.style.color = ''; }, 3000);
+    }
+    setTimeout(function() { indicator.textContent = ''; }, 2000);
   }, 800);
 }
 
@@ -6142,8 +6228,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   // If no positions saved yet, seed with 2 placeholder rows
   if (_payrollPositions.length === 0) {
     _payrollPositions = [
-      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, sort_order: 0},
-      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, sort_order: 1}
+      {position_name: 'Resident Manager', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: 0},
+      {position_name: 'Handyman', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: 1}
     ];
   }
 
@@ -6152,7 +6238,35 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   const fmtPct = v => (v * 100).toFixed(2) + '%';
   const fmtPctInput = v => (v * 100).toFixed(3);
 
-  let html = '<div style="max-width:1200px; margin:0 auto;">';
+  // Scrollable wrapper so sticky formula bar has a scroll context (matches R&S behavior)
+  let html = '<div style="max-width:1200px; margin:0 auto; max-height:calc(100vh - 220px); overflow-y:auto; padding-right:8px;">';
+
+  // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
+  html += '<style>' +
+    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
+    '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
+    '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
+    '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
+    '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
+    '#prGLContent .fa-fx { position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }' +
+    '#prGLContent .fa-fx-override { color:#d97706; background:#fef3c7; border-color:#d97706; }' +
+    '#prGLContent .fa-fx-linked { color:#fff; background:#2563eb; border-color:#2563eb; }' +
+    '#prGLContent .cell-pct { width:55px; }' +
+    '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
+    '#prGLContent td.num { position:relative; padding:5px 8px !important; }' +
+    '</style>';
+
+  // Formula bar — Excel-style with live preview + Accept/Cancel (same as other tabs)
+  // Sticky positioning so it stays visible as user scrolls through GL detail
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
+    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
+    '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
+    '<span id="faFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+    '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
+    '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
+    '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '</div>';
 
   // ── Section 0: Payroll Assumptions (Editable) ──────────────────────────
   html += `
@@ -6172,11 +6286,11 @@ async function renderPayrollTab(sheetLines, contentDiv) {
           <div style="font-size:10px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5efe7;">Wage & Schedule</div>
           ${prAssumpRow('Wage Increase %', 'wage_increase_pct', fmtPctInput(a.wage_increase_pct || 0), '%')}
           ${prAssumpRow('Effective Week', 'effective_week', a.effective_week || '16', '')}
-          ${prAssumpRowCalc('Pre-Incr Weeks', a.pre_increase_weeks || 15)}
-          ${prAssumpRowCalc('Post-Incr Weeks', a.post_increase_weeks || 37)}
+          ${prAssumpRow('Pre-Incr Weeks', 'pre_increase_weeks', a.pre_increase_weeks || 15, '')}
+          ${prAssumpRow('Post-Incr Weeks', 'post_increase_weeks', a.post_increase_weeks || 37, '')}
           ${prAssumpRow('OT Factor %', 'ot_factor', ((a.ot_factor || 0.002) * 100).toFixed(1), '%')}
           ${prAssumpRow('Vac/Sick/Hol %', 'vac_sick_hol_factor', ((a.vac_sick_hol_factor || 0.10) * 100).toFixed(1), '%')}
-          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Pre/Post weeks auto-calculate from Effective Week</div>
+          <div style="margin-top:8px; font-size:10px; color:var(--gray-400); font-style:italic; padding-top:6px; border-top:1px dashed var(--gray-200);">Changing Effective Week auto-updates Pre/Post weeks — you can also edit them directly</div>
         </div>
 
         <!-- Column 2: Payroll Tax Rates -->
@@ -6230,6 +6344,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); min-width:140px;">Position</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:40px;">#</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Hourly Rate</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Bonus $/Emp</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:70px;" title="Override the global Effective Week for this position only. Leave blank to use global.">Eff Wk Override</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Weekly Pay <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Pre-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:90px;">Post-Incr Rate <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
@@ -6305,8 +6421,8 @@ function prAssumpRow(label, key, val, suffix) {
   return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
     '<span style="color:var(--gray-600);">' + label + '</span>' +
     '<div style="display:flex; align-items:center; gap:2px;">' +
-    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums;">' +
-    (suffix ? '<span style="font-size:11px; color:var(--gray-400); width:12px;">' + suffix + '</span>' : '') +
+    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums; font-family:inherit;">' +
+    '<span style="font-size:11px; color:var(--gray-400); width:12px; display:inline-block;">' + (suffix || '') + '</span>' +
     '</div></div>';
 }
 
@@ -6346,6 +6462,8 @@ function payrollAssumptionChanged(el) {
     _payrollAssumptions.post_increase_weeks = 52 - _payrollAssumptions.pre_increase_weeks;
   } else if (['wage_increase_pct','fica','sui','fui','mta','nys_disability','pfl','workers_comp','ot_factor','vac_sick_hol_factor'].includes(key)) {
     _payrollAssumptions[key] = parseFloat(val) / 100 || 0;
+  } else if (key === 'pre_increase_weeks' || key === 'post_increase_weeks') {
+    _payrollAssumptions[key] = parseInt(val) || 0;
   } else {
     _payrollAssumptions[key] = parseFloat(val) || 0;
   }
@@ -6380,11 +6498,16 @@ function prRosterChanged() {
     const nameInput = tr.querySelector('.pr-pos-name');
     const countInput = tr.querySelector('.pr-pos-count');
     const rateInput = tr.querySelector('.pr-pos-rate');
+    const bonusInput = tr.querySelector('.pr-pos-bonus');
+    const effWkInput = tr.querySelector('.pr-pos-effwk');
     if (!nameInput) return;
+    const effWkRaw = effWkInput ? effWkInput.value.trim() : '';
     _payrollPositions.push({
       position_name: nameInput.value.trim(),
       employee_count: parseInt(countInput.value) || 0,
       hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
+      bonus_per_employee: bonusInput ? (parseFloat(bonusInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
+      effective_week_override: effWkRaw === '' ? null : (parseFloat(effWkRaw) || null),
       sort_order: i
     });
   });
@@ -6407,7 +6530,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -6435,18 +6558,27 @@ function recalcPayroll() {
   let totalOT = 0;
   let totalVSH = 0;
   let totalComp = 0;
+  let totalBonus = 0;
 
   // Calculate per-position wages
   const posCalcs = _payrollPositions.map(p => {
     const count = p.employee_count || 0;
     const rate = p.hourly_rate || 0;
+    const bonusPerEmp = p.bonus_per_employee || 0;
+    // Per-position effective week override (e.g. one Resident Manager getting a late raise)
+    let posPreWks = preWks, posPostWks = postWks;
+    if (p.effective_week_override && p.effective_week_override > 0) {
+      posPreWks = Math.max(p.effective_week_override - 1, 0);
+      posPostWks = 52 - posPreWks;
+    }
     const weeklyPay = rate * 40;
-    const preIncrWages = weeklyPay * preWks * count;
+    const preIncrWages = weeklyPay * posPreWks * count;
     const postIncrRate = rate * (1 + wageInc);
-    const postIncrWages = (postIncrRate * 40) * postWks * count;
+    const postIncrWages = (postIncrRate * 40) * posPostWks * count;
     const annualBase = preIncrWages + postIncrWages;
     const ot = annualBase * otFactor;
     const vsh = annualBase * vshFactor;
+    const bonus = bonusPerEmp * count;
     const comp = annualBase + ot + vsh;
 
     totalEmployees += count;
@@ -6454,8 +6586,9 @@ function recalcPayroll() {
     totalOT += ot;
     totalVSH += vsh;
     totalComp += comp;
+    totalBonus += bonus;
 
-    return { count, rate, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, comp };
+    return { count, rate, bonusPerEmp, posPreWks, posPostWks, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
   });
 
   // Calculate taxes & benefits
@@ -6482,13 +6615,37 @@ function recalcPayroll() {
   // Store for tie-out
   window._payrollCalcTotal = totalLaborCalc;
 
-  // Render roster
-  renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp);
+  // Publish component breakdown for GL linkage
+  window._payrollComponents = {
+    annual_base: totalAnnualBase,
+    ot: totalOT,
+    vsh_vacation: totalVSH / 3,
+    vsh_holiday: totalVSH / 3,
+    vsh_sick: totalVSH / 3,
+    bonus: totalBonus,
+    employer_taxes: ficaAmt + suiAmt + fuiAmt + mtaAmt,
+    workers_comp: wcAmt,
+    nys_disability: nysDisAmt,
+    pfl: pflAmt,
+    welfare: welfareAmt,
+    pension: pensionAmt,
+    supp_retirement: suppRetAmt,
+    legal_fund: legalAmt,
+    training_fund: trainingAmt,
+    profit_sharing: profitShareAmt
+  };
+
+  // Render roster (pass assumption values for formula strings)
+  renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp,
+    {preWks, postWks, wageInc, otFactor, vshFactor});
 
   // Render taxes
   renderPayrollTaxes({ficaAmt, suiAmt, fuiAmt, mtaAmt, nysDisAmt, pflAmt, totalPayrollTax, wcAmt,
     welfareAmt, pensionAmt, suppRetAmt, legalAmt, trainingAmt, profitShareAmt, totalUnion, totalLaborCalc,
     grossWages, totalEmployees});
+
+  // Push roster-derived component values to linked GL lines
+  pushRosterToGL();
 
   // Update tie-out
   renderPayrollTieOut(totalLaborCalc);
@@ -6506,7 +6663,7 @@ function recalcPayroll() {
 
 // ── Render Roster Table ───────────────────────────────────────────────────
 
-function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp) {
+function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp, assumpCtx) {
   const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
   const body = document.getElementById('prRosterBody');
   const foot = document.getElementById('prRosterFoot');
@@ -6515,26 +6672,66 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   // If no calcs passed, just render empty inputs
   if (!posCalcs) posCalcs = _payrollPositions.map(() => ({count:0,rate:0,weeklyPay:0,preIncrWages:0,postIncrRate:0,postIncrWages:0,annualBase:0,ot:0,vsh:0,comp:0}));
 
+  const ctx = assumpCtx || {preWks:15, postWks:37, wageInc:0, otFactor:0.002, vshFactor:0.10};
   const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
-  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+  const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
   const gs = 'color:#16a34a; font-weight:600;';
   const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;';
+
+  // fx cell helper for roster calculated fields (click to view formula, read-only)
+  // Renders a clickable cell with fx badge + invisible input holding data attributes
+  // Matches R&S cell-fx styling: light green background with darker green border
+  const rosterFx = (id, field, val, formula, posIdx, bgColor, fontWeight) => {
+    const badge = '<span class="fa-fx" style="position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; z-index:5;">fx</span>';
+    const displayVal = (field === 'postIncrRate') ? '$' + val.toFixed(2) : fD(val);
+    const tdStyle = 'padding:7px 10px; border-bottom:1px solid #f3f4f6; text-align:right; position:relative; cursor:pointer;';
+    const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px; border:1px solid #bbf7d0; border-radius:4px; background:#f0fdf4; text-align:right; font-family:inherit; font-size:12px; font-variant-numeric:tabular-nums; ' + (bgColor || 'color:#16a34a;') + ' ' + (fontWeight || 'font-weight:600;');
+    return '<td style="' + tdStyle + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' +
+      badge +
+      '<input id="' + id + '" type="text" readonly ' +
+        'data-readonly="true" ' +
+        'data-gl="Roster[' + posIdx + ']" ' +
+        'data-field="' + field + '" ' +
+        'data-raw="' + Math.round(val) + '" ' +
+        'data-formula="' + formula.replace(/"/g, '&quot;') + '" ' +
+        'value="' + displayVal + '" ' +
+        'onblur="fxCellBlur(this)" ' +
+        'style="' + inputStyle + '">' +
+      '</td>';
+  };
 
   let rows = '';
   _payrollPositions.forEach((p, i) => {
     const c = posCalcs[i] || {};
+    const count = p.employee_count || 0;
+    const rate = p.hourly_rate || 0;
+    // Build formulas as parseable math strings with literal values (safeEvalFormula compatible)
+    // Uses per-position week overrides if set, otherwise global ctx values
+    const usedPreWks = c.posPreWks !== undefined ? c.posPreWks : ctx.preWks;
+    const usedPostWks = c.posPostWks !== undefined ? c.posPostWks : ctx.postWks;
+    const fWeekly = '=' + rate + '*40';
+    const fPreWages = '=' + (c.weeklyPay||0) + '*' + usedPreWks + '*' + count;
+    const fPostRate = '=' + rate + '*(1+' + ctx.wageInc.toFixed(4) + ')';
+    const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + usedPostWks + '*' + count;
+    const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0);
+    const fOT = '=' + (c.annualBase||0) + '*' + ctx.otFactor.toFixed(4);
+    const fVSH = '=' + (c.annualBase||0) + '*' + ctx.vshFactor.toFixed(4);
+    const fComp = '=' + (c.annualBase||0) + '+' + (c.ot||0) + '+' + (c.vsh||0);
+
     rows += '<tr>' +
       '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fffff0;"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
-      '<td style="' + ns + gs + '">' + fD(c.weeklyPay || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.preIncrWages || 0) + '</td>' +
-      '<td style="' + ns + gs + '">$' + (c.postIncrRate || 0).toFixed(2) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.postIncrWages || 0) + '</td>' +
-      '<td style="' + ns + ' font-weight:700;">' + fD(c.annualBase || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.ot || 0) + '</td>' +
-      '<td style="' + ns + gs + '">' + fD(c.vsh || 0) + '</td>' +
-      '<td style="' + ns + ' font-weight:800; color:#1e40af;">' + fD(c.comp || 0) + '</td>' +
+      '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged()" title="Override global Effective Week for this position only" style="' + is + ' width:55px;"></td>' +
+      rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
+      rosterFx('pr_rost_pre_'+i, 'preIncrWages', c.preIncrWages||0, fPreWages, i) +
+      rosterFx('pr_rost_pr_'+i, 'postIncrRate', c.postIncrRate||0, fPostRate, i) +
+      rosterFx('pr_rost_post_'+i, 'postIncrWages', c.postIncrWages||0, fPostWages, i) +
+      rosterFx('pr_rost_base_'+i, 'annualBase', c.annualBase||0, fAnnualBase, i, 'color:#1f2937;', 'font-weight:700;') +
+      rosterFx('pr_rost_ot_'+i, 'ot', c.ot||0, fOT, i) +
+      rosterFx('pr_rost_vsh_'+i, 'vsh', c.vsh||0, fVSH, i) +
+      rosterFx('pr_rost_comp_'+i, 'comp', c.comp||0, fComp, i, 'color:#1e40af;', 'font-weight:800;') +
       '<td style="padding:7px 4px; border-bottom:1px solid #f3f4f6;"><button onclick="removePayrollPosition(' + i + ')" style="padding:2px 6px; font-size:10px; cursor:pointer; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; border-radius:4px;">✕</button></td>' +
       '</tr>';
   });
@@ -6546,6 +6743,8 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">TOTAL</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p)=> s+((p.bonus_per_employee||0)*(p.employee_count||0)),0)) + '</td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
@@ -6556,7 +6755,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '</tr>' +
-    '<tr><td colspan="12" style="padding:8px 10px;">' +
+    '<tr><td colspan="14" style="padding:8px 10px;">' +
     '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
     '<span style="margin-left:12px; font-size:10px; color:var(--gray-400); font-style:italic;">Flexible positions — each building can have different roles</span>' +
     '</td></tr>';
@@ -6640,6 +6839,28 @@ const PAYROLL_GL_GROUPS = [
   {key: 'benefits', label: 'Benefits', glPrefixes: ['5150','5155','5160']},
   {key: 'other_payroll', label: 'Other Payroll', glPrefixes: ['5162','5165','5166','5168','5172']}
 ];
+
+// Maps GL codes to roster/assumption calc components. Mapped GLs have their
+// proposed_budget driven automatically by Section 1-2 calculations; unmapped
+// GLs retain the manual flat-% behavior.
+const PAYROLL_COMPONENT_MAP = {
+  '5105-0000': 'annual_base',      // Gross Payroll
+  '5105-0010': 'ot',               // Overtime Pay
+  '5105-0015': 'vsh_vacation',     // Vacation Pay (1/3 of VSH)
+  '5105-0020': 'vsh_holiday',      // Holiday Pay (1/3 of VSH)
+  '5105-0025': 'vsh_sick',         // Sick Pay (1/3 of VSH)
+  '5105-0035': 'bonus',            // Bonus (flat $/employee × count, per position)
+  '5145-0000': 'employer_taxes',   // Employer Payroll Taxes (FICA+SUI+FUI+MTA)
+  '5165-0000': 'workers_comp',     // Workers Comp Insurance
+  '5166-0000': 'nys_disability',   // Disability Insurance
+  '5168-0000': 'pfl',              // Paid Family Leave
+  '5155-0015': 'welfare',          // Health Insurance (welfare)
+  '5160-0010': 'pension',          // Pension Fund
+  '5160-0020': 'supp_retirement',  // Annuity Fund
+  '5160-0025': 'legal_fund',       // Legal Fund
+  '5160-0030': 'training_fund',    // Training Fund
+  '5160-0035': 'profit_sharing'    // Profit Sharing
+};
 
 function getPayrollGroup(glCode) {
   const prefix = (glCode || '').split('-')[0];
@@ -6725,22 +6946,109 @@ function renderPayrollGL() {
 
       const hidden = g.key !== 'wages' ? ' style="display:none;"' : '';
       const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
-      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-family:"SF Mono","Fira Code",monospace; font-size:12px;';
+      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
 
-      html += '<tr class="prgl-row" data-prgroup="' + g.key + '"' + hidden + '>' +
-        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + l.gl_code + '</td>' +
+      // Linked rows are auto-driven by roster — show 🔗 icon, lock Inc%, highlight Proposed
+      const isLinked = !!l._linked;
+      const linkIcon = isLinked ? '<span title="Driven by roster calculation" style="color:#2563eb; font-size:11px; margin-right:3px;">🔗</span>' : '';
+      const pctInputAttrs = isLinked
+        ? 'class="cell cell-pct" disabled title="Locked — driven by roster calculation"'
+        : 'class="cell cell-pct"';
+
+      // Build human-readable formulas (matches R&S tab formula syntax for safeEvalFormula)
+      const pyr = float(l.prior_year), yta = float(l.ytd_actual), acc = float(l.accrual_adj), unp = float(l.unpaid_bills);
+      const baseSum = yta + acc + unp;
+      let estFormula;
+      if (baseSum >= pyr && pyr > 0 && YTD_MONTHS > 0) {
+        estFormula = '=(' + yta + '+' + acc + '+' + unp + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+      } else if (pyr > 0) {
+        estFormula = '=' + pyr + '-(' + yta + '+' + acc + '+' + unp + ')';
+      } else if (baseSum > 0 && YTD_MONTHS > 0) {
+        estFormula = '=(' + yta + '+' + acc + '+' + unp + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
+      } else {
+        estFormula = '=0';
+      }
+      const fcstFormula = '=' + yta + '+(' + acc + ')+(' + unp + ')+' + Math.round(est);
+      const componentKey = PAYROLL_COMPONENT_MAP[l.gl_code];
+      const propFormulaDisplay = isLinked
+        ? '=Roster.' + componentKey + ' (auto-linked)'
+        : '=Forecast*(1+IncreasePct)';
+
+      // Determine override states
+      const estOverride = l.estimate_override !== null && l.estimate_override !== undefined;
+      const fcstOverride = l.forecast_override !== null && l.forecast_override !== undefined;
+      const propHasFormula = !!(l.proposed_formula && l.proposed_formula !== 'manual');
+      const propManualOverride = l.proposed_formula === 'manual';
+
+      // Cell IDs
+      const estId = 'pr_est_' + l.gl_code;
+      const fcstId = 'pr_fcst_' + l.gl_code;
+      const propId = 'pr_prop_' + l.gl_code;
+
+      // Helper: build fx cell input matching R&S style (class="cell cell-fx" + top-right fx badge)
+      const fxInput = (id, val, formula, field, overrideFlag, extraAttr, linkedFlag) => {
+        const badgeClass = linkedFlag ? 'fa-fx fa-fx-linked' : (overrideFlag ? 'fa-fx fa-fx-override' : 'fa-fx');
+        const badgeText = linkedFlag ? '🔗fx' : (overrideFlag ? '✎' : 'fx');
+        const cellClass = linkedFlag ? 'cell cell-fx cell-fx-linked' : 'cell cell-fx';
+        const badge = '<span class="' + badgeClass + '">' + badgeText + '</span>';
+        return badge +
+          '<input id="' + id + '" class="' + cellClass + '" type="text" readonly' +
+          ' value="' + fD(val) + '"' +
+          ' data-raw="' + Math.round(val) + '"' +
+          ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
+          ' data-override="' + (overrideFlag ? 'true' : 'false') + '"' +
+          (extraAttr || '') +
+          ' data-gl="' + l.gl_code + '" data-field="' + field + '"' +
+          ' onblur="fxCellBlur(this)"' +
+          ' style="cursor:pointer; pointer-events:none;">';
+      };
+
+      // Estimate cell — always editable via formula bar
+      const estCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + estId + '\'))">' +
+        fxInput(estId, est, estFormula, 'estimate_override', estOverride) + '</td>';
+
+      // Forecast cell — always editable via formula bar
+      const fcstCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + fcstId + '\'))">' +
+        fxInput(fcstId, fc, fcstFormula, 'forecast_override', fcstOverride) + '</td>';
+
+      // Proposed cell: non-linked rows editable via formula bar; linked rows are read-only linked
+      let propCellHtml;
+      if (isLinked) {
+        // Linked row: read-only blue-styled cell with 🔗fx badge — no click handler (not editable)
+        propCellHtml = '<td class="num" title="' + propFormulaDisplay + '" style="position:relative;">' +
+          '<span class="fa-fx fa-fx-linked">🔗fx</span>' +
+          '<input class="cell cell-fx cell-fx-linked" type="text" readonly value="' + fD(prop) + '" data-raw="' + Math.round(prop) + '"' +
+          ' style="cursor:not-allowed; pointer-events:none;">' +
+          '</td>';
+      } else {
+        const pfAttr = propHasFormula ? ' data-proposed-formula="' + l.proposed_formula.replace(/"/g, '&quot;') + '"' : '';
+        const propOverride = propHasFormula || propManualOverride;
+        propCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + propId + '\'))">' +
+          fxInput(propId, prop, propFormulaDisplay, 'proposed_budget', propOverride, pfAttr) + '</td>';
+      }
+
+      // Editable $ cell (Prior, YTD, Accrual, Unpaid, YTD Budget, Curr Budget) — matches R&S
+      const prDollarCell = (field, val) => {
+        return '<td class="num"><input class="cell pr-gl-dollar" type="text" ' +
+          'data-gl="' + l.gl_code + '" data-field="' + field + '" ' +
+          'value="' + fD(val) + '" data-raw="' + Math.round(val || 0) + '" ' +
+          'onfocus="this.value=this.dataset.raw" onblur="prDollarCellBlur(this)"></td>';
+      };
+
+      html += '<tr class="prgl-row" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
+        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
         '<td style="' + cs + '">' + (l.description || '') + '</td>' +
         '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
-        '<td style="' + ns + '">' + fD(l.prior_year) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.ytd_actual) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.accrual_adj) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.unpaid_bills) + '</td>' +
-        '<td style="' + ns + '">' + fD(l.ytd_budget) + '</td>' +
-        '<td style="' + ns + ' color:#16a34a;">' + fD(est) + '</td>' +
-        '<td style="' + ns + ' color:#16a34a;">' + fD(fc) + '</td>' +
-        '<td style="' + ns + '">' + fD(curr) + '</td>' +
-        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" style="width:55px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;"></td>' +
-        '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + fD(prop) + '</td>' +
+        prDollarCell('prior_year', l.prior_year) +
+        prDollarCell('ytd_actual', l.ytd_actual) +
+        prDollarCell('accrual_adj', l.accrual_adj) +
+        prDollarCell('unpaid_bills', l.unpaid_bills) +
+        prDollarCell('ytd_budget', l.ytd_budget) +
+        estCellHtml +
+        fcstCellHtml +
+        prDollarCell('current_budget', curr) +
+        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
+        propCellHtml +
         '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
         '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
         '</tr>';
@@ -6809,25 +7117,248 @@ function togglePrGLGroup(groupKey) {
 
 // ── Tie-Out Bar ───────────────────────────────────────────────────────────
 
+// Push roster-derived component values to linked GL lines.
+// Updates _payrollGLLines in memory, then persists to DB via /api/fa-lines.
+let _prPushSaveTimer = null;
+function pushRosterToGL() {
+  const comps = window._payrollComponents;
+  if (!comps || !Array.isArray(_payrollGLLines)) return;
+
+  const savePayload = [];
+  let changed = false;
+
+  _payrollGLLines.forEach(line => {
+    const componentKey = PAYROLL_COMPONENT_MAP[line.gl_code];
+    if (!componentKey || comps[componentKey] === undefined) {
+      line._linked = false;
+      return;
+    }
+    // Skip rows the user has manually overridden (proposed_formula set)
+    if (line.proposed_formula) {
+      line._linked = false;
+      return;
+    }
+    const newProposed = Math.round(comps[componentKey]);
+    const oldProposed = Math.round(line.proposed_budget || 0);
+    line._linked = true;
+    line.proposed_budget = newProposed;
+    // Back-calc increase_pct from curr_budget so the column stays accurate
+    const curr = float(line.current_budget || 0);
+    line.increase_pct = curr ? (newProposed / curr - 1) : 0;
+    if (newProposed !== oldProposed) {
+      changed = true;
+      savePayload.push({
+        gl_code: line.gl_code,
+        proposed_budget: newProposed,
+        increase_pct: line.increase_pct
+      });
+    }
+  });
+
+  // Re-render GL section to reflect updated values + linked indicators
+  renderPayrollGL();
+
+  // Debounced persist — batches changes from rapid roster edits
+  if (changed && savePayload.length > 0) {
+    clearTimeout(_prPushSaveTimer);
+    _prPushSaveTimer = setTimeout(async () => {
+      try {
+        await fetch('/api/fa-lines/' + entityCode, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({lines: savePayload})
+        });
+      } catch(e) { console.error('Failed to save roster-linked GL values:', e); }
+    }, 800);
+  }
+}
+
+// Called when a Payroll dollar cell (Prior, YTD, Accrual, Unpaid, YTD Budget, Curr Budget)
+// loses focus. Parses, saves via faAutoSave, updates _payrollGLLines, and re-renders.
+function prDollarCellBlur(el) {
+  const raw = parseDollar(el.value);
+  const rounded = Math.round(raw);
+  el.dataset.raw = rounded;
+  const gl = el.dataset.gl, field = el.dataset.field;
+  // Save via existing fa-lines endpoint (uses accumulator)
+  faAutoSave(gl, field, rounded);
+  // Update in-memory line + re-render Payroll GL
+  const line = _payrollGLLines.find(l => l.gl_code === gl);
+  if (line) {
+    line[field] = rounded;
+    renderPayrollGL();
+    if (window._payrollCalcTotal !== undefined) {
+      renderPayrollTieOut(window._payrollCalcTotal);
+    }
+  }
+}
+
+// Called from formulaBarAccept when a Payroll GL cell is edited.
+// Syncs the in-memory _payrollGLLines array and triggers re-render.
+function payrollCellEdited(el, glCode, field) {
+  const line = _payrollGLLines.find(l => l.gl_code === glCode);
+  if (!line) return;
+  const raw = parseFloat(el.dataset.raw) || 0;
+  const overrideSet = el.dataset.override === 'true';
+
+  if (field === 'estimate_override') {
+    line.estimate_override = overrideSet ? raw : null;
+  } else if (field === 'forecast_override') {
+    line.forecast_override = overrideSet ? raw : null;
+  } else if (field === 'proposed_budget') {
+    line.proposed_budget = raw;
+    // Mark as user-overridden so pushRosterToGL won't re-link
+    line.proposed_formula = el.dataset.proposedFormula || 'manual';
+    line._linked = false;
+    // Back-calc increase_pct to keep column accurate
+    const curr = float(line.current_budget || 0);
+    line.increase_pct = curr ? (raw / curr - 1) : 0;
+  }
+
+  // Re-render to refresh totals and any dependent displays
+  renderPayrollGL();
+  if (window._payrollCalcTotal !== undefined) {
+    renderPayrollTieOut(window._payrollCalcTotal);
+  }
+}
+
 function renderPayrollTieOut(calcTotal) {
   const div = document.getElementById('prTieOut');
   if (!div) return;
-  const glTotal = window._payrollGLTotal || 0;
-  const diff = calcTotal - glTotal;
-  const match = Math.abs(diff) < 1;
   const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
 
-  const bg = match ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)' : 'linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%)';
-  const border = match ? '2px solid #86efac' : '2px solid #fca5a5';
+  // Break down GL total into linked (roster-driven) vs manual (flat %)
+  let linkedTotal = 0;
+  let manualTotal = 0;
+  let linkedCount = 0;
+  if (Array.isArray(_payrollGLLines)) {
+    _payrollGLLines.forEach(l => {
+      const prop = Math.round(l.proposed_budget || 0);
+      if (l._linked) { linkedTotal += prop; linkedCount++; }
+      else { manualTotal += prop; }
+    });
+  }
+  const glTotal = linkedTotal + manualTotal;
+  window._payrollGLTotal = glTotal;
 
-  div.innerHTML = '<div style="display:flex; gap:24px; padding:16px 20px; background:' + bg + '; border-top:' + border + '; border-radius:0 0 10px 10px; align-items:center;">' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calculated Total</div><div style="font-size:18px; font-weight:800; color:#2563eb;">' + fD(calcTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From Sections 1 + 2</div></div>' +
-    '<div style="font-size:24px; color:#d1d5db;">vs</div>' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">GL Proposed Total</div><div style="font-size:18px; font-weight:800; color:#5a4a3f;">' + fD(glTotal) + '</div><div style="font-size:10px; color:var(--gray-400); font-style:italic;">From GL lines above</div></div>' +
-    '<div style="font-size:24px; color:#d1d5db;">→</div>' +
-    '<div style="flex:1; text-align:center;"><div style="font-size:10px; font-weight:600; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Variance</div><div style="font-size:18px; font-weight:800; color:' + (match ? '#16a34a' : '#dc2626') + ';">' + (match ? '✓ Matched' : fD(diff)) + '</div>' +
-    (match ? '' : '<div style="font-size:10px; color:#dc2626; font-style:italic;">Review roster positions or adjust GL proposed values</div>') +
-    '</div></div>';
+  // Match: linked total should equal roster calc total (by construction)
+  const linkedMatch = Math.abs(linkedTotal - calcTotal) < 1;
+
+  div.innerHTML = '<div style="padding:16px 20px; background:linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%); border-top:2px solid #93c5fd; border-radius:0 0 10px 10px;">' +
+    '<div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">' +
+      '<div onclick="togglePrLinkedBreakdown()" style="flex:1; min-width:140px; cursor:pointer; padding:8px; margin:-8px; border-radius:6px; transition:background 0.15s;" onmouseover="this.style.background=\'rgba(255,255,255,0.5)\'" onmouseout="this.style.background=\'transparent\'" title="Click to see all linked GLs">' +
+        '<div style="font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px;">🔗 Linked GLs (Auto) <span id="prLinkedArrow" style="display:inline-block; transition:transform 0.2s; font-size:9px; margin-left:3px;">▶</span></div>' +
+        '<div style="font-size:20px; font-weight:800; color:#1e40af;">' + fD(linkedTotal) + '</div>' +
+        '<div style="font-size:10px; color:#3b82f6; font-style:italic;">' + linkedCount + ' GLs driven by roster — click to view</div>' +
+      '</div>' +
+      '<div style="font-size:24px; color:#9ca3af;">+</div>' +
+      '<div style="flex:1; min-width:140px;">' +
+        '<div style="font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Manual GLs</div>' +
+        '<div style="font-size:20px; font-weight:800; color:#374151;">' + fD(manualTotal) + '</div>' +
+        '<div style="font-size:10px; color:var(--gray-400); font-style:italic;">Flat % applied</div>' +
+      '</div>' +
+      '<div style="font-size:24px; color:#9ca3af;">=</div>' +
+      '<div style="flex:1; min-width:140px;">' +
+        '<div style="font-size:10px; font-weight:700; color:#1f2937; text-transform:uppercase; letter-spacing:0.5px;">Total Payroll</div>' +
+        '<div style="font-size:22px; font-weight:800; color:#1f2937;">' + fD(glTotal) + '</div>' +
+      '</div>' +
+      '<div style="margin-left:auto; text-align:right;">' +
+        '<div style="font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Roster Calc Check</div>' +
+        '<div style="font-size:14px; font-weight:700; color:' + (linkedMatch ? '#059669' : '#dc2626') + ';">' + (linkedMatch ? '✓ Matches ' : '⚠ Diff: ') + fD(calcTotal) + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div id="prLinkedBreakdown" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid #bfdbfe;">' + buildLinkedBreakdownHTML() + '</div>' +
+    '</div>';
+}
+
+// Build breakdown table showing each linked GL with override controls
+function buildLinkedBreakdownHTML() {
+  if (!Array.isArray(_payrollGLLines)) return '';
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  const linkedLines = _payrollGLLines.filter(l => l._linked);
+  if (linkedLines.length === 0) {
+    return '<div style="font-size:12px; color:#6b7280; font-style:italic; text-align:center; padding:12px;">No linked GLs yet — update the roster or assumptions to drive GL values.</div>';
+  }
+
+  let html = '<div style="font-size:11px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Linked GL Breakdown</div>';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+  html += '<thead><tr style="background:rgba(255,255,255,0.6);">' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">GL Code</th>' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Description</th>' +
+    '<th style="text-align:left; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Roster Component</th>' +
+    '<th style="text-align:right; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Current Value</th>' +
+    '<th style="text-align:center; padding:6px 10px; font-size:10px; font-weight:700; color:#1e40af; text-transform:uppercase; letter-spacing:0.3px;">Override</th>' +
+    '</tr></thead><tbody>';
+
+  linkedLines.forEach(l => {
+    const compKey = PAYROLL_COMPONENT_MAP[l.gl_code] || '—';
+    const val = Math.round(l.proposed_budget || 0);
+    html += '<tr style="border-top:1px solid rgba(147,197,253,0.3);">' +
+      '<td style="padding:6px 10px; font-family:monospace; font-size:11px; font-weight:600; color:#1e40af;">🔗 ' + l.gl_code + '</td>' +
+      '<td style="padding:6px 10px; font-size:12px; color:#1f2937;">' + (l.description || '') + '</td>' +
+      '<td style="padding:6px 10px; font-size:11px; color:#3b82f6; font-family:monospace;">' + compKey + '</td>' +
+      '<td style="padding:6px 10px; text-align:right; font-weight:700; color:#1e40af; font-variant-numeric:tabular-nums;">' + fD(val) + '</td>' +
+      '<td style="padding:6px 10px; text-align:center;">' +
+        '<input type="text" placeholder="Enter $" data-gl="' + l.gl_code + '" ' +
+          'style="width:90px; padding:3px 6px; border:1px solid #93c5fd; border-radius:4px; font-size:11px; text-align:right; background:white;" ' +
+          'onkeydown="if(event.key===\'Enter\'){prOverrideLinkedGL(this);}"> ' +
+        '<button onclick="prOverrideLinkedGL(this.previousElementSibling)" ' +
+          'style="padding:3px 10px; font-size:10px; font-weight:600; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer; margin-left:4px;">Override</button>' +
+      '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  html += '<div style="margin-top:8px; font-size:10px; color:#6b7280; font-style:italic;">Entering an override value unlinks the row — it will keep that value until you click Clear on the Proposed cell.</div>';
+  return html;
+}
+
+// Toggle the expand/collapse of the linked GL breakdown
+function togglePrLinkedBreakdown() {
+  const panel = document.getElementById('prLinkedBreakdown');
+  const arrow = document.getElementById('prLinkedArrow');
+  if (!panel) return;
+  const isShown = panel.style.display !== 'none';
+  panel.style.display = isShown ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isShown ? '' : 'rotate(90deg)';
+}
+
+// Apply a manual override on a linked GL from the breakdown panel
+async function prOverrideLinkedGL(input) {
+  const gl = input.dataset.gl;
+  const raw = parseDollar(input.value);
+  if (!raw || isNaN(raw)) { input.focus(); return; }
+  const line = _payrollGLLines.find(l => l.gl_code === gl);
+  if (!line) return;
+  const rounded = Math.round(raw);
+  line.proposed_budget = rounded;
+  line.proposed_formula = 'manual';
+  line._linked = false;
+  const curr = float(line.current_budget || 0);
+  line.increase_pct = curr ? (rounded / curr - 1) : 0;
+
+  // Persist to DB
+  try {
+    await fetch('/api/fa-lines/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: [{
+        gl_code: gl,
+        proposed_budget: rounded,
+        proposed_formula: 'manual',
+        increase_pct: line.increase_pct
+      }]})
+    });
+  } catch(e) { console.error('Override save failed:', e); }
+
+  // Re-render GL + tie-out
+  renderPayrollGL();
+  renderPayrollTieOut(window._payrollCalcTotal || 0);
+  // Re-open breakdown since render just replaced it
+  const panel = document.getElementById('prLinkedBreakdown');
+  if (panel) panel.style.display = 'block';
+  const arrow = document.getElementById('prLinkedArrow');
+  if (arrow) arrow.style.transform = 'rotate(90deg)';
 }
 
 // ── GL Note & Increase Save Helpers ───────────────────────────────────────
