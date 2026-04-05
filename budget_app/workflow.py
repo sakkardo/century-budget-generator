@@ -6243,7 +6243,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
 
   // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
   html += '<style>' +
-    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
+    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
@@ -6421,7 +6421,7 @@ function prAssumpRow(label, key, val, suffix) {
   return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
     '<span style="color:var(--gray-600);">' + label + '</span>' +
     '<div style="display:flex; align-items:center; gap:2px;">' +
-    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fffff0; font-variant-numeric:tabular-nums; font-family:inherit;">' +
+    '<input class="pr-assump-input" data-key="' + key + '" value="' + val + '" onchange="payrollAssumptionChanged(this)" style="width:90px; padding:3px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; font-variant-numeric:tabular-nums; font-family:inherit;">' +
     '<span style="font-size:11px; color:var(--gray-400); width:12px; display:inline-block;">' + (suffix || '') + '</span>' +
     '</div></div>';
 }
@@ -6676,7 +6676,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
   const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
   const gs = 'color:#16a34a; font-weight:600;';
-  const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fffff0;';
+  const is = 'width:80px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4;';
 
   // fx cell helper for roster calculated fields (click to view formula, read-only)
   // Renders a clickable cell with fx badge + invisible input holding data attributes
@@ -6719,7 +6719,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     const fComp = '=' + (c.annualBase||0) + '+' + (c.ot||0) + '+' + (c.vsh||0);
 
     rows += '<tr>' +
-      '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fffff0;"></td>' +
+      '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="width:130px; padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4;"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + ' width:50px;" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
@@ -7421,7 +7421,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cat-hdr td { background:var(--blue-light, #f5efe7); font-weight:700; color:var(--blue, #5a4a3f); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #5a4a3f); }
       .fa-grid .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }
       .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
-      .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; }
+      .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
@@ -7452,7 +7452,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   let html = '<div class="fa-controls"><div class="fa-legend">' +
-    '<span><span class="fa-legend-dot" style="background:#fffff0;"></span>Editable</span>' +
+    '<span><span class="fa-legend-dot" style="background:#fbfaf4;"></span>Editable</span>' +
     '<span><span class="fa-legend-dot" style="background:#f0fdf4; border-color:#bbf7d0;"></span>Calculated (click to see formula)</span>' +
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
@@ -8149,7 +8149,7 @@ PM_EDIT_TEMPLATE = r"""
     border: 1px solid var(--gray-300);
     border-radius: 4px;
     font-size: 13px;
-    background: #fffff0;
+    background: #fbfaf4;
   }
   input[type="number"] { text-align: right; width: 90px; }
   input[type="text"] { min-width: 140px; }
@@ -8175,7 +8175,7 @@ PM_EDIT_TEMPLATE = r"""
   .invoice-detail-row:hover { background: transparent !important; }
 
   /* PM Cell Styles */
-  .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fffff0; cursor:text; font-variant-numeric:tabular-nums; }
+  .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
   .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
   input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }
   input.pm-cell-fx:focus { background:#ecfdf5; }
