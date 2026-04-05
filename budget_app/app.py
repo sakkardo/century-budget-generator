@@ -611,6 +611,20 @@ def auto_upload_file():
     if entity_code:
         sess["entities"].add(entity_code)
 
+    # Persist to disk: data/yardi_archives/YYYY-MM-DD/<entity>/<filename>
+    try:
+        from datetime import datetime as _dt
+        archive_root = os.path.join(os.path.dirname(__file__), "data", "yardi_archives")
+        today = _dt.now().strftime("%Y-%m-%d")
+        entity_dir = os.path.join(archive_root, today, entity_code or "unknown")
+        os.makedirs(entity_dir, exist_ok=True)
+        archive_path = os.path.join(entity_dir, filename)
+        with open(archive_path, "wb") as af:
+            af.write(file_data)
+        logger.info(f"Archived Yardi file to {archive_path}")
+    except Exception as arch_err:
+        logger.warning(f"Failed to archive {filename}: {arch_err}")
+
     logger.info(f"Auto-upload: received {filename} ({len(file_data)} bytes) for entity {entity_code}, session {session_id}")
 
     return jsonify({
@@ -954,7 +968,7 @@ def generate_script():
         # Inject auto-upload into AP Aging triggerDownload
         ap_script = ap_script.replace(
             "    URL.revokeObjectURL(a.href);\n  }",
-            "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ap');\n  }"
+            "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _uploadPromises.push(_autoUpload(blob, a.download, entity, 'ap'));\n  }"
         )
 
     # Build Maintenance Proof script with user settings
@@ -1010,7 +1024,7 @@ def generate_script():
     # Patch Maintenance Proof triggerDownload
     mp_script = mp_script.replace(
         "    URL.revokeObjectURL(a.href);\n  }",
-        "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'maint');\n  }"
+        "    URL.revokeObjectURL(a.href);\n    if (typeof _autoUpload === 'function') _uploadPromises.push(_autoUpload(blob, a.download, entity, 'maint'));\n  }"
     )
 
     # AP Aging patching removed — runs as separate standalone script
@@ -1018,7 +1032,7 @@ def generate_script():
     # Patch YSL inline download (it doesn't use triggerDownload function)
     ysl_script = ysl_script.replace(
         "URL.revokeObjectURL(a.href);",
-        "URL.revokeObjectURL(a.href);\n          if (typeof _autoUpload === 'function') _autoUpload(blob, a.download, entity, 'ysl');"
+        "URL.revokeObjectURL(a.href);\n          if (typeof _autoUpload === 'function') _uploadPromises.push(_autoUpload(blob, a.download, entity, 'ysl'));"
     )
 
     # Get the Railway app URL for auto-upload target
@@ -1046,6 +1060,7 @@ def generate_script():
   'use strict';
   const _partResults = {{ysl: null, mp: null, ap: null}};
   const _uploadedFiles = [];
+  const _uploadPromises = [];
   const _SESSION_ID = 'yardi_' + Date.now();
   const _BUDGET_APP = '{railway_url}';
   const _PERIOD = '{period}';
@@ -1081,6 +1096,11 @@ def generate_script():
 
   // ── Auto-Process: triggers server-side processing after all downloads ──
   async function _autoProcess() {{
+    // Wait for all in-flight uploads to finish before processing
+    if (_uploadPromises.length > 0) {{
+      console.log('\\n>>> Waiting for ' + _uploadPromises.length + ' uploads to complete... <<<');
+      await Promise.allSettled(_uploadPromises);
+    }}
     if (_uploadedFiles.length === 0) {{
       console.log('No files uploaded — skipping auto-process.');
       return;
