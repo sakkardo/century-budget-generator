@@ -398,134 +398,104 @@ fa_override_value = db.Column(db.Float, nullable=True)  # FA's override when rej
 
 ---
 
-## April 4, 2026 Session
+### Enhanced Payroll Tab — FA Dashboard (April 4, 2026)
 
-### Critical Bug Fixes
+#### Overview
+Complete redesign of the Payroll tab in the FA dashboard. Previously a flat GL list with no grouping. Now has 4 collapsible sections: editable Assumptions, Employee Roster with full wage calculation engine, auto-calculated Taxes/Benefits, and GL Detail with expandable sub-category grouping. Includes tie-out bar comparing roster calculations vs GL proposed totals.
 
-#### Bug #1 - FA cell save dropping fields (DATA LOSS)
-Severity: Critical - every FA dollar cell edit and Inc% edit was silently discarded.
+#### Design Research
+Thoroughly analyzed the 204 Excel Payroll tab structure:
+- Rows 5-12: Assumptions (6 payroll tax rates, 6 union benefit rates, WC%, wage increase %)
+- Rows 14-25: Employee Roster (8 position slots, pre/post increase wage split, OT at 0.2%, Vac/Sick/Hol at 10%)
+- Rows 27-49: Tax/benefit calculations (FICA on gross, SUI/FUI on wage bases × headcount, union per-employee × period)
+- Rows 52-105: GL Detail grouped into Wages (5105), Payroll Taxes (5140/5145), Benefits (5150/5155/5160), Other Payroll (5162-5172)
 
-Root cause: faAutoSave() used a single-timer debounce that stored only the most recent field. When cellBlur triggered faLineChanged() which called faAutoSave twice in rapid succession (source field + recalculated proposed_budget), call #2 cancelled call #1's timer. Only the last field reached the server.
+Key formulas replicated: `Weekly Pay = Hourly × 40`, `Pre-Incr Wages = WeeklyPay × PreWks × Count`, `Post-Incr Rate = Hourly × (1 + WageInc%)`, `Annual Base = Pre + Post`, `OT = AnnualBase × 0.002`, `Vac/Sick/Hol = AnnualBase × 0.10`, `FICA = Gross × Rate`, `SUI = $12,000 × Rate × Employees`, `FUI = $7,000 × Rate × Employees`.
 
-Fix (e0935a2): Replaced single-field timer with a pending accumulator object. Every faAutoSave() call now adds to _faSavePending[gl][field] = value, then a single debounced flush POSTs all batched fields in one request.
+#### Gap Analysis (204 Excel vs Portal)
+1. **Bonus** — Excel treats as standalone GL line (5105-0035), NOT per-position roster calc. Portal matches this.
+2. **Notes column** — Added to GL detail (missing from original design).
+3. **GL codes** — Auto-populated from Yardi data, no hardcoding needed.
+4. **Withholding tax GLs** — 5 separate lines under Payroll Taxes, all present from Yardi.
+5. **Workers Comp** — Split across 5162-0000, 5165-0000, 5165-0050. All present.
+6. **Estimate formula** — Uses existing `faComputeEstimate()` logic (IFERROR/IF pattern).
 
-Live verification: Edited Accrual Adj=$5,000 and Inc %=10% on GL 5250-0000. Before fix: DB showed accrual=$1,208 (unchanged). After fix: both persisted.
+#### New Database Models
 
-#### Bug #2/#3 - No error handling on save endpoints
-Added try/except/rollback to both PUT /api/fa-lines and PUT /api/lines endpoints. Prevents PostgreSQL session poisoning on commit failures.
+```python
+class PayrollPosition(db.Model):
+    __tablename__ = "payroll_positions"
+    id, entity_code, budget_year, position_name, employee_count, hourly_rate, sort_order, created_at, updated_at
 
-#### Bug #4 - PM audit trail missing
-PM endpoint was silently overwriting fields with no history. Now creates BudgetRevision entries for every field change with source="pm" (mirrors FA's source="web").
+class PayrollAssumption(db.Model):
+    __tablename__ = "payroll_assumptions"
+    id, entity_code, budget_year, assumptions_json, updated_at
+```
 
-### Excel Export Test Scripts (Not Wired to App)
-Built two standalone scripts proving full budget export with FA/PM edits:
-- test_excel_export.py - flat-layout proof-of-concept from scratch
-- excel_export_v2.py - copies Budget_Final_Template_v2.xlsx + fills all 11 sheets including FA/PM edits, RE Taxes, Payroll roster/assumptions, and 400+ unmapped GL codes with live Excel formulas
+Migration: `CREATE TABLE IF NOT EXISTS` statements in app.py (PostgreSQL compatible).
 
-Status: Reference only. Existing /api/download-budget/<entity_code> endpoint still uses template_populator.populate_template() which only exports raw Yardi data. To wire up: extract fill_* functions into budget_app/excel_exporter.py and replace the download endpoint body.
+#### New API Endpoints
 
-Known issues (for future session):
-- Budget Summary RE Taxes total pulls from Gen & Admin 6315 GL lines, not from the RE Taxes calculation sheet
-- Payroll template had a bug: formulas referenced $L$7/$L$8/$L$10/$L$11 (text labels) instead of $M$7-$M$11 (values). The test script patches those refs on copy.
+- **`GET /api/payroll/positions/<entity_code>`** — Returns all positions for entity, ordered by sort_order
+- **`POST /api/payroll/positions/<entity_code>`** — Full replace of positions (delete + re-insert)
+- **`GET /api/payroll/assumptions/<entity_code>`** — Returns payroll-specific assumptions. Falls back to main assumptions tab data if none saved yet (seeds from `budget.assumptions_json`)
+- **`POST /api/payroll/assumptions/<entity_code>`** — Saves payroll-tab assumption overrides
 
-### Payroll Tab - Major Rebuild
+#### Section 0: Payroll Assumptions (Purple-themed)
+- 3-column grid: Wage & Schedule, Payroll Tax Rates, Union Benefits (32BJ)
+- All inputs editable within the payroll tab
+- Seeded from main Assumptions tab on first load, then saved independently
+- Pre/Post increase weeks auto-calculate from Effective Week
+- Changes auto-save with 800ms debounce, recalculate Sections 1-3 instantly
+- Status indicator shows save state
 
-#### New: Roster to GL Linkage (16 GLs auto-driven)
-The Payroll roster calculation now drives 16 GL Proposed values automatically. Changing hourly rate, employee count, or any assumption cascades through to the GL lines in real time.
+#### Section 1: Employee Roster & Wage Calculation
+- Flexible position rows (name, headcount, hourly rate inputs)
+- Formula columns: Weekly Pay, Pre-Incr Wages, Post-Incr Rate, Post-Incr Wages, Annual Base, OT, Vac/Sick/Hol, Total Comp
+- "+ Add Position" button, "✕" remove per row
+- Badge shows employee count and total compensation
+- Auto-saves to `payroll_positions` table with 800ms debounce
 
-PAYROLL_COMPONENT_MAP (workflow.py around line 6737):
-- annual_base to 5105-0000 (Gross Payroll)
-- ot to 5105-0010 (Overtime Pay)
-- vsh_vacation/vsh_holiday/vsh_sick to 5105-0015/0020/0025 (1/3 of VSH each)
-- bonus to 5105-0035 (flat dollars/emp times count)
-- employer_taxes to 5145-0000 (FICA+SUI+FUI+MTA)
-- workers_comp to 5165-0000
-- nys_disability to 5166-0000
-- pfl to 5168-0000
-- welfare to 5155-0015
-- pension to 5160-0010
-- supp_retirement to 5160-0020
-- legal_fund/training_fund/profit_sharing to 5160-0025/0030/0035
+#### Section 2: Payroll Taxes, Workers Comp & Union Benefits
+- All auto-calculated from assumptions rates × roster headcount/gross wages
+- Rates shown in purple to indicate source from assumptions
+- Category headers: Payroll Taxes, Workers Comp, Union Benefits (32BJ)
+- Subtotals per category, grand total for all labor & related costs
 
-pushRosterToGL() - called after every recalcPayroll():
-- Updates _payrollGLLines in memory
-- Sets line._linked = true for mapped GLs
-- Saves batched changes via /api/fa-lines (800ms debounce)
-- Skips rows where user has manually overridden (proposed_formula is set)
+#### Section 3: GL Detail with Expandable Sub-Categories
+- 4 groups based on GL prefix: Wages (5105), Payroll Taxes (5140/5145), Benefits (5150/5155/5160), Other Payroll (5162+)
+- Clickable group headers with ▶ arrow to expand/collapse individual GL lines
+- Wages group starts expanded; others collapsed
+- **Notes column** — inline editable input per GL line, saves via `/api/fa-lines/`
+- **Inc %** — editable, recalculates proposed budget, saves via `/api/fa-lines/`
+- Subtotals always visible regardless of expand/collapse state
+- Grand total row in dark blue
 
-#### New: Bonus Dollars/Employee Column
-- Added bonus_per_employee FLOAT DEFAULT 0 column to payroll_positions table
-- New "Bonus $/Emp" column in roster table (after Hourly Rate)
-- Total bonus = sum of (count x bonus_per_employee) -> drives GL 5105-0035
+#### Tie-Out Bar
+- Compares: Roster Calculated Total (Sections 1+2) vs GL Proposed Total (Section 3)
+- Green gradient = matched (< $1 variance), Red gradient = mismatch
+- Shows variance amount and direction
 
-#### New: Per-Position Effective Week Override
-- Added effective_week_override FLOAT NULL column to payroll_positions
-- New "Eff Wk Override" column in roster - leave blank for global, or set a specific week for that position only
-- Use case: one Resident Manager gets a mid-year raise on Wk 20 while everyone else waits until Wk 16
-- recalcPayroll() uses per-position pre/post week split when override is set
+#### Key JS Functions
+- `renderPayrollTab(sheetLines, contentDiv)` — main entry, loads assumptions + positions, builds all 4 sections
+- `prAssumpRow() / prAssumpRowCalc()` — assumption input/display row helpers
+- `togglePayrollSection(id)` — collapse/expand any section
+- `payrollAssumptionChanged(el)` — handles assumption edits, auto-calc pre/post weeks, triggers recalc
+- `savePayrollAssumptions()` — debounced POST to API
+- `prRosterChanged()` — reads roster DOM, triggers recalc + save
+- `savePayrollPositions()` — debounced POST to API
+- `addPayrollPosition() / removePayrollPosition(idx)` — roster row management
+- `recalcPayroll()` — core calculation engine, matches all 204 Excel formulas
+- `renderPayrollRoster()` — populates roster table body + footer
+- `renderPayrollTaxes(t)` — populates tax/benefit table with calculated values
+- `renderPayrollGL()` — builds GL table with grouped expandable rows
+- `togglePrGLGroup(groupKey)` — expand/collapse GL sub-category
+- `renderPayrollTieOut(calcTotal)` — updates tie-out bar comparison
+- `savePrGLNote(el) / savePrGLIncrease(el)` — inline GL edits via `/api/fa-lines/`
+- `float(v)` — utility: `parseFloat(v) || 0`
 
-#### New: Excel-Style Formula Bar on Payroll Tab
-The Payroll tab now has the same formula bar as R&S/other tabs. All calculated cells are clickable.
-
-Editable cells (via formula bar):
-- Estimate, Forecast - editable override with live preview
-- Proposed (non-linked rows) - editable override, type formulas or plain numbers
-- Inc% (non-linked rows) - editable yellow input
-- All dollar cells - Prior Year, YTD Actual, Accrual Adj, Unpaid Bills, YTD Budget, Curr Budget - editable text inputs
-
-Read-only view-formula cells:
-- Proposed (linked rows) - driven by roster, not editable. Click to see formula.
-- Roster calculated cells - Weekly Pay, Pre/Post Wages, Post-Incr Rate, Annual Base, OT, VSH, Total Comp. Click to see math formula in the bar, read-only.
-
-Formula bar is sticky - stays at top of viewport as user scrolls through GL rows.
-
-Extended fxCellFocus() to support a new data-readonly="true" attribute so roster cells can open in view-only mode.
-
-#### New: Clickable Linked GLs Breakdown
-The Linked GLs (Auto) tile in the tie-out bar is now clickable. Expands an inline table showing:
-- Each of the 16 linked GL codes
-- The roster component driving it
-- Current roster-driven value
-- Override input + button per row
-
-Entering a value and clicking Override sets manual value, marks the row as proposed_formula="manual" (unlinks from roster), saves via /api/fa-lines, row moves to Manual GLs column in tie-out.
-
-#### Fixed: Payroll Template Formula Bug
-The Budget_Final_Template_v2.xlsx had assumption formulas referencing column L which contains text labels instead of numeric values (values live in column M). The excel_export_v2.py script now rewrites these formula references from L to M on template copy.
-
-#### Cosmetic / UX Fixes
-- Green backgrounds on all roster calculated cells (matches R&S cell-fx styling)
-- Font unified to Plus Jakarta Sans across the Payroll tab (removed SF Mono/Fira Code monospace)
-- Assumption field alignment fix - prAssumpRow() always renders the 12px suffix span so non-% rows do not shift right
-- Pre-Incr Weeks / Post-Incr Weeks now editable (was read-only)
-
-### Commit Trail (April 4 session)
+#### Commit Trail (April 4 session)
 | Commit | Description |
 |--------|-------------|
-| e0935a2 | Fix critical FA cell save bug (Bug #1 - data loss) |
-| 7a5ed8c | Add PM audit trail + error handling |
-| 00ad2b0 | Add Excel export test scripts (TEST/REFERENCE) |
-| e8f3df1 | Payroll: wire roster/assumptions to drive 15 GL proposed values |
-| a7910fa | Payroll: add Bonus dollars/Emp column + fx badges |
-| a59a691 | Payroll: make Estimate/Forecast/Proposed editable via formula bar |
-| 7e3e04a | Payroll: add formula bar HTML to tab |
-| 0613e2a | Payroll: fix formula strings to match safeEvalFormula grammar |
-| ee2ef95 | Payroll: make Pre-Incr Weeks and Post-Incr Weeks editable |
-| d6a5bb6 | Payroll: make all GL cells editable + sticky formula bar |
-| 9a12ded | Payroll: match R&S cell styling exactly |
-| 1df8502 | Payroll: fix sticky formula bar scroll context |
-| a01d3fa | Payroll: clickable Linked GLs tile with breakdown + override |
-| bc34dfc | Payroll: make Employee Roster calculated cells clickable |
-| 4d625c4 | Payroll: add green bg to roster calc cells |
-| 70af345 | Payroll: per-position Eff Wk override, unified fonts, aligned assumptions |
-| 54bc06e | Payroll: inherit font-family on assumption inputs |
-
-### Debug Audit Results (April 4)
-Systematically verified all 17 commits against production:
-- Zero console errors on page load
-- All helper functions present: pushRosterToGL, payrollCellEdited, prDollarCellBlur, togglePrLinkedBreakdown, prOverrideLinkedGL
-- DOM structure correct: 16 components mapped, 3 bonus inputs, 3 Eff Wk inputs, 261 editable GL cells, 24 roster fx cells
-- Eff Wk Override end-to-end: porter wk=26 -> Annual Base $925,540 (from $1,004,080), persisted to DB, cleared correctly
-- Bug #1 regression test passed: edited accrual_adj=500 + increase_pct=7% together, both saved (accumulator batching works)
-- Assumption field alignment: all inputs align at exact x-positions per column (763/1153/1544)
-- Font consistency: Plus Jakarta Sans everywhere after 54bc06e fix
+| `d7d0707` | Last stable before session |
+| `4794192` | Enhanced Payroll Tab Phase 1 — full build |
