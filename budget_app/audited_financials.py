@@ -1484,17 +1484,32 @@ Be precise with numbers. Include all line items found.
 
         data = request.get_json()
 
-        # Single rule add (from review page)
+        # Single rule add/update (from review page) — upsert by (profile_id, auditor_line_item)
         if "auditor_line_item" in data:
-            rule = MappingRule(
+            line_item = data.get("auditor_line_item")
+            existing = MappingRule.query.filter_by(
                 profile_id=profile_id,
-                auditor_line_item=data.get("auditor_line_item"),
-                auditor_category=data.get("auditor_category", ""),
-                century_category=data.get("century_category"),
-                split_pct=float(data.get("split_pct", 1.0)),
-                notes=data.get("notes", "")
-            )
-            db.session.add(rule)
+                auditor_line_item=line_item
+            ).all()
+            # Keep one, delete the rest (cleans up prior duplicates)
+            rule = existing[0] if existing else None
+            for dup in existing[1:]:
+                db.session.delete(dup)
+            if rule:
+                rule.auditor_category = data.get("auditor_category", "")
+                rule.century_category = data.get("century_category")
+                rule.split_pct = float(data.get("split_pct", 1.0))
+                rule.notes = data.get("notes", "")
+            else:
+                rule = MappingRule(
+                    profile_id=profile_id,
+                    auditor_line_item=line_item,
+                    auditor_category=data.get("auditor_category", ""),
+                    century_category=data.get("century_category"),
+                    split_pct=float(data.get("split_pct", 1.0)),
+                    notes=data.get("notes", "")
+                )
+                db.session.add(rule)
             db.session.commit()
             return jsonify({"success": True, "rule": rule.to_dict()})
 
@@ -1664,9 +1679,20 @@ Be precise with numbers. Include all line items found.
                     if raw_extraction.get("expenses") and raw_extraction["expenses"].get("total_expenses"):
                         extracted_expense = raw_extraction["expenses"]["total_expenses"][0] if raw_extraction["expenses"]["total_expenses"] else 0
 
-                    # Sum mapped income and expense totals
-                    mapped_revenue = sum(item.get("amount", 0) for item in mapped_data.get("revenue", []))
-                    mapped_expense = sum(item.get("amount", 0) for item in mapped_data.get("expenses", []))
+                    # Sum mapped income and expense totals.
+                    # mapped_data shape: {century_category: {"total": X, "year_totals": [...], ...}}
+                    # Classify each category by CENTURY_TO_SUMMARY.
+                    income_summary_rows = {"Total Operating Income", "Non-Operating Income"}
+                    mapped_revenue = 0
+                    mapped_expense = 0
+                    for cat, info in mapped_data.items():
+                        if not isinstance(info, dict):
+                            continue
+                        total = info.get("total", 0) or 0
+                        if CENTURY_TO_SUMMARY.get(cat, "") in income_summary_rows:
+                            mapped_revenue += total
+                        else:
+                            mapped_expense += total
 
                     # Check deltas within $1 tolerance
                     tolerance = 1
