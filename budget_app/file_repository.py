@@ -180,7 +180,7 @@ FILES_PAGE_HTML = r"""
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
 .top-bar {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
   padding: 16px 32px; background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .top-bar h1 { font-size: 18px; font-weight: 600; }
@@ -240,8 +240,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 </head>
 <body>
 <div class="top-bar">
+  <a href="/">← Home</a>
   <h1>File Repository</h1>
-  <div><a href="/">← Home</a></div>
 </div>
 
 <div class="container">

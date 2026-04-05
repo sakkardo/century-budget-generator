@@ -3225,6 +3225,7 @@ ASSUMPTIONS_TEMPLATE = """
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
         header { background: #5a4a3f; color: white; padding: 24px; }
         header h1 { font-size: 24px; font-weight: 600; }
+        header .back-link { color: white; margin-bottom: 8px; }
         .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
         .back-link { display: inline-block; margin-bottom: 24px; color: #5a4a3f; text-decoration: none; font-size: 14px; }
         .back-link:hover { text-decoration: underline; }
@@ -3247,10 +3248,10 @@ ASSUMPTIONS_TEMPLATE = """
 </head>
 <body>
     <header>
+        <a href="/" class="back-link">← Home</a>
         <h1>Portfolio Defaults</h1>
     </header>
     <div class="container">
-        <a href="/" class="back-link">← Home</a>
 
         <div class="section">
             <h2>Payroll Tax Rates</h2>
@@ -3557,6 +3558,7 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
         header { background: #5a4a3f; color: white; padding: 24px; }
         header h1 { font-size: 24px; font-weight: 600; }
+        header .back-link { color: white; margin-bottom: 8px; }
         .main { display: flex; height: calc(100vh - 80px); }
         .sidebar {
             width: 280px;
@@ -3633,6 +3635,7 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
 </head>
 <body>
     <header>
+        <a href="/" class="back-link">← Home</a>
         <h1>Building Assumptions</h1>
     </header>
     <div class="main">
@@ -3644,7 +3647,6 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
             <div class="sidebar-list" id="buildingList"></div>
         </div>
         <div class="content">
-            <a href="/" class="back-link">← Home</a>
 
             <div id="noBuildingSelected" class="empty">
                 <p>Select a building from the list to view and edit assumptions</p>
