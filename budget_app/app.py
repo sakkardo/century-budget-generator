@@ -635,6 +635,85 @@ def auto_upload_file():
     })
 
 
+@app.route("/api/qa/verify", methods=["GET", "OPTIONS"])
+@cors_headers
+def qa_verify():
+    """Read-only QA endpoint: returns archive listing + DB state for an entity.
+
+    Query params:
+      entity  (required) - entity code to inspect
+      date    (optional) - archive date YYYY-MM-DD, defaults to today
+    """
+    if request.method == "OPTIONS":
+        return make_response(""), 200
+
+    from datetime import datetime as _dt
+    entity = request.args.get("entity", "").strip()
+    date_str = request.args.get("date", _dt.now().strftime("%Y-%m-%d"))
+    if not entity:
+        return jsonify({"error": "entity param required"}), 400
+
+    result = {"entity": entity, "date": date_str}
+
+    # Archive listing
+    archive_root = os.path.join(os.path.dirname(__file__), "data", "yardi_archives")
+    entity_dir = os.path.join(archive_root, date_str, entity)
+    archived = []
+    if os.path.isdir(entity_dir):
+        for fn in sorted(os.listdir(entity_dir)):
+            fp = os.path.join(entity_dir, fn)
+            try:
+                st = os.stat(fp)
+                archived.append({
+                    "name": fn,
+                    "size": st.st_size,
+                    "mtime": _dt.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+                })
+            except Exception:
+                pass
+    result["archive"] = {
+        "dir": entity_dir,
+        "exists": os.path.isdir(entity_dir),
+        "files": archived,
+        "count": len(archived),
+    }
+
+    # DB state — latest budget for this entity
+    try:
+        from sqlalchemy import text as _sql
+        row = db.session.execute(_sql(
+            "SELECT id, year, status, updated_at FROM budgets "
+            "WHERE entity_code = :e ORDER BY updated_at DESC LIMIT 1"
+        ), {"e": entity}).fetchone()
+        if row:
+            bid = row[0]
+            stats = db.session.execute(_sql(
+                "SELECT COUNT(*) lines, "
+                "COALESCE(SUM(unpaid_bills),0) unpaid_total, "
+                "COALESCE(SUM(CASE WHEN unpaid_bills<>0 THEN 1 ELSE 0 END),0) lines_with_unpaid, "
+                "COALESCE(SUM(ytd_actual),0) ytd_actual_total, "
+                "COALESCE(SUM(accrual_adj),0) accrual_total "
+                "FROM budget_lines WHERE budget_id = :bid"
+            ), {"bid": bid}).fetchone()
+            result["db"] = {
+                "budget_id": bid,
+                "year": row[1],
+                "status": row[2],
+                "updated_at": row[3].isoformat(timespec="seconds") if row[3] else None,
+                "lines": stats[0],
+                "unpaid_bills_total": float(stats[1] or 0),
+                "lines_with_unpaid": int(stats[2] or 0),
+                "ytd_actual_total": float(stats[3] or 0),
+                "accrual_total": float(stats[4] or 0),
+            }
+        else:
+            result["db"] = {"budget_id": None, "note": "no budget row for this entity"}
+    except Exception as db_err:
+        result["db"] = {"error": str(db_err)}
+
+    return jsonify(result)
+
+
 @app.route("/api/auto-process", methods=["POST", "OPTIONS"])
 @cors_headers
 def auto_process():
