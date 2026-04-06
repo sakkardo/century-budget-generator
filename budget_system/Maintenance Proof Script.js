@@ -17,7 +17,7 @@
   // ║  EDIT THESE BEFORE EACH RUN                      ║
   // ╠══════════════════════════════════════════════════╣
   // Entity → charge code mapping (coop=maint, condo=common)
-  const ENTITY_CHARGES = {204: 'maint', 206: 'common', 148: 'maint', 805: 'maint'};
+  const ENTITY_CHARGES = {805: 'maint', 302: 'common', 206: 'common', 733: 'maint'};
   const ENTITIES = Object.keys(ENTITY_CHARGES).map(Number);
   // ╚══════════════════════════════════════════════════╝
 

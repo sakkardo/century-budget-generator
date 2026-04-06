@@ -5997,7 +5997,7 @@ async function faToggleInvoices(glCode, el) {
   if (!data || !data.gl_groups) {
     const noData = document.createElement('tr');
     noData.className = 'fa-invoice-detail';
-    noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense data uploaded yet.</td>';
+    noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense data uploaded yet.</td>';
     row.after(noData);
     return;
   }
@@ -6006,14 +6006,14 @@ async function faToggleInvoices(glCode, el) {
   if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
     const noInv = document.createElement('tr');
     noInv.className = 'fa-invoice-detail';
-    noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices for ' + glCode + '</td>';
+    noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices for ' + glCode + '</td>';
     row.after(noInv);
     return;
   }
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
-  let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+  let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
   html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
   html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
   html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
@@ -7411,16 +7411,28 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     style.textContent = `
       .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
       .fa-grid-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }
-      .fa-grid table { width:100%; border-collapse:collapse; font-size:13px; }
-      .fa-grid thead { background:var(--gray-100); position:sticky; top:0; z-index:10; }
-      .fa-grid th { padding:10px 12px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); }
+      .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; }
+      .fa-grid thead { position:sticky; top:0; z-index:20; }
+      .fa-grid th { padding:10px 10px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
-      .fa-grid td { padding:8px 12px; border-bottom:1px solid var(--gray-200); }
+      .fa-grid td, .fa-grid th { white-space:nowrap; width:1px; }
+      .fa-grid td { padding:8px 10px; border-bottom:1px solid var(--gray-200); }
       .fa-grid td.num { text-align:right; font-variant-numeric:tabular-nums; }
-      .fa-grid tbody tr:hover { background:#eef2ff; }
-      .fa-grid .cat-hdr td { background:var(--blue-light, #f5efe7); font-weight:700; color:var(--blue, #5a4a3f); font-size:14px; padding:10px 12px; border-bottom:2px solid var(--blue, #5a4a3f); }
+      .fa-grid tbody tr:hover td { background:#eef2ff; }
+      .fa-grid tbody tr:hover td.frozen { background:#ede5d8; }
+      .fa-grid th.frozen, .fa-grid td.frozen { position:sticky; z-index:15; background:white; }
+      .fa-grid thead th.frozen { z-index:25; background:var(--gray-100); }
+      .fa-grid .frozen-gl { left:0; min-width:80px; }
+      .fa-grid .frozen-desc { left:80px; min-width:180px; width:auto; border-right:2px solid var(--gray-300); box-shadow:2px 0 8px rgba(90,74,63,0.08); }
+      .fa-grid thead th.frozen.frozen-desc { width:auto; min-width:180px; }
+      .fa-grid .col-notes { color:var(--gray-500); font-size:12px; min-width:40px; text-align:center; }
+      .fa-grid .cat-hdr td { background:var(--blue-light, #f5efe7); font-weight:700; color:var(--blue, #5a4a3f); font-size:14px; padding:10px 10px; border-bottom:2px solid var(--blue, #5a4a3f); }
+      .fa-grid .cat-hdr td.frozen { background:var(--blue-light, #f5efe7); }
       .fa-grid .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }
+      .fa-grid .sub-row td.frozen { background:var(--gray-100); }
       .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
+      .fa-grid .total-row td.frozen { background:#1e3a5f; color:white; }
+      .fa-grid tr.drill-row td.frozen { border-right:none; box-shadow:none; }
       .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
@@ -7468,13 +7480,14 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '</div>';
 
   html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
-    '<th>GL Code</th><th>Description</th><th>Notes</th>' +
+    '<th class="frozen frozen-gl">GL Code</th><th class="frozen frozen-desc">Description</th>' +
     '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
     '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
     '<th class="num">YTD Budget</th>' +
     '<th class="num">' + estLbl + ' Est</th><th class="num">12 Mo Forecast</th>' +
     '<th class="num">Curr Budget</th><th class="num">Inc %</th>' +
     '<th class="num">Proposed</th><th class="num">$ Var</th><th class="num">% Chg</th>' +
+    '<th class="col-notes">Notes</th>' +
     '</tr></thead><tbody>';
 
   const catConfig = SHEET_CATEGORIES[sheetName];
@@ -7543,9 +7556,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     }
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
-      '<td><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
-      '<td style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
-      '<td><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td>' +
+      '<td class="frozen frozen-gl"><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
+      '<td class="frozen frozen-desc" style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
@@ -7571,7 +7583,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' data-raw="' + pctChange + '"' +
         ' data-formula="= (' + fmt(budget) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast) + '"' +
         ' data-gl="' + gl + '" data-field="pct_change"' +
-        ' style="cursor:pointer; pointer-events:none;"></td></tr>';
+        ' style="cursor:pointer; pointer-events:none;"></td>' +
+      '<td class="col-notes"><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td></tr>';
   }
 
   function sumLines(lines) {
@@ -7603,7 +7616,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     }
     const vc = v >= 0 ? 'var(--red)' : 'var(--green)';
     return '<tr class="' + (cls||'sub-row') + '"' + idAttr + '>' +
-      '<td colspan="3">' + label + '</td>' +
+      '<td class="frozen frozen-gl"></td><td class="frozen frozen-desc">' + label + '</td>' +
       fxTd(t.prior, 'prior') +
       fxTd(t.ytd, 'ytd') +
       fxTd(t.accrual, 'accrual') +
@@ -7615,7 +7628,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num"></td>' +
       fxTd(t.proposed, 'proposed') +
       '<td class="num" style="position:relative; cursor:pointer; color:' + vc + ';" data-col="variance" data-raw="' + Math.round(v) + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + fmt(v) + '</span></td>' +
-      '<td class="num" style="position:relative; cursor:pointer;" data-col="pctchange" data-raw="' + p + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + (p*100).toFixed(1) + '%</span></td></tr>';
+      '<td class="num" style="position:relative; cursor:pointer;" data-col="pctchange" data-raw="' + p + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + (p*100).toFixed(1) + '%</span></td>' +
+      '<td class="col-notes"></td></tr>';
   }
 
   // Build category groups and populate _catGroupGLs for live recalculation
@@ -7625,7 +7639,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       const gl = sheetLines.filter(grp.match);
       if (gl.length === 0) return;
       window._catGroupGLs[grp.key] = gl.map(l => l.gl_code);
-      html += '<tr class="cat-hdr"><td colspan="' + NC + '">' + grp.label + '</td></tr>';
+      html += '<tr class="cat-hdr"><td class="frozen frozen-gl"></td><td class="frozen frozen-desc">' + grp.label + '</td><td colspan="' + (NC - 2) + '"></td></tr>';
       gl.forEach(l => { html += buildLineRow(l); });
       html += subtotalRow('Total ' + grp.label, sumLines(gl), null, 'subtotal_' + grp.key);
     });
@@ -7633,7 +7647,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const ungrouped = sheetLines.filter(l => !allGrouped.includes(l));
     if (ungrouped.length > 0) {
       window._catGroupGLs['other'] = ungrouped.map(l => l.gl_code);
-      html += '<tr class="cat-hdr"><td colspan="' + NC + '" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td></tr>';
+      html += '<tr class="cat-hdr"><td class="frozen frozen-gl"></td><td class="frozen frozen-desc" style="color:var(--gray-500); border-color:var(--gray-300);">Other</td><td colspan="' + (NC - 2) + '"></td></tr>';
       ungrouped.forEach(l => { html += buildLineRow(l); });
       html += subtotalRow('Total Other', sumLines(ungrouped), null, 'subtotal_other');
     }
@@ -8109,39 +8123,54 @@ PM_EDIT_TEMPLATE = r"""
   }
   .grid-container { overflow-x: auto; max-height: 75vh; overflow-y: auto; }
 
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  thead { background: var(--gray-100); position: sticky; top: 0; z-index: 10; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+  thead { position: sticky; top: 0; z-index: 20; }
   th {
-    padding: 10px 12px;
+    padding: 10px 10px;
     text-align: left;
     font-weight: 600;
     border-bottom: 2px solid var(--gray-300);
     white-space: nowrap;
+    background: var(--gray-100);
   }
   th.number { text-align: right; }
-  td { padding: 8px 12px; border-bottom: 1px solid var(--gray-200); }
+  td, th { white-space: nowrap; width: 1px; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--gray-200); }
   td.number { text-align: right; font-variant-numeric: tabular-nums; }
-  tbody tr:hover { background: var(--blue-light); }
+  tbody tr:hover td { background: var(--blue-light); }
+  tbody tr:hover td.frozen { background: #ede5d8; }
+  /* Frozen columns */
+  th.frozen, td.frozen { position: sticky; z-index: 15; background: white; }
+  thead th.frozen { z-index: 25; background: var(--gray-100); }
+  .frozen-gl { left: 0; min-width: 80px; }
+  .frozen-desc { left: 80px; min-width: 180px; width: auto; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); }
+  thead th.frozen.frozen-desc { width: auto; min-width: 180px; }
+  .col-notes { color: var(--gray-500); font-size: 12px; min-width: 40px; text-align: center; }
 
   .category-header td {
     background: var(--blue-light);
     font-weight: 700;
     color: var(--blue);
     font-size: 14px;
-    padding: 10px 12px;
+    padding: 10px 10px;
     border-bottom: 2px solid var(--blue);
   }
+  .category-header td.frozen { background: var(--blue-light); }
   .subtotal-row td {
     background: var(--gray-100);
     font-weight: 700;
     border-top: 2px solid var(--gray-300);
   }
+  .subtotal-row td.frozen { background: var(--gray-100); }
   .grand-total td {
     background: #1e3a5f;
     color: white;
     font-weight: 700;
     font-size: 14px;
   }
+  .grand-total td.frozen { background: #1e3a5f; color: white; }
+  /* Reclass/invoice drill-down rows — clean frozen cell borders */
+  tr.drill-row td.frozen { border-right: none; box-shadow: none; }
 
   input[type="number"], input[type="text"] {
     width: 100%;
@@ -8283,9 +8312,8 @@ PM_EDIT_TEMPLATE = r"""
       <table id="linesTable">
         <thead>
           <tr>
-            <th>GL Code</th>
-            <th>Description</th>
-            <th>Notes</th>
+            <th class="frozen frozen-gl">GL Code</th>
+            <th class="frozen frozen-desc">Description</th>
             <th class="number">Prior Year<br>Actual</th>
             <th class="number">YTD<br>Actual</th>
             <th class="number">Accrual<br>Adj</th>
@@ -8298,6 +8326,7 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">$<br>Variance</th>
             <th class="number">%<br>Change</th>
+            <th class="col-notes">Notes</th>
           </tr>
         </thead>
         <tbody id="linesBody"></tbody>
@@ -8830,7 +8859,7 @@ function renderTable() {
 
         const headerRow = document.createElement('tr');
         headerRow.className = 'category-header';
-        headerRow.innerHTML = '<td colspan="' + NC + '">' + catLabels[cat] + '</td>';
+        headerRow.innerHTML = '<td class="frozen frozen-gl"></td><td class="frozen frozen-desc">' + catLabels[cat] + '</td><td colspan="' + (NC - 2) + '"></td>';
         tbody.appendChild(headerRow);
 
         let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
@@ -8862,9 +8891,8 @@ function renderTable() {
             const propFormula = pmGetFormulaTooltip(line, 'proposed');
 
             tr.innerHTML = `
-                <td><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
-                <td><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
-                <td><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" onchange="pmLineChanged('${gl}', 'notes', this.value)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:100px;"></td>
+                <td class="frozen frozen-gl"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
+                <td class="frozen frozen-desc"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td class="number"><input id="pm_pr_${gl}" class="pm-cell" type="text" value="${fmt(line.prior_year)}" data-raw="${Math.round(line.prior_year || 0)}" data-gl="${gl}" data-field="prior_year" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input id="pm_acc_${gl}" class="pm-cell" type="text" value="${fmt(line.accrual_adj)}" data-raw="${Math.round(line.accrual_adj || 0)}" data-gl="${gl}" data-field="accrual_adj" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
@@ -8892,6 +8920,7 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
                 </td>
+                <td class="col-notes"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" onchange="pmLineChanged('${gl}', 'notes', this.value)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:80px;"></td>
             `;
             tbody.appendChild(tr);
         });
@@ -8901,7 +8930,7 @@ function renderTable() {
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
-            <td></td><td>Total ${catLabels[cat]}</td><td></td>
+            <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">Total ${catLabels[cat]}</td>
             <td class="number" id="pm_subtotal_prior_${cat}" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(catTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.prior)}</span></td>
             <td class="number" id="pm_subtotal_ytd_${cat}" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(catTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytd)}</span></td>
             <td></td><td></td>
@@ -8913,6 +8942,7 @@ function renderTable() {
             <td class="number" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
             <td class="number" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catVar)}</span></td>
             <td></td>
+            <td class="col-notes"></td>
         `;
         tbody.appendChild(subRow);
 
@@ -8925,7 +8955,7 @@ function renderTable() {
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
-        <td></td><td>GRAND TOTAL R&M</td><td></td>
+        <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">GRAND TOTAL R&M</td>
         <td class="number" id="pm_grandtotal_prior" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(grandTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.prior)}</span></td>
         <td class="number" id="pm_grandtotal_ytd" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(grandTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytd)}</span></td>
         <td></td><td></td>
@@ -8937,6 +8967,7 @@ function renderTable() {
         <td class="number" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
         <td class="number" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandVar)}</span></td>
         <td class="number" id="pm_grandtotal_pct">${(grandPct * 100).toFixed(1)}%</td>
+        <td class="col-notes"></td>
     `;
     tbody.appendChild(grandRow);
 }
@@ -8998,7 +9029,7 @@ async function toggleInvoices(glCode, linkEl) {
     if (!data || !data.gl_groups) {
         const noData = document.createElement('tr');
         noData.className = 'invoice-detail-row';
-        noData.innerHTML = '<td colspan="15" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet. <a href="/pm/' + ENTITY + '/expenses" style="color:var(--blue);">Upload here</a></td>';
+        noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet. <a href="/pm/' + ENTITY + '/expenses" style="color:var(--blue);">Upload here</a></td>';
         row.after(noData);
         return;
     }
@@ -9007,7 +9038,7 @@ async function toggleInvoices(glCode, linkEl) {
     if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
         const noInv = document.createElement('tr');
         noInv.className = 'invoice-detail-row';
-        noInv.innerHTML = '<td colspan="15" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
+        noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
         row.after(noInv);
         return;
     }
@@ -9017,7 +9048,7 @@ async function toggleInvoices(glCode, linkEl) {
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
-    let html = '<td colspan="15" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+    let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
     html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
     html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
     html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmtAmt(glGroup.total || 0) + '</span>';
@@ -9301,7 +9332,7 @@ function showReclass(glCode) {
     const formRow = document.createElement('tr');
     formRow.className = 'reclass-form-row';
     formRow.innerHTML = `
-        <td colspan="15" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
+        <td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
                 <input type="hidden" id="reclass_target_${glCode}" value="">

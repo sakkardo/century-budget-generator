@@ -529,3 +529,92 @@ Systematically verified all 17 commits against production:
 - Bug #1 regression test passed: edited accrual_adj=500 + increase_pct=7% together, both saved (accumulator batching works)
 - Assumption field alignment: all inputs align at exact x-positions per column (763/1153/1544)
 - Font consistency: Plus Jakarta Sans everywhere after 54bc06e fix
+
+---
+
+## April 5, 2026 Session
+
+### Summary
+Bug-fixed the FA Dashboard list page checkboxes, wired the Audited Financials confirmed-status into the FA Dashboard, and ran a full multi-entity pipeline test against 4 new buildings (805, 302, 206, 733). End-to-end workflow (YSL → Maint Proof → AP Aging → ExpDist manual upload) validated cleanly on production.
+
+### Bug Fixes
+
+#### Bug #1 — Dashboard list missing green ✓ on Expenses (session poisoning)
+Symptom: On `/dashboard`, entity 148 had expense data loaded but the Expenses column showed ✗ instead of ✓.
+
+Root cause: `list_budgets()` in `workflow.py` (~line 1055) ran a per-budget query inside the loop (`SELECT 1 FROM expense_reports WHERE entity_code=...`) wrapped in `try/except: has_expenses=False`. When any one query threw, the SQLAlchemy session entered a poisoned state and every subsequent query returned False — silently.
+
+Fix: Batched both lookups into single DISTINCT queries outside the loop, wrapped each in try/except with `db.session.rollback()` on failure. Per-budget loop then does plain set membership checks.
+
+```python
+try:
+    expense_entities = {r[0] for r in db.session.execute(
+        db.text("SELECT DISTINCT entity_code FROM expense_reports")
+    ).fetchall()}
+except Exception:
+    db.session.rollback()
+    expense_entities = set()
+# (same pattern for audit_entities against audit_uploads)
+for b in budgets:
+    d = b.to_dict()
+    d["has_expenses"] = b.entity_code in expense_entities
+    d["has_audit"] = b.entity_code in audit_entities
+```
+
+Verified: All 6 entities (148, 204, 805, 302, 206, 733) now report `has_expenses: true` correctly on the list endpoint.
+
+#### Bug #2 — Audited Financials not showing on FA Dashboard detail
+Symptom: Entity 148 had a confirmed audited financial statement but the FA Dashboard detail page said "no audit uploaded".
+
+Root cause #1: raw SQL used table name `audit_upload` (singular) — the actual SQLAlchemy `__tablename__` is `audit_uploads` (plural, defined in `audited_financials.py` line 193).
+
+Root cause #2: `mapped_data` column is a Postgres JSONB type, which SQLAlchemy auto-deserializes to a Python dict. Code was calling `json.loads(row[0])` on an already-dict value, throwing TypeError.
+
+Fix (both queries at workflow.py ~lines 1210-1260):
+- `audit_upload` → `audit_uploads` (table name)
+- `mapped = row[0] if isinstance(row[0], dict) else _json.loads(row[0])` (type guard)
+
+Verified: Entity 148 FA Dashboard now shows its reviewed audit on load.
+
+### Budget Creation Logic (Confirmed Behavior)
+- Re-running the Generator for an existing entity creates a **fresh budget record** (new `id`) and marks older ones as superseded — it does not overwrite.
+- Deleting a budget from the dashboard removes the record; a subsequent YSL upload creates a brand-new budget with `draft` status, 0 overrides, no PM notes.
+- This is the expected "restart" workflow for re-budgeting an entity mid-cycle.
+
+### Multi-Entity Pipeline Test — 4 New Buildings
+
+Tested full workflow against production for 4 entities representing both building types:
+
+| Entity | Type | Name | Building ID |
+|--------|------|------|-------------|
+| 805 | Condo | The Hopkins Condominium | common |
+| 302 | Condo | 205 Water | common |
+| 206 | Coop | 77 Bleecker Street Corporation | maint |
+| 733 | Coop | 142 E 16 Cooperative Owners' Inc. | maint |
+
+Combined Yardi script dispatched once for all 4 entities from a Claude-driven console injection:
+- Part 1 YSL: 4/4 OK, files 56-57 KB each
+- Part 2 Maint Proof: 4/4 OK — 805 (96 units), 302 (66 units), 206 (238 units), 733 (134 units)
+- Part 3 AP Aging: 4/4 OK in 24 seconds total
+- Auto-upload: 12 files posted to `/api/auto-upload`, server auto-processed all 12
+
+Then user manually ran and uploaded Expense Distribution (all 4 at once via Manual Upload — server routes by filename entity code).
+
+### Final Verification (all 4 entities)
+
+| Entity | Lines | YTD Actual | Accrual Adj | Unpaid Bills | Lines w/ Unpaid | Exp Dist Invoices |
+|--------|-------|------------|-------------|--------------|-----------------|-------------------|
+| 805 | 576 | $1,023,525 | -$170,916 | $0 | 0 | 109 (47 GLs, $368K) |
+| 302 | 576 | $714,531 | -$35,105 | $125,832 | 17 | 66 (27 GLs, $311K) |
+| 206 | 576 | $4,173,685 | -$587,912 | $9,836 | 1 | 136 (50 GLs, $1.65M) |
+| 733 | 576 | $2,137,657 | -$312,633 | $21,934 | 1 | 111 (53 GLs, $970K) |
+
+All 4 entities: 4 archive files each (YSL, AP Aging, Adhoc_AMP, ExpenseDistribution), dashboard detail pages return 200, maint proof units + shares correctly populated, accrual adjustments applied as negatives per April 1 convention.
+
+### Autonomous Execution Lesson
+User feedback mid-session: "why cant you do this - you are controlling my computer" when asked to run Yardi steps manually. Lesson captured: **drive the browser directly via Claude in Chrome tools instead of giving the user step-by-step instructions when browser control is available.** Subsequent script dispatch, progress polling, and QA verification all run from the agent side without user context-switching.
+
+### Known Deferred Items (next session)
+1. **Audited Financials for 4 new test entities** — 805/302/206/733 show `has_audit: false` on dashboard list. User to upload PDFs via Data Collection for each.
+2. **Design updates** — user flagged "a few design updates" for separate visual-only pass.
+3. **Expense Distribution automation** — still a manual-upload step per user workflow ("do not change the script").
