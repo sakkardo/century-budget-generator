@@ -5997,7 +5997,7 @@ async function faToggleInvoices(glCode, el) {
   if (!data || !data.gl_groups) {
     const noData = document.createElement('tr');
     noData.className = 'fa-invoice-detail';
-    noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense data uploaded yet.</td>';
+    noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense data uploaded yet.</div></td>';
     row.after(noData);
     return;
   }
@@ -6006,20 +6006,20 @@ async function faToggleInvoices(glCode, el) {
   if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
     const noInv = document.createElement('tr');
     noInv.className = 'fa-invoice-detail';
-    noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices for ' + glCode + '</td>';
+    noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices for ' + glCode + '</div></td>';
     row.after(noInv);
     return;
   }
 
   const detailRow = document.createElement('tr');
   detailRow.className = 'fa-invoice-detail';
-  let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+  let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 16px 12px 24px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
   html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
   html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
   html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
   html += '</div>';
   html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05); table-layout:fixed;">';
-  html += '<colgroup><col style="width:18%"><col style="width:22%"><col style="width:10%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:22%"></colgroup>';
+  html += '<colgroup><col style="width:20%"><col style="width:28%"><col style="width:10%"><col style="width:10%"><col style="width:11%"><col style="width:8%"><col style="width:13%"></colgroup>';
   html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
   html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Payee</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Description</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Invoice #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Date</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Amount</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Check #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Action</div></td></tr></thead>';
 
@@ -7442,6 +7442,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell-pct { width:60px; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
+      .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:260px; z-index:10; width:fit-content; min-width:700px; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
@@ -8202,6 +8203,7 @@ PM_EDIT_TEMPLATE = r"""
 
   .invoice-detail-row td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
+  .invoice-detail-row .drill-sticky, .drill-sticky { position:sticky; left:260px; z-index:10; width:fit-content; min-width:700px; }
 
   /* PM Cell Styles */
   .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
@@ -9029,7 +9031,7 @@ async function toggleInvoices(glCode, linkEl) {
     if (!data || !data.gl_groups) {
         const noData = document.createElement('tr');
         noData.className = 'invoice-detail-row';
-        noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet. <a href="/pm/' + ENTITY + '/expenses" style="color:var(--blue);">Upload here</a></td>';
+        noData.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 24px; background:#fef3c7; font-size:13px;">No expense distribution data uploaded yet. <a href="/pm/' + ENTITY + '/expenses" style="color:var(--blue);">Upload here</a></div></td>';
         row.after(noData);
         return;
     }
@@ -9038,7 +9040,7 @@ async function toggleInvoices(glCode, linkEl) {
     if (!glGroup || !glGroup.invoices || glGroup.invoices.length === 0) {
         const noInv = document.createElement('tr');
         noInv.className = 'invoice-detail-row';
-        noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</td>';
+        noInv.innerHTML = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 24px; background:var(--gray-50); font-size:13px; color:var(--gray-500);">No invoices found for ' + glCode + '</div></td>';
         row.after(noInv);
         return;
     }
@@ -9048,14 +9050,14 @@ async function toggleInvoices(glCode, linkEl) {
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'invoice-detail-row';
-    let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div style="padding:12px 16px 12px 40px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
+    let html = '<td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;"><div class="drill-sticky" style="padding:12px 16px 12px 24px; background:linear-gradient(to right, #f0f4ff, #f8faff); border-left:3px solid var(--blue); border-bottom:1px solid var(--gray-200);">';
     html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
     html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
     html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmtAmt(glGroup.total || 0) + '</span>';
     html += '</div>';
 
     html += '<table style="width:100%; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.05); table-layout:fixed;">';
-    html += '<colgroup><col style="width:18%"><col style="width:22%"><col style="width:10%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:22%"></colgroup>';
+    html += '<colgroup><col style="width:20%"><col style="width:28%"><col style="width:10%"><col style="width:10%"><col style="width:11%"><col style="width:8%"><col style="width:13%"></colgroup>';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
     html += '<td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Payee</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Description</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Invoice #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Date</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Amount</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap;">Check #</div></td><td><div style="padding:6px 10px; overflow:hidden; white-space:nowrap; text-align:right;">Action</div></td></tr></thead>';
 
@@ -9332,8 +9334,8 @@ function showReclass(glCode) {
     const formRow = document.createElement('tr');
     formRow.className = 'reclass-form-row';
     formRow.innerHTML = `
-        <td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);">
-            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <td class="frozen frozen-gl drill-row"></td><td class="frozen frozen-desc drill-row"></td><td colspan="13" style="padding:0;">
+            <div class="drill-sticky" style="padding:12px 24px; background:var(--blue-light); border-left:3px solid var(--blue);"><div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                 <label style="font-size:12px; font-weight:600;">Suggest reclass to:</label>
                 <input type="hidden" id="reclass_target_${glCode}" value="">
                 <span id="reclass_target_label_${glCode}" style="font-size:12px; color:var(--gray-500);">No GL selected</span>
@@ -9344,7 +9346,7 @@ function showReclass(glCode) {
                        style="width:200px; font-size:12px; padding:4px 8px; border:1px solid var(--gray-300); border-radius:4px;">
                 <button onclick="saveReclass('${glCode}')" style="font-size:12px; padding:4px 12px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer;">Save</button>
                 <button onclick="this.closest('tr').remove()" style="font-size:12px; padding:4px 12px; background:var(--gray-200); border:none; border-radius:4px; cursor:pointer;">Cancel</button>
-            </div>
+            </div></div>
         </td>
     `;
     row.after(formRow);
