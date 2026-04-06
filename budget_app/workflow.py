@@ -7442,7 +7442,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell-pct { width:60px; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
-      .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:260px; z-index:10; width:fit-content; min-width:700px; }
+      .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:321px; z-index:10; width:fit-content; min-width:700px; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
@@ -8203,7 +8203,7 @@ PM_EDIT_TEMPLATE = r"""
 
   .invoice-detail-row td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
-  .invoice-detail-row .drill-sticky, .drill-sticky { position:sticky; left:260px; z-index:10; width:fit-content; min-width:700px; }
+  .invoice-detail-row .drill-sticky, .drill-sticky { position:sticky; left:321px; z-index:10; width:fit-content; min-width:700px; }
 
   /* PM Cell Styles */
   .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
