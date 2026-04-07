@@ -7967,8 +7967,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     }
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
-      '<td class="frozen frozen-gl"><span style="font-family:monospace; font-size:12px;">' + gl + '</span>' + reclassBadge + '</td>' +
-      '<td class="frozen frozen-desc" style="font-size:12px;"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
+      '<td class="frozen frozen-gl"><span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
+      '<td class="frozen frozen-desc"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
       '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
