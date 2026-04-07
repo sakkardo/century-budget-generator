@@ -9303,7 +9303,7 @@ function renderTable() {
             const propFormula = pmGetFormulaTooltip(line, 'proposed');
 
             tr.innerHTML = `
-                <td class="frozen frozen-gl"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-family:monospace;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
+                <td class="frozen frozen-gl"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-variant-numeric:tabular-nums;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
                 <td class="frozen frozen-desc"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
                 <td class="number"><input id="pm_pr_${gl}" class="pm-cell" type="text" value="${fmt(line.prior_year)}" data-raw="${Math.round(line.prior_year || 0)}" data-gl="${gl}" data-field="prior_year" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
