@@ -6022,8 +6022,11 @@ async function renderBudgetSummary(contentDiv) {
     }
   });
 
-  // Formula bar
-  let html = '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;margin-bottom:12px;background:white;border:1px solid var(--gray-200);border-radius:12px;min-height:44px;transition:all .2s;">' +
+  // Table
+  const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
+  let html = '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);overflow:hidden;">' +
+    '<div style="overflow-x:auto;max-height:75vh;overflow-y:auto;">' +
+    '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;background:white;border:1px solid var(--gray-200);border-radius:8px;margin:8px 8px 0;min-height:44px;transition:all .2s;position:sticky;top:0;z-index:30;box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
     '<span style="font-size:11px;font-weight:800;color:white;background:var(--blue);padding:2px 8px;border-radius:4px;font-family:monospace;letter-spacing:1px;">fx</span>' +
     '<span id="sumFBLabel" style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;white-space:nowrap;min-width:60px;">Click a cell\u2026</span>' +
     '<input id="sumFBInput" type="text" disabled placeholder="Select an editable cell to enter a value or formula\u2026" style="font-family:monospace;font-size:13px;color:var(--gray-700);flex:1;padding:4px 8px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:4px;outline:none;">' +
@@ -6031,14 +6034,9 @@ async function renderBudgetSummary(contentDiv) {
     '<button id="sumFBAccept" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;background:var(--green);color:white;">Accept</button>' +
     '<button id="sumFBCancel" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;color:var(--gray-600);">Cancel</button>' +
     '<button id="sumFBClear" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(224,36,36,0.3);background:white;color:var(--red);">Clear</button>' +
-    '</div>';
-
-  // Table
-  const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
-  html += '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);overflow:hidden;">' +
-    '<div style="overflow-x:auto;max-height:75vh;overflow-y:auto;">' +
+    '</div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
-    '<thead style="position:sticky;top:0;z-index:20;"><tr>' +
+    '<thead style="position:sticky;top:52px;z-index:20;"><tr>' +
     '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
     '<th style="'+thS+'min-width:80px;">Tab</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>2024 Actual*</th>' +
@@ -6060,8 +6058,9 @@ async function renderBudgetSummary(contentDiv) {
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
       'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;"></td>';
   }
+  const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
-    return '<td class="number" data-sum-col="'+col+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;">\u2014</td>';
+    return '<td class="number" data-sum-col="'+col+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span>'+_fxBadge+'</td>';
   }
   function noteIn(label) {
     return '<td style="padding:4px 6px;"><input type="text" placeholder="Add note\u2026" data-note-label="'+label.replace(/"/g,'&quot;')+'" ' +
@@ -6098,11 +6097,12 @@ async function renderBudgetSummary(contentDiv) {
       html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
         '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
         '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
+      const fxColor = isGrand ? 'background:#38bdf8;color:#1e3a5f;' : '';
       COLS.forEach(c => {
         const extra = isGrand ? 'background:#1e3a5f;color:white;' : '';
-        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;'+extra+'">\u2014</td>';
+        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+extra+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span><span class="sum-fx" style="display:inline-block;background:'+(isGrand?'#38bdf8':'#4ade80')+';color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span></td>';
       });
-      html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;'+(isGrand?'background:#1e3a5f;color:white;':'')+'">\u2014</td>';
+      html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+(isGrand?'background:#1e3a5f;color:white;':'')+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span><span class="sum-fx" style="display:inline-block;background:'+(isGrand?'#38bdf8':'#4ade80')+';color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span></td>';
       html += '<td style="'+(isGrand?'background:#1e3a5f;':'')+'padding:4px 6px;">'+(isGrand?'':'<input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;">')+'</td>';
       html += '</tr>';
     }
@@ -6148,17 +6148,23 @@ function sumRecalcTotals() {
     COLS.forEach(c => {
       const td = tr.querySelector('[data-sum-col="'+c+'"]');
       if (td) {
+        const sv = td.querySelector('.sub-val');
         const v = totals[c];
-        if (!v && v !== 0) { td.textContent = '\u2014'; return; }
-        const n = Math.round(v);
-        td.textContent = n === 0 ? '\u2014' : (n < 0 ? '(' + Math.abs(n).toLocaleString('en-US') + ')' : n.toLocaleString('en-US'));
+        const txt = (!v && v !== 0) ? '\u2014' : (Math.round(v) === 0 ? '\u2014' : (v < 0 ? '(' + Math.abs(Math.round(v)).toLocaleString('en-US') + ')' : Math.round(v).toLocaleString('en-US')));
+        if (sv) sv.textContent = txt; else td.textContent = txt;
       }
     });
     const c8 = tr.querySelector('[data-sum-col="c8"]');
-    if (c8 && totals.c7 && totals.c5 && totals.c5 !== 0) {
-      const pct = ((totals.c7 - totals.c5) / Math.abs(totals.c5)) * 100;
-      c8.innerHTML = '<span style="color:'+(pct>0?'var(--green)':pct<0?'var(--red)':'var(--gray-400)')+'">'+(pct>0?'+':'')+pct.toFixed(1)+'%</span>';
-    } else if (c8) { c8.textContent = '\u2014'; }
+    if (c8) {
+      const sv8 = c8.querySelector('.sub-val');
+      if (totals.c7 && totals.c5 && totals.c5 !== 0) {
+        const pct = ((totals.c7 - totals.c5) / Math.abs(totals.c5)) * 100;
+        const pctHtml = '<span style="color:'+(pct>0?'var(--green)':pct<0?'var(--red)':'var(--gray-400)')+'">'+(pct>0?'+':'')+pct.toFixed(1)+'%</span>';
+        if (sv8) sv8.innerHTML = pctHtml; else c8.innerHTML = pctHtml;
+      } else {
+        if (sv8) sv8.textContent = '\u2014'; else c8.textContent = '\u2014';
+      }
+    }
   }
 
   writeSum('tr[data-sums="income"]', inc);
@@ -6175,10 +6181,77 @@ function sumRecalcTotals() {
   writeSum('tr[data-calc="grand"]', grand);
 }
 
+// ── Summary tab: subtotal fx click ──
+let _activeSumSubtotal = null;
+function sumSubtotalClick(td) {
+  // Clear previous highlight
+  if (_activeSumSubtotal && _activeSumSubtotal !== td) {
+    _activeSumSubtotal.style.outline = '';
+  }
+  _activeSumSubtotal = td;
+  td.style.outline = '2px solid var(--blue)';
+  td.style.outlineOffset = '-2px';
+
+  const col = td.dataset.sumCol;
+  const tr = td.closest('tr');
+  const COL_NAMES = {c1:'2024 Actual',c2:'2025 Actual',c3:'2026 YTD',c4:'2026 Est.',c5:'2026 Forecast',c6:'2026 Budget',c7:'2027 Budget',c8:'% Var'};
+  const rowLabel = tr ? (tr.querySelector('td')?.textContent || 'Total') : 'Total';
+  const colLabel = COL_NAMES[col] || col;
+
+  // Build formula from component data rows
+  const tbody = document.getElementById('sumBody');
+  let formula = '';
+  if (col === 'c8') {
+    // % Var = (c7 - c5) / |c5|
+    formula = '= (Col 7 - Col 5) / |Col 5|';
+  } else if (tr.dataset.sums) {
+    // Section subtotal: sum all data rows in this section
+    const secKey = tr.dataset.sums;
+    const vals = [];
+    tbody.querySelectorAll('tr[data-type="d"][data-sec="'+secKey+'"]').forEach(dr => {
+      const inp = dr.querySelector('input[data-col="'+col+'"]');
+      if (inp) { const v = parseFloat(inp.dataset.raw) || 0; if (v !== 0) vals.push(Math.round(v)); }
+    });
+    formula = vals.length <= 10 ? '= ' + (vals.length ? vals.join(' + ') : '0') : '= SUM of ' + vals.length + ' lines = ' + vals.reduce((a,b)=>a+b,0).toLocaleString();
+  } else if (tr.dataset.calc === 'income-expenses') {
+    // Net Operating = Income - Expenses
+    const incTr = tbody.querySelector('tr[data-sums="income"]');
+    const expTr = tbody.querySelector('tr[data-sums="expenses"]');
+    const incVal = incTr ? (incTr.querySelector('[data-sum-col="'+col+'"] .sub-val')?.textContent || '0') : '0';
+    const expVal = expTr ? (expTr.querySelector('[data-sum-col="'+col+'"] .sub-val')?.textContent || '0') : '0';
+    formula = '= Income (' + incVal + ') - Expenses (' + expVal + ')';
+  } else if (tr.dataset.calc === 'grand') {
+    formula = '= Net Operating + Non-Op Income - Non-Op Expenses';
+  }
+
+  // Show in formula bar
+  const bar = document.getElementById('sumFBar');
+  if (bar) bar.style.borderColor = 'var(--blue)';
+  const lbl = document.getElementById('sumFBLabel');
+  if (lbl) lbl.textContent = rowLabel.trim() + ' \u2192 ' + colLabel;
+  const inp = document.getElementById('sumFBInput');
+  if (inp) { inp.disabled = true; inp.value = formula; inp.style.opacity = '0.85'; inp.placeholder = ''; }
+  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display='none'; });
+  const prev = document.getElementById('sumFBPreview');
+  if (prev) prev.textContent = '';
+}
+// Clear subtotal highlight on click-away
+document.addEventListener('click', function(e) {
+  if (!_activeSumSubtotal) return;
+  if (_activeSumSubtotal.contains(e.target)) return;
+  const bar = document.getElementById('sumFBar');
+  if (bar && bar.contains(e.target)) return;
+  _activeSumSubtotal.style.outline = '';
+  _activeSumSubtotal = null;
+  sumResetBar();
+});
+
 // ── Summary tab: cell editing ──
 let _sumActiveCell = null;
 
 function sumCellFocus(el) {
+  // Clear any subtotal highlight
+  if (_activeSumSubtotal) { _activeSumSubtotal.style.outline = ''; _activeSumSubtotal = null; }
   _sumActiveCell = el;
   const bar = document.getElementById('sumFBar');
   if (bar) bar.style.borderColor = 'var(--blue)';
@@ -6188,7 +6261,7 @@ function sumCellFocus(el) {
   const lbl = document.getElementById('sumFBLabel');
   if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl;
   const inp = document.getElementById('sumFBInput');
-  if (inp) { inp.disabled = false; inp.value = el.dataset.raw || el.value || ''; inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)'; }
+  if (inp) { inp.disabled = false; inp.style.opacity = '1'; inp.value = el.dataset.raw || el.value || ''; inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)'; }
   ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display=''; });
   el.value = el.dataset.raw || '';
 }
@@ -6245,7 +6318,7 @@ function sumResetBar() {
   const bar = document.getElementById('sumFBar');
   if (bar) bar.style.borderColor = 'var(--gray-200)';
   const inp = document.getElementById('sumFBInput');
-  if (inp) { inp.disabled = true; inp.value = ''; }
+  if (inp) { inp.disabled = true; inp.value = ''; inp.style.opacity = '1'; }
   const lbl = document.getElementById('sumFBLabel');
   if (lbl) lbl.textContent = 'Click a cell\u2026';
   const prev = document.getElementById('sumFBPreview');
@@ -10292,9 +10365,9 @@ function sumFxClick(el) {
   _showSumButtons(true);
   sumFormulaPreview();
 
-  el.style.border = '2px solid #38bdf8';
+  el.style.border = '2px solid var(--blue)';
   el.style.borderRadius = '4px';
-  el.style.background = '#1e3a5f';
+  el.style.background = '#ecfdf5';
 
   bar.focus({ preventScroll: true });
   bar.setSelectionRange(bar.value.length, bar.value.length);
@@ -10398,17 +10471,17 @@ function renderSummary() {
     '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
 
   // Formula bar
-  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#1e293b; border:1px solid #334155; border-radius:8px; margin-bottom:0; position:sticky; top:0; z-index:50; box-shadow:0 2px 8px rgba(0,0,0,0.3);">' +
-    '<span style="font-size:11px; font-weight:700; color:#fff; background:#3b82f6; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
-    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#94a3b8; white-space:nowrap; min-width:120px;"></span>' +
-    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #475569; border-radius:4px; font-size:13px; font-family:monospace; background:#0f172a; color:#e2e8f0;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
-    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#4ade80; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200,#e2e8f0); border-radius:8px; margin-bottom:12px;">' +
+    '<span style="font-size:11px; font-weight:700; color:#3b82f6; background:#dbeafe; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#64748b; white-space:nowrap; min-width:120px;"></span>' +
+    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
+    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#22c55e; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
     '<button id="sumFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:#22c55e; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaAccept()">OK</button>' +
-    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
+    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#e2e8f0; color:#334155; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
     '</div>';
 
   // Summary table with expanded columns
-  html += '<table><thead style="position:sticky; top:42px; z-index:40;"><tr><th>Category</th>' +
+  html += '<table><thead><tr><th>Category</th>' +
     '<th class="num">Prior Year</th>' +
     '<th class="num">YTD Actual</th>' +
     '<th class="num">Estimate</th>' +
