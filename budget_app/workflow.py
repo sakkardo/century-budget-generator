@@ -2152,6 +2152,35 @@ def create_workflow_blueprint(db):
         return totals
 
 
+    @bp.route("/api/budget/ensure", methods=["POST"])
+    def api_budget_ensure():
+        """Create a Budget record if one doesn't already exist for this entity/year.
+
+        Used by bulk onboarding to seed buildings before importing summary rows.
+        """
+        data = request.get_json()
+        if not data or "entity_code" not in data:
+            return jsonify({"error": "entity_code required"}), 400
+
+        entity_code = data["entity_code"]
+        building_name = data.get("building_name", "Unknown")
+        year = data.get("year", 2027)
+
+        existing = Budget.query.filter_by(entity_code=entity_code, year=year).first()
+        if existing:
+            return jsonify({"status": "exists", "entity_code": entity_code, "budget_id": existing.id})
+
+        budget = Budget(
+            entity_code=entity_code,
+            building_name=building_name,
+            year=year,
+            status="not_started",
+        )
+        db.session.add(budget)
+        db.session.commit()
+        return jsonify({"status": "created", "entity_code": entity_code, "budget_id": budget.id})
+
+
     @bp.route("/api/summary/import/<entity_code>", methods=["POST"])
     def api_summary_import(entity_code):
         """Import budget summary row framework + Col 1 / Col 6 from parsed Excel.
@@ -2167,6 +2196,17 @@ def create_workflow_blueprint(db):
 
         budget_year = 2027  # Current cycle year — all imports target 2027
         source_file = data.get("source_file", "")
+
+        # Auto-create Budget record if missing (belt + suspenders for bulk onboard)
+        building_name = data.get("building_name", "Unknown")
+        if not Budget.query.filter_by(entity_code=entity_code, year=budget_year).first():
+            db.session.add(Budget(
+                entity_code=entity_code,
+                building_name=building_name,
+                year=budget_year,
+                status="not_started",
+            ))
+            db.session.flush()
 
         imported = 0
         updated = 0
