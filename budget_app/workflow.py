@@ -6440,8 +6440,8 @@ async function faToggleInvoices(glCode, el) {
     html += '<td style="padding:8px 12px; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
     html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
     html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-300);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:8px 12px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; min-width:90px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-300);">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; min-width:70px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
+    html += '<td style="padding:8px 16px 8px 12px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; min-width:90px; border-bottom:1px solid var(--gray-200); border-right:2px solid var(--gray-400); background:#f9fafb;">$' + Math.round(inv.amount).toLocaleString() + '</td>';
+    html += '<td style="padding:8px 12px 8px 16px; white-space:nowrap; font-size:12px; min-width:70px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
     html += '<td style="text-align:right;">';
     if (isReclassed) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
@@ -9477,8 +9477,8 @@ async function toggleInvoices(glCode, linkEl) {
         html += '<td style="padding:8px 12px; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);" title="' + ((inv.notes || '').replace(/"/g, '&quot;')) + '">' + (inv.notes || '—') + '</td>';
         html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
         html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-300);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:8px 12px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; min-width:90px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-300);">' + fmtAmt(inv.amount) + '</td>';
-        html += '<td style="padding:8px 12px; white-space:nowrap; font-size:12px; min-width:70px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
+        html += '<td style="padding:8px 16px 8px 12px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; min-width:90px; border-bottom:1px solid var(--gray-200); border-right:2px solid var(--gray-400); background:#f9fafb;">' + fmtAmt(inv.amount) + '</td>';
+        html += '<td style="padding:8px 12px 8px 16px; white-space:nowrap; font-size:12px; min-width:70px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
         html += '<td style="text-align:right;">';
         if (isReclassed) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
