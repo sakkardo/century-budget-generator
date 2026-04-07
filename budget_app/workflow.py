@@ -10292,9 +10292,9 @@ function sumFxClick(el) {
   _showSumButtons(true);
   sumFormulaPreview();
 
-  el.style.border = '2px solid var(--blue)';
+  el.style.border = '2px solid #38bdf8';
   el.style.borderRadius = '4px';
-  el.style.background = '#ecfdf5';
+  el.style.background = '#1e3a5f';
 
   bar.focus({ preventScroll: true });
   bar.setSelectionRange(bar.value.length, bar.value.length);
@@ -10398,17 +10398,17 @@ function renderSummary() {
     '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
 
   // Formula bar
-  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200,#e2e8f0); border-radius:8px; margin-bottom:12px;">' +
-    '<span style="font-size:11px; font-weight:700; color:#3b82f6; background:#dbeafe; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
-    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#64748b; white-space:nowrap; min-width:120px;"></span>' +
-    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
-    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#22c55e; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
+  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#1e293b; border:1px solid #334155; border-radius:8px; margin-bottom:0; position:sticky; top:0; z-index:50; box-shadow:0 2px 8px rgba(0,0,0,0.3);">' +
+    '<span style="font-size:11px; font-weight:700; color:#fff; background:#3b82f6; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
+    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#94a3b8; white-space:nowrap; min-width:120px;"></span>' +
+    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #475569; border-radius:4px; font-size:13px; font-family:monospace; background:#0f172a; color:#e2e8f0;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
+    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#4ade80; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
     '<button id="sumFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:#22c55e; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaAccept()">OK</button>' +
-    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#e2e8f0; color:#334155; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
+    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
     '</div>';
 
   // Summary table with expanded columns
-  html += '<table><thead><tr><th>Category</th>' +
+  html += '<table><thead style="position:sticky; top:42px; z-index:40;"><tr><th>Category</th>' +
     '<th class="num">Prior Year</th>' +
     '<th class="num">YTD Actual</th>' +
     '<th class="num">Estimate</th>' +
