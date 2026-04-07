@@ -804,6 +804,74 @@ def create_workflow_blueprint(db):
         return forecast * (1 + increase_pct)
 
 
+    # ─── Budget Summary Table ───────────────────────────────────────────────
+
+    class BudgetSummaryRow(db.Model):
+        """
+        Budget Summary row — one per line item per building.
+
+        Stores the row framework from yrlycomp import plus:
+          - col1_prior_actual: 2024 Actual (imported from Excel, read-only)
+          - col6_approved_budget: 2026 Approved Budget (imported from Excel, read-only)
+          - col7_proposed_budget: 2027 Budget (FA-editable, starts NULL)
+
+        Columns 2-5 and 8 are computed live from budget_lines via GL prefix aggregation.
+        """
+        __tablename__ = "budget_summary_rows"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False, index=True)
+        budget_year = db.Column(db.Integer, nullable=False, default=2027)
+
+        # Row framework (from yrlycomp parser)
+        display_order = db.Column(db.Integer, nullable=False)
+        label = db.Column(db.String(255), nullable=False)
+        section = db.Column(db.String(100), nullable=True)  # Income, Expenses, Non-Operating Income, etc.
+        row_type = db.Column(db.String(20), nullable=False)  # data, subtotal, section_header
+        footnote_marker = db.Column(db.String(20), nullable=True)
+
+        # Imported columns (from approved budget Excel)
+        col1_prior_actual = db.Column(db.Float, nullable=True)      # 2024 Actual*
+        col6_approved_budget = db.Column(db.Float, nullable=True)    # 2026 Budget
+
+        # FA work product (starts NULL, FA fills in)
+        col7_proposed_budget = db.Column(db.Float, nullable=True)    # 2027 Budget
+
+        # Metadata for the summary engine
+        source_tab = db.Column(db.String(50), nullable=True)        # Income, Payroll, Energy, etc.
+        gl_prefixes_json = db.Column(db.Text, nullable=True)        # JSON array of GL prefixes
+        source_file = db.Column(db.String(255), nullable=True)
+
+        # Timestamps
+        imported_at = db.Column(db.DateTime, default=datetime.utcnow)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        __table_args__ = (
+            db.UniqueConstraint("entity_code", "budget_year", "display_order",
+                                name="uq_summary_entity_year_order"),
+        )
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "entity_code": self.entity_code,
+                "budget_year": self.budget_year,
+                "display_order": self.display_order,
+                "label": self.label,
+                "section": self.section,
+                "row_type": self.row_type,
+                "footnote_marker": self.footnote_marker,
+                "col1_prior_actual": self.col1_prior_actual,
+                "col6_approved_budget": self.col6_approved_budget,
+                "col7_proposed_budget": self.col7_proposed_budget,
+                "source_tab": self.source_tab,
+                "gl_prefixes_json": self.gl_prefixes_json,
+                "source_file": self.source_file,
+                "imported_at": self.imported_at.isoformat() if self.imported_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            }
+
+
     # ─── Blueprint Creation ──────────────────────────────────────────────────
 
     bp = Blueprint("workflow", __name__)
@@ -2023,6 +2091,359 @@ def create_workflow_blueprint(db):
             )
 
 
+    # ─── Budget Summary API ──────────────────────────────────────────────
+
+    def _gl_matches_prefixes(gl_code, prefixes):
+        """Check if a GL code starts with any of the given prefixes."""
+        if not gl_code or not prefixes:
+            return False
+        gl_base = gl_code.split("-")[0].strip()
+        for prefix in prefixes:
+            if gl_base.startswith(prefix):
+                return True
+        return False
+
+    def _section_key(section_label):
+        """Map section label to internal key for subtotal grouping."""
+        if not section_label:
+            return ""
+        sl = section_label.lower().strip()
+        if "non" in sl and "income" in sl:
+            return "non_operating_income"
+        if "non" in sl and "expense" in sl:
+            return "non_operating_expense"
+        if sl == "income":
+            return "income"
+        if sl == "expenses":
+            return "expenses"
+        return ""
+
+    def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
+        """Sum budget_lines matching GL prefixes. Returns ytd/estimate/forecast/current_budget."""
+        totals = {"ytd_actual": 0.0, "estimate": 0.0, "forecast": 0.0, "current_budget": 0.0, "proposed_budget": 0.0, "count": 0}
+        for line in budget_lines_dicts:
+            gl = line.get("gl_code", "")
+            if not _gl_matches_prefixes(gl, prefixes):
+                continue
+            ytd = float(line.get("ytd_actual", 0) or 0)
+            accrual = float(line.get("accrual_adj", 0) or 0)
+            unpaid = float(line.get("unpaid_bills", 0) or 0)
+            prior = float(line.get("prior_year", 0) or 0)
+            ytd_total = ytd + accrual + unpaid
+            remaining = 12 - ytd_months
+            if ytd_total >= prior and prior > 0 and ytd_months > 0:
+                est = (ytd_total / ytd_months) * remaining
+            else:
+                est = max(prior - ytd_total, 0)
+            line_forecast = ytd_total + est
+            totals["ytd_actual"] += ytd_total
+            totals["estimate"] += est
+            totals["forecast"] += line_forecast
+            totals["current_budget"] += float(line.get("current_budget", 0) or 0)
+            proposed = float(line.get("proposed_budget", 0) or 0)
+            if proposed == 0 and line_forecast > 0:
+                inc_pct = float(line.get("increase_pct", 0) or 0)
+                proposed = line_forecast * (1 + inc_pct)
+            totals["proposed_budget"] += proposed
+            totals["count"] += 1
+        return totals
+
+
+    @bp.route("/api/summary/import/<entity_code>", methods=["POST"])
+    def api_summary_import(entity_code):
+        """Import budget summary row framework + Col 1 / Col 6 from parsed Excel.
+
+        Accepts JSON matching batch_import.extract_importable_data() output.
+        Upserts rows by entity_code + budget_year + display_order.
+        """
+        import json as _json
+
+        data = request.get_json()
+        if not data or "rows" not in data:
+            return jsonify({"error": "Missing rows data"}), 400
+
+        budget_year = 2027  # Current cycle year — all imports target 2027
+        source_file = data.get("source_file", "")
+
+        imported = 0
+        updated = 0
+
+        for i, row in enumerate(data["rows"]):
+            display_order = row.get("display_order") or (i + 1)
+
+            existing = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code,
+                budget_year=budget_year,
+                display_order=display_order,
+            ).first()
+
+            gl_pj = None
+            if row.get("gl_prefixes"):
+                gl_pj = _json.dumps(row["gl_prefixes"])
+
+            if existing:
+                existing.label = row["label"]
+                existing.section = row.get("section")
+                existing.row_type = row.get("row_type", "data")
+                existing.footnote_marker = row.get("footnote_marker")
+                existing.col1_prior_actual = row.get("col1_prior_actual")
+                existing.col6_approved_budget = row.get("col6_approved_budget")
+                existing.source_tab = row.get("source_tab") or existing.source_tab
+                existing.gl_prefixes_json = gl_pj or existing.gl_prefixes_json
+                existing.source_file = source_file or existing.source_file
+                existing.updated_at = datetime.utcnow()
+                updated += 1
+            else:
+                db.session.add(BudgetSummaryRow(
+                    entity_code=entity_code,
+                    budget_year=budget_year,
+                    display_order=display_order,
+                    label=row["label"],
+                    section=row.get("section"),
+                    row_type=row.get("row_type", "data"),
+                    footnote_marker=row.get("footnote_marker"),
+                    col1_prior_actual=row.get("col1_prior_actual"),
+                    col6_approved_budget=row.get("col6_approved_budget"),
+                    col7_proposed_budget=None,
+                    source_tab=row.get("source_tab"),
+                    gl_prefixes_json=gl_pj,
+                    source_file=source_file,
+                ))
+                imported += 1
+
+        db.session.commit()
+        return jsonify({
+            "status": "ok",
+            "entity_code": entity_code,
+            "budget_year": budget_year,
+            "imported": imported,
+            "updated": updated,
+            "total_rows": len(data["rows"]),
+        })
+
+
+    @bp.route("/api/summary/<entity_code>", methods=["GET"])
+    def api_summary_get(entity_code):
+        """Return full 8-column budget summary for a building.
+
+        Stored columns: col1 (2024 Actual), col6 (2026 Budget), col7 (2027 Budget).
+        Computed columns: col2 (2025 Actual — TBD), col3-col5 from budget_lines
+        via GL prefix aggregation, col8 = % variance.
+        """
+        import json as _json
+
+        budget_year = request.args.get("year", 2027, type=int)
+
+        summary_rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=budget_year
+        ).order_by(BudgetSummaryRow.display_order).all()
+
+        # Fallback: if no rows for requested year, use latest available year
+        if not summary_rows:
+            latest = db.session.query(db.func.max(BudgetSummaryRow.budget_year)).filter_by(
+                entity_code=entity_code
+            ).scalar()
+            if latest:
+                budget_year = latest
+                summary_rows = BudgetSummaryRow.query.filter_by(
+                    entity_code=entity_code, budget_year=budget_year
+                ).order_by(BudgetSummaryRow.display_order).all()
+
+        if not summary_rows:
+            return jsonify({"error": "No summary data found", "entity_code": entity_code}), 404
+
+        # Fetch budget_lines for GL aggregation (cols 3-5)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=budget_year).first()
+        bl_dicts = []
+        ytd_months = 2
+
+        if budget:
+            lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+            bl_dicts = [l.to_dict() for l in lines]
+            try:
+                assumptions = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+                bp_val = assumptions.get("budget_period", "")
+                if "/" in str(bp_val):
+                    ytd_months = int(str(bp_val).split("/")[0])
+            except Exception:
+                pass
+
+        # Build response rows
+        result_rows = []
+        section_data = {"income": [], "expenses": [], "non_operating_income": [], "non_operating_expense": []}
+
+        for row in summary_rows:
+            if row.row_type == "section_header":
+                result_rows.append({
+                    "label": row.label, "row_type": "section_header",
+                    "section": row.section, "display_order": row.display_order,
+                    "col1": None, "col2": None, "col3": None, "col4": None,
+                    "col5": None, "col6": None, "col7": None, "col8": None,
+                    "source_tab": None,
+                })
+                continue
+
+            col1 = row.col1_prior_actual
+            col6 = row.col6_approved_budget
+            col7 = row.col7_proposed_budget
+
+            # Compute cols 3-5 from budget_lines via GL prefix aggregation
+            col2 = None   # 2025 Actual — audited financials, not loaded yet
+            col3 = None   # 2026 YTD actual
+            col4 = None   # 2026 estimate
+            col5 = None   # 2026 forecast
+
+            if row.row_type == "data" and row.gl_prefixes_json and bl_dicts:
+                try:
+                    prefixes = _json.loads(row.gl_prefixes_json)
+                except Exception:
+                    prefixes = []
+                if prefixes:
+                    agg = _aggregate_by_prefix(bl_dicts, prefixes, ytd_months)
+                    if agg["count"] > 0:
+                        col3 = round(agg["ytd_actual"], 2)
+                        col4 = round(agg["estimate"], 2)
+                        col5 = round(agg["forecast"], 2)
+
+            # Col 8: % variance = (col7 - col5) / |col5| * 100
+            col8 = None
+            if col7 is not None and col5 and col5 != 0:
+                col8 = round(((col7 - col5) / abs(col5)) * 100, 1)
+
+            rd = {
+                "id": row.id,
+                "label": row.label,
+                "row_type": row.row_type,
+                "section": row.section,
+                "display_order": row.display_order,
+                "footnote_marker": row.footnote_marker,
+                "col1": col1, "col2": col2, "col3": col3,
+                "col4": col4, "col5": col5, "col6": col6,
+                "col7": col7, "col8": col8,
+                "source_tab": row.source_tab,
+            }
+            result_rows.append(rd)
+
+            # Track data rows for subtotal computation
+            if row.row_type == "data":
+                sk = _section_key(row.section)
+                if sk in section_data:
+                    section_data[sk].append(rd)
+
+        # Recompute subtotal cols (3-5, 7, 8) from data rows
+        for rd in result_rows:
+            if rd["row_type"] != "subtotal":
+                continue
+            label_lower = (rd.get("label") or "").lower()
+            if "total income" in label_lower:
+                data_rows = section_data.get("income", [])
+            elif "total expenses" in label_lower and "non" not in label_lower:
+                data_rows = section_data.get("expenses", [])
+            elif "net operating" in label_lower:
+                inc = section_data.get("income", [])
+                exp = section_data.get("expenses", [])
+                for ck in ["col3", "col4", "col5", "col7"]:
+                    iv = sum(r.get(ck) or 0 for r in inc)
+                    ev = sum(r.get(ck) or 0 for r in exp)
+                    rd[ck] = round(iv - ev, 2) if (iv or ev) else None
+                if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
+                    rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
+                continue
+            elif "non" in label_lower and "income" in label_lower:
+                data_rows = section_data.get("non_operating_income", [])
+            elif "non" in label_lower and "expense" in label_lower:
+                data_rows = section_data.get("non_operating_expense", [])
+            elif "total surplus" in label_lower or "total deficit" in label_lower:
+                # Grand total = net operating + non-op income - non-op expense
+                inc = section_data.get("income", [])
+                exp = section_data.get("expenses", [])
+                noi = section_data.get("non_operating_income", [])
+                noe = section_data.get("non_operating_expense", [])
+                for ck in ["col3", "col4", "col5", "col7"]:
+                    iv = sum(r.get(ck) or 0 for r in inc)
+                    ev = sum(r.get(ck) or 0 for r in exp)
+                    ni = sum(r.get(ck) or 0 for r in noi)
+                    ne = sum(r.get(ck) or 0 for r in noe)
+                    rd[ck] = round((iv - ev) + ni - ne, 2) if (iv or ev or ni or ne) else None
+                if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
+                    rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
+                continue
+            else:
+                data_rows = []
+
+            # Simple sum for section subtotals
+            for ck in ["col3", "col4", "col5", "col7"]:
+                vals = [r.get(ck) or 0 for r in data_rows]
+                rd[ck] = round(sum(vals), 2) if any(v != 0 for v in vals) else None
+            if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
+                rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
+
+        return jsonify({
+            "entity_code": entity_code,
+            "budget_year": budget_year,
+            "ytd_months": ytd_months,
+            "rows": result_rows,
+            "stats": {
+                "total_rows": len(result_rows),
+                "data_rows": len([r for r in result_rows if r["row_type"] == "data"]),
+                "has_budget_lines": len(bl_dicts) > 0,
+            }
+        })
+
+
+    @bp.route("/api/summary/<entity_code>", methods=["PUT"])
+    def api_summary_edit(entity_code):
+        """FA edits Col 7 (proposed budget) on summary rows.
+
+        Accepts JSON: {"edits": [{"display_order": N, "col7": value}, ...]}
+        Logs each change to budget_revisions.
+        """
+        data = request.get_json()
+        if not data or "edits" not in data:
+            return jsonify({"error": "Missing edits"}), 400
+
+        budget_year = data.get("budget_year", 2027)
+        user_id = data.get("user_id")
+
+        # Need a budget record for revision logging
+        budget = Budget.query.filter_by(entity_code=entity_code, year=budget_year).first()
+
+        updated = 0
+        for edit in data["edits"]:
+            display_order = edit.get("display_order")
+            new_val = edit.get("col7")
+            if display_order is None:
+                continue
+
+            row = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code,
+                budget_year=budget_year,
+                display_order=display_order,
+            ).first()
+            if not row:
+                continue
+
+            old_val = row.col7_proposed_budget
+            row.col7_proposed_budget = float(new_val) if new_val is not None else None
+            row.updated_at = datetime.utcnow()
+
+            # Log to budget_revisions if budget exists
+            if budget:
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id,
+                    user_id=user_id,
+                    action="summary_edit",
+                    field_name=f"col7:{row.label}",
+                    old_value=str(old_val) if old_val is not None else "",
+                    new_value=str(new_val) if new_val is not None else "",
+                    source="web",
+                ))
+            updated += 1
+
+        db.session.commit()
+        return jsonify({"status": "ok", "updated": updated})
+
+
     # ─── Presentation Routes ───────────────────────────────────────────────
 
     @bp.route("/api/presentation/generate/<entity_code>", methods=["POST"])
@@ -2087,7 +2508,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
@@ -3755,24 +4176,27 @@ function renderDetail(data) {
   if (sheetOrder.length === 0) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No budget data yet. Generate a budget first.</p>';
   } else {
-    sheetOrder.forEach((sheetName, i) => {
+    // Summary tab is FIRST — before all sheet tabs
+    const summaryTab = document.createElement('button');
+    summaryTab.textContent = 'Summary';
+    summaryTab.className = 'sheet-tab active';
+    summaryTab.dataset.sheet = 'Summary';
+    summaryTab.style.cssText = 'padding-left:20px; position:relative;';
+    // green dot indicator
+    const dot = document.createElement('span');
+    dot.style.cssText = 'position:absolute;left:6px;top:50%;transform:translateY(-50%);width:6px;height:6px;background:#057a55;border-radius:50%;';
+    summaryTab.prepend(dot);
+    summaryTab.onclick = () => renderSheet('Summary', null, summaryTab);
+    tabsDiv.appendChild(summaryTab);
+
+    sheetOrder.forEach((sheetName) => {
       const tab = document.createElement('button');
       tab.textContent = sheetName;
-      tab.className = 'sheet-tab' + (i === 0 ? ' active' : '');
+      tab.className = 'sheet-tab';
       tab.dataset.sheet = sheetName;
       tab.onclick = () => renderSheet(sheetName, sheets[sheetName], tab);
       tabsDiv.appendChild(tab);
     });
-
-    // Add Summary tab before Assumptions
-    const summaryTab = document.createElement('button');
-    summaryTab.textContent = '\ud83d\udcca Summary';
-    summaryTab.className = 'sheet-tab';
-    summaryTab.style.background = '#e0f2fe';
-    summaryTab.style.color = 'var(--primary)';
-    summaryTab.style.fontWeight = '600';
-    summaryTab.onclick = () => renderSheet('Summary', null, summaryTab);
-    tabsDiv.appendChild(summaryTab);
 
     // Add Assumptions tab
     const assumTab = document.createElement('button');
@@ -3801,7 +4225,8 @@ function renderDetail(data) {
     };
     tabsDiv.appendChild(histTab);
 
-    renderSheet(sheetOrder[0], sheets[sheetOrder[0]], tabsDiv.firstChild);
+    // Render Summary first
+    renderSheet('Summary', null, summaryTab);
   }
 }
 
@@ -5538,392 +5963,378 @@ async function refreshDOFData() {
   }
 }
 
-// ── Summary tab formula bar ───────────────────────────────────────────
-let _activeSumFxCell = null;
-let _sumFormulaOriginal = '';
-let _sumCatData = {};
 
-function _showSumButtons(show) {
-  ['sumFormulaPreview','sumFormulaAccept','sumFormulaCancel'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = show ? 'inline-block' : 'none';
+async function renderBudgetSummary(contentDiv) {
+  const COLS = ['c1','c2','c3','c4','c5','c6','c7'];
+  const COL_NAMES = {c1:'Col 1 \u00b7 2024 Actual',c2:'Col 2 \u00b7 2025 Actual',c3:'Col 3 \u00b7 2026 YTD',
+    c4:'Col 4 \u00b7 2026 Est.',c5:'Col 5 \u00b7 2026 Forecast',c6:'Col 6 \u00b7 2026 Budget',c7:'Col 7 \u00b7 2027 Budget'};
+  const SUM_TAB_COLORS = {
+    "Income":{bg:"rgba(76,175,80,0.15)",color:"#2e7d32"},"Payroll":{bg:"rgba(33,150,243,0.15)",color:"#1565c0"},
+    "Energy":{bg:"rgba(255,152,0,0.15)",color:"#e65100"},"Water & Sewer":{bg:"rgba(0,188,212,0.15)",color:"#00838f"},
+    "Repairs & Supplies":{bg:"rgba(121,85,72,0.15)",color:"#5d4037"},"Gen & Admin":{bg:"rgba(156,39,176,0.15)",color:"#7b1fa2"},
+    "RE Taxes":{bg:"rgba(244,67,54,0.15)",color:"#c62828"},"Manual":{bg:"rgba(255,213,79,0.15)",color:"#f57f17"},
+  };
+  const SUM_TAB_SHORT = {"Income":"Income","Payroll":"Payroll","Energy":"Energy","Water & Sewer":"Water",
+    "Repairs & Supplies":"R&S","Gen & Admin":"Gen&Admin","RE Taxes":"RE Tax","Manual":"Manual"};
+
+  function sfmt(v) {
+    if (v===null||v===undefined||v==='') return '\u2014';
+    const n=Number(v); if(isNaN(n)||n===0) return '\u2014';
+    const s=Math.abs(Math.round(n)).toLocaleString('en-US');
+    return n<0?'('+s+')':s;
+  }
+  function schip(tab) {
+    if(!tab) return '<span style="color:var(--gray-400);font-size:11px">\u2014</span>';
+    const c=SUM_TAB_COLORS[tab]||{bg:'rgba(158,158,158,0.15)',color:'#757575'};
+    return '<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:0.3px;white-space:nowrap;background:'+c.bg+';color:'+c.color+'">'+(SUM_TAB_SHORT[tab]||tab)+'</span>';
+  }
+
+  // Fetch summary data from API
+  let sumData = null;
+  try {
+    const res = await fetch('/api/summary/' + entityCode);
+    if (res.ok) sumData = await res.json();
+  } catch(e) {}
+
+  if (!sumData || !sumData.rows || sumData.rows.length === 0) {
+    contentDiv.innerHTML = '<div style="padding:40px; text-align:center; color:var(--gray-500);"><p style="font-size:16px; margin-bottom:8px;">No Budget Summary data imported yet.</p><p style="font-size:13px;">Import an approved budget Excel to populate the Summary tab.</p></div>';
+    return;
+  }
+
+  // Build section-aware data structure
+  const rows = sumData.rows;
+  const sections = {};
+  let currentSec = '';
+  rows.forEach(r => {
+    if (r.row_type === 'section_header') currentSec = r.label;
+    r._sec = currentSec;
+    const sk = currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('income') ? 'noi' :
+               currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('expense') ? 'noe' :
+               currentSec.toLowerCase() === 'income' ? 'income' :
+               currentSec.toLowerCase() === 'expenses' ? 'expenses' : '';
+    r._sk = sk;
+    if (r.row_type === 'data' && sk) {
+      if (!sections[sk]) sections[sk] = [];
+      sections[sk].push(r);
+    }
   });
-}
-
-function _buildSumFormula(cellId) {
-  const data = _sumCatData[cellId];
-  if (!data) return '';
-  const field = data.field;
-  const lines = data.lines;
-
-  if (field === 'var') {
-    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
-    const forecast = Math.round(lines.reduce((s, l) => s + faComputeForecast(l), 0));
-    return '= ' + budget + ' - ' + forecast;
-  }
-  if (field === 'pct') {
-    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
-    const forecast = Math.round(lines.reduce((s, l) => s + faComputeForecast(l), 0));
-    return forecast ? '= (' + budget + ' - ' + forecast + ') / ' + forecast : '= 0';
-  }
-
-  // For budget/proposed/prior, show SUM of GL line values
-  const getVal = (l) => {
-    if (field === 'prior') return Math.round(l.prior_year || 0);
-    if (field === 'budget') return Math.round(l.current_budget || 0);
-    if (field === 'proposed') {
-      const f = faComputeForecast(l);
-      return Math.round(l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
-    }
-    return 0;
-  };
-
-  const vals = lines.map(getVal).filter(v => v !== 0);
-  if (vals.length === 0) return '= 0';
-  if (vals.length <= 10) return '= ' + vals.join(' + ');
-  return '= SUM(' + vals.length + ' GL lines) = ' + vals.reduce((a, b) => a + b, 0);
-}
-
-function sumFxClick(el) {
-  if (_activeSumFxCell && _activeSumFxCell !== el) {
-    _activeSumFxCell.style.border = '';
-    _activeSumFxCell.style.borderRadius = '';
-    _activeSumFxCell.style.background = '';
-  }
-  _activeSumFxCell = el;
-  const bar = document.getElementById('sumFormulaBar');
-  const label = document.getElementById('sumFormulaLabel');
-  if (!bar || !label) return;
-
-  label.textContent = el.dataset.label || el.id;
-  label.style.display = 'inline';
-
-  bar.value = _buildSumFormula(el.id);
-  _sumFormulaOriginal = bar.value;
-  _showSumButtons(true);
-  _sumFormulaPreview();
-
-  el.style.border = '2px solid var(--blue)';
-  el.style.borderRadius = '4px';
-  el.style.background = '#ecfdf5';
-
-  // Populate the detail breakdown
-  const detail = document.getElementById('sumFormulaDetail');
-  if (detail) {
-    detail.innerHTML = _buildSumDetail(el.id);
-    detail.style.display = detail.innerHTML ? 'block' : 'none';
-  }
-
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
-}
-
-// Build GL-level breakdown for detail area
-function _buildSumDetail(cellId) {
-  const data = _sumCatData[cellId];
-  if (!data || !data.lines || data.lines.length === 0) return '';
-  const field = data.field;
-  const lines = data.lines;
-
-  // For var/pct, describe what's being compared
-  if (field === 'var') return '<b>$ Variance</b> = Curr Budget \u2212 12 Mo Forecast';
-  if (field === 'pct') return '<b>% Change</b> = (Curr Budget \u2212 12 Mo Forecast) / 12 Mo Forecast';
-  if (field && field.startsWith('sub_')) {
-    const subField = field.replace('sub_', '');
-    if (subField === 'var') return '<b>$ Variance</b> = Curr Budget \u2212 12 Mo Forecast';
-    if (subField === 'pct') return '<b>% Change</b> = (Curr Budget \u2212 12 Mo Forecast) / 12 Mo Forecast';
-  }
-
-  // For value columns, show each GL line
-  const getVal = (l) => {
-    if (field === 'prior' || field === 'sub_prior') return Math.round(l.prior_year || 0);
-    if (field === 'budget' || field === 'sub_budget') return Math.round(l.current_budget || 0);
-    if (field === 'proposed' || field === 'sub_proposed') {
-      const f = faComputeForecast(l);
-      return Math.round(l.proposed_budget || (f * (1 + (l.increase_pct || 0))));
-    }
-    return 0;
-  };
-
-  const items = lines.map(l => ({
-    gl: l.gl_code,
-    desc: l.description || '',
-    val: getVal(l)
-  })).filter(x => x.val !== 0);
-
-  if (items.length === 0) return '<span style="color:var(--gray-400);">All GL lines are $0</span>';
-
-  const sheet = lines[0] && lines[0].sheet_name ? lines[0].sheet_name : '';
-  let html = '<b>' + (sheet ? sheet + ' \u2014 ' : '') + items.length + ' GL line' + (items.length !== 1 ? 's' : '') + ':</b> ';
-  html += items.map(x => '<span style="white-space:nowrap;">' + x.gl + ' ' + x.desc + ' <b>$' + x.val.toLocaleString() + '</b></span>').join(' + ');
-  return html;
-}
-
-function _sumFormulaPreview() {
-  const bar = document.getElementById('sumFormulaBar');
-  const preview = document.getElementById('sumFormulaPreview');
-  if (!bar || !preview || !_activeSumFxCell) return;
-  const typed = bar.value.trim();
-  if (!typed) { preview.style.display = 'none'; return; }
-  const result = safeEvalFormula(typed);
-  if (result !== null) {
-    const field = (_sumCatData[_activeSumFxCell.id] || {}).field || '';
-    if (field === 'pct') {
-      preview.textContent = '= ' + result.toFixed(1) + '%';
-    } else {
-      preview.textContent = '= $' + Math.round(result).toLocaleString();
-    }
-    preview.style.color = 'var(--green)';
-    preview.style.display = 'inline-block';
-  } else {
-    preview.style.display = 'none';
-  }
-}
-
-function sumFormulaCancel() {
-  const bar = document.getElementById('sumFormulaBar');
-  if (bar) bar.value = _sumFormulaOriginal;
-  _showSumButtons(false);
-  const preview = document.getElementById('sumFormulaPreview');
-  if (preview) preview.style.display = 'none';
-  const detail = document.getElementById('sumFormulaDetail');
-  if (detail) detail.style.display = 'none';
-  if (_activeSumFxCell) {
-    _activeSumFxCell.style.border = '';
-    _activeSumFxCell.style.borderRadius = '';
-    _activeSumFxCell.style.background = '';
-  }
-}
-
-document.addEventListener('click', function(e) {
-  if (!_activeSumFxCell) return;
-  const wrap = document.getElementById('sumFormulaBarWrap');
-  if (_activeSumFxCell.contains(e.target)) return;
-  if (wrap && wrap.contains(e.target)) return;
-  _activeSumFxCell.style.border = '';
-  _activeSumFxCell.style.borderRadius = '';
-  _activeSumFxCell.style.background = '';
-  _activeSumFxCell = null;
-  const bar = document.getElementById('sumFormulaBar');
-  const label = document.getElementById('sumFormulaLabel');
-  const preview = document.getElementById('sumFormulaPreview');
-  const detail = document.getElementById('sumFormulaDetail');
-  if (bar) { bar.value = ''; bar.placeholder = 'Click any fx cell to view its formula...'; }
-  if (label) label.style.display = 'none';
-  if (preview) preview.style.display = 'none';
-  if (detail) detail.style.display = 'none';
-  _showSumButtons(false);
-});
-
-function renderBudgetSummary(contentDiv) {
-  const thStyle = 'text-align:right; padding:10px 12px; white-space:nowrap;';
-  _sumCatData = {};
-
-  // Get audit summary years (up to 2 most recent)
-  const auditSummary = (window._data && window._data.audit && window._data.audit.summary_years) ? window._data.audit.summary_years : {};
-  const auditYearKeys = Object.keys(auditSummary).sort().reverse().slice(0, 2).reverse(); // chronological, max 2
-  const hasAudit = auditYearKeys.length > 0;
-
-  // Track custom rows added by FA
-  if (!window._customSummaryRows) window._customSummaryRows = [];
-
-  let showZeroRows = window._showZeroSummaryRows || false;
-
-  const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:8px; font-weight:700; padding:1px 3px; border-radius:3px; margin-left:3px; vertical-align:middle;">fx</span>';
-  let _cellIdx = 0;
-  function sfx(val, label, field, lines, extraStyle) {
-    const id = 'sumfx_' + (++_cellIdx);
-    _sumCatData[id] = {field: field, lines: lines};
-    return '<td style="text-align:right; padding:10px 12px; cursor:pointer;' + (extraStyle || '') + '" id="' + id + '" data-label="' + label.replace(/"/g, '&quot;') + '" onclick="sumFxClick(this)">' + val + fxBadge + '</td>';
-  }
-
-  let html = '<div style="margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">' +
-    '<span style="font-size:14px; color:var(--gray-500);">Executive budget overview — all figures roll up from detail sheets</span>' +
-    '<button onclick="toggleZeroRows()" id="zeroToggleBtn" style="margin-left:auto; padding:4px 12px; font-size:11px; border:1px solid var(--gray-300); border-radius:4px; background:white; cursor:pointer;">' +
-    (showZeroRows ? 'Hide Empty Rows' : 'Show All Rows') + '</button></div>';
 
   // Formula bar
-  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
-    '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
-    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>' +
-    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" onkeydown="if(event.key===\'Escape\')sumFormulaCancel()">' +
-    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>' +
-    '<button id="sumFormulaAccept" style="display:none;">OK</button>' +
-    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
-    '</div>' +
-    '<div id="sumFormulaDetail" style="display:none; padding:6px 16px 8px; font-size:11px; color:var(--gray-600); line-height:1.6; background:#f8fafc; border:1px solid var(--gray-200); border-top:none; border-radius:0 0 8px 8px; margin-top:-13px; margin-bottom:12px; max-height:80px; overflow-y:auto;"></div>';
+  let html = '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;margin-bottom:12px;background:white;border:1px solid var(--gray-200);border-radius:12px;min-height:44px;transition:all .2s;">' +
+    '<span style="font-size:11px;font-weight:800;color:white;background:var(--blue);padding:2px 8px;border-radius:4px;font-family:monospace;letter-spacing:1px;">fx</span>' +
+    '<span id="sumFBLabel" style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;white-space:nowrap;min-width:60px;">Click a cell\u2026</span>' +
+    '<input id="sumFBInput" type="text" disabled placeholder="Select an editable cell to enter a value or formula\u2026" style="font-family:monospace;font-size:13px;color:var(--gray-700);flex:1;padding:4px 8px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:4px;outline:none;">' +
+    '<span id="sumFBPreview" style="font-size:13px;color:var(--gray-500);font-family:monospace;min-width:100px;text-align:right;"></span>' +
+    '<button id="sumFBAccept" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;background:var(--green);color:white;">Accept</button>' +
+    '<button id="sumFBCancel" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;color:var(--gray-600);">Cancel</button>' +
+    '<button id="sumFBClear" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(224,36,36,0.3);background:white;color:var(--red);">Clear</button>' +
+    '</div>';
 
-  // Table header
-  html += '<table id="summaryTable" style="width:100%; border-collapse:collapse; font-size:13px;">' +
-    '<thead><tr style="background:var(--gray-100); font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500);">' +
-    '<th style="text-align:left; padding:10px 12px; width:28%;">Category</th>';
+  // Table
+  const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
+  html += '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);overflow:hidden;">' +
+    '<div style="overflow-x:auto;max-height:75vh;overflow-y:auto;">' +
+    '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
+    '<thead style="position:sticky;top:0;z-index:20;"><tr>' +
+    '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
+    '<th style="'+thS+'min-width:80px;">Tab</th>' +
+    '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>2024 Actual*</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>2025 Actual</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>2026 YTD</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>2026 Est.</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>2026 Forecast</th>' +
+    '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>2026 Budget</th>' +
+    '<th style="'+thS+'min-width:120px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>2027 Budget</th>' +
+    '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
+    '<th style="text-align:left;padding:10px;min-width:180px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
+    '</tr></thead><tbody id="sumBody">';
 
-  // Audit year columns
-  auditYearKeys.forEach(y => {
-    html += '<th style="' + thStyle + '">FY' + y + '<br>Audit</th>';
+  function makeInput(val, label, col, bg) {
+    const raw = (val!==null&&val!==undefined&&val!==0) ? Math.round(val) : '';
+    const disp = raw!=='' ? raw.toLocaleString('en-US') : '';
+    return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;">' +
+      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'" ' +
+      'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
+      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;"></td>';
+  }
+  function sumTd(col) {
+    return '<td class="number" data-sum-col="'+col+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;">\u2014</td>';
+  }
+  function noteIn(label) {
+    return '<td style="padding:4px 6px;"><input type="text" placeholder="Add note\u2026" data-note-label="'+label.replace(/"/g,'&quot;')+'" ' +
+      'style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;color:var(--gray-700);"></td>';
+  }
+
+  rows.forEach((r, idx) => {
+    if (r.row_type === 'section_header') {
+      html += '<tr data-sec="'+r._sk+'" style="background:var(--blue-light);">' +
+        '<td colspan="11" style="font-weight:700;color:var(--blue);font-size:14px;padding:10px;border-bottom:2px solid var(--blue);position:sticky;left:0;background:var(--blue-light);">' +
+        r.label + ' <button onclick="sumShowInsert(\''+r._sk+'\',\''+r.label.replace(/'/g,"\\'")+'\')" style="margin-left:12px;display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px dashed var(--gray-300);border-radius:6px;font-size:11px;font-weight:600;color:var(--gray-500);background:transparent;cursor:pointer;vertical-align:middle;">+ Add Row</button>' +
+        '</td></tr>';
+    } else if (r.row_type === 'data') {
+      const fn = r.footnote_marker ? '<span style="color:var(--gray-500);font-size:11px;font-weight:600;vertical-align:super;margin-left:2px;">'+r.footnote_marker+'</span>' : '';
+      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'">' +
+        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+'</td>' +
+        '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
+        makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
+        makeInput(r.col2, r.label, 'c2', '#f9f9f7') +
+        makeInput(r.col3, r.label, 'c3', '#f9f9f7') +
+        makeInput(r.col4, r.label, 'c4', '#f9f9f7') +
+        makeInput(r.col5, r.label, 'c5', '#f9f9f7') +
+        makeInput(r.col6, r.label, 'c6', '#fbfaf4') +
+        makeInput(r.col7, r.label, 'c7', '#fffbeb') +
+        '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);font-variant-numeric:tabular-nums;">\u2014</td>' +
+        noteIn(r.label) + '</tr>';
+    } else if (r.row_type === 'subtotal') {
+      const isNet = r.label.toLowerCase().includes('net operating');
+      const isGrand = r.label.toLowerCase().includes('total surplus') || r.label.toLowerCase().includes('total deficit');
+      const calcAttr = isGrand ? 'data-calc="grand"' : isNet ? 'data-calc="income-expenses"' : 'data-sums="'+r._sk+'"';
+      const bgStyle = isGrand ? 'background:#1e3a5f;color:white;' : isNet ? 'background:#f0f4f8;border-top:2px solid var(--gray-400);border-bottom:2px solid var(--gray-400);' : 'background:var(--gray-100);border-top:2px solid var(--gray-300);';
+      const tdFrozen = isGrand ? 'background:#1e3a5f;color:white;' : isNet ? 'background:#f0f4f8;' : 'background:var(--gray-100);';
+
+      html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
+        '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
+        '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
+      COLS.forEach(c => {
+        const extra = isGrand ? 'background:#1e3a5f;color:white;' : '';
+        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;'+extra+'">\u2014</td>';
+      });
+      html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;'+(isGrand?'background:#1e3a5f;color:white;':'')+'">\u2014</td>';
+      html += '<td style="'+(isGrand?'background:#1e3a5f;':'')+'padding:4px 6px;">'+(isGrand?'':'<input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;">')+'</td>';
+      html += '</tr>';
+    }
   });
 
-  html += '<th style="' + thStyle + '">Prior Year<br>Actual</th>' +
-    '<th style="' + thStyle + '">Current<br>Budget</th>' +
-    '<th style="' + thStyle + '">Proposed<br>Budget</th>' +
-    '<th style="' + thStyle + '">$<br>Variance</th>' +
-    '<th style="' + thStyle + '">%<br>Change</th>' +
-    '</tr></thead><tbody>';
+  html += '</tbody></table></div></div>';
+  contentDiv.innerHTML = html;
 
-  let totalIncome = {prior:0, budget:0, proposed:0, forecast:0};
-  let totalExpense = {prior:0, budget:0, proposed:0, forecast:0};
-  let auditTotalIncome = auditYearKeys.map(() => 0);
-  let auditTotalExpense = auditYearKeys.map(() => 0);
+  // Recalculate totals
+  sumRecalcTotals();
+}
 
-  SUMMARY_ROWS.forEach((sr, idx) => {
-    const sheetLines = allSheets[sr.sheet] || [];
-    let lines = sheetLines;
-    if (sr.rowRange) {
-      lines = sheetLines.filter(l => l.row_num >= sr.rowRange[0] && l.row_num <= sr.rowRange[1]);
-    }
-    let prior = 0, budget = 0, proposed = 0, forecastTotal = 0;
-    lines.forEach(l => {
-      prior += l.prior_year || 0;
-      budget += l.current_budget || 0;
-      const forecast = faComputeForecast(l);
-      forecastTotal += forecast;
-      proposed += l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+// ── Summary tab: recalculate all subtotals ──
+function sumRecalcTotals() {
+  const COLS = ['c1','c2','c3','c4','c5','c6','c7'];
+  const tbody = document.getElementById('sumBody');
+  if (!tbody) return;
+
+  const secs = {income:[], expenses:[], noi:[], noe:[]};
+  tbody.querySelectorAll('tr[data-type="d"]').forEach(tr => {
+    const sec = tr.dataset.sec;
+    const skMap = {'Income':'income','Expenses':'expenses','Non-Operating Income':'noi','Non-Operating Expense':'noe'};
+    const sk = skMap[sec] || tr.closest('[data-sec]')?.dataset.sec || '';
+    if (!secs[sk]) return;
+    const vals = {};
+    COLS.forEach(c => {
+      const inp = tr.querySelector('input[data-col="'+c+'"]');
+      vals[c] = inp ? (parseFloat(inp.dataset.raw) || 0) : 0;
     });
+    secs[sk].push(vals);
+  });
 
-    // Add custom rows for this category
-    window._customSummaryRows.forEach(cr => {
-      if (cr.summaryLabel === sr.label) {
-        proposed += cr.amount;
+  function sumSec(key) {
+    const t = {}; COLS.forEach(c => t[c] = 0);
+    (secs[key]||[]).forEach(v => { COLS.forEach(c => t[c] += v[c]); });
+    return t;
+  }
+  const inc = sumSec('income'), exp = sumSec('expenses'), noi = sumSec('noi'), noe = sumSec('noe');
+
+  function writeSum(sel, totals) {
+    const tr = tbody.querySelector(sel);
+    if (!tr) return;
+    COLS.forEach(c => {
+      const td = tr.querySelector('[data-sum-col="'+c+'"]');
+      if (td) {
+        const v = totals[c];
+        if (!v && v !== 0) { td.textContent = '\u2014'; return; }
+        const n = Math.round(v);
+        td.textContent = n === 0 ? '\u2014' : (n < 0 ? '(' + Math.abs(n).toLocaleString('en-US') + ')' : n.toLocaleString('en-US'));
       }
     });
+    const c8 = tr.querySelector('[data-sum-col="c8"]');
+    if (c8 && totals.c7 && totals.c5 && totals.c5 !== 0) {
+      const pct = ((totals.c7 - totals.c5) / Math.abs(totals.c5)) * 100;
+      c8.innerHTML = '<span style="color:'+(pct>0?'var(--green)':pct<0?'var(--red)':'var(--gray-400)')+'">'+(pct>0?'+':'')+pct.toFixed(1)+'%</span>';
+    } else if (c8) { c8.textContent = '\u2014'; }
+  }
 
-    // Get audit amounts for this summary row
-    const auditAmounts = auditYearKeys.map(y => {
-      return (auditSummary[y] && auditSummary[y][sr.label]) ? auditSummary[y][sr.label] : 0;
-    });
+  writeSum('tr[data-sums="income"]', inc);
+  writeSum('tr[data-sums="expenses"]', exp);
+  writeSum('tr[data-sums="noi"]', noi);
+  writeSum('tr[data-sums="noe"]', noe);
 
-    const allZero = prior === 0 && budget === 0 && proposed === 0 && auditAmounts.every(a => a === 0);
-    if (allZero && !showZeroRows) return; // skip zero rows
+  // Net Operating = Income - Expenses
+  const net = {}; COLS.forEach(c => net[c] = inc[c] - exp[c]);
+  writeSum('tr[data-calc="income-expenses"]', net);
 
-    const variance = budget - forecastTotal;
-    const pctChange = forecastTotal ? ((budget - forecastTotal) / forecastTotal) : 0;
-    const varColor = sr.type === 'income'
-      ? (variance >= 0 ? 'var(--green)' : 'var(--red)')
-      : (variance >= 0 ? 'var(--red)' : 'var(--green)');
-
-    if (sr.type === 'income') {
-      totalIncome.prior += prior; totalIncome.budget += budget; totalIncome.proposed += proposed; totalIncome.forecast += forecastTotal;
-      auditAmounts.forEach((a, i) => auditTotalIncome[i] += a);
-    } else {
-      totalExpense.prior += prior; totalExpense.budget += budget; totalExpense.proposed += proposed; totalExpense.forecast += forecastTotal;
-      auditAmounts.forEach((a, i) => auditTotalExpense[i] += a);
-    }
-
-    const isIncomeRow = idx === 0;
-    const rowStyle = isIncomeRow ? 'font-weight:600; background:var(--blue-light, #f5efe7);' : '';
-    html += '<tr style="border-bottom:1px solid var(--gray-100); ' + rowStyle + '">' +
-      '<td style="padding:10px 12px;">' + sr.label + '</td>';
-
-    auditAmounts.forEach(a => {
-      html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>';
-    });
-
-    html += sfx(fmt(prior), sr.label + ' / Prior Year', 'prior', lines) +
-      sfx(fmt(budget), sr.label + ' / Curr Budget', 'budget', lines) +
-      sfx(fmt(proposed), sr.label + ' / Proposed', 'proposed', lines) +
-      sfx(fmt(variance), sr.label + ' / $ Var', 'var', lines, ' color:' + varColor + ';') +
-      sfx((pctChange * 100).toFixed(1) + '%', sr.label + ' / % Chg', 'pct', lines) +
-      '</tr>';
-
-    // After last expense row, add totals
-    if (idx === SUMMARY_ROWS.length - 1) {
-      const tePrior = totalExpense.prior, teBudget = totalExpense.budget, teProposed = totalExpense.proposed, teForecast = totalExpense.forecast;
-      const teVar = teBudget - teForecast;
-      const tePct = teForecast ? ((teBudget - teForecast) / teForecast) : 0;
-      // Collect all expense lines for formula
-      const allExpLines = SUMMARY_ROWS.filter(r => r.type === 'expense').reduce((arr, r) => {
-        let ls = allSheets[r.sheet] || [];
-        if (r.rowRange) ls = ls.filter(l => l.row_num >= r.rowRange[0] && l.row_num <= r.rowRange[1]);
-        return arr.concat(ls);
-      }, []);
-
-      html += '<tr style="font-weight:700; background:var(--gray-100); border-top:2px solid var(--gray-300);"><td style="padding:10px 12px;">Total Operating Expenses</td>';
-      auditTotalExpense.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
-      html += sfx(fmt(tePrior), 'Total Expenses / Prior Year', 'prior', allExpLines) +
-        sfx(fmt(teBudget), 'Total Expenses / Curr Budget', 'budget', allExpLines) +
-        sfx(fmt(teProposed), 'Total Expenses / Proposed', 'proposed', allExpLines) +
-        sfx(fmt(teVar), 'Total Expenses / $ Var', 'var', allExpLines, teVar >= 0 ? ' color:var(--red);' : ' color:var(--green);') +
-        sfx((tePct * 100).toFixed(1) + '%', 'Total Expenses / % Chg', 'pct', allExpLines) +
-        '</tr>';
-
-      // NOI
-      const noiPrior = totalIncome.prior - tePrior;
-      const noiBudget = totalIncome.budget - teBudget;
-      const noiProposed = totalIncome.proposed - teProposed;
-      const noiForecast = totalIncome.forecast - teForecast;
-      const noiVar = noiBudget - noiForecast;
-      const noiPct = noiForecast ? ((noiBudget - noiForecast) / noiForecast) : 0;
-      const noiColor = noiVar >= 0 ? 'var(--green)' : 'var(--red)';
-
-      // NOI audit amounts
-      const noiAudit = auditYearKeys.map((_, i) => auditTotalIncome[i] - auditTotalExpense[i]);
-      // All lines for NOI formula
-      const allIncLines = SUMMARY_ROWS.filter(r => r.type === 'income').reduce((arr, r) => {
-        let ls = allSheets[r.sheet] || [];
-        if (r.rowRange) ls = ls.filter(l => l.row_num >= r.rowRange[0] && l.row_num <= r.rowRange[1]);
-        return arr.concat(ls);
-      }, []);
-
-      html += '<tr style="font-weight:700; background:var(--blue-light, #f5efe7); border-top:2px solid var(--blue);"><td style="padding:10px 12px;">Net Operating Income</td>';
-      noiAudit.forEach(a => { html += '<td style="text-align:right; padding:10px 12px; color:var(--gray-500);">' + fmt(a) + '</td>'; });
-      html += sfx(fmt(noiPrior), 'NOI / Prior Year', 'prior', allIncLines.concat(allExpLines)) +
-        sfx(fmt(noiBudget), 'NOI / Curr Budget', 'budget', allIncLines.concat(allExpLines)) +
-        sfx(fmt(noiProposed), 'NOI / Proposed', 'proposed', allIncLines.concat(allExpLines)) +
-        sfx(fmt(noiVar), 'NOI / $ Var', 'var', allIncLines.concat(allExpLines), ' color:' + noiColor + ';') +
-        sfx((noiPct * 100).toFixed(1) + '%', 'NOI / % Chg', 'pct', allIncLines.concat(allExpLines)) +
-        '</tr>';
-    }
-  });
-
-  html += '</tbody></table>';
-
-  // Manual row add section
-  const colCount = 5 + auditYearKeys.length; // category + audit cols + prior + budget + proposed + var + %
-  html += '<div style="margin-top:12px; padding:12px; background:var(--gray-100); border-radius:8px;" id="addRowSection">' +
-    '<button onclick="document.getElementById(\'addRowForm\').style.display=\'flex\'" style="padding:6px 14px; font-size:12px; border:1px dashed var(--gray-300); border-radius:6px; background:white; cursor:pointer; color:var(--gray-500);">+ Add Custom Row</button>' +
-    '<div id="addRowForm" style="display:none; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center;">' +
-    '<select id="addRowCategory" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px;">' +
-    '<option value="">Select category...</option>';
-  SUMMARY_ROWS.forEach(sr => {
-    html += '<option value="' + sr.label + '">' + sr.label + '</option>';
-  });
-  html += '</select>' +
-    '<input id="addRowLabel" placeholder="Line description" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; width:180px;" />' +
-    '<input id="addRowAmount" type="number" placeholder="Amount" style="padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; width:100px;" />' +
-    '<button onclick="addCustomSummaryRow()" style="padding:6px 14px; background:var(--blue); color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer;">Add</button>' +
-    '<button onclick="document.getElementById(\'addRowForm\').style.display=\'none\'" style="padding:6px 14px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; cursor:pointer; background:white;">Cancel</button>' +
-    '</div></div>';
-
-  contentDiv.innerHTML = html;
+  // Grand = Net + NOI - NOE
+  const grand = {}; COLS.forEach(c => grand[c] = net[c] + noi[c] - noe[c]);
+  writeSum('tr[data-calc="grand"]', grand);
 }
 
-// Toggle zero rows
-function toggleZeroRows() {
-  window._showZeroSummaryRows = !window._showZeroSummaryRows;
-  const contentDiv = document.querySelector('[data-sheet="Summary"]') || document.getElementById('sheetContent');
-  if (contentDiv) renderBudgetSummary(contentDiv);
+// ── Summary tab: cell editing ──
+let _sumActiveCell = null;
+
+function sumCellFocus(el) {
+  _sumActiveCell = el;
+  const bar = document.getElementById('sumFBar');
+  if (bar) bar.style.borderColor = 'var(--blue)';
+  const COL_NAMES = {c1:'Col 1 \u00b7 2024 Actual',c2:'Col 2 \u00b7 2025 Actual',c3:'Col 3 \u00b7 2026 YTD',
+    c4:'Col 4 \u00b7 2026 Est.',c5:'Col 5 \u00b7 2026 Forecast',c6:'Col 6 \u00b7 2026 Budget',c7:'Col 7 \u00b7 2027 Budget'};
+  const cl = COL_NAMES[el.dataset.col] || el.dataset.col;
+  const lbl = document.getElementById('sumFBLabel');
+  if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl;
+  const inp = document.getElementById('sumFBInput');
+  if (inp) { inp.disabled = false; inp.value = el.dataset.raw || el.value || ''; inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)'; }
+  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display=''; });
+  el.value = el.dataset.raw || '';
 }
 
-// Add custom summary row
-function addCustomSummaryRow() {
-  const cat = document.getElementById('addRowCategory').value;
-  const label = document.getElementById('addRowLabel').value;
-  const amount = parseFloat(document.getElementById('addRowAmount').value) || 0;
-  if (!cat || !label || !amount) { alert('Fill in all fields'); return; }
-  if (!window._customSummaryRows) window._customSummaryRows = [];
-  window._customSummaryRows.push({summaryLabel: cat, label: label, amount: amount});
-  const contentDiv = document.querySelector('[data-sheet="Summary"]') || document.getElementById('sheetContent');
-  if (contentDiv) renderBudgetSummary(contentDiv);
+function sumCellBlur(el) {
+  if (el.value && !el.value.startsWith('=')) {
+    const num = parseFloat(el.value.replace(/,/g, ''));
+    if (!isNaN(num)) { el.dataset.raw = num; el.value = num.toLocaleString('en-US', {maximumFractionDigits:0}); el.style.background = el.dataset.col === 'c7' ? '#fffbeb' : '#fbfaf4'; }
+  } else if (el.value.startsWith('=')) {
+    try { const r = Function('"use strict"; return (' + el.value.slice(1) + ')')(); el.dataset.raw = r; el.style.background = '#f0fdf4'; el.style.borderColor = '#bbf7d0'; } catch(e) {}
+  } else { el.dataset.raw = ''; }
+  sumRecalcTotals();
+  // Auto-save col7 edits
+  if (el.dataset.col === 'c7' && el.dataset.raw) {
+    const tr = el.closest('tr');
+    const order = tr ? tr.dataset.order : null;
+    if (order) {
+      fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({edits:[{display_order:parseInt(order), col7:parseFloat(el.dataset.raw)}]})
+      }).catch(()=>{});
+    }
+  }
+}
+
+function sumCellKey(e, el) {
+  if (e.key === 'Enter') { el.blur(); sumAcceptFormula(); }
+  else if (e.key === 'Escape') { sumCancelFormula(); }
+}
+
+function sumAcceptFormula() {
+  if (!_sumActiveCell) return;
+  const val = document.getElementById('sumFBInput').value;
+  if (val.startsWith('=')) {
+    try {
+      const r = Function('"use strict"; return (' + val.slice(1) + ')')();
+      _sumActiveCell.dataset.raw = r;
+      _sumActiveCell.value = Math.round(r).toLocaleString('en-US');
+      _sumActiveCell.style.background = '#f0fdf4'; _sumActiveCell.style.borderColor = '#bbf7d0';
+      document.getElementById('sumFBPreview').textContent = '= ' + Math.round(r).toLocaleString('en-US');
+    } catch(e) { document.getElementById('sumFBPreview').textContent = '\u26a0 Error'; }
+  }
+  sumRecalcTotals();
+  sumResetBar();
+}
+
+function sumCancelFormula() {
+  if (_sumActiveCell) {
+    _sumActiveCell.value = _sumActiveCell.dataset.raw ? parseFloat(_sumActiveCell.dataset.raw).toLocaleString('en-US',{maximumFractionDigits:0}) : '';
+  }
+  sumResetBar();
+}
+
+function sumResetBar() {
+  const bar = document.getElementById('sumFBar');
+  if (bar) bar.style.borderColor = 'var(--gray-200)';
+  const inp = document.getElementById('sumFBInput');
+  if (inp) { inp.disabled = true; inp.value = ''; }
+  const lbl = document.getElementById('sumFBLabel');
+  if (lbl) lbl.textContent = 'Click a cell\u2026';
+  const prev = document.getElementById('sumFBPreview');
+  if (prev) prev.textContent = '';
+  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display='none'; });
+  _sumActiveCell = null;
+}
+
+// Wire formula bar buttons (called after render)
+document.addEventListener('click', function(e) {
+  if (e.target.id === 'sumFBAccept') sumAcceptFormula();
+  if (e.target.id === 'sumFBCancel') sumCancelFormula();
+  if (e.target.id === 'sumFBClear') {
+    if (_sumActiveCell) { _sumActiveCell.value=''; _sumActiveCell.dataset.raw=''; _sumActiveCell.style.background=_sumActiveCell.dataset.col==='c7'?'#fffbeb':'#fbfaf4'; _sumActiveCell.style.borderColor='var(--gray-300)'; }
+    sumRecalcTotals(); sumResetBar();
+  }
+});
+document.addEventListener('input', function(e) {
+  if (e.target.id === 'sumFBInput') {
+    if (_sumActiveCell) _sumActiveCell.value = e.target.value;
+    if (e.target.value.startsWith('=')) {
+      try { const r = Function('"use strict"; return (' + e.target.value.slice(1) + ')')(); document.getElementById('sumFBPreview').textContent = '= ' + Math.round(r).toLocaleString('en-US'); } catch(ex) { document.getElementById('sumFBPreview').textContent = ''; }
+    } else { const p = document.getElementById('sumFBPreview'); if(p) p.textContent = ''; }
+  }
+});
+
+// ── Summary tab: insert row ──
+function sumShowInsert(secKey, secLabel) {
+  let modal = document.getElementById('sumInsertModal');
+  let overlay = document.getElementById('sumInsertOverlay');
+  if (!modal) {
+    overlay = document.createElement('div'); overlay.id = 'sumInsertOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:99;';
+    overlay.onclick = sumCloseInsert;
+    document.body.appendChild(overlay);
+    modal = document.createElement('div'); modal.id = 'sumInsertModal';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:24px;z-index:100;width:380px;';
+    document.body.appendChild(modal);
+  }
+  overlay.style.display = 'block'; modal.style.display = 'block';
+  modal.innerHTML = '<h3 style="font-size:15px;font-weight:700;color:var(--blue-dark);margin-bottom:12px;">Add Row to '+secLabel+'</h3>' +
+    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Line Item Name</label>' +
+    '<input id="sumInsLabel" type="text" placeholder="e.g. Lobby Renovation" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
+    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;margin-top:10px;">Source Tab</label>' +
+    '<select id="sumInsTab" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
+    '<option value="Manual">Manual</option><option value="Income">Income</option><option value="Payroll">Payroll</option>' +
+    '<option value="Energy">Energy</option><option value="Water & Sewer">Water & Sewer</option>' +
+    '<option value="Repairs & Supplies">Repairs & Supplies</option><option value="Gen & Admin">Gen & Admin</option>' +
+    '<option value="RE Taxes">RE Taxes</option></select>' +
+    '<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">' +
+    '<button onclick="sumCloseInsert()" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;">Cancel</button>' +
+    '<button onclick="sumDoInsert(\''+secKey+'\')" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--blue);color:white;">Add Row</button></div>';
+  setTimeout(() => document.getElementById('sumInsLabel').focus(), 50);
+}
+
+function sumCloseInsert() {
+  const m = document.getElementById('sumInsertModal');
+  const o = document.getElementById('sumInsertOverlay');
+  if (m) m.style.display = 'none';
+  if (o) o.style.display = 'none';
+}
+
+function sumDoInsert(secKey) {
+  const label = document.getElementById('sumInsLabel').value.trim();
+  if (!label) return;
+  const tab = document.getElementById('sumInsTab').value;
+  const tbody = document.getElementById('sumBody');
+  const subRow = tbody.querySelector('tr[data-sums="'+secKey+'"]') || tbody.querySelector('tr[data-calc]');
+  if (!subRow) { sumCloseInsert(); return; }
+
+  const SUM_TAB_COLORS = {"Income":{bg:"rgba(76,175,80,0.15)",color:"#2e7d32"},"Payroll":{bg:"rgba(33,150,243,0.15)",color:"#1565c0"},"Energy":{bg:"rgba(255,152,0,0.15)",color:"#e65100"},"Water & Sewer":{bg:"rgba(0,188,212,0.15)",color:"#00838f"},"Repairs & Supplies":{bg:"rgba(121,85,72,0.15)",color:"#5d4037"},"Gen & Admin":{bg:"rgba(156,39,176,0.15)",color:"#7b1fa2"},"RE Taxes":{bg:"rgba(244,67,54,0.15)",color:"#c62828"},"Manual":{bg:"rgba(255,213,79,0.15)",color:"#f57f17"}};
+  const SUM_TAB_SHORT = {"Income":"Income","Payroll":"Payroll","Energy":"Energy","Water & Sewer":"Water","Repairs & Supplies":"R&S","Gen & Admin":"Gen&Admin","RE Taxes":"RE Tax","Manual":"Manual"};
+  const tc = SUM_TAB_COLORS[tab]||{bg:'rgba(158,158,158,0.15)',color:'#757575'};
+  const chipH = '<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:'+tc.bg+';color:'+tc.color+'">'+(SUM_TAB_SHORT[tab]||tab)+'</span>';
+
+  function mkIn(col, bg) {
+    return '<td style="text-align:right;padding:4px 6px;background:'+(bg||'#fbfaf4')+';border-bottom:1px solid var(--gray-200);">' +
+      '<input type="text" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="" ' +
+      'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
+      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;"></td>';
+  }
+
+  const tr = document.createElement('tr');
+  tr.dataset.sec = secKey; tr.dataset.type = 'd';
+  tr.innerHTML = '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+label+' <span style="color:var(--yellow);font-size:10px;font-weight:700;">NEW</span></td>' +
+    '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+chipH+'</td>' +
+    mkIn('c1','#fbfaf4')+mkIn('c2','#f9f9f7')+mkIn('c3','#f9f9f7')+mkIn('c4','#f9f9f7')+mkIn('c5','#f9f9f7')+mkIn('c6','#fbfaf4')+mkIn('c7','#fffbeb') +
+    '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);">\u2014</td>' +
+    '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-200);"><input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;"></td>';
+  subRow.parentNode.insertBefore(tr, subRow);
+  sumCloseInsert();
+  sumRecalcTotals();
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {
