@@ -8538,7 +8538,7 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container { overflow-x: auto; max-height: 75vh; overflow-y: auto; }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; }
-  thead { position: sticky; top: 0; z-index: 20; }
+  thead { position: sticky; top: 48px; z-index: 20; }
   th {
     padding: 10px 10px;
     text-align: left;
