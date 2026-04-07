@@ -7852,7 +7852,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell-pct { width:60px; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
-      .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:321px; z-index:10; width:fit-content; min-width:700px; }
+      .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:321px; z-index:10; width:fit-content; min-width:1050px; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
       .fa-legend { display:flex; gap:14px; font-size:11px; color:var(--gray-500); align-items:center; flex-wrap:wrap; }
       .fa-legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:3px; border:1px solid var(--gray-300); }
