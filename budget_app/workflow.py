@@ -949,8 +949,11 @@ def create_workflow_blueprint(db):
         # Check if PM can edit this budget
         can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned"]
 
-        # PM only sees Repairs & Supplies lines (pm_editable=True)
-        lines = BudgetLine.query.filter_by(budget_id=budget.id, pm_editable=True).order_by(BudgetLine.row_num).all()
+        # PM sees Repairs & Supplies + Gen & Admin lines
+        lines = BudgetLine.query.filter(
+            BudgetLine.budget_id == budget.id,
+            BudgetLine.sheet_name.in_(["Repairs & Supplies", "Gen & Admin"])
+        ).order_by(BudgetLine.row_num).all()
         import json as json_mod
 
         lines_data = [l.to_dict() for l in lines]
@@ -8664,7 +8667,7 @@ PM_EDIT_TEMPLATE = r"""
     </div>
   </div>
 
-  <div id="pmFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+  <div id="pmFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">
     <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
     <span id="pmFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>
     <input id="pmFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="pmFormulaBarPreview()" onkeydown="pmFormulaBarKeydown(event)">
@@ -8717,7 +8720,16 @@ PM_EDIT_TEMPLATE = r"""
   <style>
     .pm-panel-hidden { display: none !important; }
     .pm-chev-closed { transform: rotate(-90deg); }
+    .pm-sheet-tabs { display:flex; gap:4px; padding:0 0 12px 0; }
+    .pm-sheet-tab { padding:8px 20px; font-size:13px; font-weight:600; border:1px solid var(--gray-300); border-radius:8px 8px 0 0; cursor:pointer; background:var(--gray-100); color:var(--gray-600); transition:all 0.15s; }
+    .pm-sheet-tab:hover { background:var(--gray-200); }
+    .pm-sheet-tab.active { background:white; color:var(--blue); border-bottom:2px solid var(--blue); box-shadow:0 -1px 3px rgba(0,0,0,0.06); }
   </style>
+
+  <div class="pm-sheet-tabs">
+    <div class="pm-sheet-tab active" onclick="pmSwitchSheet('Repairs & Supplies', this)">Repairs & Supplies</div>
+    <div class="pm-sheet-tab" onclick="pmSwitchSheet('Gen & Admin', this)">General & Admin</div>
+  </div>
 
   <div class="grid-wrapper">
     <div class="grid-container">
@@ -8730,7 +8742,6 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">YTD<br>Actual</th>
             <th class="number">Accrual<br>Adj</th>
             <th class="number">Unpaid<br>Bills</th>
-            <th class="number">YTD<br>Budget</th>
             <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">Current<br>Budget</th>
@@ -8754,6 +8765,41 @@ const LINES = {{ lines_json | safe }};
 const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
 const REMAINING_MONTHS = {{ remaining_months }};
+
+// Sheet tab config
+let _pmActiveSheet = 'Repairs & Supplies';
+const PM_SHEET_CATEGORIES = {
+  'Repairs & Supplies': {
+    cats: {supplies: [], repairs: [], maintenance: []},
+    labels: {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance Contracts'},
+    match: function(l) { return l.sheet_name === 'Repairs & Supplies'; },
+    assign: function(l) { return l.category; },
+    grandLabel: 'GRAND TOTAL R&M'
+  },
+  'Gen & Admin': {
+    cats: {prof_fees: [], admin_other: [], insurance: [], taxes: [], financial: []},
+    labels: {prof_fees: 'Professional Fees', admin_other: 'Administrative & Other', insurance: 'Insurance', taxes: 'Taxes', financial: 'Financial Expenses'},
+    match: function(l) { return l.sheet_name === 'Gen & Admin'; },
+    assign: function(l) {
+      const r = l.row_num || 0;
+      if (r >= 8 && r <= 16) return 'prof_fees';
+      if (r >= 20 && r <= 49) return 'admin_other';
+      if (r >= 53 && r <= 64) return 'insurance';
+      if (r >= 68 && r <= 78) return 'taxes';
+      if (r >= 82 && r <= 90) return 'financial';
+      return 'admin_other';  // fallback
+    },
+    grandLabel: 'GRAND TOTAL G&A'
+  }
+};
+
+function pmSwitchSheet(sheetName, tabEl) {
+  _pmActiveSheet = sheetName;
+  document.querySelectorAll('.pm-sheet-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  renderTable();
+  updateZeroToggle();
+}
 
 let saveTimer = null;
 const indicator = document.getElementById('saveIndicator');
@@ -9181,24 +9227,27 @@ function pmLineChanged(gl, field, value) {
 
 // Update all subtotal and grand total rows
 function pmUpdateTotals() {
-    const categories = {supplies: [], repairs: [], maintenance: []};
-    const catLabels = {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance Contracts'};
+    const sheetCfg = PM_SHEET_CATEGORIES[_pmActiveSheet];
+    const categories = {};
+    Object.keys(sheetCfg.cats).forEach(k => categories[k] = []);
+    const catLabels = sheetCfg.labels;
     LINES.forEach(l => {
-        if (categories[l.category]) categories[l.category].push(l);
+        if (!sheetCfg.match(l)) return;
+        const cat = sheetCfg.assign(l);
+        if (categories[cat]) categories[cat].push(l);
     });
 
-    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+    let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
 
     for (const [cat, catLines] of Object.entries(categories)) {
         if (catLines.length === 0) continue;
 
-        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
+        let catTotals = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
         catLines.forEach(l => {
             catTotals.prior += (l.prior_year || 0);
             catTotals.ytd += (l.ytd_actual || 0);
             catTotals.accrual += (l.accrual_adj || 0);
             catTotals.unpaid += (l.unpaid_bills || 0);
-            catTotals.ytdBudget += (l.ytd_budget || 0);
             catTotals.estimate += computeEstimate(l);
             catTotals.forecast += computeForecast(l);
             catTotals.budget += (l.current_budget || 0);
@@ -9208,7 +9257,6 @@ function pmUpdateTotals() {
         // Update subtotal cells
         const subPrior = document.getElementById('pm_subtotal_prior_' + cat);
         const subYtd = document.getElementById('pm_subtotal_ytd_' + cat);
-        const subYtdBudget = document.getElementById('pm_subtotal_ytdbudget_' + cat);
         const subEstimate = document.getElementById('pm_subtotal_estimate_' + cat);
         const subForecast = document.getElementById('pm_subtotal_forecast_' + cat);
         const subBudget = document.getElementById('pm_subtotal_budget_' + cat);
@@ -9217,7 +9265,6 @@ function pmUpdateTotals() {
 
         if (subPrior) subPrior.textContent = fmt(catTotals.prior);
         if (subYtd) subYtd.textContent = fmt(catTotals.ytd);
-        if (subYtdBudget) subYtdBudget.textContent = fmt(catTotals.ytdBudget);
         if (subEstimate) subEstimate.textContent = fmt(catTotals.estimate);
         if (subForecast) subForecast.textContent = fmt(catTotals.forecast);
         if (subBudget) subBudget.textContent = fmt(catTotals.budget);
@@ -9231,7 +9278,6 @@ function pmUpdateTotals() {
     // Update grand total cells
     const grandPrior = document.getElementById('pm_grandtotal_prior');
     const grandYtd = document.getElementById('pm_grandtotal_ytd');
-    const grandYtdBudget = document.getElementById('pm_grandtotal_ytdbudget');
     const grandEstimate = document.getElementById('pm_grandtotal_estimate');
     const grandForecast = document.getElementById('pm_grandtotal_forecast');
     const grandBudget = document.getElementById('pm_grandtotal_budget');
@@ -9241,7 +9287,6 @@ function pmUpdateTotals() {
 
     if (grandPrior) grandPrior.textContent = fmt(grandTotals.prior);
     if (grandYtd) grandYtd.textContent = fmt(grandTotals.ytd);
-    if (grandYtdBudget) grandYtdBudget.textContent = fmt(grandTotals.ytdBudget);
     if (grandEstimate) grandEstimate.textContent = fmt(grandTotals.estimate);
     if (grandForecast) grandForecast.textContent = fmt(grandTotals.forecast);
     if (grandBudget) grandBudget.textContent = fmt(grandTotals.budget);
@@ -9256,11 +9301,15 @@ function renderTable() {
     const tbody = document.getElementById('linesBody');
     tbody.innerHTML = '';
 
-    // Group by category: Supplies, Repairs, Maintenance
-    const categories = {supplies: [], repairs: [], maintenance: []};
-    const catLabels = {supplies: 'Supplies', repairs: 'Repairs', maintenance: 'Maintenance Contracts'};
+    // Group by category based on active sheet tab
+    const sheetCfg = PM_SHEET_CATEGORIES[_pmActiveSheet];
+    const categories = {};
+    Object.keys(sheetCfg.cats).forEach(k => categories[k] = []);
+    const catLabels = sheetCfg.labels;
     LINES.forEach(l => {
-        if (categories[l.category]) categories[l.category].push(l);
+        if (!sheetCfg.match(l)) return;
+        const cat = sheetCfg.assign(l);
+        if (categories[cat]) categories[cat].push(l);
     });
 
     let grandTotals = {prior:0, ytd:0, accrual:0, unpaid:0, ytdBudget:0, estimate:0, forecast:0, budget:0, proposed:0};
@@ -9293,7 +9342,7 @@ function renderTable() {
 
             const reclassBadge = line.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">Reclass</span>' : '';
 
-            const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.ytd_budget || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
+            const isZero = !(line.prior_year || line.ytd_actual || line.accrual_adj || line.unpaid_bills || line.current_budget || (line.increase_pct && line.increase_pct !== 0));
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
 
@@ -9309,7 +9358,6 @@ function renderTable() {
                 <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input id="pm_acc_${gl}" class="pm-cell" type="text" value="${fmt(line.accrual_adj)}" data-raw="${Math.round(line.accrual_adj || 0)}" data-gl="${gl}" data-field="accrual_adj" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number"><input id="pm_unp_${gl}" class="pm-cell" type="text" value="${fmt(line.unpaid_bills)}" data-raw="${Math.round(line.unpaid_bills || 0)}" data-gl="${gl}" data-field="unpaid_bills" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input id="pm_ytdb_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_budget)}" data-raw="${Math.round(line.ytd_budget || 0)}" data-gl="${gl}" data-field="ytd_budget" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
                 <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_est_${gl}'))">
                     <span class="pm-fx">fx</span>
                     <input id="pm_est_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(estimate)}" data-raw="${Math.round(estimate)}" data-formula="${estFormula}" data-gl="${gl}" data-field="estimate" style="cursor:pointer; pointer-events:none;">
@@ -9346,7 +9394,6 @@ function renderTable() {
             <td class="number" id="pm_subtotal_prior_${cat}" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(catTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.prior)}</span></td>
             <td class="number" id="pm_subtotal_ytd_${cat}" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(catTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytd)}</span></td>
             <td></td><td></td>
-            <td class="number" id="pm_subtotal_ytdbudget_${cat}" style="position:relative; cursor:pointer;" data-col="ytdbudget" data-raw="${Math.round(catTotals.ytdBudget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytdBudget)}</span></td>
             <td class="number" id="pm_subtotal_estimate_${cat}" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(catTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.estimate)}</span></td>
             <td class="number" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
             <td class="number" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.budget)}</span></td>
@@ -9367,11 +9414,10 @@ function renderTable() {
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
-        <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">GRAND TOTAL R&M</td>
+        <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">${sheetCfg.grandLabel}</td>
         <td class="number" id="pm_grandtotal_prior" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(grandTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.prior)}</span></td>
         <td class="number" id="pm_grandtotal_ytd" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(grandTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytd)}</span></td>
         <td></td><td></td>
-        <td class="number" id="pm_grandtotal_ytdbudget" style="position:relative; cursor:pointer;" data-col="ytdbudget" data-raw="${Math.round(grandTotals.ytdBudget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytdBudget)}</span></td>
         <td class="number" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
         <td class="number" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
         <td class="number" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
