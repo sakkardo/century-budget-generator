@@ -2386,7 +2386,17 @@ def create_workflow_blueprint(db):
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         col2_lookup = {}
         try:
-            from budget_summary.GL_TO_SUMMARY_MAP import LABEL_ALIASES
+            # Label aliases: audit category variant → canonical summary label
+            _LABEL_ALIASES = {
+                "Common Charges": "Maintenance", "Gas - Heating": "Gas Cooking / Heating",
+                "Gas Heating": "Gas Cooking / Heating", "Gas": "Gas Cooking / Heating",
+                "Oil / Fuel": "Fuel", "Fuel Oil": "Fuel",
+                "RE Taxes": "Real Estate Taxes", "Real Estate Tax": "Real Estate Taxes",
+                "Assessment - Operating": "Assessment-Operating",
+                "Storage Income": "Storage Room",
+                "Garage": "Commercial Rent (Garage)",
+                "Interest Income": "Other Income",
+            }
             # Query audit_uploads directly (model defined in factory, can't import)
             fy = str(budget_year - 2)  # Col 2 = BY-2 actual
             row_au = db.session.execute(db.text(
@@ -2405,9 +2415,9 @@ def create_workflow_blueprint(db):
                             confirmed[cat] = totals[0]
                         elif info.get("total"):
                             confirmed[cat] = info["total"]
-                # Build reverse alias: canonical_label → [variant labels in DB]
+                # Build reverse alias: canonical → [variants]
                 alias_reverse = {}
-                for variant, canonical in LABEL_ALIASES.items():
+                for variant, canonical in _LABEL_ALIASES.items():
                     alias_reverse.setdefault(canonical, []).append(variant)
                 # Build label set from this building's summary rows
                 building_labels = {r.label for r in summary_rows if r.row_type == "data"}
@@ -2419,7 +2429,7 @@ def create_workflow_blueprint(db):
                         col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
                     else:
                         # Try alias: audit category might be a variant
-                        canonical = LABEL_ALIASES.get(cat, cat)
+                        canonical = _LABEL_ALIASES.get(cat, cat)
                         if canonical in building_labels:
                             col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
                         else:
