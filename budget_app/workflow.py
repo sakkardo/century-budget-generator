@@ -4216,10 +4216,9 @@ function renderDetail(data) {
   const contentDiv = document.getElementById('sheetContent');
   tabsDiv.innerHTML = '';
 
-  if (sheetOrder.length === 0) {
-    contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">No budget data yet. Generate a budget first.</p>';
-  } else {
-    // Summary tab is FIRST — before all sheet tabs
+  {
+    // Summary tab is ALWAYS shown — even before detail lines exist
+    // (BudgetSummaryRow data may be imported from approved Excel)
     const summaryTab = document.createElement('button');
     summaryTab.textContent = 'Summary';
     summaryTab.className = 'sheet-tab active';
