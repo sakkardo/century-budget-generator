@@ -1233,9 +1233,23 @@ Revenue total and expense total must equal the audited totals in the PDF.
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
                 for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
-                for (let cat of rawExtraction.expenses.categories) {
+
+                // Handle both formats: old (array of {name,items,total}) and Phase 2 (object with numeric keys)
+                let expenseCategories = rawExtraction.expenses.categories;
+                if (!Array.isArray(expenseCategories)) {
+                    // Phase 2 flat format: {"0": [{description, amounts}], ...} — flatten into single list
+                    let flatItems = [];
+                    for (let key of Object.keys(expenseCategories).sort((a,b) => parseInt(a) - parseInt(b))) {
+                        const arr = expenseCategories[key];
+                        if (Array.isArray(arr)) { for (let it of arr) flatItems.push(it); }
+                        else if (arr && arr.description) flatItems.push(arr);
+                    }
+                    expenseCategories = [{ name: 'Expenses', items: flatItems }];
+                }
+
+                for (let cat of expenseCategories) {
                     html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
-                    for (let item of cat.items) {
+                    for (let item of (cat.items || [])) {
                         const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                         html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description + '</td>';
                         for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
