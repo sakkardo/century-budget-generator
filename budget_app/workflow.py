@@ -8096,7 +8096,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { min-width:45px; width:auto; }
-      .fa-invoice-detail td { padding:0 !important; }
+      .fa-invoice-detail > td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
       .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:220px; z-index:10; width:fit-content; min-width:850px; }
       .fa-controls { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:white; border-radius:12px; border:1px solid var(--gray-200); margin-bottom:12px; }
@@ -8320,11 +8320,12 @@ function faFitGridToViewport() {
   if (!gs) return;
   const rect = gs.getBoundingClientRect();
   const available = window.innerHeight - rect.top - 16;
-  gs.style.maxHeight = Math.max(250, available) + 'px';
+  gs.style.maxHeight = Math.max(120, available) + 'px';
 }
 faFitGridToViewport();
 window.addEventListener('resize', faFitGridToViewport);
 window.addEventListener('scroll', faFitGridToViewport);
+document.querySelector('.fa-grid-scroll')?.addEventListener('scroll', faFitGridToViewport);
 
 /* ── Column Auto-Sizer ─────────────────────────────────────────────── */
 function autoSizeColumns(table) {
@@ -8906,7 +8907,7 @@ PM_EDIT_TEMPLATE = r"""
   .btn-green { background: var(--green); }
   .btn-green:hover { background: #046c4e; }
 
-  .invoice-detail-row td { padding: 0 !important; }
+  .invoice-detail-row > td { padding: 0 !important; }
   .invoice-detail-row:hover { background: transparent !important; }
   .invoice-detail-row .drill-sticky, .drill-sticky { position:sticky; left:220px; z-index:10; width:fit-content; min-width:850px; }
 
@@ -9116,11 +9117,12 @@ function pmFitGridToViewport() {
   if (!gs) return;
   const rect = gs.getBoundingClientRect();
   const available = window.innerHeight - rect.top - 16;
-  gs.style.maxHeight = Math.max(250, available) + 'px';
+  gs.style.maxHeight = Math.max(120, available) + 'px';
 }
 pmFitGridToViewport();
 window.addEventListener('resize', pmFitGridToViewport);
 window.addEventListener('scroll', pmFitGridToViewport);
+document.querySelector('.grid-container')?.addEventListener('scroll', pmFitGridToViewport);
 
 /* ── Column Auto-Sizer (PM) ───────────────────────────────────────── */
 function autoSizeColumns(table) {
