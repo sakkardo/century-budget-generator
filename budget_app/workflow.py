@@ -6680,20 +6680,20 @@ async function faToggleInvoices(glCode, el) {
   html += '<span style="font-weight:600; font-size:13px; color:var(--blue);">' + glCode + ' — ' + (glGroup.gl_name || '') + '</span>';
   html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · $' + Math.round(glGroup.total || 0).toLocaleString() + '</span>';
   html += '</div>';
-  html += '<table style="width:auto; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+  html += '<table style="width:auto; font-size:12px; border-collapse:separate; border-spacing:0; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">';
   html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Payee</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Description</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Inv #</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Date</td><td style="padding:6px 14px; text-align:right; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Amount</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Check #</td><td style="padding:6px 14px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
+  html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:80px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
     html += '<tr style="border-top:1px solid var(--gray-200);' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-    html += '<td style="padding:6px 14px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-    html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.notes || '—') + '</td>';
-    html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; font-family:monospace; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
-    html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-    html += '<td style="padding:6px 14px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">$' + Math.round(inv.amount).toLocaleString() + '</td>';
-    html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
-    html += '<td style="padding:6px 14px; text-align:center;">';
+    html += '<td style="padding:7px 16px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--gray-200);">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+    html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200);">' + (inv.notes || '—') + '</td>';
+    html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; font-family:monospace; border-bottom:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
+    html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+    html += '<td style="padding:7px 16px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; border-bottom:1px solid var(--gray-200);">$' + Math.round(inv.amount).toLocaleString() + '</td>';
+    html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
+    html += '<td style="padding:7px 16px; text-align:center; border-bottom:1px solid var(--gray-200);">';
     if (isReclassed) {
       html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
       html += '<button onclick="faUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
@@ -9831,20 +9831,20 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<span style="font-size:12px; color:var(--gray-500);">' + glGroup.invoices.length + ' invoice' + (glGroup.invoices.length !== 1 ? 's' : '') + ' · ' + fmtAmt(glGroup.total || 0) + '</span>';
     html += '</div>';
 
-    html += '<table style="width:auto; font-size:12px; border-collapse:collapse; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">';
+    html += '<table style="width:auto; font-size:12px; border-collapse:separate; border-spacing:0; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Payee</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Description</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Inv #</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Date</td><td style="padding:6px 14px; text-align:right; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Amount</td><td style="padding:6px 14px; border-bottom:2px solid var(--gray-300); border-right:1px solid var(--gray-200);">Check #</td><td style="padding:6px 14px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
+    html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:80px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
         html += '<tr style="' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
-        html += '<td style="padding:6px 14px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
-        html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.notes || '—') + '</td>';
-        html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; font-family:monospace; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
-        html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
-        html += '<td style="padding:6px 14px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + fmtAmt(inv.amount) + '</td>';
-        html += '<td style="padding:6px 14px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200); border-right:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
-        html += '<td style="padding:6px 14px; text-align:center;">';
+        html += '<td style="padding:7px 16px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--gray-200);">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
+        html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200);">' + (inv.notes || '—') + '</td>';
+        html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; font-family:monospace; border-bottom:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
+        html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200);">' + (inv.invoice_date ? inv.invoice_date.substring(0,10) : '—') + '</td>';
+        html += '<td style="padding:7px 16px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; border-bottom:1px solid var(--gray-200);">' + fmtAmt(inv.amount) + '</td>';
+        html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
+        html += '<td style="padding:7px 16px; text-align:center; border-bottom:1px solid var(--gray-200);">';
         if (isReclassed) {
             html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
