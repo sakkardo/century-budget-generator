@@ -2428,8 +2428,8 @@ def create_workflow_blueprint(db):
                                 if variant in building_labels:
                                     col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
                                     break
-        except Exception:
-            col2_lookup = {}
+        except Exception as _col2_err:
+            col2_lookup = {"_error": str(_col2_err)}
 
         # Build response rows
         result_rows = []
