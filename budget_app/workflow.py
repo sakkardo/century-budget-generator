@@ -6046,20 +6046,49 @@ async function renderBudgetSummary(contentDiv) {
   // Build section-aware data structure
   const rows = sumData.rows;
   const sections = {};
-  let currentSec = '';
-  rows.forEach(r => {
-    if (r.row_type === 'section_header') currentSec = r.label;
-    r._sec = currentSec;
-    const sk = currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('income') ? 'noi' :
-               currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('expense') ? 'noe' :
-               currentSec.toLowerCase() === 'income' ? 'income' :
-               currentSec.toLowerCase() === 'expenses' ? 'expenses' : '';
-    r._sk = sk;
-    if (r.row_type === 'data' && sk) {
-      if (!sections[sk]) sections[sk] = [];
-      sections[sk].push(r);
-    }
-  });
+  const hasSectionHeaders = rows.some(r => r.row_type === 'section_header');
+
+  if (hasSectionHeaders) {
+    // Buildings WITH section headers: assign sections from header labels
+    let currentSec = '';
+    rows.forEach(r => {
+      if (r.row_type === 'section_header') currentSec = r.label;
+      r._sec = currentSec;
+      const sk = currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('income') ? 'noi' :
+                 currentSec.toLowerCase().includes('non') && currentSec.toLowerCase().includes('expense') ? 'noe' :
+                 currentSec.toLowerCase() === 'income' ? 'income' :
+                 currentSec.toLowerCase() === 'expenses' ? 'expenses' : '';
+      r._sk = sk;
+      if (r.row_type === 'data' && sk) {
+        if (!sections[sk]) sections[sk] = [];
+        sections[sk].push(r);
+      }
+    });
+  } else {
+    // Buildings WITHOUT section headers: infer sections from subtotal positions
+    // Standard layout: income rows -> Total Income -> expense rows -> Total Expenses
+    //   -> Net Operating -> NOI data -> Total NOI -> NOE data -> Total NOE -> Grand Total
+    let inferredSk = 'income';
+    rows.forEach(r => {
+      if (r.row_type === 'subtotal') {
+        const lbl = r.label.toLowerCase();
+        if (lbl.includes('total income'))                                        { r._sk = 'income';   inferredSk = 'expenses'; }
+        else if (lbl.includes('total expense') && !lbl.includes('non'))          { r._sk = 'expenses'; inferredSk = 'noi'; }
+        else if (lbl.includes('net operating'))                                  { r._sk = '';          inferredSk = 'noi'; }
+        else if (lbl.includes('total non') && lbl.includes('income'))            { r._sk = 'noi';      inferredSk = 'noe'; }
+        else if (lbl.includes('total non') && lbl.includes('expense'))           { r._sk = 'noe';      inferredSk = ''; }
+        else if (lbl.includes('total surplus') || lbl.includes('total deficit')) { r._sk = ''; }
+        else                                                                     { r._sk = ''; }
+      } else {
+        r._sk = inferredSk;
+      }
+      r._sec = r._sk;
+      if (r.row_type === 'data' && r._sk) {
+        if (!sections[r._sk]) sections[r._sk] = [];
+        sections[r._sk].push(r);
+      }
+    });
+  }
 
   // Table
   const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
