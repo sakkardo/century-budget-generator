@@ -2386,33 +2386,48 @@ def create_workflow_blueprint(db):
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         col2_lookup = {}
         try:
-            from budget_app.audited_financials import get_confirmed_actuals
             from budget_summary.GL_TO_SUMMARY_MAP import LABEL_ALIASES
-            confirmed = get_confirmed_actuals(entity_code, budget_year - 2)
-            # confirmed = {audit_category: amount}
-            # Build reverse alias: canonical_label → [variant labels in DB]
-            alias_reverse = {}
-            for variant, canonical in LABEL_ALIASES.items():
-                alias_reverse.setdefault(canonical, []).append(variant)
-            # Build label set from this building's summary rows
-            building_labels = {r.label for r in summary_rows if r.row_type == "data"}
-            for cat, amount in confirmed.items():
-                if amount is None:
-                    continue
-                # Direct match first
-                if cat in building_labels:
-                    col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
-                else:
-                    # Try alias: audit category might be a variant
-                    canonical = LABEL_ALIASES.get(cat, cat)
-                    if canonical in building_labels:
-                        col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
+            # Query audit_uploads directly (model defined in factory, can't import)
+            fy = str(budget_year - 2)  # Col 2 = BY-2 actual
+            row_au = db.session.execute(db.text(
+                "SELECT mapped_data FROM audit_uploads "
+                "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
+                "ORDER BY confirmed_at DESC LIMIT 1"
+            ), {"ec": entity_code, "fy": fy}).fetchone()
+            if row_au and row_au[0]:
+                mapped_raw = _json.loads(row_au[0])
+                # Extract {category: year_totals[0]} from mapped_data
+                confirmed = {}
+                for cat, info in mapped_raw.items():
+                    if isinstance(info, dict):
+                        totals = info.get("year_totals", [])
+                        if totals and len(totals) > 0:
+                            confirmed[cat] = totals[0]
+                        elif info.get("total"):
+                            confirmed[cat] = info["total"]
+                # Build reverse alias: canonical_label → [variant labels in DB]
+                alias_reverse = {}
+                for variant, canonical in LABEL_ALIASES.items():
+                    alias_reverse.setdefault(canonical, []).append(variant)
+                # Build label set from this building's summary rows
+                building_labels = {r.label for r in summary_rows if r.row_type == "data"}
+                for cat, amount in confirmed.items():
+                    if amount is None:
+                        continue
+                    # Direct match first
+                    if cat in building_labels:
+                        col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
                     else:
-                        # Try reverse: building label might be a variant of audit category
-                        for variant in alias_reverse.get(cat, []):
-                            if variant in building_labels:
-                                col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
-                                break
+                        # Try alias: audit category might be a variant
+                        canonical = LABEL_ALIASES.get(cat, cat)
+                        if canonical in building_labels:
+                            col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
+                        else:
+                            # Try reverse: building label might be a variant of audit category
+                            for variant in alias_reverse.get(cat, []):
+                                if variant in building_labels:
+                                    col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
+                                    break
         except Exception:
             col2_lookup = {}
 
