@@ -10335,17 +10335,21 @@ function switchPmMcTab(button, tabId) {
           itr.dataset.group = gid;
           itr.style.cssText = 'display:none; background:#fafbfc;';
           const invDate = inv.invoice_date || inv.date || '';
-          const invNum = inv.invoice_number || inv.ref || '';
-          const invVendor = inv.vendor_name || inv.vendor || '';
-          const invDesc = inv.description || '';
+          const cleanDate = invDate ? invDate.split('T')[0] : '';
+          const invNum = inv.invoice_num || inv.invoice_number || inv.ref || '';
+          const invVendor = inv.payee_name || inv.vendor_name || inv.vendor || '';
+          const invDesc = inv.notes || inv.description || '';
+          const toGlName = (LINES.find(l => l.gl_code === inv.reclass_to_gl) || {}).description || inv.reclass_to_gl;
           itr.innerHTML =
             '<td colspan="7" style="padding:8px 10px 8px 44px; border-bottom:1px solid #f0f1f3;">' +
-              '<div style="display:flex; align-items:center; gap:16px; font-size:12px;">' +
-                (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-500);">' + invNum + '</span>' : '') +
+              '<div style="display:flex; align-items:center; gap:12px; font-size:12px; flex-wrap:wrap;">' +
+                (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-400); background:#f3f4f6; padding:1px 6px; border-radius:3px;">' + invNum + '</span>' : '') +
                 '<span style="font-weight:600; color:var(--gray-700);">' + invVendor + '</span>' +
                 (invDesc ? '<span style="color:var(--gray-500);">— ' + invDesc + '</span>' : '') +
-                (invDate ? '<span style="font-size:11px; color:var(--gray-500);">' + invDate + '</span>' : '') +
-                '<span style="margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums;">' + fmt(inv.amount || 0) + '</span>' +
+                (cleanDate ? '<span style="font-size:11px; color:var(--gray-400);">' + cleanDate + '</span>' : '') +
+                '<span style="font-size:11px; color:var(--orange);">→ ' + toGlName + '</span>' +
+                '<span style="margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums; text-align:right;">' + fmt(inv.amount || 0) + '</span>' +
+                '<button onclick="event.stopPropagation(); undoSingleReclass(' + inv.id + ',\'' + g.from_gl + '\',\'' + g.to_gl + '\',this)" style="margin-left:8px; padding:2px 8px; font-size:10px; font-weight:600; border-radius:4px; cursor:pointer; background:white; color:var(--gray-500); border:1px solid var(--gray-300);">Undo</button>' +
               '</div>' +
             '</td>';
           reclassBody.appendChild(itr);
@@ -10369,6 +10373,24 @@ function switchPmMcTab(button, tabId) {
     document.getElementById('pmMyChangesBadge').textContent = totalItems + ' item' + (totalItems !== 1 ? 's' : '');
   }
 })();
+
+async function undoSingleReclass(invId, fromGl, toGl, btn) {
+  if (!confirm('Undo this invoice reclass?')) return;
+  try {
+    await fetch('/api/expense-dist/reclass/' + invId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ reclass_to_gl: '' })
+    });
+    const row = btn.closest('tr');
+    if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; }
+    btn.textContent = 'Undone';
+    btn.disabled = true;
+    showToast('Invoice restored to ' + fromGl, 'success');
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
 
 function pmToggleReclassInv(gid) {
   const rows = document.querySelectorAll('tr[data-group="' + gid + '"]');
