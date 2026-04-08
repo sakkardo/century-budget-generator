@@ -4174,17 +4174,21 @@ function renderDetail(data) {
             itr.dataset.group = gid;
             itr.style.cssText = 'display:none; background:#fafbfc;';
             const invDate = inv.invoice_date || inv.date || '';
-            const invNum = inv.invoice_number || inv.ref || '';
-            const invVendor = inv.vendor_name || inv.vendor || '';
-            const invDesc = inv.description || '';
+            const cleanDate = invDate ? invDate.split('T')[0] : '';
+            const invNum = inv.invoice_num || inv.invoice_number || inv.ref || '';
+            const invVendor = inv.payee_name || inv.vendor_name || inv.vendor || '';
+            const invDesc = inv.notes || inv.description || '';
+            const toGlName = (lines.find(l => l.gl_code === inv.reclass_to_gl) || {}).description || inv.reclass_to_gl;
             itr.innerHTML =
               '<td colspan="7" style="padding:8px 10px 8px 44px; border-bottom:1px solid #f0f1f3;">' +
-                '<div style="display:flex; align-items:center; gap:16px; font-size:12px;">' +
-                  (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-400);">' + invNum + '</span>' : '') +
+                '<div style="display:flex; align-items:center; gap:12px; font-size:12px; flex-wrap:wrap;">' +
+                  (invNum ? '<span style="font-family:monospace; font-size:11px; color:var(--gray-400); background:#f3f4f6; padding:1px 6px; border-radius:3px;">' + invNum + '</span>' : '') +
                   '<span style="font-weight:600; color:var(--gray-700);">' + invVendor + '</span>' +
                   (invDesc ? '<span style="color:var(--gray-500);">— ' + invDesc + '</span>' : '') +
-                  (invDate ? '<span style="font-size:11px; color:var(--gray-400);">' + invDate + '</span>' : '') +
+                  (cleanDate ? '<span style="font-size:11px; color:var(--gray-400);">' + cleanDate + '</span>' : '') +
+                  '<span style="font-size:11px; color:var(--orange);">→ ' + toGlName + '</span>' +
                   '<span style="margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums; text-align:right;">' + fmt(inv.amount || 0) + '</span>' +
+                  '<button onclick="event.stopPropagation(); undoSingleReclass(' + inv.id + ',\'' + g.from_gl + '\',\'' + g.to_gl + '\',this)" style="margin-left:8px; padding:2px 8px; font-size:10px; font-weight:600; border-radius:4px; cursor:pointer; background:white; color:var(--gray-500); border:1px solid var(--gray-300);">Undo</button>' +
                 '</div>' +
               '</td>';
             reclassBody.appendChild(itr);
@@ -5264,6 +5268,25 @@ async function undoPmReclass(fromGl, toGl, invIdStr) {
 
     _faExpenseCache = null;
     loadDetail();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function undoSingleReclass(invId, fromGl, toGl, btn) {
+  if (!confirm('Undo this invoice reclass?')) return;
+  try {
+    await fetch('/api/expense-dist/reclass/' + invId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ reclass_to_gl: '' })
+    });
+    const row = btn.closest('tr');
+    if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; }
+    btn.textContent = 'Undone';
+    btn.disabled = true;
+    showToast('Invoice restored to ' + fromGl, 'success');
+    _faExpenseCache = null;
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }
@@ -8055,7 +8078,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     style.textContent = `
       .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
       .fa-grid-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }
-      .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; }
+      .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:auto; }
       .fa-grid thead { position:sticky; top:0; z-index:20; }
       .fa-grid th { padding:10px 10px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
@@ -8077,13 +8100,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; }
       .fa-grid .total-row td.frozen { background:#1e3a5f; color:white; }
       .fa-grid tr.drill-row td.frozen { border-right:none; box-shadow:none; }
-      .fa-grid .cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
+      .fa-grid .cell { min-width:55px; width:auto; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
       .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
-      .fa-grid .cell-pct { width:60px; }
+      .fa-grid .cell-pct { min-width:45px; width:auto; }
       .fa-invoice-detail td { padding:0 !important; }
       .fa-invoice-detail:hover { background:transparent !important; }
       .fa-invoice-detail .drill-sticky, .fa-grid .drill-sticky { position:sticky; left:220px; z-index:10; width:fit-content; min-width:850px; }
@@ -8303,6 +8326,47 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   html += subtotalRow('Sheet Total', sumLines(sheetLines), 'total-row', 'faSheetTotal');
   html += '</tbody></table></div></div>';
   contentDiv.innerHTML = html;
+  // Auto-size numeric columns after render
+  autoSizeColumns(contentDiv.querySelector('table'));
+}
+
+/* ── Column Auto-Sizer ─────────────────────────────────────────────── */
+function autoSizeColumns(table) {
+  if (!table) return;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = '13px Arial';
+  const cols = table.querySelectorAll('thead th');
+  const colWidths = [];
+  cols.forEach((th, ci) => {
+    if (th.classList.contains('frozen')) { colWidths.push(null); return; }
+    let maxPx = 0;
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      const td = tr.children[ci];
+      if (!td) return;
+      const inp = td.querySelector('input');
+      if (inp) {
+        const w = Math.ceil(ctx.measureText(inp.value || '').width);
+        if (w > maxPx) maxPx = w;
+      } else {
+        const span = td.querySelector('.sub-val') || td;
+        const w = Math.ceil(ctx.measureText((span.textContent || '').trim()).width);
+        if (w > maxPx) maxPx = w;
+      }
+    });
+    colWidths.push(maxPx + 28);
+  });
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    cols.forEach((th, ci) => {
+      if (!colWidths[ci]) return;
+      const td = tr.children[ci];
+      if (!td) return;
+      const inp = td.querySelector('input');
+      if (inp && !inp.classList.contains('cell-notes')) {
+        inp.style.width = Math.max(colWidths[ci], 55) + 'px';
+      }
+    });
+  });
 }
 
 function computeForecast(l) {
@@ -8768,7 +8832,7 @@ PM_EDIT_TEMPLATE = r"""
   }
   .grid-container { overflow-x: auto; max-height: 75vh; overflow-y: auto; }
 
-  table { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: auto; }
   thead { position: sticky; top: 48px; z-index: 20; }
   th {
     padding: 10px 10px;
@@ -8825,7 +8889,7 @@ PM_EDIT_TEMPLATE = r"""
     font-size: 13px;
     background: #fbfaf4;
   }
-  input[type="number"] { text-align: right; width: 90px; }
+  input[type="number"] { text-align: right; min-width: 55px; width: auto; }
   input[type="text"] { min-width: 140px; }
   input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-light); }
   input:disabled { background: var(--gray-100); color: var(--gray-500); }
@@ -8850,12 +8914,12 @@ PM_EDIT_TEMPLATE = r"""
   .invoice-detail-row .drill-sticky, .drill-sticky { position:sticky; left:220px; z-index:10; width:fit-content; min-width:850px; }
 
   /* PM Cell Styles */
-  .pm-cell { width:90px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
+  .pm-cell { min-width:55px; width:auto; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
   .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
   input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }
   input.pm-cell-fx:focus { background:#ecfdf5; }
   .pm-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
-  .pm-cell-pct { width:60px; }
+  .pm-cell-pct { min-width:45px; width:auto; }
 </style>
 </head>
 <body>
@@ -9047,6 +9111,45 @@ function showToast(msg, type='info') {
 function fmt(n) {
     if (n == null || isNaN(n)) return '$0';
     return '$' + Math.round(n).toLocaleString();
+}
+
+/* ── Column Auto-Sizer (PM) ───────────────────────────────────────── */
+function autoSizeColumns(table) {
+  if (!table) return;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = '13px Arial';
+  const cols = table.querySelectorAll('thead th');
+  const colWidths = [];
+  cols.forEach((th, ci) => {
+    if (th.classList.contains('frozen')) { colWidths.push(null); return; }
+    let maxPx = 0;
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      const td = tr.children[ci];
+      if (!td) return;
+      const inp = td.querySelector('input');
+      if (inp) {
+        const w = Math.ceil(ctx.measureText(inp.value || '').width);
+        if (w > maxPx) maxPx = w;
+      } else {
+        const span = td.querySelector('.sub-val') || td;
+        const w = Math.ceil(ctx.measureText((span.textContent || '').trim()).width);
+        if (w > maxPx) maxPx = w;
+      }
+    });
+    colWidths.push(maxPx + 28);
+  });
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    cols.forEach((th, ci) => {
+      if (!colWidths[ci]) return;
+      const td = tr.children[ci];
+      if (!td) return;
+      const inp = td.querySelector('input');
+      if (inp && !inp.classList.contains('cell-notes') && !inp.classList.contains('pm-cell-notes')) {
+        inp.style.width = Math.max(colWidths[ci], 55) + 'px';
+      }
+    });
+  });
 }
 
 function fmtAmt(n) {
@@ -9658,6 +9761,8 @@ function renderTable() {
         <td class="col-notes"></td>
     `;
     tbody.appendChild(grandRow);
+    // Auto-size numeric columns after render
+    autoSizeColumns(document.querySelector('#linesBody')?.closest('table'));
 }
 
 // ── Zero-row toggle ──────────────────────────────────────────────────
