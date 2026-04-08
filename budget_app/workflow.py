@@ -8927,7 +8927,11 @@ PM_EDIT_TEMPLATE = r"""
   .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
   input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }
   input.pm-cell-fx:focus { background:#ecfdf5; }
-  .pm-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
+  .pm-fx { display:none !important; }
+  .subtotal-row td.pm-fx-td { background:#e8f5e9; }
+  .subtotal-row td.pm-fx-td .sub-val { color:#1b5e20; }
+  .grand-total td.pm-fx-td { background:#1a3d2e; }
+  .grand-total td.pm-fx-td .sub-val { color:#a5d6a7; }
   .pm-cell-pct { min-width:45px; width:auto; }
 </style>
 </head>
@@ -9745,15 +9749,15 @@ function renderTable() {
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
             <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">Total ${catLabels[cat]}</td>
-            <td class="number" id="pm_subtotal_prior_${cat}" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(catTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.prior)}</span></td>
-            <td class="number" id="pm_subtotal_ytd_${cat}" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(catTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.ytd)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_prior_${cat}" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(catTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.prior)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_ytd_${cat}" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(catTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.ytd)}</span></td>
             <td></td><td></td>
-            <td class="number" id="pm_subtotal_estimate_${cat}" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(catTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.estimate)}</span></td>
-            <td class="number" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
-            <td class="number" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.budget)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_estimate_${cat}" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(catTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.estimate)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.budget)}</span></td>
             <td></td>
-            <td class="number" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
-            <td class="number" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(catVar)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catVar)}</span></td>
             <td></td>
             <td class="col-notes"></td>
         `;
@@ -9769,15 +9773,15 @@ function renderTable() {
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
         <td class="frozen frozen-gl"></td><td class="frozen frozen-desc">${sheetCfg.grandLabel}</td>
-        <td class="number" id="pm_grandtotal_prior" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(grandTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.prior)}</span></td>
-        <td class="number" id="pm_grandtotal_ytd" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(grandTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.ytd)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_prior" style="position:relative; cursor:pointer;" data-col="prior" data-raw="${Math.round(grandTotals.prior)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.prior)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_ytd" style="position:relative; cursor:pointer;" data-col="ytd" data-raw="${Math.round(grandTotals.ytd)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.ytd)}</span></td>
         <td></td><td></td>
-        <td class="number" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
-        <td class="number" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
-        <td class="number" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
         <td></td>
-        <td class="number" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
-        <td class="number" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="pm-fx">fx</span><span class="sub-val">${fmt(grandVar)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
+        <td class="number pm-fx-td" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandVar)}</span></td>
         <td class="number" id="pm_grandtotal_pct">${(grandPct * 100).toFixed(1)}%</td>
         <td class="col-notes"></td>
     `;
