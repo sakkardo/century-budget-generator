@@ -1142,11 +1142,70 @@ def create_workflow_blueprint(db):
         except Exception:
             db.session.rollback()
             audit_entities = set()
+
+        # Batch-fetch data-loaded timestamps per entity
+        # 1) Budget summary import timestamps (earliest imported_at per entity)
+        summary_ts = {}
+        try:
+            rows = db.session.execute(
+                db.text("SELECT entity_code, MIN(imported_at) FROM budget_summary_rows GROUP BY entity_code")
+            ).fetchall()
+            for r in rows:
+                summary_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 2) YSL data timestamps — use earliest BudgetLine updated_at per entity as proxy
+        #    (YSL import creates/updates budget_lines via store_all_lines)
+        ysl_ts = {}
+        try:
+            rows = db.session.execute(
+                db.text("""
+                    SELECT b.entity_code, MIN(bl.updated_at)
+                    FROM budget_lines bl
+                    JOIN budgets b ON b.id = bl.budget_id
+                    GROUP BY b.entity_code
+                """)
+            ).fetchall()
+            for r in rows:
+                ysl_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 3) Expense distribution upload timestamps
+        expense_ts = {}
+        try:
+            rows = db.session.execute(
+                db.text("SELECT entity_code, MAX(uploaded_at) FROM expense_reports GROUP BY entity_code")
+            ).fetchall()
+            for r in rows:
+                expense_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 4) Open AP import timestamps
+        open_ap_ts = {}
+        try:
+            rows = db.session.execute(
+                db.text("SELECT entity_code, MAX(uploaded_at) FROM open_ap_reports GROUP BY entity_code")
+            ).fetchall()
+            for r in rows:
+                open_ap_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
         result = []
         for b in budgets:
             d = b.to_dict()
             d["has_expenses"] = b.entity_code in expense_entities
             d["has_audit"] = b.entity_code in audit_entities
+            ec = b.entity_code
+            d["timestamps"] = {
+                "budget_summary": summary_ts.get(ec),
+                "ysl": ysl_ts.get(ec),
+                "expense_dist": expense_ts.get(ec),
+                "open_ap": open_ap_ts.get(ec),
+            }
             result.append(d)
         return jsonify(result)
 
@@ -3146,6 +3205,7 @@ DASHBOARD_TEMPLATE = r"""
             <th>Building</th>
             <th>Entity</th>
             <th>Data</th>
+            <th>Data Loaded</th>
             <th>PM Review</th>
             <th>Status</th>
             <th>Action</th>
@@ -3266,10 +3326,25 @@ function renderBudgets(budgets) {
         `</div></div>`;
     }
 
+    // Format timestamps for data-loaded column
+    const ts = b.timestamps || {};
+    function fmtTs(iso) {
+      if (!iso) return '<span style="color:var(--gray-300);">—</span>';
+      const d = new Date(iso);
+      return '<span style="color:var(--green);">' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'}) + '</span>';
+    }
+    const tsHtml = '<div style="font-size:11px; line-height:1.7;">' +
+      '<div title="Approved budget summary imported"><b>Budget:</b> ' + fmtTs(ts.budget_summary) + '</div>' +
+      '<div title="YSL data collected from Yardi"><b>YSL:</b> ' + fmtTs(ts.ysl) + '</div>' +
+      '<div title="Open AP / Aging Payables imported"><b>AP Aging:</b> ' + fmtTs(ts.open_ap) + '</div>' +
+      '<div title="Expense Distribution uploaded"><b>Exp Dist:</b> ' + fmtTs(ts.expense_dist) + '</div>' +
+      '</div>';
+
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
+      <td>${tsHtml}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
       <td>${actionHtml}</td>
