@@ -8067,6 +8067,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     style.textContent = `
       .fa-grid { background:white; border-radius:12px; border:1px solid var(--gray-200); overflow:hidden; }
       .fa-grid-scroll { overflow-x:scroll; max-height:75vh; overflow-y:auto; }
+      .fa-grid-scroll::-webkit-scrollbar { width:10px; height:12px; }
+      .fa-grid-scroll::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
+      .fa-grid-scroll::-webkit-scrollbar-thumb { background:var(--gray-400); border-radius:6px; min-height:40px; }
+      .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:var(--gray-500); }
+      .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
       .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:auto; }
       .fa-grid thead { position:sticky; top:0; z-index:20; }
       .fa-grid th { padding:8px 6px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
@@ -8828,6 +8833,11 @@ PM_EDIT_TEMPLATE = r"""
     overflow: hidden;
   }
   .grid-container { overflow-x: scroll; max-height: 75vh; overflow-y: auto; }
+  .grid-container::-webkit-scrollbar { width:10px; height:12px; }
+  .grid-container::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
+  .grid-container::-webkit-scrollbar-thumb { background:var(--gray-400); border-radius:6px; min-height:40px; }
+  .grid-container::-webkit-scrollbar-thumb:hover { background:var(--gray-500); }
+  .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: auto; }
   thead { position: sticky; top: 48px; z-index: 20; }
