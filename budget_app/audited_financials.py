@@ -1821,6 +1821,21 @@ Be precise with numbers. Include all line items found.
             "upload": data
         })
 
+    @bp.route("/api/af/uploads/<int:upload_id>", methods=["PATCH"])
+    def api_patch_upload(upload_id):
+        """Update mapped_data and/or status on an upload."""
+        upload = AuditUpload.query.get(upload_id)
+        if not upload:
+            return jsonify({"success": False, "error": "Upload not found"}), 404
+        data = request.get_json(silent=True) or {}
+        if "mapped_data" in data:
+            upload.mapped_data = json.dumps(data["mapped_data"])
+        if "status" in data:
+            upload.status = data["status"]
+        upload.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({"success": True})
+
     @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
     def api_delete_upload(upload_id):
         """Delete an upload that hasn't been confirmed."""
