@@ -1874,6 +1874,8 @@ Revenue total and expense total must equal the audited totals in the PDF.
             upload.mapped_data = json.dumps(data["mapped_data"])
         if "status" in data:
             upload.status = data["status"]
+        if "profile_id" in data:
+            upload.profile_id = int(data["profile_id"]) if data["profile_id"] else None
         upload.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({"success": True})
