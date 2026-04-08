@@ -6682,7 +6682,7 @@ async function faToggleInvoices(glCode, el) {
   html += '</div>';
   html += '<table style="width:auto; font-size:12px; border-collapse:separate; border-spacing:0; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">';
   html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-  html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:80px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
+  html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:100px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:90px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
   glGroup.invoices.forEach(inv => {
     const isReclassed = !!inv.reclass_to_gl;
@@ -8314,6 +8314,18 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   autoSizeColumns(contentDiv.querySelector('table'));
 }
 
+/* ── Grid Viewport Fit — keep horizontal scrollbar visible ────────── */
+function faFitGridToViewport() {
+  const gs = document.querySelector('.fa-grid-scroll');
+  if (!gs) return;
+  const rect = gs.getBoundingClientRect();
+  const available = window.innerHeight - rect.top - 16;
+  gs.style.maxHeight = Math.max(250, available) + 'px';
+}
+faFitGridToViewport();
+window.addEventListener('resize', faFitGridToViewport);
+window.addEventListener('scroll', faFitGridToViewport);
+
 /* ── Column Auto-Sizer ─────────────────────────────────────────────── */
 function autoSizeColumns(table) {
   if (!table) return;
@@ -9098,6 +9110,18 @@ function fmt(n) {
     return '$' + Math.round(n).toLocaleString();
 }
 
+/* ── Grid Viewport Fit (PM) — keep horizontal scrollbar visible ──── */
+function pmFitGridToViewport() {
+  const gs = document.querySelector('.grid-container');
+  if (!gs) return;
+  const rect = gs.getBoundingClientRect();
+  const available = window.innerHeight - rect.top - 16;
+  gs.style.maxHeight = Math.max(250, available) + 'px';
+}
+pmFitGridToViewport();
+window.addEventListener('resize', pmFitGridToViewport);
+window.addEventListener('scroll', pmFitGridToViewport);
+
 /* ── Column Auto-Sizer (PM) ───────────────────────────────────────── */
 function autoSizeColumns(table) {
   if (!table) return;
@@ -9833,7 +9857,7 @@ async function toggleInvoices(glCode, linkEl) {
 
     html += '<table style="width:auto; font-size:12px; border-collapse:separate; border-spacing:0; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">';
     html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
-    html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:80px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
+    html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:100px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:90px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
         const isReclassed = !!inv.reclass_to_gl;
