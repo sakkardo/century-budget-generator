@@ -6909,9 +6909,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
-    '#prGLContent .fa-fx { position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }' +
-    '#prGLContent .fa-fx-override { color:#fff; background:#f97316; border-color:#ea580c; }' +
-    '#prGLContent .fa-fx-linked { color:#fff; background:#2563eb; border-color:#2563eb; }' +
+    '#prGLContent .fa-fx { display:none !important; }' +
     '#prGLContent .cell-pct { width:55px; }' +
     '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
     '#prGLContent td.num { position:relative; padding:5px 8px !important; }' +
@@ -8069,8 +8067,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid-scroll { overflow-x:scroll; max-height:75vh; overflow-y:auto; }
       .fa-grid-scroll::-webkit-scrollbar { width:10px; height:12px; }
       .fa-grid-scroll::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
-      .fa-grid-scroll::-webkit-scrollbar-thumb { background:var(--gray-400); border-radius:6px; min-height:40px; }
-      .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:var(--gray-500); }
+      .fa-grid-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }
+      .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }
       .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
       .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:auto; }
       .fa-grid thead { position:sticky; top:0; z-index:20; }
@@ -8098,7 +8096,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
-      .fa-fx { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:3px; padding:0 3px; cursor:pointer; user-select:none; z-index:5; }
+      .fa-fx { display:none !important; }
+      .fa-grid .sub-row td.fx-td { background:#e8f5e9; }
+      .fa-grid .sub-row td.fx-td .sub-val { color:#1b5e20; }
+      .fa-grid .total-row td.fx-td { background:#1a3d2e; }
+      .fa-grid .total-row td.fx-td .sub-val { color:#a5d6a7; }
       .fa-grid .cell-notes { text-align:left; min-width:100px; width:100%; }
       .fa-grid .cell-pct { min-width:45px; width:auto; }
       .fa-invoice-detail > td { padding:0 !important; }
@@ -8268,8 +8270,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const isTotal = cls === 'total-row';
     const bs = isTotal ? 'background:rgba(255,255,255,0.2); color:white; border-color:rgba(255,255,255,0.4);' : '';
     function fxTd(val, col) {
-      return '<td class="num" style="position:relative; cursor:pointer;" data-col="' + col + '" data-raw="' + Math.round(val) + '" onclick="fxSubtotalFocus(this)">' +
-        '<span class="fa-fx" style="' + bs + '">fx</span>' +
+      return '<td class="num fx-td" style="position:relative; cursor:pointer;" data-col="' + col + '" data-raw="' + Math.round(val) + '" onclick="fxSubtotalFocus(this)">' +
         '<span class="sub-val">' + fmt(val) + '</span></td>';
     }
     const vc = v >= 0 ? 'var(--red)' : 'var(--green)';
@@ -8284,8 +8285,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       fxTd(t.budget, 'budget') +
       '<td class="num"></td>' +
       fxTd(t.proposed, 'proposed') +
-      '<td class="num" style="position:relative; cursor:pointer; color:' + vc + ';" data-col="variance" data-raw="' + Math.round(v) + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + fmt(v) + '</span></td>' +
-      '<td class="num" style="position:relative; cursor:pointer;" data-col="pctchange" data-raw="' + p + '" onclick="fxSubtotalFocus(this)"><span class="fa-fx" style="' + bs + '">fx</span><span class="sub-val">' + (p*100).toFixed(1) + '%</span></td>' +
+      '<td class="num fx-td" style="position:relative; cursor:pointer; color:' + vc + ';" data-col="variance" data-raw="' + Math.round(v) + '" onclick="fxSubtotalFocus(this)"><span class="sub-val">' + fmt(v) + '</span></td>' +
+      '<td class="num fx-td" style="position:relative; cursor:pointer;" data-col="pctchange" data-raw="' + p + '" onclick="fxSubtotalFocus(this)"><span class="sub-val">' + (p*100).toFixed(1) + '%</span></td>' +
       '<td class="col-notes"></td></tr>';
   }
 
@@ -8835,8 +8836,8 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container { overflow-x: scroll; max-height: 75vh; overflow-y: auto; }
   .grid-container::-webkit-scrollbar { width:10px; height:12px; }
   .grid-container::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
-  .grid-container::-webkit-scrollbar-thumb { background:var(--gray-400); border-radius:6px; min-height:40px; }
-  .grid-container::-webkit-scrollbar-thumb:hover { background:var(--gray-500); }
+  .grid-container::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }
+  .grid-container::-webkit-scrollbar-thumb:hover { background:#6b5740; }
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: auto; }
