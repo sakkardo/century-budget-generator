@@ -2383,6 +2383,39 @@ def create_workflow_blueprint(db):
             except Exception:
                 pass
 
+        # ── Col 2: 2025 Actual from confirmed audited financials ──────────
+        col2_lookup = {}
+        try:
+            from budget_app.audited_financials import get_confirmed_actuals
+            from budget_summary.GL_TO_SUMMARY_MAP import LABEL_ALIASES
+            confirmed = get_confirmed_actuals(entity_code, budget_year - 1)
+            # confirmed = {audit_category: amount}
+            # Build reverse alias: canonical_label → [variant labels in DB]
+            alias_reverse = {}
+            for variant, canonical in LABEL_ALIASES.items():
+                alias_reverse.setdefault(canonical, []).append(variant)
+            # Build label set from this building's summary rows
+            building_labels = {r.label for r in summary_rows if r.row_type == "data"}
+            for cat, amount in confirmed.items():
+                if amount is None:
+                    continue
+                # Direct match first
+                if cat in building_labels:
+                    col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
+                else:
+                    # Try alias: audit category might be a variant
+                    canonical = LABEL_ALIASES.get(cat, cat)
+                    if canonical in building_labels:
+                        col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
+                    else:
+                        # Try reverse: building label might be a variant of audit category
+                        for variant in alias_reverse.get(cat, []):
+                            if variant in building_labels:
+                                col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
+                                break
+        except Exception:
+            col2_lookup = {}
+
         # Build response rows
         result_rows = []
         section_data = {"income": [], "expenses": [], "non_operating_income": [], "non_operating_expense": []}
@@ -2403,7 +2436,7 @@ def create_workflow_blueprint(db):
             col7 = row.col7_proposed_budget
 
             # Compute cols 3-5 from budget_lines via GL prefix aggregation
-            col2 = None   # 2025 Actual — audited financials, not loaded yet
+            col2 = col2_lookup.get(row.label)  # 2025 Actual from confirmed audited financials
             col3 = None   # 2026 YTD actual
             col4 = None   # 2026 estimate
             col5 = None   # 2026 forecast
@@ -2457,7 +2490,7 @@ def create_workflow_blueprint(db):
             elif "net operating" in label_lower:
                 inc = section_data.get("income", [])
                 exp = section_data.get("expenses", [])
-                for ck in ["col3", "col4", "col5", "col7"]:
+                for ck in ["col2", "col3", "col4", "col5", "col7"]:
                     iv = sum(r.get(ck) or 0 for r in inc)
                     ev = sum(r.get(ck) or 0 for r in exp)
                     rd[ck] = round(iv - ev, 2) if (iv or ev) else None
@@ -2474,7 +2507,7 @@ def create_workflow_blueprint(db):
                 exp = section_data.get("expenses", [])
                 noi = section_data.get("non_operating_income", [])
                 noe = section_data.get("non_operating_expense", [])
-                for ck in ["col3", "col4", "col5", "col7"]:
+                for ck in ["col2", "col3", "col4", "col5", "col7"]:
                     iv = sum(r.get(ck) or 0 for r in inc)
                     ev = sum(r.get(ck) or 0 for r in exp)
                     ni = sum(r.get(ck) or 0 for r in noi)
@@ -2487,7 +2520,7 @@ def create_workflow_blueprint(db):
                 data_rows = []
 
             # Simple sum for section subtotals
-            for ck in ["col3", "col4", "col5", "col7"]:
+            for ck in ["col2", "col3", "col4", "col5", "col7"]:
                 vals = [r.get(ck) or 0 for r in data_rows]
                 rd[ck] = round(sum(vals), 2) if any(v != 0 for v in vals) else None
             if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
