@@ -8882,7 +8882,6 @@ PM_EDIT_TEMPLATE = r"""
   tr.drill-row td.frozen { border-right: none; box-shadow: none; }
 
   input[type="number"], input[type="text"] {
-    width: 100%;
     padding: 5px 8px;
     border: 1px solid var(--gray-300);
     border-radius: 4px;
@@ -8890,7 +8889,9 @@ PM_EDIT_TEMPLATE = r"""
     background: #fbfaf4;
   }
   input[type="number"] { text-align: right; min-width: 55px; width: auto; }
-  input[type="text"] { min-width: 140px; }
+  input[type="text"] { min-width: 140px; width: 100%; }
+  input.pm-cell, input.pm-cell-fx { width: auto; min-width: 55px; }
+  input.pm-cell-pct { width: auto; min-width: 45px; }
   input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-light); }
   input:disabled { background: var(--gray-100); color: var(--gray-500); }
 
