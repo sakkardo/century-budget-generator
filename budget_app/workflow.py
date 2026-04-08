@@ -2550,7 +2550,8 @@ def create_workflow_blueprint(db):
                 "total_rows": len(result_rows),
                 "data_rows": len([r for r in result_rows if r["row_type"] == "data"]),
                 "has_budget_lines": len(bl_dicts) > 0,
-            }
+            },
+            "_debug_col2": col2_lookup,
         })
 
 
