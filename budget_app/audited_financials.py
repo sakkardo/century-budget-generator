@@ -359,7 +359,7 @@ def create_audited_financials_blueprint(db):
         return mapped, unmapped
 
 
-    def extract_from_pdf(pdf_path, building_name):
+    def extract_from_pdf(pdf_path, building_name, entity_code=None):
         """
         Extract Schedule of Expenses and Revenue from PDF using Claude API.
         Returns extracted data as dict or None on error.
@@ -382,47 +382,89 @@ def create_audited_financials_blueprint(db):
 
             client = anthropic.Anthropic(api_key=api_key)
 
+            # ── Build building-aware category list ─────────────────────────
+            budget_categories = None
+            if entity_code:
+                try:
+                    rows = db.session.execute(db.text(
+                        "SELECT label, section FROM budget_summary_rows "
+                        "WHERE entity_code = :ec AND row_type = 'data' "
+                        "ORDER BY display_order"
+                    ), {"ec": entity_code}).fetchall()
+                    if rows:
+                        income_labels = [r[0] for r in rows if r[1] and r[1].lower() == "income"]
+                        expense_labels = [r[0] for r in rows if r[1] and r[1].lower() == "expenses"]
+                        nonop_inc = [r[0] for r in rows if r[1] and "non" in r[1].lower() and "income" in r[1].lower()]
+                        nonop_exp = [r[0] for r in rows if r[1] and "non" in r[1].lower() and "expense" in r[1].lower()]
+                        budget_categories = {
+                            "income": income_labels,
+                            "expenses": expense_labels,
+                            "non_operating_income": nonop_inc,
+                            "non_operating_expense": nonop_exp,
+                        }
+                except Exception as e:
+                    logger.warning(f"Could not load building categories for {entity_code}: {e}")
+
+            if budget_categories:
+                cat_instruction = f"""
+IMPORTANT: This building's budget uses these EXACT categories. You MUST map every
+auditor line item into one of these categories. Do NOT use the auditor's own category
+names — force everything into the categories below.
+
+INCOME categories: {json.dumps(budget_categories['income'])}
+EXPENSE categories: {json.dumps(budget_categories['expenses'])}
+NON-OPERATING INCOME: {json.dumps(budget_categories['non_operating_income'])}
+NON-OPERATING EXPENSE: {json.dumps(budget_categories['non_operating_expense'])}
+
+When the auditor lumps items together (e.g. "Utilities" or "Administrative"),
+look for supplementary schedules or notes in the PDF that break them down.
+For example:
+- "Utilities" should be split into Electric, Gas, Water & Sewer, etc.
+- "Administrative" should be split into Insurance, Professional Fees, Administrative & Other, etc.
+- "Repairs and maintenance" may need to be split into Supplies vs Repairs & Maintenance.
+
+If a supplementary schedule provides the breakdown, use those numbers.
+If no breakdown exists, map the lump sum to the BEST matching single category.
+
+Each item in the JSON output must use one of the exact category names listed above as its "description".
+Combine auditor line items that map to the same category into one entry with the summed amount.
+"""
+            else:
+                cat_instruction = """
+Extract all line items using the auditor's own descriptions.
+"""
+
             extraction_prompt = f"""
 You are analyzing an audited financial statement for {building_name}.
 
-Find the Schedule of Expenses and Schedule of Revenue pages.
+Find the Schedule of Expenses and Schedule of Revenue pages, AND any
+supplementary schedules that break down categories into sub-items.
 
-Extract all line items and their amounts for all fiscal years present.
+{cat_instruction}
 
 Return ONLY valid JSON (no markdown, no code blocks) with this structure:
 {{
   "building_name": "{building_name}",
-  "fiscal_years": [2024, 2023],
+  "fiscal_years": [2025, 2024],
   "revenue": {{
     "items": [
-      {{"description": "Maintenance assessments - gross", "amounts": [8760380, 8588595]}},
-      {{"description": "Tax benefit credits", "amounts": [100000, 95000]}}
+      {{"description": "Maintenance", "amounts": [8760380, 8588595]}},
+      {{"description": "Other Income", "amounts": [100000, 95000]}}
     ],
     "total": [8860380, 8683595]
   }},
   "expenses": {{
-    "categories": [
-      {{
-        "name": "Administrative",
-        "items": [
-          {{"description": "Accounting and audit fees", "amounts": [22715, 20722]}},
-          {{"description": "Legal fees", "amounts": [15000, 14000]}}
-        ],
-        "total": [37715, 34722]
-      }},
-      {{
-        "name": "Building Operations",
-        "items": [
-          {{"description": "Payroll", "amounts": [3000000, 2900000]}}
-        ],
-        "total": [3000000, 2900000]
-      }}
-    ],
-    "total_expenses": [3037715, 2934722]
+    "categories": {{
+      "0": [{{"description": "Payroll", "amounts": [3000000, 2900000]}}],
+      "1": [{{"description": "Electric", "amounts": [50000, 48000]}}],
+      "2": [{{"description": "Gas", "amounts": [20000, 19000]}}]
+    }},
+    "total_expenses": [3070000, 2967000]
   }}
 }}
 
 Be precise with numbers. Include all line items found.
+Revenue total and expense total must equal the audited totals in the PDF.
 """
 
             message = client.messages.create(
@@ -1664,8 +1706,8 @@ Be precise with numbers. Include all line items found.
             if not pdf_path.exists():
                 return jsonify({"success": False, "error": "PDF file not found"}), 404
 
-            # Extract from PDF
-            extracted = extract_from_pdf(str(pdf_path), upload.building_name)
+            # Extract from PDF (pass entity_code for building-aware categories)
+            extracted = extract_from_pdf(str(pdf_path), upload.building_name, entity_code=upload.entity_code)
             if not extracted:
                 return jsonify({"success": False, "error": "Failed to extract from PDF"}), 400
 
