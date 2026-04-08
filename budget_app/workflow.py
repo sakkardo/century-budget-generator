@@ -2388,7 +2388,7 @@ def create_workflow_blueprint(db):
         try:
             from budget_app.audited_financials import get_confirmed_actuals
             from budget_summary.GL_TO_SUMMARY_MAP import LABEL_ALIASES
-            confirmed = get_confirmed_actuals(entity_code, budget_year - 1)
+            confirmed = get_confirmed_actuals(entity_code, budget_year - 2)
             # confirmed = {audit_category: amount}
             # Build reverse alias: canonical_label → [variant labels in DB]
             alias_reverse = {}
