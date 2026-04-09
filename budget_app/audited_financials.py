@@ -1565,28 +1565,46 @@ RULES:
             const years = rawExtraction.fiscal_years || [];
             const currentYear = years[0] || 'Current';
 
-            // Build dynamic totals from current dropdown selections (2025 / year[0] only)
-            const catTotals = {};
+            // Build dynamic totals + line item detail from current dropdown selections
+            const catData = {};  // { category: { total: N, items: [{desc, amount}] } }
             const allSelects = document.querySelectorAll('select[id^="map_"]');
             allSelects.forEach(s => {
                 if (s.value) {
                     const cat = stripCatSuffix(s.value);
                     const amount = parseFloat(s.dataset.amount) || 0;
-                    catTotals[cat] = (catTotals[cat] || 0) + amount;
+                    const desc = s.dataset.desc || '?';
+                    if (!catData[cat]) catData[cat] = { total: 0, items: [] };
+                    catData[cat].total += amount;
+                    catData[cat].items.push({ desc: desc, amount: amount });
                 }
             });
 
-            let html = '<table style="font-size:13px; width:100%;"><tr><th style="text-align:left;">Category</th>';
-            html += '<th style="text-align:right;">' + currentYear + '</th></tr>';
+            let html = '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+            html += '<tr><th style="text-align:left; padding:4px 6px; border-bottom:2px solid #333;">Category</th>';
+            html += '<th style="text-align:right; padding:4px 6px; border-bottom:2px solid #333;">' + currentYear + '</th></tr>';
 
-            const sortedCats = Object.keys(catTotals).sort();
+            const sortedCats = Object.keys(catData).sort();
             if (sortedCats.length === 0) {
-                html += '<tr><td colspan="2" style="text-align:center; color:#999; padding:20px;">Map items on the left, then click "Save All Mappings"</td></tr>';
+                html += '<tr><td colspan="2" style="text-align:center; color:#999; padding:20px;">Map items on the left to see totals here</td></tr>';
             } else {
+                let grandTotal = 0;
                 for (let cat of sortedCats) {
-                    html += '<tr><td>' + cat + '</td>';
-                    html += '<td style="text-align:right; font-weight:600;">' + formatAmount(catTotals[cat]) + '</td></tr>';
+                    const cd = catData[cat];
+                    grandTotal += cd.total;
+                    // Category header row
+                    html += '<tr style="border-top:1px solid #ddd;">';
+                    html += '<td style="padding:5px 6px; font-weight:600;">' + cat + '</td>';
+                    html += '<td style="text-align:right; padding:5px 6px; font-weight:600;">' + formatAmount(cd.total) + '</td></tr>';
+                    // Line item detail rows
+                    for (let li of cd.items) {
+                        html += '<tr style="color:#666;">';
+                        html += '<td style="padding:1px 6px 1px 18px; font-size:11px;">' + li.desc + '</td>';
+                        html += '<td style="text-align:right; padding:1px 6px; font-size:11px;">' + formatAmount(li.amount) + '</td></tr>';
+                    }
                 }
+                html += '<tr style="border-top:2px solid #333;">';
+                html += '<td style="padding:5px 6px; font-weight:700;">Grand Total</td>';
+                html += '<td style="text-align:right; padding:5px 6px; font-weight:700;">' + formatAmount(grandTotal) + '</td></tr>';
             }
 
             html += '</table>';
