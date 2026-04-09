@@ -335,8 +335,20 @@ def create_audited_financials_blueprint(db):
 
         # Process expense items
         if "expenses" in extracted and "categories" in extracted["expenses"]:
-            for cat_group in extracted["expenses"]["categories"]:
-                for item in cat_group.get("items", []):
+            raw_cats = extracted["expenses"]["categories"]
+            # Normalize Phase 2 flat format (object with numeric keys) into array format
+            if isinstance(raw_cats, dict):
+                flat_items = []
+                for key in sorted(raw_cats.keys(), key=lambda k: int(k) if k.isdigit() else k):
+                    val = raw_cats[key]
+                    if isinstance(val, list):
+                        flat_items.extend(val)
+                    elif isinstance(val, dict) and "description" in val:
+                        flat_items.append(val)
+                raw_cats = [{"name": "Expenses", "items": flat_items}]
+            for cat_group in raw_cats:
+                items = cat_group.get("items", []) if isinstance(cat_group, dict) else []
+                for item in items:
                     description = item.get("description", "")
                     amounts = item.get("amounts", [])
                     rule, confidence = fuzzy_match_rule(description, rules, section="expense")
