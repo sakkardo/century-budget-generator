@@ -1355,7 +1355,7 @@ Revenue total and expense total must equal the audited totals in the PDF.
                     else unmappedExpense += amount;
                 } else {
                     const bareCat = stripCatSuffix(s.value);
-                    const summaryRow = centuryToSummary[bareCat] || '';
+                    const summaryRow = centuryToSummary[bareCat] || buildingLabelSections[bareCat] || '';
                     const isRevenueCat = incomeSummaryRows.has(summaryRow);
                     const isRevenueSection = sectionType === 'revenue';
                     if (isRevenueCat !== isRevenueSection) {
