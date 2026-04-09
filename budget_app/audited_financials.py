@@ -582,7 +582,7 @@ RULES:
             buildings = get_buildings_list()
             profiles = AuditorProfile.query.all()
             buildings_json = json.dumps([{"entity_code": b["entity_code"], "building_name": b["building_name"]} for b in buildings])
-            profiles_json = json.dumps([{"id": p.id, "name": p.contact_name + " (" + p.firm_name + ")"} for p in profiles])
+            profiles_json = json.dumps([{"id": p.id, "name": p.name + " (" + p.firm_name + ")"} for p in profiles])
         except Exception as e:
             logger.error("Bulk upload page setup error: %s", e)
             import traceback
