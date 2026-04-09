@@ -1195,7 +1195,7 @@ RULES:
             return v.replace(/\s*\((?:inc|exp)\.\)\s*$/, '').trim();
         }
 
-        function renderSourceLines(sourceLines, years) {
+        function renderSourceLines(sourceLines, years, section) {
             if (!sourceLines || sourceLines.length === 0) return '';
             // Single direct match — show inline green tag
             if (sourceLines.length === 1) {
@@ -1203,7 +1203,8 @@ RULES:
                 const auditorDesc = sl.auditor_desc || sl.description || '';
                 return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"</div>';
             }
-            // Multiple source lines — show expandable list
+            // Multiple source lines — show expandable list with Split button
+            const sourcesJson = JSON.stringify(sourceLines).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
             let html = '<details style="margin-top:3px;">';
             html += '<summary style="font-size:10px; color:#856404; cursor:pointer;">⚠ ' + sourceLines.length + ' auditor items consolidated (click to expand)</summary>';
             html += '<div style="font-size:11px; background:#fff8e1; padding:4px 8px; border-radius:3px; margin-top:2px;">';
@@ -1215,8 +1216,62 @@ RULES:
                 html += '<span style="white-space:nowrap; margin-left:8px;">' + amts.join(' / ') + '</span>';
                 html += '</div>';
             }
+            html += '<button onclick="splitRow(this)" data-sources="' + sourcesJson + '" data-section="' + (section || 'expense') + '" style="margin-top:4px; font-size:10px; padding:2px 8px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer;">Split into individual rows</button>';
             html += '</div></details>';
             return html;
+        }
+
+        // Pre-compute dropdown option groups (building-specific first, then other Century cats)
+        const bldgIncome = buildingLabels.filter(c => {
+            const s = (buildingLabelSections[c] || '').toLowerCase();
+            return s.includes('income') && !s.includes('non-operating');
+        });
+        const bldgExpense = buildingLabels.filter(c => {
+            const s = (buildingLabelSections[c] || '').toLowerCase();
+            return s.includes('expense') || s === '';
+        });
+        const bldgNonOp = buildingLabels.filter(c => {
+            const s = (buildingLabelSections[c] || '').toLowerCase();
+            return s.includes('non-operating');
+        });
+        const bldgSet = new Set(buildingLabels);
+        const otherCentury = centuryCategories.filter(c => !bldgSet.has(c)).sort();
+
+        function buildSelectOptions(currentMapping) {
+            let opts = '<option value="">— Select category —</option>';
+            // Group 1: This building's income labels
+            if (bldgIncome.length > 0) {
+                opts += '<optgroup label="Income (this building)">';
+                for (let c of bldgIncome) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            // Group 2: This building's expense labels
+            if (bldgExpense.length > 0) {
+                opts += '<optgroup label="Expenses (this building)">';
+                for (let c of bldgExpense) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            // Group 3: This building's non-operating labels
+            if (bldgNonOp.length > 0) {
+                opts += '<optgroup label="Non-Operating (this building)">';
+                for (let c of bldgNonOp) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            // Group 4: Other Century categories not in this building's budget
+            if (otherCentury.length > 0) {
+                opts += '<optgroup label="── Other Century Categories ──">';
+                for (let c of otherCentury) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            return opts;
         }
 
         function makeDropdown(description, amount, section) {
@@ -1229,62 +1284,23 @@ RULES:
                 : (rulesForDesc[section] || '');
             let matchType = currentMapping ? 'rule' : '';
 
-            // Auto-fill: if no auditor rule, check if description IS a valid century category
             if (!currentMapping && centuryCatSet.has(description)) {
                 currentMapping = description;
                 matchType = 'exact';
             }
-            // Auto-fill: if still no match, check building's own labels
             if (!currentMapping && buildingLabelSet.has(description)) {
                 currentMapping = description;
                 matchType = 'building';
             }
 
-            // Color coding: green = exact/building match, yellow = auditor rule
             let bgStyle = '';
             if (currentMapping && (matchType === 'exact' || matchType === 'building')) bgStyle = 'background:#d4edda;';
             else if (currentMapping && matchType === 'rule') bgStyle = 'background:#fff3cd;';
 
-            // Build <select> dropdown with all categories
-            const allCats = Array.from(new Set([...centuryCategories, ...buildingLabels])).sort();
             let html = '<div data-section="' + (section || 'expense') + '">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="onDropdownChange(this); renderReconciliation();" style="width:100%; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
-            html += '<option value="">— Select category —</option>';
-            // Group: Income
-            html += '<optgroup label="Income">';
-            const incCats = allCats.filter(c => {
-                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
-                return sum.toLowerCase().includes('income') && !sum.toLowerCase().includes('non-operating');
-            });
-            for (let c of incCats) {
-                const sel = (c === currentMapping) ? ' selected' : '';
-                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
-            }
-            html += '</optgroup>';
-            // Group: Expenses
-            html += '<optgroup label="Expenses">';
-            const expCats = allCats.filter(c => {
-                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
-                return sum.toLowerCase().includes('expense') || sum === '';
-            });
-            for (let c of expCats) {
-                const sel = (c === currentMapping) ? ' selected' : '';
-                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
-            }
-            html += '</optgroup>';
-            // Group: Non-Operating
-            html += '<optgroup label="Non-Operating">';
-            const noCats = allCats.filter(c => {
-                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
-                return sum.toLowerCase().includes('non-operating');
-            });
-            for (let c of noCats) {
-                const sel = (c === currentMapping) ? ' selected' : '';
-                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
-            }
-            html += '</optgroup>';
+            html += buildSelectOptions(currentMapping);
             html += '</select>';
-            // Show note for auditor-rule matches where name differs
             if (matchType === 'rule' && currentMapping.toLowerCase() !== normalized) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:2px;">Auditor: "' + description + '" → mapped to "' + currentMapping + '"</div>';
             }
@@ -1293,11 +1309,31 @@ RULES:
         }
 
         function onDropdownChange(el) {
-            if (el.value) {
-                el.style.background = '#d4edda';
-            } else {
-                el.style.background = '';
+            el.style.background = el.value ? '#d4edda' : '';
+        }
+
+        // Split a consolidated row into individual source_line rows
+        function splitRow(btn) {
+            const row = btn.closest('tr');
+            const sourceData = JSON.parse(btn.dataset.sources);
+            const section = btn.dataset.section;
+            const years = rawExtraction.fiscal_years || [];
+            let newRows = '';
+            for (let sl of sourceData) {
+                const desc = sl.auditor_desc || sl.description || '?';
+                const amounts = sl.amounts || [];
+                const amount0 = amounts[0] || 0;
+                newRows += '<tr style="border-bottom:1px solid #eee; background:#fffbeb;">';
+                newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc + '</td>';
+                for (let a of amounts) { newRows += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                // Pad if fewer amounts than years
+                for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:6px;">—</td>'; }
+                newRows += '<td style="padding:4px;">' + makeDropdown(desc, amount0, section) + '</td></tr>';
             }
+            // Replace the original row with the split rows
+            row.insertAdjacentHTML('afterend', newRows);
+            row.remove();
+            renderReconciliation();
         }
 
         function renderRawData() {
@@ -1319,7 +1355,7 @@ RULES:
                 for (let item of rawExtraction.revenue.items) {
                     const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                     html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description;
-                    html += renderSourceLines(item.source_lines, years);
+                    html += renderSourceLines(item.source_lines, years, 'revenue');
                     html += '</td>';
                     for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
                     html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'revenue') + '</td></tr>';
@@ -1356,7 +1392,7 @@ RULES:
                     for (let item of (cat.items || [])) {
                         const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                         html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description;
-                        html += renderSourceLines(item.source_lines, years);
+                        html += renderSourceLines(item.source_lines, years, 'expense');
                         html += '</td>';
                         for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
                         html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'expense') + '</td></tr>';
