@@ -578,10 +578,15 @@ RULES:
     @bp.route("/audited-financials/bulk-upload", methods=["GET"])
     def bulk_upload_page():
         """Bulk upload page - select multiple PDFs, auto-match entities, upload all at once."""
-        buildings = get_buildings_list()
-        profiles = AuditorProfile.query.all()
-        buildings_json = json.dumps([{"entity_code": b["entity_code"], "building_name": b["building_name"]} for b in buildings])
-        profiles_json = json.dumps([{"id": p.id, "name": p.contact_name + " (" + p.firm_name + ")"} for p in profiles])
+        try:
+            buildings = get_buildings_list()
+            profiles = AuditorProfile.query.all()
+            buildings_json = json.dumps([{"entity_code": b["entity_code"], "building_name": b["building_name"]} for b in buildings])
+            profiles_json = json.dumps([{"id": p.id, "name": p.contact_name + " (" + p.firm_name + ")"} for p in profiles])
+        except Exception as e:
+            logger.error("Bulk upload page setup error: %s", e)
+            import traceback
+            return "<pre>" + traceback.format_exc() + "</pre>", 500
 
         html = """
 <!DOCTYPE html>
@@ -783,9 +788,14 @@ async function uploadAll() {
 </script>
 </body>
 </html>"""
-        html = html.replace('__BUILDINGS_JSON__', buildings_json)
-        html = html.replace('__PROFILES_JSON__', profiles_json)
-        return html
+        try:
+            html = html.replace('__BUILDINGS_JSON__', buildings_json)
+            html = html.replace('__PROFILES_JSON__', profiles_json)
+            return html
+        except Exception as e:
+            logger.error("Bulk upload page render error: %s", e)
+            import traceback
+            return "<pre>" + traceback.format_exc() + "</pre>", 500
 
     @bp.route("/audited-financials", methods=["GET"])
     def main_page():
