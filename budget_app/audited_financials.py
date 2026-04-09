@@ -1107,9 +1107,12 @@ RULES:
         header h1 { font-size: 24px; font-weight: 700; }
         header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
         .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
-        .columns { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+        .columns { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; align-items: start; }
         .column { background: white; border-radius: 12px; padding: 24px; border: 1px solid var(--gray-200); }
+        .column:last-child { position: sticky; top: 12px; }
         .column h3 { font-size: 16px; font-weight: 600; color: var(--blue); margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid var(--blue-light); }
+        @keyframes flashUpdate { 0% { background: #fef08a; } 100% { background: white; } }
+        .flash-update { animation: flashUpdate 0.8s ease-out; }
         button { background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
         button:hover { background: #1542b8; }
         .btn-green { background: var(--green); }
@@ -1503,6 +1506,10 @@ RULES:
 
             html += '</table>';
             container.innerHTML = html;
+            // Flash to show update
+            container.classList.remove('flash-update');
+            void container.offsetWidth; // force reflow
+            container.classList.add('flash-update');
         }
 
         function renderReconciliation() {
