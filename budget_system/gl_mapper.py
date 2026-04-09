@@ -24,6 +24,7 @@ GL_DATA_SHEETS = [
     "Water & Sewer",
     "Repairs & Supplies",
     "Gen & Admin",
+    "Capital",
 ]
 
 

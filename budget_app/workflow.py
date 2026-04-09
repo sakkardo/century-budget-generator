@@ -71,6 +71,83 @@ RM_GL_MAP = {
     "5809-0016": ("Sprinkler Maintenance", 66, "maintenance"),
 }
 
+# Capital GL Prefix Map: first 4 digits → description
+# 7xxx codes use entity-specific sub-accounts (e.g. 7110-1409) so we match on prefix
+CAPITAL_GL_PREFIX = {
+    "7018": "Net Proceeds of Sale",
+    "7020": "Real Estate Tax Refund",
+    "7025": "Flip Tax - Capital",
+    "7030": "J51 Credit - Capital",
+    "7035": "Investment Income",
+    "7040": "Mitchell Lama Amortization",
+    "7045": "Claims Proceeds - Insurance Repairs",
+    "7095": "Other Sources of Funds",
+    "7105": "Cap - Elevator",
+    "7110": "Cap - Boiler/Burner",
+    "7115": "Cap - HVAC",
+    "7120": "Cap - Pump & Motor",
+    "7125": "Cap - Appliances",
+    "7130": "Cap - Roofing",
+    "7135": "Cap - Chimney",
+    "7140": "Cap - Facade Waterproof",
+    "7145": "Cap - Plumbing",
+    "7150": "Cap - Electrical",
+    "7155": "Cap - General Contractor",
+    "7160": "Cap - Carpentry",
+    "7165": "Cap - Engineering / Architectural",
+    "7170": "Cap - Sprinkler",
+    "7175": "Cap - Water Meter",
+    "7180": "Cap - Water Tank",
+    "7185": "Cap - Windows",
+    "7190": "Cap - Hallways",
+    "7195": "Cap - Lobby",
+    "7200": "Cap - Compactor",
+    "7205": "Cap - Storage",
+    "7210": "Cap - Sidewalk Bridge",
+    "7215": "Cap - Paint & Plaster",
+    "7220": "Cap - Asbestos Removal",
+    "7225": "Cap - Sidewalk / Concrete",
+    "7230": "Cap - Driveway",
+    "7235": "Cap - Doors",
+    "7240": "Cap - Floor / Carpet",
+    "7245": "Cap - Garage",
+    "7250": "Cap - Canopy / Awning",
+    "7255": "Cap - TV / VCR",
+    "7260": "Cap - Intercom",
+    "7265": "Cap - Security System",
+    "7270": "Cap - Garden & Landscape",
+    "7273": "Cap - Insurance Repairs",
+    "7275": "Cap - Mailbox",
+    "7280": "Cap - Signage",
+    "7285": "Cap - Parking",
+    "7290": "Cap - Pool",
+    "7295": "Cap - Pool Furniture",
+    "7300": "Cap - STP",
+    "7305": "Cap - Whirlpool / Steam Room",
+    "7310": "Cap - Tennis Court",
+    "7315": "Cap - Fitness Equipment",
+    "7320": "Cap - Laundry Room",
+    "7325": "Cap - Children's Play Area",
+    "7330": "Cap - Gym",
+    "7335": "Cap - Aerobics Floor",
+    "7340": "Cap - Racquetball Court",
+    "7345": "Cap - Great Room",
+    "7350": "Cap - Principal Amortization",
+    "7355": "Cap - Interest",
+    "7360": "Cap - Professional",
+    "7370": "Cap - Commissions",
+    "7375": "Cap - Legal",
+    "7380": "Cap - Loan Financing Fees",
+    "7385": "Cap - Building Equipment",
+    "7390": "Cap - Office Equipment",
+    "7395": "Cap - Computer Equipment",
+    "7400": "Cap - Computer Software",
+    "7405": "Cap - Furniture & Fixtures",
+    "7415": "Cap - Inspection Fees",
+    "7490": "Cap - Other",
+    "7900": "Cap - Contra",
+}
+
 # Comprehensive mapping: budget_line category → Century audit category
 BUDGET_CAT_TO_CENTURY = {
     "supplies": "Supplies",
@@ -627,6 +704,7 @@ def create_workflow_blueprint(db):
         "Water & Sewer": "water_sewer",
         "Repairs & Supplies": "rm",
         "Gen & Admin": "gen_admin",
+        "Capital": "capital",
     }
 
     def _delete_entity_data(entity_code):
@@ -708,6 +786,12 @@ def create_workflow_blueprint(db):
                     sheet_name, row_num, desc = gl_mapping[gl_code]
                     category = SHEET_TO_CATEGORY.get(sheet_name, "other")
                     pm_editable = False
+                elif gl_code[:4] in CAPITAL_GL_PREFIX:
+                    desc = CAPITAL_GL_PREFIX[gl_code[:4]]
+                    sheet_name = "Capital"
+                    row_num = 0
+                    category = "capital"
+                    pm_editable = True
                 else:
                     desc = gl_code
                     sheet_name = "Unmapped"
@@ -1412,7 +1496,7 @@ def create_workflow_blueprint(db):
             sheets[sn].append(l.to_dict())
 
         # Ordered sheet tab names
-        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Unmapped"]
+        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Capital", "Unmapped"]
 
         # Parse stored assumptions
         import json as _json
@@ -2655,7 +2739,7 @@ def create_workflow_blueprint(db):
                 sheets[sn] = []
             sheets[sn].append(l.to_dict())
 
-        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin"]
+        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Capital"]
         ordered = [s for s in sheet_order if s in sheets]
 
         # Parse assumptions for YTD months

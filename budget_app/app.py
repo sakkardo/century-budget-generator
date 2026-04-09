@@ -225,6 +225,30 @@ with app.app_context():
             db.session.rollback()
             logger.warning(f"Building type backfill skipped: {e}")
 
+        # Backfill: move 7xxx GL codes from 'Unmapped' sheet to 'Capital' sheet
+        try:
+            from workflow import CAPITAL_GL_PREFIX
+            cap_lines = db.session.execute(
+                db.text("SELECT id, gl_code FROM budget_lines WHERE sheet_name = 'Unmapped' AND gl_code LIKE '7%'")
+            ).fetchall()
+            moved = 0
+            for row in cap_lines:
+                line_id, gl_code = row[0], row[1]
+                prefix = (gl_code or "")[:4]
+                if prefix in CAPITAL_GL_PREFIX:
+                    desc = CAPITAL_GL_PREFIX[prefix]
+                    db.session.execute(
+                        db.text("UPDATE budget_lines SET sheet_name = 'Capital', category = 'capital', pm_editable = TRUE, description = :desc WHERE id = :id"),
+                        {"desc": desc, "id": line_id}
+                    )
+                    moved += 1
+            if moved:
+                db.session.commit()
+                logger.info(f"Backfilled {moved} 7xxx lines from Unmapped to Capital")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Capital backfill skipped: {e}")
+
 # Health check for Railway
 @app.route("/healthz")
 def healthz():
