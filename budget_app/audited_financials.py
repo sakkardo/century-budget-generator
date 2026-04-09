@@ -1210,7 +1210,32 @@ RULES:
             const sel = document.getElementById(rowId);
             if (sel) sel.dataset.amount = Math.round(raw);
             renderReconciliation();
+            recalcLeftTotals();
             updateAcceptState();
+        }
+
+        function recalcLeftTotals() {
+            // Revenue total = sum of all revenue item editable cells
+            let revTotal = 0;
+            document.querySelectorAll('tr[data-group="revenue"] .amt-cell:not(.amt-cell-readonly)').forEach(inp => {
+                revTotal += parseInt(inp.dataset.raw) || 0;
+            });
+            const revEl = document.getElementById('total-revenue');
+            if (revEl) revEl.textContent = formatAmount(revTotal);
+
+            // Expense subtotals per category
+            let expGrandTotal = 0;
+            for (let ci = 0; ci < 50; ci++) {
+                const rows = document.querySelectorAll('tr[data-group="exp_' + ci + '"] .amt-cell:not(.amt-cell-readonly)');
+                if (rows.length === 0 && ci > 0) break;
+                let catTotal = 0;
+                rows.forEach(inp => { catTotal += parseInt(inp.dataset.raw) || 0; });
+                const subEl = document.getElementById('subtotal-exp-' + ci);
+                if (subEl) subEl.textContent = formatAmount(catTotal);
+                expGrandTotal += catTotal;
+            }
+            const expEl = document.getElementById('total-expenses');
+            if (expEl) expEl.textContent = formatAmount(expGrandTotal);
         }
 
         // Decorate a Century category with an (inc.)/(exp.) suffix so users
@@ -1412,13 +1437,14 @@ RULES:
             // Get the parent row's current dropdown selection
             const parentSelect = row.querySelector('select[id^="map_"]');
             const parentMapping = parentSelect ? parentSelect.value : '';
+            const parentGroup = row.dataset.group || '';
             let newRows = '';
             for (let sl of sourceData) {
                 const desc = sl.auditor_desc || sl.description || '?';
                 const amounts = sl.amounts || [];
                 const amount0 = amounts[0] || 0;
                 const mapId = 'map_' + itemIndex;  // peek before makeDropdownWithDefault increments
-                newRows += '<tr style="border-bottom:1px solid #eee; background:#fffbeb;">';
+                newRows += '<tr data-group="' + parentGroup + '" style="border-bottom:1px solid #eee; background:#fffbeb;">';
                 newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc + '</td>';
                 for (let yi = 0; yi < amounts.length; yi++) {
                     newRows += '<td style="text-align:right; padding:4px;">';
@@ -1432,6 +1458,7 @@ RULES:
             row.insertAdjacentHTML('afterend', newRows);
             row.remove();
             renderReconciliation();
+            recalcLeftTotals();
         }
 
         function renderRawData() {
@@ -1453,7 +1480,7 @@ RULES:
                 for (let item of rawExtraction.revenue.items) {
                     const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                     const mapId = 'map_' + itemIndex;  // peek at the next map id
-                    html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description;
+                    html += '<tr data-group="revenue" style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description;
                     html += renderSourceLines(item.source_lines, years, 'revenue');
                     html += '</td>';
                     for (let yi = 0; yi < item.amounts.length; yi++) {
@@ -1467,7 +1494,8 @@ RULES:
                 if (rawExtraction.revenue.total) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
                     for (let yi = 0; yi < rawExtraction.revenue.total.length; yi++) {
-                        html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.revenue.total[yi]) + '</td>';
+                        if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="total-revenue">' + formatAmount(rawExtraction.revenue.total[yi]) + '</span></td>'; }
+                        else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.revenue.total[yi]) + '</td>'; }
                     }
                     html += '<td></td></tr>';
                 }
@@ -1491,12 +1519,13 @@ RULES:
                     expenseCategories = [{ name: 'Expenses', items: flatItems }];
                 }
 
+                let catIdx = 0;
                 for (let cat of expenseCategories) {
                     html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of (cat.items || [])) {
                         const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                         const mapId = 'map_' + itemIndex;
-                        html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description;
+                        html += '<tr data-group="exp_' + catIdx + '" style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description;
                         html += renderSourceLines(item.source_lines, years, 'expense');
                         html += '</td>';
                         for (let yi = 0; yi < item.amounts.length; yi++) {
@@ -1510,15 +1539,18 @@ RULES:
                     if (cat.total) {
                         html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
                         for (let yi = 0; yi < cat.total.length; yi++) {
-                            html += '<td style="text-align:right; padding:6px;">' + formatAmount(cat.total[yi]) + '</td>';
+                            if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="subtotal-exp-' + catIdx + '">' + formatAmount(cat.total[yi]) + '</span></td>'; }
+                            else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(cat.total[yi]) + '</td>'; }
                         }
                         html += '<td></td></tr>';
                     }
+                    catIdx++;
                 }
                 if (rawExtraction.expenses.total_expenses) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Expenses</td>';
                     for (let yi = 0; yi < rawExtraction.expenses.total_expenses.length; yi++) {
-                        html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</td>';
+                        if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="total-expenses">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</span></td>'; }
+                        else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</td>'; }
                     }
                     html += '<td></td></tr>';
                 }
