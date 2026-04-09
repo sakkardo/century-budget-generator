@@ -428,6 +428,11 @@ If no breakdown exists, map the lump sum to the BEST matching single category.
 
 Each item in the JSON output must use one of the exact category names listed above as its "description".
 Combine auditor line items that map to the same category into one entry with the summed amount.
+
+CRITICAL: For EVERY item, include a "source_lines" array showing EXACTLY what the
+auditor's original line items were and their individual amounts. This lets the user
+verify your mapping. Each source line should have the auditor's exact description and amounts.
+If a category is a direct 1:1 match (auditor used the same name), still include it in source_lines.
 """
             else:
                 cat_instruction = """
@@ -448,23 +453,37 @@ Return ONLY valid JSON (no markdown, no code blocks) with this structure:
   "fiscal_years": [2025, 2024],
   "revenue": {{
     "items": [
-      {{"description": "Maintenance", "amounts": [8760380, 8588595]}},
-      {{"description": "Other Income", "amounts": [100000, 95000]}}
+      {{"description": "Maintenance", "amounts": [8760380, 8588595], "source_lines": [
+        {{"auditor_desc": "Maintenance charges", "amounts": [8760380, 8588595]}}
+      ]}},
+      {{"description": "Other Income", "amounts": [100000, 95000], "source_lines": [
+        {{"auditor_desc": "Interest income", "amounts": [60000, 55000]}},
+        {{"auditor_desc": "Miscellaneous revenue", "amounts": [40000, 40000]}}
+      ]}}
     ],
     "total": [8860380, 8683595]
   }},
   "expenses": {{
     "categories": {{
-      "0": [{{"description": "Payroll", "amounts": [3000000, 2900000]}}],
-      "1": [{{"description": "Electric", "amounts": [50000, 48000]}}],
-      "2": [{{"description": "Gas", "amounts": [20000, 19000]}}]
+      "0": [{{"description": "Payroll", "amounts": [3000000, 2900000], "source_lines": [
+        {{"auditor_desc": "Superintendent", "amounts": [120000, 115000]}},
+        {{"auditor_desc": "Doorman and security", "amounts": [200000, 190000]}},
+        {{"auditor_desc": "Payroll taxes and benefits", "amounts": [2680000, 2595000]}}
+      ]}}],
+      "1": [{{"description": "Electric", "amounts": [50000, 48000], "source_lines": [
+        {{"auditor_desc": "Electricity", "amounts": [50000, 48000]}}
+      ]}}]
     }},
-    "total_expenses": [3070000, 2967000]
+    "total_expenses": [3050000, 2948000]
   }}
 }}
 
-Be precise with numbers. Include all line items found.
-Revenue total and expense total must equal the audited totals in the PDF.
+RULES:
+- "description" = the Century budget category name (from the lists above)
+- "source_lines" = the auditor's ORIGINAL line items with their exact descriptions and amounts
+- source_lines amounts must sum to the parent item's amounts
+- Be precise with numbers. Include all line items found.
+- Revenue total and expense total must equal the audited totals in the PDF.
 """
 
             message = client.messages.create(
@@ -1164,6 +1183,30 @@ Revenue total and expense total must equal the audited totals in the PDF.
             return v.replace(/\s*\((?:inc|exp)\.\)\s*$/, '').trim();
         }
 
+        function renderSourceLines(sourceLines, years) {
+            if (!sourceLines || sourceLines.length === 0) return '';
+            // Single direct match — show inline green tag
+            if (sourceLines.length === 1) {
+                const sl = sourceLines[0];
+                const auditorDesc = sl.auditor_desc || sl.description || '';
+                return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"</div>';
+            }
+            // Multiple source lines — show expandable list
+            let html = '<details style="margin-top:3px;">';
+            html += '<summary style="font-size:10px; color:#856404; cursor:pointer;">⚠ ' + sourceLines.length + ' auditor items consolidated (click to expand)</summary>';
+            html += '<div style="font-size:11px; background:#fff8e1; padding:4px 8px; border-radius:3px; margin-top:2px;">';
+            for (let sl of sourceLines) {
+                const desc = sl.auditor_desc || sl.description || '?';
+                const amts = (sl.amounts || []).map(a => formatAmount(a));
+                html += '<div style="display:flex; justify-content:space-between; padding:1px 0; border-bottom:1px solid #f0e6c0;">';
+                html += '<span>' + desc + '</span>';
+                html += '<span style="white-space:nowrap; margin-left:8px;">' + amts.join(' / ') + '</span>';
+                html += '</div>';
+            }
+            html += '</div></details>';
+            return html;
+        }
+
         function makeDropdown(description, amount, section) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
@@ -1241,7 +1284,9 @@ Revenue total and expense total must equal the audited totals in the PDF.
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
                 for (let item of rawExtraction.revenue.items) {
                     const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
-                    html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description + '</td>';
+                    html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description;
+                    html += renderSourceLines(item.source_lines, years);
+                    html += '</td>';
                     for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
                     html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'revenue') + '</td></tr>';
                 }
@@ -1276,7 +1321,9 @@ Revenue total and expense total must equal the audited totals in the PDF.
                     html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of (cat.items || [])) {
                         const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
-                        html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description + '</td>';
+                        html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description;
+                        html += renderSourceLines(item.source_lines, years);
+                        html += '</td>';
                         for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
                         html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'expense') + '</td></tr>';
                     }
