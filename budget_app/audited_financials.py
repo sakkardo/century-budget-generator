@@ -1122,6 +1122,9 @@ RULES:
         table { width: 100%; border-collapse: collapse; }
         table th { background: var(--gray-100); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
         table td { padding: 8px 10px; border-bottom: 1px solid var(--gray-200); font-size: 13px; }
+        .amt-cell { background: #fbfaf4; border: 1px solid var(--gray-300); padding: 4px 6px; text-align: right; width: 85px; font-size: 12px; font-family: inherit; border-radius: 3px; }
+        .amt-cell:focus { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-light); outline: none; }
+        .amt-cell-readonly { background: var(--gray-50); border: 1px solid var(--gray-200); color: var(--gray-500); cursor: default; }
         .confirm-section { background: white; border-radius: 12px; padding: 24px; border: 1px solid var(--gray-200); margin-top: 24px; }
         .confirm-section h3 { font-size: 16px; font-weight: 600; color: var(--gray-900); margin-bottom: 8px; }
         .confirm-section p { font-size: 13px; color: var(--gray-500); margin-bottom: 16px; }
@@ -1180,6 +1183,34 @@ RULES:
         function formatAmount(n) {
             if (n === null || n === undefined) return '—';
             return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+        }
+
+        function parseDollar(v) {
+            if (!v || v === '—') return 0;
+            return parseFloat(String(v).replace(/[,$\s]/g, '')) || 0;
+        }
+
+        // Editable cell for current year (2025)
+        function makeAmtInput(amount, rowId) {
+            const raw = Math.round(amount || 0);
+            return '<input class="amt-cell" type="text" value="' + formatAmount(raw) + '" data-raw="' + raw + '" data-row="' + rowId + '" onfocus="this.value=this.dataset.raw" onblur="amtCellBlur(this)">';
+        }
+
+        // Read-only cell for prior year (2024)
+        function makeAmtReadonly(amount) {
+            return '<input class="amt-cell amt-cell-readonly" type="text" value="' + formatAmount(Math.round(amount || 0)) + '" readonly tabindex="-1">';
+        }
+
+        function amtCellBlur(el) {
+            const raw = parseDollar(el.value);
+            el.dataset.raw = Math.round(raw);
+            el.value = formatAmount(raw);
+            // Update the linked select's data-amount so reconciliation picks it up
+            const rowId = el.dataset.row;
+            const sel = document.getElementById(rowId);
+            if (sel) sel.dataset.amount = Math.round(raw);
+            renderReconciliation();
+            updateAcceptState();
         }
 
         // Decorate a Century category with an (inc.)/(exp.) suffix so users
@@ -1386,10 +1417,16 @@ RULES:
                 const desc = sl.auditor_desc || sl.description || '?';
                 const amounts = sl.amounts || [];
                 const amount0 = amounts[0] || 0;
+                const mapId = 'map_' + itemIndex;  // peek before makeDropdownWithDefault increments
                 newRows += '<tr style="border-bottom:1px solid #eee; background:#fffbeb;">';
                 newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc + '</td>';
-                for (let a of amounts) { newRows += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:6px;">—</td>'; }
+                for (let yi = 0; yi < amounts.length; yi++) {
+                    newRows += '<td style="text-align:right; padding:4px;">';
+                    if (yi === 0) { newRows += makeAmtInput(amounts[yi], mapId); }
+                    else { newRows += makeAmtReadonly(amounts[yi]); }
+                    newRows += '</td>';
+                }
+                for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:4px;">' + makeAmtReadonly(0) + '</td>'; }
                 newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping) + '</td></tr>';
             }
             row.insertAdjacentHTML('afterend', newRows);
@@ -1411,19 +1448,27 @@ RULES:
             if (rawExtraction.revenue && rawExtraction.revenue.items) {
                 html += '<h5 style="margin:15px 0 5px;">Revenue</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
-                for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
+                for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
                 for (let item of rawExtraction.revenue.items) {
-                    const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
+                    const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
+                    const mapId = 'map_' + itemIndex;  // peek at the next map id
                     html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px;">' + item.description;
                     html += renderSourceLines(item.source_lines, years, 'revenue');
                     html += '</td>';
-                    for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'revenue') + '</td></tr>';
+                    for (let yi = 0; yi < item.amounts.length; yi++) {
+                        html += '<td style="text-align:right; padding:4px;">';
+                        if (yi === 0) { html += makeAmtInput(item.amounts[yi], mapId); }
+                        else { html += makeAmtReadonly(item.amounts[yi]); }
+                        html += '</td>';
+                    }
+                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'revenue') + '</td></tr>';
                 }
                 if (rawExtraction.revenue.total) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
-                    for (let a of rawExtraction.revenue.total) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                    for (let yi = 0; yi < rawExtraction.revenue.total.length; yi++) {
+                        html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.revenue.total[yi]) + '</td>';
+                    }
                     html += '<td></td></tr>';
                 }
                 html += '</table>';
@@ -1432,13 +1477,11 @@ RULES:
             if (rawExtraction.expenses && rawExtraction.expenses.categories) {
                 html += '<h5 style="margin:15px 0 5px;">Expenses</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
-                for (let y of years) { html += '<th style="text-align:right; padding:6px; width:90px;">' + y + '</th>'; }
+                for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
 
-                // Handle both formats: old (array of {name,items,total}) and Phase 2 (object with numeric keys)
                 let expenseCategories = rawExtraction.expenses.categories;
                 if (!Array.isArray(expenseCategories)) {
-                    // Phase 2 flat format: {"0": [{description, amounts}], ...} — flatten into single list
                     let flatItems = [];
                     for (let key of Object.keys(expenseCategories).sort((a,b) => parseInt(a) - parseInt(b))) {
                         const arr = expenseCategories[key];
@@ -1451,22 +1494,32 @@ RULES:
                 for (let cat of expenseCategories) {
                     html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of (cat.items || [])) {
-                        const amount = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
+                        const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
+                        const mapId = 'map_' + itemIndex;
                         html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 6px 6px 20px;">' + item.description;
                         html += renderSourceLines(item.source_lines, years, 'expense');
                         html += '</td>';
-                        for (let a of item.amounts) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount, 'expense') + '</td></tr>';
+                        for (let yi = 0; yi < item.amounts.length; yi++) {
+                            html += '<td style="text-align:right; padding:4px;">';
+                            if (yi === 0) { html += makeAmtInput(item.amounts[yi], mapId); }
+                            else { html += makeAmtReadonly(item.amounts[yi]); }
+                            html += '</td>';
+                        }
+                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'expense') + '</td></tr>';
                     }
                     if (cat.total) {
                         html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
-                        for (let a of cat.total) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                        for (let yi = 0; yi < cat.total.length; yi++) {
+                            html += '<td style="text-align:right; padding:6px;">' + formatAmount(cat.total[yi]) + '</td>';
+                        }
                         html += '<td></td></tr>';
                     }
                 }
                 if (rawExtraction.expenses.total_expenses) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Expenses</td>';
-                    for (let a of rawExtraction.expenses.total_expenses) { html += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
+                    for (let yi = 0; yi < rawExtraction.expenses.total_expenses.length; yi++) {
+                        html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</td>';
+                    }
                     html += '<td></td></tr>';
                 }
                 html += '</table>';
