@@ -1136,6 +1136,10 @@ Revenue total and expense total must equal the audited totals in the PDF.
         const centuryCategories = {{ century_categories_json }};
         const CENTURY_TO_SUMMARY = {{ century_to_summary_json }};
         const existingRules = {{ existing_rules_json }};
+        const buildingLabels = {{ building_labels_json }};
+        const buildingLabelSet = new Set(buildingLabels);
+        const buildingLabelSections = {{ building_label_sections_json }};
+        const centuryCatSet = new Set(centuryCategories);
         const profileId = {{ profile_id }};
         let itemIndex = 0;
 
@@ -1151,7 +1155,7 @@ Revenue total and expense total must equal the audited totals in the PDF.
         const INCOME_ROWS = new Set(["Total Operating Income", "Non-Operating Income"]);
         function displayCat(cat) {
             if (!cat) return '';
-            const summary = CENTURY_TO_SUMMARY[cat] || '';
+            const summary = CENTURY_TO_SUMMARY[cat] || buildingLabelSections[cat] || '';
             const tag = INCOME_ROWS.has(summary) ? ' (inc.)' : ' (exp.)';
             return cat + tag;
         }
@@ -1164,17 +1168,36 @@ Revenue total and expense total must equal the audited totals in the PDF.
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
             const rulesForDesc = existingRules[normalized] || {};
-            // Section-aware: only pre-fill with a rule whose category matches
-            // this input's section. A rule for the OTHER section stays out to
-            // avoid the revenue/expense crosstalk it caused previously.
-            const currentMapping = (typeof rulesForDesc === 'string')
+            // Priority: 1) auditor rule, 2) exact century category match, 3) exact building label match
+            let currentMapping = (typeof rulesForDesc === 'string')
                 ? rulesForDesc
                 : (rulesForDesc[section] || '');
+            let matchType = currentMapping ? 'rule' : '';
+
+            // Auto-fill: if no auditor rule, check if description IS a valid century category
+            if (!currentMapping && centuryCatSet.has(description)) {
+                currentMapping = description;
+                matchType = 'exact';
+            }
+            // Auto-fill: if still no match, check building's own labels
+            if (!currentMapping && buildingLabelSet.has(description)) {
+                currentMapping = description;
+                matchType = 'building';
+            }
+
             const displayValue = displayCat(currentMapping);
-            const mapped = currentMapping ? ' style="background:#d4edda;"' : '';
+            // Color coding: green = exact match, yellow = auditor rule (learned/consolidated)
+            let bgStyle = '';
+            if (currentMapping && matchType === 'exact') bgStyle = 'background:#d4edda;';       // green — exact
+            else if (currentMapping && matchType === 'building') bgStyle = 'background:#d4edda;'; // green — building label match
+            else if (currentMapping && matchType === 'rule') bgStyle = 'background:#fff3cd;';    // yellow — auditor rule
 
             let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + displayValue + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();"' + mapped + ' style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px;">';
+            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + displayValue + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();" style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px; ' + bgStyle + '">';
+            // Show note for auditor-rule matches (non-exact) so user can see what was consolidated
+            if (matchType === 'rule' && currentMapping.toLowerCase() !== normalized) {
+                html += '<div style="font-size:10px; color:#856404; margin-top:2px;">Auditor: "' + description + '" → mapped to "' + currentMapping + '"</div>';
+            }
             html += '</div>';
             return html;
         }
@@ -1184,14 +1207,14 @@ Revenue total and expense total must equal the audited totals in the PDF.
             if (raw === '') { el.style.background = ''; return; }
             // Allow both suffixed ("Payroll (exp.)") and bare ("Payroll") entries.
             const bare = stripCatSuffix(raw);
-            if (centuryCategories.indexOf(bare) === -1) {
-                el.value = '';
-                el.style.background = '';
-                alert('"' + raw + '" is not a valid Century category. Pick from the list.');
-            } else {
+            if (centuryCatSet.has(bare) || buildingLabelSet.has(bare)) {
                 // Normalize to the suffixed display form.
                 el.value = displayCat(bare);
                 el.style.background = '#d4edda';
+            } else {
+                el.value = '';
+                el.style.background = '';
+                alert('"' + raw + '" is not a valid category. Pick from the list.');
             }
         }
 
@@ -1202,7 +1225,9 @@ Revenue total and expense total must equal the audited totals in the PDF.
 
             // Shared datalist for all mapping dropdowns (alphabetical + searchable)
             html += '<datalist id="centuryCatsList">';
-            for (let cat of centuryCategories) { html += '<option value="' + displayCat(cat) + '">'; }
+            // Include both Century generic categories and building-specific labels
+            const allCats = new Set([...centuryCategories, ...buildingLabels]);
+            for (let cat of Array.from(allCats).sort()) { html += '<option value="' + displayCat(cat) + '">'; }
             html += '</datalist>';
 
             if (years.length > 0) {
@@ -1492,9 +1517,33 @@ Revenue total and expense total must equal the audited totals in the PDF.
         html = html.replace("{{ raw_json }}", json.dumps(raw_extraction))
         html = html.replace("{{ mapped_json }}", json.dumps(mapped_data))
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
+        # Query building's own summary row labels + sections for auto-matching
+        building_labels = []
+        building_label_sections = {}  # label → summary row (income/expense)
+        try:
+            bl_rows = db.session.execute(db.text(
+                "SELECT label, section FROM budget_summary_rows "
+                "WHERE entity_code = :ec AND row_type = 'data' "
+                "ORDER BY display_order"
+            ), {"ec": upload.entity_code}).fetchall()
+            building_labels = [r[0] for r in bl_rows]
+            for r in bl_rows:
+                sec = (r[1] or "").lower()
+                if sec == "income":
+                    building_label_sections[r[0]] = "Total Operating Income"
+                elif sec == "non-operating income":
+                    building_label_sections[r[0]] = "Non-Operating Income"
+                else:
+                    building_label_sections[r[0]] = "Total Operating Expenses"
+        except Exception:
+            building_labels = []
+            building_label_sections = {}
+
         html = html.replace("{{ century_categories_json }}", json.dumps(sorted(CENTURY_CATEGORIES)))
         html = html.replace("{{ century_to_summary_json }}", json.dumps(CENTURY_TO_SUMMARY))
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
+        html = html.replace("{{ building_labels_json }}", json.dumps(building_labels))
+        html = html.replace("{{ building_label_sections_json }}", json.dumps(building_label_sections))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
 
         return render_template_string(html)
