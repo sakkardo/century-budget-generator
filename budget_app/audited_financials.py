@@ -1992,23 +1992,28 @@ RULES:
 
     @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
     def api_delete_upload(upload_id):
-        """Delete an upload that hasn't been confirmed."""
+        """Delete an upload."""
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
 
         # Delete the PDF file if it exists
-        if upload.file_path:
+        if upload.pdf_filename:
             try:
                 import os
-                if os.path.exists(upload.file_path):
-                    os.remove(upload.file_path)
+                pdf_path = str(get_data_dir() / upload.pdf_filename)
+                if os.path.exists(pdf_path):
+                    os.remove(pdf_path)
             except Exception:
                 pass  # File cleanup is best-effort
 
-        db.session.delete(upload)
-        db.session.commit()
-        return jsonify({"success": True})
+        try:
+            db.session.delete(upload)
+            db.session.commit()
+            return jsonify({"success": True})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"success": False, "error": str(e)}), 500
 
     # ─── Return Blueprint and Models ───────────────────────────────────────────
 
