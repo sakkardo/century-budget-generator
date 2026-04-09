@@ -1240,16 +1240,51 @@ RULES:
                 matchType = 'building';
             }
 
-            const displayValue = displayCat(currentMapping);
-            // Color coding: green = exact match, yellow = auditor rule (learned/consolidated)
+            // Color coding: green = exact/building match, yellow = auditor rule
             let bgStyle = '';
-            if (currentMapping && matchType === 'exact') bgStyle = 'background:#d4edda;';       // green — exact
-            else if (currentMapping && matchType === 'building') bgStyle = 'background:#d4edda;'; // green — building label match
-            else if (currentMapping && matchType === 'rule') bgStyle = 'background:#fff3cd;';    // yellow — auditor rule
+            if (currentMapping && (matchType === 'exact' || matchType === 'building')) bgStyle = 'background:#d4edda;';
+            else if (currentMapping && matchType === 'rule') bgStyle = 'background:#fff3cd;';
 
+            // Build <select> dropdown with all categories
+            const allCats = Array.from(new Set([...centuryCategories, ...buildingLabels])).sort();
             let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<input list="centuryCatsList" id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" value="' + displayValue + '" placeholder="Type to search or leave blank…" onchange="validateCatInput(this); renderReconciliation();" style="width:100%; padding:3px; font-size:12px; border:1px solid #ccc; border-radius:3px; ' + bgStyle + '">';
-            // Show note for auditor-rule matches (non-exact) so user can see what was consolidated
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="onDropdownChange(this); renderReconciliation();" style="width:100%; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<option value="">— Select category —</option>';
+            // Group: Income
+            html += '<optgroup label="Income">';
+            const incCats = allCats.filter(c => {
+                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
+                return sum.toLowerCase().includes('income') && !sum.toLowerCase().includes('non-operating');
+            });
+            for (let c of incCats) {
+                const sel = (c === currentMapping) ? ' selected' : '';
+                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
+            }
+            html += '</optgroup>';
+            // Group: Expenses
+            html += '<optgroup label="Expenses">';
+            const expCats = allCats.filter(c => {
+                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
+                return sum.toLowerCase().includes('expense') || sum === '';
+            });
+            for (let c of expCats) {
+                const sel = (c === currentMapping) ? ' selected' : '';
+                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
+            }
+            html += '</optgroup>';
+            // Group: Non-Operating
+            html += '<optgroup label="Non-Operating">';
+            const noCats = allCats.filter(c => {
+                const sum = CENTURY_TO_SUMMARY[c] || buildingLabelSections[c] || '';
+                return sum.toLowerCase().includes('non-operating');
+            });
+            for (let c of noCats) {
+                const sel = (c === currentMapping) ? ' selected' : '';
+                html += '<option value="' + c + '"' + sel + '>' + c + '</option>';
+            }
+            html += '</optgroup>';
+            html += '</select>';
+            // Show note for auditor-rule matches where name differs
             if (matchType === 'rule' && currentMapping.toLowerCase() !== normalized) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:2px;">Auditor: "' + description + '" → mapped to "' + currentMapping + '"</div>';
             }
@@ -1257,19 +1292,11 @@ RULES:
             return html;
         }
 
-        function validateCatInput(el) {
-            const raw = el.value.trim();
-            if (raw === '') { el.style.background = ''; return; }
-            // Allow both suffixed ("Payroll (exp.)") and bare ("Payroll") entries.
-            const bare = stripCatSuffix(raw);
-            if (centuryCatSet.has(bare) || buildingLabelSet.has(bare)) {
-                // Normalize to the suffixed display form.
-                el.value = displayCat(bare);
+        function onDropdownChange(el) {
+            if (el.value) {
                 el.style.background = '#d4edda';
             } else {
-                el.value = '';
                 el.style.background = '';
-                alert('"' + raw + '" is not a valid category. Pick from the list.');
             }
         }
 
@@ -1278,12 +1305,7 @@ RULES:
             const years = rawExtraction.fiscal_years || [];
             let html = '';
 
-            // Shared datalist for all mapping dropdowns (alphabetical + searchable)
-            html += '<datalist id="centuryCatsList">';
-            // Include both Century generic categories and building-specific labels
-            const allCats = new Set([...centuryCategories, ...buildingLabels]);
-            for (let cat of Array.from(allCats).sort()) { html += '<option value="' + displayCat(cat) + '">'; }
-            html += '</datalist>';
+            // Categories are now rendered as <select> dropdowns in makeDropdown()
 
             if (years.length > 0) {
                 html += '<div style="background:#e8f0fe; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-weight:bold;">Fiscal Years: ' + years.join(', ') + '</div>';
@@ -1400,7 +1422,7 @@ RULES:
             let unmappedRevenue = 0;
             let unmappedExpense = 0;
 
-            const allSelects = document.querySelectorAll('input[id^="map_"]');
+            const allSelects = document.querySelectorAll('select[id^="map_"]');
             const mismatches = [];
             allSelects.forEach(s => {
                 // Clear any prior mismatch styling (idempotent)
@@ -1502,7 +1524,7 @@ RULES:
         function saveAllRules() {
             if (!profileId) { alert('No auditor profile assigned'); return; }
 
-            const selects = document.querySelectorAll('input[id^="map_"]');
+            const selects = document.querySelectorAll('select[id^="map_"]');
             const rules = [];
             selects.forEach(s => {
                 if (s.value) {
