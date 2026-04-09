@@ -618,3 +618,82 @@ User feedback mid-session: "why cant you do this - you are controlling my comput
 1. **Audited Financials for 4 new test entities** — 805/302/206/733 show `has_audit: false` on dashboard list. User to upload PDFs via Data Collection for each.
 2. **Design updates** — user flagged "a few design updates" for separate visual-only pass.
 3. **Expense Distribution automation** — still a manual-upload step per user workflow ("do not change the script").
+
+---
+
+## April 9, 2026 Session
+
+### Audited Financials — Interactive Review Page Overhaul
+
+#### Overview
+Transformed the AF review page (`/af/review/<id>`) from a static display into a full spreadsheet-like interactive interface matching the FA dashboard pattern. All code in `audited_financials.py` inside `create_audited_financials()`.
+
+#### Editable Amount Cells (Excel-Style)
+- **2025 amounts (current year)**: Editable `<input>` cells with `data-raw` for numeric value
+- **2024 amounts (prior year)**: Read-only styled inputs (`amt-cell-readonly`)
+- `onfocus` shows raw number, `onblur` reformats via `amtCellBlur()` and updates linked select's `data-amount`
+- Pattern matches FA dashboard: `makeAmtInput(amount, rowId)` / `makeAmtReadonly(amount)`
+- Split rows also get editable cells (not just parent consolidated rows)
+
+#### Dynamic Left-Side Totals (Formula Rows)
+- Each item row tagged with `data-group="revenue"` or `data-group="exp_N"` (N = expense category index)
+- Revenue Total, Expense Subtotals, and Total Expenses have `<span>` elements with IDs (`total-revenue`, `subtotal-exp-0`, `total-expenses`)
+- `recalcLeftTotals()` sums `.amt-cell:not(.amt-cell-readonly)` by group and updates total spans live
+- Called from `amtCellBlur()` and `splitRow()` — any amount edit instantly recalculates all left-side totals
+- Split rows inherit parent's `data-group` so subtotals remain correct after splitting
+
+#### Accept Workflow (Yellow → Green)
+- All Claude-recommended mappings start YELLOW (`background:#fff3cd`) with `data-accepted="false"`
+- Each dropdown has an "✓ Accept" button
+- Clicking Accept: turns dropdown GREEN (`#d4edda`), sets `data-accepted="true"`
+- Changing a dropdown after accepting reverts to YELLOW (needs re-accept)
+- `updateAcceptState()` tracks progress — "Confirm & Save" button disabled until all rows accepted
+
+#### Split Consolidated Items
+- Auditor groups (e.g., "Payroll" with 5 sub-items) show a "Split into individual rows" button
+- `splitRow()` replaces parent with individual sub-rows, each with:
+  - Own editable amount cells (year 0 editable, year 1+ readonly)
+  - Own dropdown inheriting parent's mapping (`makeDropdownWithDefault`)
+  - Own Accept button (starts yellow, needs individual acceptance)
+  - Parent's `data-group` for correct subtotal calculation
+
+#### Formula-Based Right Column (In/Out Tracking)
+- Each select stores `data-orig-cat` (original Claude mapping) — immutable across dropdown changes
+- `renderMappedData()` compares current selection vs original to classify:
+  - **Base items**: `currentCat === origCat` (stayed in same category)
+  - **Adjusted in**: `currentCat !== origCat` (moved TO this category) — shown in GREEN
+  - **Adjusted out**: item's `origCat` was this category but moved away — shown in RED
+- Formula row shows: `= $originalBase + $adjIn - $adjOut`
+  - Example: `= $500,000 + $10,000` when an item moves in
+  - Example: `= $30,000 − $10,000` when an item moves out
+- Line item detail shows source/destination: `+ Office Supplies (from Supplies)` / `− Office Supplies (→ Payroll)`
+- Grand Total row at bottom
+
+#### Building-Specific Dropdown Options
+- Option groups: Income (this building) → Expenses (this building) → Non-Operating (this building) → Other Century Categories
+- Building labels from `budget_summary_rows` table, sections from `buildingLabelSections` mapping
+- "Other Century Categories" at bottom for edge cases (new categories not in building's budget)
+
+#### Key Functions (all in `audited_financials.py`)
+- `makeAmtInput(amount, rowId)` / `makeAmtReadonly(amount)` — editable/readonly cell builders
+- `amtCellBlur(el)` — format, update linked select, trigger `renderReconciliation()` + `recalcLeftTotals()`
+- `recalcLeftTotals()` — sums editable cells by `data-group`, updates left-side total spans
+- `renderMappedData()` — builds right column with base/adjIn/adjOut tracking and formula display
+- `splitRow(btn)` — splits consolidated rows, preserves `data-group` and creates editable cells
+- `makeDropdown(desc, amount, section)` / `makeDropdownWithDefault(desc, amount, section, defaultMapping)` — dropdown builders with `data-orig-cat`
+- `acceptRow(btn)` / `onDropdownChange(el)` / `updateAcceptState()` — accept workflow
+- `buildSelectOptions(currentMapping)` — building-specific grouped options
+
+#### Prior Fixes (this session, carried from earlier)
+- Delete endpoint crash: model has `pdf_filename` not `file_path` — fixed with `get_data_dir()` + try/catch
+- Phase 2 extraction format: `expenses.categories` as dict with numeric keys → normalized to array
+- Static datalist inputs → proper `<select>` dropdowns
+- Split rows inheriting parent mapping via `makeDropdownWithDefault`
+- Dropdown changes now trigger `renderReconciliation()` (was missing)
+- Right column sticky positioning for visibility during scrolling
+
+#### Pending
+1. **Process remaining audited PDFs** — 12+ buildings still need Phase 3 extraction
+2. **Formula bar** — consider adding FA-style formula bar to AF review page
+3. **Remove `_debug_col2`** from summary API response (low priority cleanup)
+4. **Design updates** — visual polish pass deferred

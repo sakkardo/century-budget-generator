@@ -2296,6 +2296,57 @@ RULES:
             db.session.rollback()
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @bp.route("/api/af/bulk-upload", methods=["POST"])
+    def api_bulk_upload():
+        """Bulk upload PDFs from base64-encoded JSON payload.
+        Expects: { "uploads": [ { "entity_code": "138", "profile_id": null, "fiscal_year_end": "2025", "filename": "test.pdf", "data_b64": "base64..." } ] }
+        """
+        import base64
+        try:
+            payload = request.get_json()
+            uploads_data = payload.get("uploads", [])
+            results = []
+            buildings = get_buildings_list()
+            data_dir = get_data_dir()
+
+            for item in uploads_data:
+                entity_code = item.get("entity_code")
+                profile_id = item.get("profile_id")
+                fiscal_year_end = item.get("fiscal_year_end", "2025")
+                filename = item.get("filename", "upload.pdf")
+                data_b64 = item.get("data_b64", "")
+
+                if not entity_code or not data_b64:
+                    results.append({"entity_code": entity_code, "success": False, "error": "Missing entity_code or data"})
+                    continue
+
+                building_name = next((b["building_name"] for b in buildings if b["entity_code"] == entity_code), "Unknown")
+                safe_filename = f"{entity_code}_{fiscal_year_end}_{filename}"
+                filepath = data_dir / safe_filename
+
+                # Decode and save
+                pdf_bytes = base64.b64decode(data_b64)
+                with open(str(filepath), "wb") as f:
+                    f.write(pdf_bytes)
+
+                upload = AuditUpload(
+                    entity_code=entity_code,
+                    building_name=building_name,
+                    profile_id=int(profile_id) if profile_id else None,
+                    fiscal_year_end=fiscal_year_end,
+                    pdf_filename=safe_filename,
+                    status="uploaded"
+                )
+                db.session.add(upload)
+                db.session.commit()
+                results.append({"entity_code": entity_code, "success": True, "upload_id": upload.id})
+
+            return jsonify({"success": True, "results": results})
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Bulk upload error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 400
+
     # ─── Return Blueprint and Models ───────────────────────────────────────────
 
     models = {
