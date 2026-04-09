@@ -1154,7 +1154,7 @@ RULES:
 
     <div class="confirm-section">
         <h3>Confirm Extraction</h3>
-        <p>Review the data above and confirm to save as official actuals for this building/year.</p>
+        <p>Accept each line item above, then confirm to save as official actuals for this building/year.</p>
         <button id="confirmBtn" class="btn-green" disabled style="opacity:0.4; cursor:not-allowed;" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
         <div id="confirmStatus"></div>
     </div>
@@ -1278,44 +1278,38 @@ RULES:
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
             const rulesForDesc = existingRules[normalized] || {};
-            // Priority: 1) auditor rule, 2) exact century category match, 3) exact building label match
             let currentMapping = (typeof rulesForDesc === 'string')
                 ? rulesForDesc
                 : (rulesForDesc[section] || '');
-            let matchType = currentMapping ? 'rule' : '';
 
             if (!currentMapping && centuryCatSet.has(description)) {
                 currentMapping = description;
-                matchType = 'exact';
             }
             if (!currentMapping && buildingLabelSet.has(description)) {
                 currentMapping = description;
-                matchType = 'building';
             }
 
-            let bgStyle = '';
-            if (currentMapping && (matchType === 'exact' || matchType === 'building')) bgStyle = 'background:#d4edda;';
-            else if (currentMapping && matchType === 'rule') bgStyle = 'background:#fff3cd;';
+            // All start yellow (recommended) — user must Accept to turn green
+            const bgStyle = currentMapping ? 'background:#fff3cd;' : '';
 
-            let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="onDropdownChange(this); renderReconciliation();" style="width:100%; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-accepted="false" onchange="onDropdownChange(this); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
-            if (matchType === 'rule' && currentMapping.toLowerCase() !== normalized) {
-                html += '<div style="font-size:10px; color:#856404; margin-top:2px;">Auditor: "' + description + '" → mapped to "' + currentMapping + '"</div>';
-            }
+            html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
             html += '</div>';
             return html;
         }
 
-        // Version of makeDropdown that forces a specific default mapping (for split rows)
+        // Version for split rows — inherits parent mapping, starts yellow
         function makeDropdownWithDefault(description, amount, section, defaultMapping) {
             const id = 'map_' + itemIndex++;
-            const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';  // yellow = inherited from parent
-            let html = '<div data-section="' + (section || 'expense') + '">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="onDropdownChange(this); renderReconciliation();" style="width:100%; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-accepted="false" onchange="onDropdownChange(this); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
+            html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
             if (defaultMapping) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
             }
@@ -1323,8 +1317,55 @@ RULES:
             return html;
         }
 
+        function acceptRow(btn) {
+            const wrapper = btn.closest('[data-section]');
+            const sel = wrapper.querySelector('select[id^="map_"]');
+            if (!sel.value) { alert('Select a category first'); return; }
+            sel.dataset.accepted = 'true';
+            sel.style.background = '#d4edda';  // green = confirmed
+            btn.style.background = '#16a34a';
+            btn.textContent = '✓';
+            btn.disabled = true;
+            btn.title = 'Accepted';
+            updateAcceptState();
+            renderReconciliation();
+        }
+
         function onDropdownChange(el) {
-            el.style.background = el.value ? '#d4edda' : '';
+            // If user changes after accepting, revert to yellow (needs re-accept)
+            el.dataset.accepted = 'false';
+            el.style.background = el.value ? '#fff3cd' : '';
+            const btn = el.parentElement.querySelector('.accept-btn');
+            if (btn) {
+                btn.style.background = '#f59e0b';
+                btn.textContent = '✓ Accept';
+                btn.disabled = false;
+            }
+        }
+
+        function updateAcceptState() {
+            // Check if all rows are accepted — controls Confirm & Save button
+            const allSelects = document.querySelectorAll('select[id^="map_"]');
+            let allAccepted = true;
+            let acceptedCount = 0;
+            allSelects.forEach(s => {
+                if (s.dataset.accepted === 'true') acceptedCount++;
+                else allAccepted = false;
+            });
+            const total = allSelects.length;
+            // Update accept counter
+            const counter = document.getElementById('acceptCounter');
+            if (counter) {
+                counter.textContent = acceptedCount + ' / ' + total + ' accepted';
+                counter.style.color = allAccepted ? '#16a34a' : '#d97706';
+            }
+            // Enable/disable confirm button
+            const confirmBtn = document.getElementById('confirmBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = !allAccepted;
+                confirmBtn.style.opacity = allAccepted ? '1' : '0.4';
+                confirmBtn.style.cursor = allAccepted ? 'pointer' : 'not-allowed';
+            }
         }
 
         // Split a consolidated row into individual source_line rows
@@ -1434,29 +1475,30 @@ RULES:
         function renderMappedData() {
             const container = document.getElementById('mappedData');
             const years = rawExtraction.fiscal_years || [];
-            let html = '<table style="font-size:13px;"><tr><th style="text-align:left;">Category</th>';
-            for (let y of years) { html += '<th style="text-align:right;">' + y + '</th>'; }
-            html += '</tr>';
+            const currentYear = years[0] || 'Current';
 
-            let hasData = false;
-            for (let cat in mappedData) {
-                const data = mappedData[cat];
-                const yearAmounts = data.year_totals || [];
-                const total = data.total || 0;
-                if (total !== 0) {
-                    hasData = true;
-                    html += '<tr><td>' + cat + '</td>';
-                    if (yearAmounts.length > 0) {
-                        for (let a of yearAmounts) { html += '<td style="text-align:right;">' + formatAmount(a) + '</td>'; }
-                    } else {
-                        html += '<td style="text-align:right;">' + formatAmount(total) + '</td>';
-                    }
-                    html += '</tr>';
+            // Build dynamic totals from current dropdown selections (2025 / year[0] only)
+            const catTotals = {};
+            const allSelects = document.querySelectorAll('select[id^="map_"]');
+            allSelects.forEach(s => {
+                if (s.value) {
+                    const cat = stripCatSuffix(s.value);
+                    const amount = parseFloat(s.dataset.amount) || 0;
+                    catTotals[cat] = (catTotals[cat] || 0) + amount;
                 }
-            }
+            });
 
-            if (!hasData) {
-                html += '<tr><td colspan="' + (years.length + 1) + '" style="text-align:center; color:#999; padding:20px;">Map items on the left, then click "Save All Mappings"</td></tr>';
+            let html = '<table style="font-size:13px; width:100%;"><tr><th style="text-align:left;">Category</th>';
+            html += '<th style="text-align:right;">' + currentYear + '</th></tr>';
+
+            const sortedCats = Object.keys(catTotals).sort();
+            if (sortedCats.length === 0) {
+                html += '<tr><td colspan="2" style="text-align:center; color:#999; padding:20px;">Map items on the left, then click "Save All Mappings"</td></tr>';
+            } else {
+                for (let cat of sortedCats) {
+                    html += '<tr><td>' + cat + '</td>';
+                    html += '<td style="text-align:right; font-weight:600;">' + formatAmount(catTotals[cat]) + '</td></tr>';
+                }
             }
 
             html += '</table>';
@@ -1464,6 +1506,8 @@ RULES:
         }
 
         function renderReconciliation() {
+            // Also refresh the mapped data table so it stays in sync
+            renderMappedData();
             const container = document.getElementById('reconciliation');
             const centuryToSummary = CENTURY_TO_SUMMARY;
             const incomeSummaryRows = new Set(["Total Operating Income", "Non-Operating Income"]);
@@ -1556,22 +1600,20 @@ RULES:
                 html += '</div>';
             }
 
+            // Accept progress counter
+            html += '<div id="acceptCounter" style="text-align:center; font-weight:600; margin-bottom:8px; color:#d97706;"></div>';
+
             // Status
             if (allTied) {
-                html += '<div style="background:var(--green-light); color:var(--green); padding:8px 12px; border-radius:6px; font-weight:600; text-align:center;">✓ All totals tied — ready to confirm</div>';
+                html += '<div style="background:var(--green-light); color:var(--green); padding:8px 12px; border-radius:6px; font-weight:600; text-align:center;">✓ All totals tied</div>';
             } else {
                 html += '<div style="background:var(--red-light, #fde8e8); color:var(--red); padding:8px 12px; border-radius:6px; font-weight:600; text-align:center;">Totals must tie before confirming</div>';
             }
             html += '</div>';
             container.innerHTML = html;
 
-            // Enable/disable confirm button
-            const confirmBtn = document.getElementById('confirmBtn');
-            if (confirmBtn) {
-                confirmBtn.disabled = !allTied;
-                confirmBtn.style.opacity = allTied ? '1' : '0.4';
-                confirmBtn.style.cursor = allTied ? 'pointer' : 'not-allowed';
-            }
+            // Update accept state (controls confirm button)
+            updateAcceptState();
         }
 
         function saveAllRules() {
