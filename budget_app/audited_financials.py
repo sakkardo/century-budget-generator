@@ -575,6 +575,204 @@ RULES:
 
     # ─── Pages ────────────────────────────────────────────────────────────────
 
+    @bp.route("/audited-financials/bulk-upload", methods=["GET"])
+    def bulk_upload_page():
+        """Bulk upload page - select multiple PDFs, auto-match entities, upload all at once."""
+        buildings = get_buildings_list()
+        profiles = AuditorProfile.query.all()
+        buildings_json = json.dumps([{"entity_code": b["entity_code"], "building_name": b["building_name"]} for b in buildings])
+        profiles_json = json.dumps([{"id": p.id, "name": f"{p.contact_name} ({p.firm_name})"} for p in profiles])
+
+        return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bulk Upload - Audited Financials</title>
+    <style>
+        :root {{ --blue: #1a56db; --green: #057a55; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #fdf6ee 0%, #f5ebe0 100%); min-height: 100vh; color: var(--gray-700); }}
+        header {{ background: linear-gradient(135deg, #3d1c00 0%, #6b3410 100%); color: white; padding: 16px 24px; }}
+        header a {{ color: rgba(255,255,255,0.8); text-decoration: none; font-size: 13px; }}
+        header h1 {{ font-size: 28px; font-weight: 700; }}
+        .container {{ max-width: 1200px; margin: 0 auto; padding: 32px 20px; }}
+        .section {{ background: white; border-radius: 12px; padding: 28px; margin-bottom: 24px; border: 1px solid var(--gray-200); }}
+        h2 {{ font-size: 18px; font-weight: 600; margin-bottom: 16px; color: var(--blue); }}
+        .drop-zone {{ border: 3px dashed var(--gray-300); border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--gray-50); }}
+        .drop-zone:hover, .drop-zone.drag-over {{ border-color: var(--blue); background: #eef2ff; }}
+        .drop-zone p {{ font-size: 16px; color: var(--gray-500); margin-bottom: 8px; }}
+        .drop-zone .big {{ font-size: 36px; margin-bottom: 12px; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
+        th {{ background: var(--gray-100); padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }}
+        td {{ padding: 8px 12px; border-bottom: 1px solid var(--gray-200); font-size: 13px; }}
+        select {{ padding: 6px 8px; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 13px; width: 100%; }}
+        input[type=text] {{ padding: 6px 8px; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 13px; width: 80px; }}
+        .btn {{ background: var(--green); color: white; border: none; padding: 12px 28px; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }}
+        .btn:hover {{ background: #046c4e; }}
+        .btn:disabled {{ background: var(--gray-300); cursor: not-allowed; }}
+        .status {{ font-weight: 600; font-size: 12px; }}
+        .status-pending {{ color: var(--gray-500); }}
+        .status-uploading {{ color: #92400e; }}
+        .status-done {{ color: #057a55; }}
+        .status-error {{ color: #dc2626; }}
+        .match {{ color: #057a55; font-weight: 600; }}
+        .no-match {{ color: #dc2626; font-style: italic; }}
+        .progress-bar {{ width: 100%; height: 6px; background: var(--gray-200); border-radius: 3px; margin-top: 16px; overflow: hidden; }}
+        .progress-fill {{ height: 100%; background: var(--green); transition: width 0.3s; width: 0%; }}
+        #summary {{ margin-top: 16px; font-size: 14px; }}
+        .remove-btn {{ background: none; border: none; color: #dc2626; cursor: pointer; font-size: 16px; padding: 2px 6px; }}
+    </style>
+</head>
+<body>
+<header>
+    <a href="/audited-financials">&larr; Back to Audited Financials</a>
+    <h1>Bulk Upload</h1>
+    <p>Upload multiple audited financial PDFs at once</p>
+</header>
+<div class="container">
+    <div class="section">
+        <h2>1. Select PDF Files</h2>
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="big">📄</div>
+            <p><strong>Click to select files</strong> or drag and drop</p>
+            <p style="font-size:13px; color:#999;">PDF files only &middot; Entity codes auto-matched from filenames</p>
+        </div>
+        <input type="file" id="fileInput" multiple accept=".pdf" style="display:none" onchange="handleFiles(this.files)">
+    </div>
+
+    <div class="section" id="fileListSection" style="display:none">
+        <h2>2. Review & Assign</h2>
+        <p style="font-size:13px; color:var(--gray-500); margin-bottom:12px;">Entity codes are auto-detected from filenames. Adjust as needed.</p>
+        <table>
+            <thead>
+                <tr><th>File</th><th>Entity</th><th>Auditor Profile</th><th>Year</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody id="fileTableBody"></tbody>
+        </table>
+        <div class="progress-bar" id="progressBar" style="display:none"><div class="progress-fill" id="progressFill"></div></div>
+        <div id="summary"></div>
+        <div style="margin-top:20px; display:flex; gap:12px; align-items:center;">
+            <button class="btn" id="uploadAllBtn" onclick="uploadAll()">Upload All</button>
+            <span id="uploadCount" style="font-size:13px; color:var(--gray-500);"></span>
+        </div>
+    </div>
+</div>
+
+<script>
+const BUILDINGS = {buildings_json};
+const PROFILES = {profiles_json};
+let fileQueue = [];
+
+// Drop zone
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => {{ e.preventDefault(); dz.classList.add('drag-over'); }});
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {{ e.preventDefault(); dz.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); }});
+
+function guessEntity(filename) {{
+    // Try to match entity code from filename patterns like "138 - ..." or "212 ..."
+    const m = filename.match(/^(\\d{{3}})\\s*[-\\s]/);
+    if (m) {{
+        const code = m[1];
+        const b = BUILDINGS.find(b => b.entity_code === code);
+        if (b) return {{ code: code, name: b.building_name, confident: true }};
+    }}
+    // Try "147 Waverly" -> entity 826
+    const knownMappings = {{
+        '147 Waverly': '826',
+        '142 E': '733',
+    }};
+    for (let [pattern, code] of Object.entries(knownMappings)) {{
+        if (filename.includes(pattern)) {{
+            const b = BUILDINGS.find(b => b.entity_code === code);
+            if (b) return {{ code: code, name: b.building_name, confident: true }};
+        }}
+    }}
+    return {{ code: '', name: '', confident: false }};
+}}
+
+function handleFiles(files) {{
+    for (let f of files) {{
+        if (!f.name.toLowerCase().endsWith('.pdf')) continue;
+        if (fileQueue.find(q => q.file.name === f.name)) continue;
+        const guess = guessEntity(f.name);
+        fileQueue.push({{ file: f, entity: guess.code, confident: guess.confident, profile: '', year: '2025', status: 'pending' }});
+    }}
+    renderTable();
+    document.getElementById('fileListSection').style.display = 'block';
+}}
+
+function renderTable() {{
+    const tbody = document.getElementById('fileTableBody');
+    tbody.innerHTML = '';
+    fileQueue.forEach((q, i) => {{
+        const entityOpts = BUILDINGS.map(b => `<option value="${{b.entity_code}}" ${{b.entity_code===q.entity?'selected':''}}>{{b.entity_code}} - ${{b.building_name}}</option>`).join('');
+        const profileOpts = PROFILES.map(p => `<option value="${{p.id}}" ${{String(p.id)===String(q.profile)?'selected':''}}>{{p.name}}</option>`).join('');
+        const statusClass = q.status === 'done' ? 'status-done' : q.status === 'error' ? 'status-error' : q.status === 'uploading' ? 'status-uploading' : 'status-pending';
+        const statusText = q.status === 'done' ? '&#10003; Done' : q.status === 'error' ? '&#10007; Error' : q.status === 'uploading' ? 'Uploading...' : 'Pending';
+        tbody.innerHTML += `<tr>
+            <td title="${{q.file.name}}" style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${{q.file.name}}</td>
+            <td><select onchange="fileQueue[${{i}}].entity=this.value" ${{q.status!=='pending'?'disabled':''}}><option value="">Select...</option>${{entityOpts}}</select></td>
+            <td><select onchange="fileQueue[${{i}}].profile=this.value" ${{q.status!=='pending'?'disabled':''}}><option value="">None</option>${{profileOpts}}</select></td>
+            <td><input type="text" value="${{q.year}}" onchange="fileQueue[${{i}}].year=this.value" ${{q.status!=='pending'?'disabled':''}}></td>
+            <td><span class="status ${{statusClass}}">${{statusText}}</span></td>
+            <td>${{q.status==='pending'?`<button class="remove-btn" onclick="fileQueue.splice(${{i}},1);renderTable();">&times;</button>`:''}}</td>
+        </tr>`;
+    }});
+    document.getElementById('uploadCount').textContent = `${{fileQueue.filter(q=>q.entity).length}} of ${{fileQueue.length}} files matched`;
+}}
+
+async function uploadAll() {{
+    const btn = document.getElementById('uploadAllBtn');
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    const bar = document.getElementById('progressBar');
+    bar.style.display = 'block';
+    const fill = document.getElementById('progressFill');
+    let done = 0;
+    const total = fileQueue.length;
+
+    for (let i = 0; i < fileQueue.length; i++) {{
+        const q = fileQueue[i];
+        if (q.status === 'done') {{ done++; continue; }}
+        if (!q.entity) {{ q.status = 'error'; q.errorMsg = 'No entity selected'; renderTable(); done++; continue; }}
+        q.status = 'uploading';
+        renderTable();
+        try {{
+            const fd = new FormData();
+            fd.append('entity_code', q.entity);
+            fd.append('profile_id', q.profile || '');
+            fd.append('fiscal_year_end', q.year);
+            fd.append('pdf', q.file);
+            const r = await fetch('/api/af/upload', {{ method: 'POST', body: fd }});
+            const d = await r.json();
+            if (d.success) {{
+                q.status = 'done';
+                q.uploadId = d.upload_id;
+            }} else {{
+                q.status = 'error';
+                q.errorMsg = d.error;
+            }}
+        }} catch(e) {{
+            q.status = 'error';
+            q.errorMsg = e.message;
+        }}
+        done++;
+        fill.style.width = (done/total*100) + '%';
+        renderTable();
+    }}
+
+    btn.textContent = 'Done!';
+    const doneCount = fileQueue.filter(q => q.status === 'done').length;
+    const errCount = fileQueue.filter(q => q.status === 'error').length;
+    document.getElementById('summary').innerHTML = `<strong>${{doneCount}}</strong> uploaded successfully${{errCount > 0 ? `, <strong style="color:#dc2626">${{errCount}}</strong> failed` : ''}}. <a href="/audited-financials">← Back to main page</a>`;
+}}
+</script>
+</body>
+</html>"""
+
     @bp.route("/audited-financials", methods=["GET"])
     def main_page():
         """Main audited financials page."""
@@ -643,6 +841,7 @@ RULES:
     <div class="section">
         <div class="header-row">
             <h2>Upload Audit PDF</h2>
+            <a href="/audited-financials/bulk-upload" class="profiles-link" style="margin-right:16px;">Bulk Upload →</a>
             <a href="/audited-financials/profiles" class="profiles-link">Manage Profiles & Rules →</a>
         </div>
         <div class="form-row">
