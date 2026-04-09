@@ -1308,16 +1308,35 @@ RULES:
             return html;
         }
 
+        // Version of makeDropdown that forces a specific default mapping (for split rows)
+        function makeDropdownWithDefault(description, amount, section, defaultMapping) {
+            const id = 'map_' + itemIndex++;
+            const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';  // yellow = inherited from parent
+            let html = '<div data-section="' + (section || 'expense') + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" onchange="onDropdownChange(this); renderReconciliation();" style="width:100%; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += buildSelectOptions(defaultMapping);
+            html += '</select>';
+            if (defaultMapping) {
+                html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
+            }
+            html += '</div>';
+            return html;
+        }
+
         function onDropdownChange(el) {
             el.style.background = el.value ? '#d4edda' : '';
         }
 
         // Split a consolidated row into individual source_line rows
+        // Each sub-row inherits the parent's current mapping
         function splitRow(btn) {
             const row = btn.closest('tr');
             const sourceData = JSON.parse(btn.dataset.sources);
             const section = btn.dataset.section;
             const years = rawExtraction.fiscal_years || [];
+            // Get the parent row's current dropdown selection
+            const parentSelect = row.querySelector('select[id^="map_"]');
+            const parentMapping = parentSelect ? parentSelect.value : '';
             let newRows = '';
             for (let sl of sourceData) {
                 const desc = sl.auditor_desc || sl.description || '?';
@@ -1326,11 +1345,9 @@ RULES:
                 newRows += '<tr style="border-bottom:1px solid #eee; background:#fffbeb;">';
                 newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc + '</td>';
                 for (let a of amounts) { newRows += '<td style="text-align:right; padding:6px;">' + formatAmount(a) + '</td>'; }
-                // Pad if fewer amounts than years
                 for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:6px;">—</td>'; }
-                newRows += '<td style="padding:4px;">' + makeDropdown(desc, amount0, section) + '</td></tr>';
+                newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping) + '</td></tr>';
             }
-            // Replace the original row with the split rows
             row.insertAdjacentHTML('afterend', newRows);
             row.remove();
             renderReconciliation();
