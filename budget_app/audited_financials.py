@@ -1352,7 +1352,7 @@ RULES:
             const bgStyle = currentMapping ? 'background:#fff3cd;' : '';
 
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
@@ -1365,7 +1365,7 @@ RULES:
             const id = 'map_' + itemIndex++;
             const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
@@ -1565,17 +1565,34 @@ RULES:
             const years = rawExtraction.fiscal_years || [];
             const currentYear = years[0] || 'Current';
 
-            // Build dynamic totals + line item detail from current dropdown selections
-            const catData = {};  // { category: { total: N, items: [{desc, amount}] } }
+            // Build category data with original vs current tracking
+            const catData = {};  // { cat: { base: N, adjIn: [{desc,amount,from}], adjOut: [{desc,amount,to}] } }
             const allSelects = document.querySelectorAll('select[id^="map_"]');
+
             allSelects.forEach(s => {
-                if (s.value) {
-                    const cat = stripCatSuffix(s.value);
-                    const amount = parseFloat(s.dataset.amount) || 0;
-                    const desc = s.dataset.desc || '?';
-                    if (!catData[cat]) catData[cat] = { total: 0, items: [] };
-                    catData[cat].total += amount;
-                    catData[cat].items.push({ desc: desc, amount: amount });
+                const currentCat = stripCatSuffix(s.value) || '';
+                const origCat = stripCatSuffix(s.dataset.origCat || '') || '';
+                const amount = parseFloat(s.dataset.amount) || 0;
+                const desc = s.dataset.desc || '?';
+
+                // Ensure both categories exist in our data
+                if (currentCat && !catData[currentCat]) catData[currentCat] = { base: 0, baseItems: [], adjIn: [], adjOut: [] };
+                if (origCat && !catData[origCat]) catData[origCat] = { base: 0, baseItems: [], adjIn: [], adjOut: [] };
+
+                if (!currentCat && !origCat) return;
+
+                if (currentCat === origCat) {
+                    // Item stayed in its original category
+                    catData[currentCat].base += amount;
+                    catData[currentCat].baseItems.push({ desc: desc, amount: amount });
+                } else {
+                    // Item moved
+                    if (currentCat) {
+                        catData[currentCat].adjIn.push({ desc: desc, amount: amount, from: origCat || 'New' });
+                    }
+                    if (origCat) {
+                        catData[origCat].adjOut.push({ desc: desc, amount: amount, to: currentCat || 'Unmapped' });
+                    }
                 }
             });
 
@@ -1590,16 +1607,42 @@ RULES:
                 let grandTotal = 0;
                 for (let cat of sortedCats) {
                     const cd = catData[cat];
-                    grandTotal += cd.total;
-                    // Category header row
+                    const adjInTotal = cd.adjIn.reduce((s, a) => s + a.amount, 0);
+                    const adjOutTotal = cd.adjOut.reduce((s, a) => s + a.amount, 0);
+                    const originalBase = cd.base + adjOutTotal;
+                    const currentTotal = cd.base + adjInTotal;
+                    grandTotal += currentTotal;
+
+                    // Category header with current total
                     html += '<tr style="border-top:1px solid #ddd;">';
                     html += '<td style="padding:5px 6px; font-weight:600;">' + cat + '</td>';
-                    html += '<td style="text-align:right; padding:5px 6px; font-weight:600;">' + formatAmount(cd.total) + '</td></tr>';
-                    // Line item detail rows
-                    for (let li of cd.items) {
+                    html += '<td style="text-align:right; padding:5px 6px; font-weight:600;">' + formatAmount(currentTotal) + '</td></tr>';
+
+                    // Formula row if adjustments exist
+                    if (cd.adjIn.length > 0 || cd.adjOut.length > 0) {
+                        let formula = '= ' + formatAmount(originalBase);
+                        for (let a of cd.adjIn) { formula += ' <span style="color:#16a34a; font-weight:600;">+ ' + formatAmount(a.amount) + '</span>'; }
+                        for (let a of cd.adjOut) { formula += ' <span style="color:#dc2626; font-weight:600;">− ' + formatAmount(a.amount) + '</span>'; }
+                        html += '<tr><td colspan="2" style="padding:2px 6px 2px 14px; font-size:11px; color:#555; font-family:monospace;">' + formula + '</td></tr>';
+                    }
+
+                    // Base items (stayed in this category)
+                    for (let li of cd.baseItems) {
                         html += '<tr style="color:#666;">';
                         html += '<td style="padding:1px 6px 1px 18px; font-size:11px;">' + li.desc + '</td>';
                         html += '<td style="text-align:right; padding:1px 6px; font-size:11px;">' + formatAmount(li.amount) + '</td></tr>';
+                    }
+                    // Items moved IN (green)
+                    for (let a of cd.adjIn) {
+                        html += '<tr style="color:#16a34a;">';
+                        html += '<td style="padding:1px 6px 1px 18px; font-size:11px;">+ ' + a.desc + ' <span style="font-size:10px; color:#888;">(from ' + a.from + ')</span></td>';
+                        html += '<td style="text-align:right; padding:1px 6px; font-size:11px;">+' + formatAmount(a.amount) + '</td></tr>';
+                    }
+                    // Items moved OUT (red)
+                    for (let a of cd.adjOut) {
+                        html += '<tr style="color:#dc2626;">';
+                        html += '<td style="padding:1px 6px 1px 18px; font-size:11px;">− ' + a.desc + ' <span style="font-size:10px; color:#888;">(→ ' + a.to + ')</span></td>';
+                        html += '<td style="text-align:right; padding:1px 6px; font-size:11px;">−' + formatAmount(a.amount) + '</td></tr>';
                     }
                 }
                 html += '<tr style="border-top:2px solid #333;">';
@@ -1609,9 +1652,8 @@ RULES:
 
             html += '</table>';
             container.innerHTML = html;
-            // Flash to show update
             container.classList.remove('flash-update');
-            void container.offsetWidth; // force reflow
+            void container.offsetWidth;
             container.classList.add('flash-update');
         }
 
