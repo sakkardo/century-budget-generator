@@ -248,6 +248,34 @@ with app.app_context():
             db.session.rollback()
             logger.warning(f"Capital backfill skipped: {e}")
 
+        # Backfill: name unmapped budget_lines using GL_Mapping.csv (prefix match).
+        # Only updates rows where description is blank or equal to the GL code itself.
+        try:
+            from workflow import GL_MAPPING_CSV
+            if GL_MAPPING_CSV:
+                rows = db.session.execute(
+                    db.text("SELECT id, gl_code, description FROM budget_lines WHERE sheet_name = 'Unmapped'")
+                ).fetchall()
+                renamed = 0
+                for r in rows:
+                    line_id, gl_code, cur_desc = r[0], r[1] or "", (r[2] or "")
+                    # Only rename if description is missing or just the GL code
+                    if cur_desc and cur_desc != gl_code:
+                        continue
+                    hit = GL_MAPPING_CSV.get(gl_code[:4])
+                    if hit:
+                        db.session.execute(
+                            db.text("UPDATE budget_lines SET description = :d WHERE id = :id"),
+                            {"d": hit[1], "id": line_id}
+                        )
+                        renamed += 1
+                if renamed:
+                    db.session.commit()
+                    logger.info(f"Named {renamed} unmapped budget_lines from GL_Mapping.csv")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"GL_Mapping naming backfill skipped: {e}")
+
 # Health check for Railway
 @app.route("/healthz")
 def healthz():

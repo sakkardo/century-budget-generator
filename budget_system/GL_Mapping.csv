@@ -1,0 +1,413 @@
+Category Tab,GL Code,Description,Sub-Category
+Income,4010-0000,Maintenance,Recurring Income
+Income,4011-0000,Maintenance Sponsors,Recurring Income
+Income,4020-0000,Common Charges,Recurring Income
+Income,4026-0000,Mandatory Dues,Recurring Income
+Income,4027-0000,General Membership,Recurring Income
+Income,4030-0005,Commercial Common Charges,Recurring Income
+Income,4021-0000,Common Charges Sponsors,Recurring Income
+Income,4025-0000,Homeowner Association Dues,Recurring Income
+Income,4030-0000,Rental Income,Recurring Income
+Income,4080-0000,Rents- Residential Below Market,Recurring Income
+Income,4030-0010,Vacancy Loss,Recurring Income
+Income,4040-0000,Commercial Rent,Recurring Income
+Income,4080-0002,Rents- Commercial Straight Line,Recurring Income
+Income,4080-0004,Rents-Commercial Above Market,Recurring Income
+Income,4080-0006,Rents- Commercial Below Market,Recurring Income
+Income,4040-0010,Common Area Maintenance,Recurring Income
+Income,4050-0000,Professional Rental Income,Recurring Income
+Income,4060-0000,Arrears,Recurring Income
+Income,4065-0000,Surcharge,Recurring Income
+Income,4070-0000,Prepaid Income,Recurring Income
+Income,4105-0000,Real Estate Tax Abatement,Recurring Income
+Income,4110-0000,STAR Exemption,Recurring Income
+Income,4115-0000,Veterans Exemption,Recurring Income
+Income,4120-0000,SCRIE,Recurring Income
+Income,4125-0000,SCHE,Recurring Income
+Income,4127-0000,Abatement,Recurring Income
+Income,4128-0000,MCI Increase,Recurring Income
+Income,4128-0002,IAI Increase,Recurring Income
+Income,4129-0000,Preferential Rent,Recurring Income
+Income,4130-0000,Apartment Charges,Recurring Income
+Income,4130-0005,Ground Rent,Recurring Income
+Income,4130-0006,Civic Fee,Recurring Income
+Income,4130-0010,Storage Room,Recurring Income
+Income,4130-0011,Locker,Recurring Income
+Income,4130-0012,Locker 2,Recurring Income
+Income,4130-0015,Bicycle Charge,Recurring Income
+Income,4130-0020,Gym Fees,Recurring Income
+Income,4130-0021,Business Center,Recurring Income
+Income,4130-0022,Cinema Room,Recurring Income
+Income,4130-0025,Energy Surcharge,Recurring Income
+Income,4130-0030,Laundry,Recurring Income
+Income,4130-0031,Valet,Recurring Income
+Income,4130-0035,Maids Room,Recurring Income
+Income,4130-0036,Hallway License Fee,Recurring Income
+Income,4130-0040,Pool Charges,Recurring Income
+Income,4130-0041,TENNIS MEMBERSHIP,Recurring Income
+Income,4130-0042,TENNIS MEMBERSHIP-SPONSORED,Recurring Income
+Income,4130-0043,DEFERRED MEMBERSHIP,Recurring Income
+Income,4130-0044,HOUSE MEMBERSHIP,Recurring Income
+Income,4130-0045,TRAINER FEES,Recurring Income
+Income,4130-0046,PERSONAL TRAINERS-MEMBERS,Recurring Income
+Income,4130-0047,GOLF MEMBERSHIP-NON MANDATORY,Recurring Income
+Income,4130-0048,GOLF MEMBERSHIP-MANDATORY,Recurring Income
+Income,4130-0049,GOLF MEMBERSHIP-SPONSORED,Recurring Income
+Income,4130-0050,GOLF MEMBERSHIP-JUNIOR/EXEC,Recurring Income
+Income,4130-0051,GOLF-DUES LADIES,Recurring Income
+Income,4130-0052,GOLF-DUES MENS,Recurring Income
+Income,4130-0053,GOLF-GUEST,Recurring Income
+Income,4130-0054,POOL/TENNIS GUEST,Recurring Income
+Income,4130-0055,BAG STORAGE,Recurring Income
+Income,4130-0056,METROPOLITAN GOLF ASSOC,Recurring Income
+Income,4130-0057,OUTSIDE OUTINGS,Recurring Income
+Income,4130-0058,Golf Cart Income,Recurring Income
+Income,4130-0059,Event Income,Recurring Income
+Income,4130-0060,Tennis Association dues,Recurring Income
+Income,4130-0061,Reformer classes,Recurring Income
+Income,4130-0062,Tennis - USTA Events,Recurring Income
+Income,4135-0000,Garage & Parking,Recurring Income
+Income,4135-0010,Garage,Recurring Income
+Income,4135-0011,Garage – Sublet Fee,Recurring Income
+Income,4135-0012,Garage – SUV Surcharge,Recurring Income
+Income,4135-0013,Amenity1,Recurring Income
+Income,4135-0015,Garage - Non Residents,Recurring Income
+Income,4135-0020,Parking,Recurring Income
+Income,4135-0025,Parking - Non-Residents,Recurring Income
+Income,4135-0026,Transient Parking,Recurring Income
+Income,4135-0030,Garage Door Opener,Recurring Income
+Income,4140-0015,Accelerated Common Charges,Recurring Income
+Income,4200-0000,Assessment - Operating,Recurring Income
+Income,4200-0005,Special Assessment,Recurring Income
+Income,4200-0010,Discount on Prepaid Assessment,Recurring Income
+Income,4250-0000,Utility Income,Recurring Income
+Income,4250-0002,Utility Income- Commercial,Recurring Income
+Income,4250-0005,Refrigerator,Recurring Income
+Income,4250-0010,Cable TV,Recurring Income
+Income,4250-0015,Air Conditioner,Recurring Income
+Income,4250-0020,Gas,Recurring Income
+Income,4250-0025,Electric,Recurring Income
+Income,4250-0030,Washing Machine,Recurring Income
+Income,4250-0035,Dryer,Recurring Income
+Income,4250-0040,Dishwasher,Recurring Income
+Income,4250-0045,Freezer,Recurring Income
+Income,4250-0050,Carbon/Smoke Detector,Recurring Income
+Income,4250-0055,Appliance Charges,Recurring Income
+Income,4305-0000,Fuel Surcharge,Recurring Income
+Income,4310-0000,Maximum Base Rent,Recurring Income
+Income,4505-0000,Additional Commercial Rent,Recurring Income
+Income,4515-0000,CPI Adjustment,Recurring Income
+Income,4515-0010,Operating Esc Income,Recurring Income
+Income,4515-0015,Straight Line Adjustment,Recurring Income
+Income,4520-0000,Commercial Real Estate Tax,Recurring Income
+Income,4525-0000,Porter Wage,Recurring Income
+Income,4530-0000,Garage - Operator,Recurring Income
+Income,4580-0000,Sales Tax,Recurring Income
+Income,4600-0000,Management Fees,Recurring Income
+Income,4600-0010,Management Fees-Staff,Recurring Income
+Income,4605-0000,Conference Room,Recurring Income
+Income,4650-0000,Bad Debt,Recurring Income
+Income,4655-0000,N.Y.C. Grant,Recurring Income
+Income,4655-0002,Capital Grant Subsidy,Recurring Income
+Income,4660-0000,Roof Income,Recurring Income
+Income,4702-0000,Gratuities,Recurring Income
+Income,4690-0000,Other Recurring Income,Recurring Income
+Income,4705-0000,Late Charges,Non-Recurring Income
+Income,4710-0000,Legal Fees,Non-Recurring Income
+Income,4715-0000,Bounce Check Fee,Non-Recurring Income
+Income,4720-0000,Apartment Repair Income,Non-Recurring Income
+Income,4720-0010,Architectural/Enginerring Fees,Non-Recurring Income
+Income,4720-0020,Paint & Plaster,Non-Recurring Income
+Income,4720-0025,Bathroom Repair,Non-Recurring Income
+Income,4720-0030,Plumbing Repair,Non-Recurring Income
+Income,4720-0035,A/C Repair,Non-Recurring Income
+Income,4720-0040,HVAC Repair,Non-Recurring Income
+Income,4720-0045,Refrigerator,Non-Recurring Income
+Income,4720-0046,Range & Oven,Non-Recurring Income
+Income,4720-0050,Electrical Repairs,Non-Recurring Income
+Income,4720-0055,Intercom Repairs,Non-Recurring Income
+Income,4720-0060,Retroactive Air Conditioner Fees,Non-Recurring Income
+Income,4725-0000,Other Apartment Charges,Non-Recurring Income
+Income,4725-0015,Violations,Non-Recurring Income
+Income,4725-0020,Gate Cards,Non-Recurring Income
+Income,4725-0025,Move-In Out Fees,Non-Recurring Income
+Income,4725-0030,Locks & Keys,Non-Recurring Income
+Income,4725-0035,Sublet Fees,Non-Recurring Income
+Income,4725-0045,Guest Fees,Non-Recurring Income
+Income,4725-0050,Child Care Fees,Non-Recurring Income
+Income,4725-0055,Landscaping Fund Fees,Non-Recurring Income
+Income,4725-0060,Cleaning Service Fees,Non-Recurring Income
+Income,4725-0065,Window Washing Fees,Non-Recurring Income
+Income,4725-0070,Rubbish Removal Fees,Non-Recurring Income
+Income,4725-0075,Freight Elevator Fees,Non-Recurring Income
+Income,4725-0080,Grill Fees,Non-Recurring Income
+Income,4800-0000,Interest Income,Non-Recurring Income
+Income,4803-0000,Dividend Income,Non-Recurring Income
+Income,4806-0000,Insurance Refunds,Non-Recurring Income
+Income,4809-0000,Real Estate Tax Refunds,Non-Recurring Income
+Income,4812-0000,Corporation Tax Refunds,Non-Recurring Income
+Income,4815-0000,Payroll Tax Refunds,Non-Recurring Income
+Income,4818-0000,Flip Tax - Operating,Non-Recurring Income
+Income,4821-0000,Tenant Allowance,Non-Recurring Income
+Income,4824-0000,Telephone Reimbursement,Non-Recurring Income
+Income,4827-0000,Forfeit Security Deposit,Non-Recurring Income
+Income,4830-0000,Water & Sewer,Non-Recurring Income
+Income,4833-0000,Fuel Rebates,Non-Recurring Income
+Income,4836-0000,Utility Rebates,Non-Recurring Income
+Income,4839-0000,Court Stipulation,Non-Recurring Income
+Income,4905-0000,Photocopy,Non-Recurring Income
+Income,4908-0000,Postage,Non-Recurring Income
+Income,4911-0000,Messenger,Non-Recurring Income
+Income,4914-0000,Stationery & Printing,Non-Recurring Income
+Income,4917-0000,Credit Check Fees,Non-Recurring Income
+Income,4920-0000,Prospectus,Non-Recurring Income
+Income,4921-0000,Coop Questionnaire,Non-Recurring Income
+Income,4922-0000,Alteration Agreement Fee,Non-Recurring Income
+Income,4923-0000,Recognition Agreement Fees,Non-Recurring Income
+Income,4925-0000,Pet Fees,Non-Recurring Income
+Income,4926-0000,Administrative Fees,Non-Recurring Income
+Income,4929-0000,Secretary Services,Non-Recurring Income
+Income,4932-0000,Application Fees,Non-Recurring Income
+Income,4935-0000,Refinancing Fees,Non-Recurring Income
+Income,4938-0000,Closing Fees,Non-Recurring Income
+Income,4941-0000,Offering Plan Fees,Non-Recurring Income
+Income,4944-0000,Window Guards,Non-Recurring Income
+Income,4945-0000,Safety Notices,Non-Recurring Income
+Income,4947-0000,Lead Paint,Non-Recurring Income
+Income,4950-0000,Fire Safety,Non-Recurring Income
+Income,4953-0000,1098's Fee's,Non-Recurring Income
+Income,4954-0000,Accounting Fees,Non-Recurring Income
+Income,4955-0000,Tax Abatement Program,Non-Recurring Income
+Income,4956-0000,Security Account Admin.,Non-Recurring Income
+Income,4959-0000,Leasing Commissions,Non-Recurring Income
+Income,4970-0000,Sales Commissions,Non-Recurring Income
+Income,4972-0000,Insurance Commissions,Non-Recurring Income
+Income,4974-0000,Mortgage Brokerage Commissions,Non-Recurring Income
+Income,4975-0000,Co-Broker,Non-Recurring Income
+Income,4975-0010,Closing Costs Reimbursement,Non-Recurring Income
+Income,4975-0015,Gain on Debt,Non-Recurring Income
+Income,4975-0020,Apartment Sales,Non-Recurring Income
+Income,4975-0025,Cost of Sales,Non-Recurring Income
+Income,4606-0000,Amenity Rental,Non-Recurring Income
+Income,4980-0000,Movie Shoot Income,Non-Recurring Income
+Income,4990-0000,Other Non Recurring Income,Non-Recurring Income
+Operating Expenses,5105-0000,Gross Payroll,Payroll Expenses
+Operating Expenses,5105-0010,Overtime Pay,Payroll Expenses
+Operating Expenses,5105-0027,Meal Reimbursement,Payroll Expenses
+,5105-0059,Tool Reimbursement,Payroll Expenses
+,5105-0030,Miscellanous Pay,Payroll Expenses
+Operating Expenses,5105-0035,Bonus,Payroll Expenses
+Operating Expenses,5140-0000,Employee Payroll Taxes,Payroll Expenses
+,5140-0010,Medicare,Payroll Expenses
+,5140-0015,Federal withholding Taxes,Payroll Expenses
+,5140-0020,NYS withholding taxes,Payroll Expenses
+,5140-0025,NYC withholding taxes,Payroll Expenses
+,5145-0000,Employer Payroll Taxes,Payroll Expenses
+,5145-0010,FICA Taxes,Payroll Expenses
+,5145-0015,SUIT - State Unemployment Insurance,Payroll Expenses
+,5145-0020,FUTA - Federal Unemployment Insurance,Payroll Expenses
+Operating Expenses,5155-0000,Voluntary Deductible,Payroll Expenses
+,5155-0015,Health Insurance,Payroll Expenses
+,5155-0020,Dental Insurance,Payroll Expenses
+,5160-0005,Life Insurance,Payroll Expenses
+Operating Expenses,5155-0010,Union Dues,Payroll Expenses
+,5160-0000,Union Benefit Funds,Payroll Expenses
+,5160-0010,Pension Funds,Payroll Expenses
+,5160-0015,Health Fund,Payroll Expenses
+,5160-0020,Annuity Fund,Payroll Expenses
+,5160-0025,Legal Fund,Payroll Expenses
+,5160-0030,Training Fund,Payroll Expenses
+,5160-0035,Welfare Fund,Payroll Expenses
+,5170-0000,Benefits Administration,Payroll Expenses
+Operating Expenses,5150-0000,401K,Payroll Expenses
+,5150-0010,401K Loan,Payroll Expenses
+,5150-0020,401K Match,Payroll Expenses
+,5150-0030,401K Roth,Payroll Expenses
+Operating Expenses,5160-0040,Garnishments,Payroll Expenses
+Operating Expenses,5165-0000,Workers Compensation Insurance,Payroll Expenses
+Operating Expenses,5165-0050,Workers Comp Audit / Dividend,Payroll Expenses
+Operating Expenses,5166-0000,Disability Insurance,Payroll Expenses
+Operating Expenses,5180-0004,Life Insurance- Building Staff,Payroll Expenses
+Operating Expenses,5180-0001,Gross Payroll-Building Staff,Payroll Expenses
+,5180-0002,Payroll Taxes-Building Staff,Payroll Expenses
+,5180-0003,Health Insurance-Building Staff,Payroll Expenses
+,5180-0004,Life Insurance-Building Staff,Payroll Expenses
+Operating Expenses,5171-0000,Check Cashing,Payroll Expenses
+,5172-0000,Payroll Processing,Payroll Expenses
+,5179-0000,Other Payroll Expenses,Payroll Expenses
+,5179-0002,Staffing Services,Payroll Expenses
+Operating Expenses,5250-0000,Gas,Utility Expenses
+Operating Expenses,5251-0000,Gas Transport,Utility Expenses
+Operating Expenses,5252-0000,Gas - Heating,Utility Expenses
+Operating Expenses,5255-0000,Electricity,Utility Expenses
+Operating Expenses,5260-0000,Fuel,Utility Expenses
+Operating Expenses,5265-0000,Steam,Utility Expenses
+Operating Expenses,5270-0000,Other Energy Expense,Utility Expenses
+Operating Expenses,6305-0000,Water/Sewer,Utility Expenses
+Operating Expenses,5405-0000,Appliance Supplies,Supplies
+Operating Expenses,5406-0000,Supplies & Hardware,Supplies
+Operating Expenses,5408-0000,Startup Supplies,Supplies
+Operating Expenses,5410-0000,Refrigeration Supplies,Supplies
+Operating Expenses,5415-0000,Dishwasher Supplies,Supplies
+Operating Expenses,5420-0000,Range & Oven Supplies,Supplies
+Operating Expenses,5425-0000,Bathroom Fixture Supplies,Supplies
+Operating Expenses,5430-0000,Hardware Supplies,Supplies
+Operating Expenses,5430-0010,Plumbing Supplies,Supplies
+Operating Expenses,5430-0015,Electrical Supplies,Supplies
+Operating Expenses,5430-0020,Light Bulbs,Supplies
+Operating Expenses,5430-0025,Cleaning Supplies,Supplies
+Operating Expenses,5430-0030,Compactor Bags,Supplies
+Operating Expenses,5430-0035,Locks & Keys,Supplies
+Operating Expenses,5430-0040,Exterminating Supplies,Supplies
+Operating Expenses,5430-0045,Air Conditioning Supplies,Supplies
+Operating Expenses,5430-0050,Window & Glass Supplies,Supplies
+Operating Expenses,5435-0000,Directory Plates & Signs,Supplies
+Operating Expenses,5440-0000,Painting Supplies,Supplies
+Operating Expenses,5441-0000,Golf Course Accessories,Supplies
+Operating Expenses,5453-0000,Golf Course Chemicals,Supplies
+Operating Expenses,5445-0000,Uniforms Purchased,Supplies
+Operating Expenses,5450-0000,STP Chemicals,Supplies
+Operating Expenses,5451-0000,Gold Fertilizer & Chemicals,Supplies
+Operating Expenses,5452-0000,Pool Chemicals,Supplies
+Operating Expenses,5455-0000,Snow Melt Chemicals,Supplies
+Operating Expenses,5460-0000,Pool Supplies,Supplies
+Operating Expenses,5465-0000,Fitness Center Supplies,Supplies
+Operating Expenses,5466-0000,Power Plant Supplies,Supplies
+Operating Expenses,5495-0000,Other Building Supplies,Supplies
+Operating Expenses,5603-0000,Apartment Repairs,Repairs
+Operating Expenses,5606-0000,Insurance Repairs,Repairs
+Operating Expenses,5609-0000,Appliance Repairs,Repairs
+Operating Expenses,5612-0000,Refrigerator Repairs,Repairs
+Operating Expenses,5622-0000,HVAC Repairs,Repairs
+Operating Expenses,5615-0000,Range & Oven Repairs,Repairs
+Operating Expenses,5618-0000,Dishwasher Repairs,Repairs
+Operating Expenses,5621-0000,Equipment Repairs,Repairs
+Operating Expenses,5624-0000,Heating Repairs,Repairs
+Operating Expenses,5627-0000,Boiler/Burner Repairs,Repairs
+Operating Expenses,5630-0000,Plumbing Repairs,Repairs
+Operating Expenses,5630-0001,Pump/Motor Repair,Repairs
+Operating Expenses,5633-0000,Electrical Repairs,Repairs
+Operating Expenses,5636-0000,Air Conditioning Repairs,Repairs
+Operating Expenses,5639-0000,Elevator Repairs,Repairs
+Operating Expenses,5642-0000,Compactor / Incinerator Repairs,Repairs
+Operating Expenses,5645-0000,Window Repairs,Repairs
+Operating Expenses,5648-0000,Floor / Carpet Repair,Repairs
+Operating Expenses,5651-0000,Garage Repairs,Repairs
+Operating Expenses,5654-0000,Hallway Repairs,Repairs
+Operating Expenses,5657-0000,Lobby Repairs,Repairs
+Operating Expenses,5660-0000,Paint & Plaster Repairs,Repairs
+Operating Expenses,5663-0000,Carpentry Repairs,Repairs
+Operating Expenses,5666-0000,Door Repairs,Repairs
+Operating Expenses,5668-0000,Canopy Repairs,Repairs
+Operating Expenses,5670-0000,Intercom Repairs,Repairs
+Operating Expenses,5672-0000,Time Recorder Repairs,Repairs
+Operating Expenses,5674-0000,Facade / Waterproofing Repairs,Repairs
+Operating Expenses,5676-0000,Roof Repairs,Repairs
+Operating Expenses,5678-0000,Roof Tank / Water Tank Repairs,Repairs
+Operating Expenses,5680-0000,Roof Exhaust Repairs,Repairs
+Operating Expenses,5681-0000,STP Repairs,Repairs
+Operating Expenses,5682-0000,Sprinkler System Repairs,Repairs
+Operating Expenses,5683-0000,Irrigation System Repair,Repairs
+Operating Expenses,5684-0000,Sidewalk Concrete Repairs,Repairs
+Operating Expenses,5686-0000,Pool Repairs,Repairs
+Operating Expenses,5688-0000,Steam / Locker Room Repairs,Repairs
+Operating Expenses,5690-0000,Sauna Repairs,Repairs
+Operating Expenses,5692-0000,Fitness Equipment Repair,Repairs
+Operating Expenses,5692-0001,Golf Cart Repars,Repairs
+Operating Expenses,5693-0000,Grounds Repairs,Repairs
+Operating Expenses,5695-0000,Other Building Repairs,Repairs
+Operating Expenses,5803-0000,Cleaning & Maintenance,Maintenance
+Operating Expenses,5806-0000,Air Conditioning Maintenance,Maintenance
+Operating Expenses,5809-0000,Heating Maintenance,Maintenance
+Operating Expenses,5809-0010,Boiler Maintenance,Maintenance
+Operating Expenses,5809-0015,Burner Maintenance,Maintenance
+Operating Expenses,5809-0016,Sprinkler Maintenance,Maintenance
+Operating Expenses,5810-0000,HVAC Maintenance,Maintenance
+Operating Expenses,5810-0001,HVAC Maintenance (Residential),Maintenance
+Operating Expenses,5811-0000,Residential Chargebacks,Maintenance
+Operating Expenses,5812-0000,Elevator Maintenance,Maintenance
+Operating Expenses,5813-0000,Dryer Vent Cleaning (Common Area),Maintenance
+Operating Expenses,5813-0001,Dryer Vent Cleaning (Residential Units),Maintenance
+Operating Expenses,5814-0000,Door Maintenance,Maintenance
+Operating Expenses,5815-0000,Floor/Carpet Cleaning,Maintenance
+Operating Expenses,5818-0000,Window Cleaning,Maintenance
+Operating Expenses,5821-0000,Fire Extinguisher Maintenance,Maintenance
+Operating Expenses,5825-0000,Uniform Cleaning & Maintenance,Maintenance
+Operating Expenses,5825-0002,Startup Uniforms,Maintenance
+Operating Expenses,5828-0000,Rubbish Removal,Maintenance
+Operating Expenses,5831-0000,Exterminating,Maintenance
+Operating Expenses,5834-0000,Cooling Tower Maintenance,Maintenance
+Operating Expenses,5837-0000,Alarm / Security System Maintenance,Maintenance
+Operating Expenses,5837-0001,Fire Safety Maintenance,Maintenance
+Operating Expenses,5840-0000,Metal / Marble/ Wood Maintenance,Maintenance
+Operating Expenses,5843-0000,Laundry Equipment Maintenance,Maintenance
+Operating Expenses,5846-0000,Garage Maintenance,Maintenance
+Operating Expenses,5849-0000,Facade Maintenance,Maintenance
+Operating Expenses,5852-0000,Water Treatment Maintenance,Maintenance
+Operating Expenses,5853-0000,STP Maintenance,Maintenance
+Operating Expenses,5856-0000,Equipment Maintenance,Maintenance
+Operating Expenses,5857-0000,Mechanical Maintenance,Maintenance
+Operating Expenses,5859-0000,Pool Maintenance,Maintenance
+Operating Expenses,5862-0000,Cesspool Maintenance,Maintenance
+Operating Expenses,5865-0000,Landscaping,Maintenance
+Operating Expenses,5866-0000,Grounds Maintenance,Maintenance
+Operating Expenses,5868-0000,Snow Removal,Maintenance
+Operating Expenses,5869-0000,Fairway Aeration Maintenance,Maintenance
+Operating Expenses,5870-0000,Roof Top Garden Expense,Maintenance
+Operating Expenses,5871-0000,Sewer Plant Maintenance,Maintenance
+Operating Expenses,5872-0000,Generator Maintenance,Maintenance
+Operating Expenses,5873-0000,Compactor Maintenance,Maintenance
+Operating Expenses,5874-0000,Other Maintenance,Maintenance
+Gen & Admin Expenses,6105-0000,Package Policy,Insurance
+Gen & Admin Expenses,6110-0000,General Liability Insurance,Insurance
+Gen & Admin Expenses,6115-0000,Property Insurance,Insurance
+Gen & Admin Expenses,6120-0000,Umbrella Insurance,Insurance
+Gen & Admin Expenses,6125-0000,D&O Insurance,Insurance
+Gen & Admin Expenses,6126-0000,Cyber Insurance,Insurance
+Gen & Admin Expenses,6130-0000,Auto Insurance,Insurance
+Gen & Admin Expenses,6135-0000,Crime / Fidelity Insurance,Insurance
+Gen & Admin Expenses,6140-0000,Boiler & Machinery Insurance,Insurance
+Gen & Admin Expenses,6145-0000,Errors & Omissions Insurance,Insurance
+Gen & Admin Expenses,6150-0000,Flood / Hurricane Insurance,Insurance
+Gen & Admin Expenses,6195-0000,Other Insurance,Insurance
+Gen & Admin Expenses,6310-0000,Corporation Tax,Taxes
+Gen & Admin Expenses,6315-0000,Real Estate Tax,Taxes
+Gen & Admin Expenses,6315-0010,Real Estate Tax Abatement,Taxes
+Gen & Admin Expenses,6315-0020,STAR Exemption,Taxes
+Gen & Admin Expenses,6315-0025,Veteran Exemption,Taxes
+Gen & Admin Expenses,6315-0030,SCRIE Credit,Taxes
+Gen & Admin Expenses,6315-0035,SCHE Credit,Taxes
+Gen & Admin Expenses,6315-0040,J-51 Credit,Taxes
+Gen & Admin Expenses,6320-0000,Transfer Tax,Taxes
+Gen & Admin Expenses,6325-0000,Sales & Use Tax,Taxes
+Gen & Admin Expenses,6330-0000,Commercial Rent Tax,Taxes
+Gen & Admin Expenses,6335-0000,BID Tax,Taxes
+Gen & Admin Expenses,6395-0000,Other Taxes,Taxes
+Gen & Admin Expenses,6505-0000,Engineering & Architectural Fees,Professional Fees
+Gen & Admin Expenses,6510-0000,Management Fees,Professional Fees
+Gen & Admin Expenses,6510-0002,Owner Management Fees,Professional Fees
+Gen & Admin Expenses,6515-0000,Legal Fees,Professional Fees
+Gen & Admin Expenses,6517-0000,Legal Fees Reimbursable,Professional Fees
+Gen & Admin Expenses,6520-0000,Real Estate Tax Certiorari Fees,Professional Fees
+Gen & Admin Expenses,6525-0000,Accounting Fees,Professional Fees
+Gen & Admin Expenses,6530-0000,Fitness Center Fees,Professional Fees
+Gen & Admin Expenses,6531-0000,Aerobic Instructor,Professional Fees
+Gen & Admin Expenses,6532-0000,GOLF PRO CONTRACT,Professional Fees
+Gen & Admin Expenses,6533-0000,GPS SYSTEM,Professional Fees
+Gen & Admin Expenses,6533-0001,TENNIS EXPENSES,Professional Fees
+Gen & Admin Expenses,6533-0002,OTHER GOLF EXPENSES,Professional Fees
+Gen & Admin Expenses,6534-0000,Pool/Spa Contact,Professional Fees
+Gen & Admin Expenses,6535-0000,Pool Management,Professional Fees
+Gen & Admin Expenses,6590-0000,Other Professional Fees,Professional Fees
+Gen & Admin Expenses,6701-0000,Condo Common Charges,Administrative
+Gen & Admin Expenses,6702-0000,Coop Maintenance,Administrative
+Gen & Admin Expenses,6703-0000,Assessment Charges,Administrative
+Gen & Admin Expenses,6704-0000,Lock Box Services,Administrative
+Gen & Admin Expenses,6706-0000,Office Expense,Administrative
+Gen & Admin Expenses,6706-0010,Office Supplies,Administrative
+Gen & Admin Expenses,6706-0015,Coffee Services,Administrative
+Gen & Admin Expenses,6706-0020,Water Cooler Expense,Administrative
+Gen & Admin Expenses,6708-0000,Stationery & Printing,Administrative
+Gen & Admin Expenses,6710-0000,Postage Expense,Administrative
+Gen & Admin Expenses,6710-0010,Postage Meter,Administrative
+Gen & Admin Expenses,6710-0015,Messenger Expense,
