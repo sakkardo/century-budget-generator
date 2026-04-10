@@ -9091,10 +9091,50 @@ PM_EDIT_TEMPLATE = r"""
   .save-indicator {
     font-size: 13px;
     color: var(--gray-500);
-    padding: 4px 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+    font-weight: 500;
   }
-  .save-indicator.saving { color: var(--orange); }
-  .save-indicator.saved { color: var(--green); }
+  .save-indicator.saving {
+    color: var(--orange);
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+  }
+  .save-indicator.saving::before {
+    content: '';
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--orange);
+    animation: save-pulse 1s ease-in-out infinite;
+  }
+  .save-indicator.saved {
+    color: var(--green);
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+  }
+  .save-indicator.saved::before { content: '\2713'; font-weight: 700; }
+  .save-indicator.failed {
+    color: white;
+    background: var(--red);
+    border: 1px solid #991b1b;
+    font-weight: 600;
+    cursor: pointer;
+    animation: save-fail-pulse 1.6s ease-in-out infinite;
+  }
+  .save-indicator.failed::before { content: '\26A0'; font-size: 14px; }
+  @keyframes save-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+  @keyframes save-fail-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
+    70%  { box-shadow: 0 0 0 12px rgba(220, 38, 38, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+  }
 
   /* ── Formula Bar ── */
   .pm-formula-bar {
@@ -10329,17 +10369,21 @@ async function saveAll() {
             console.log('[saveAll] response body=', body);
             indicator.textContent = 'Saved';
             indicator.className = 'save-indicator saved';
-            setTimeout(() => { indicator.textContent = ''; }, 2000);
+            indicator.onclick = null;
+            setTimeout(() => { indicator.textContent = ''; indicator.className = 'save-indicator'; }, 2000);
         } else {
             const errBody = await resp.text().catch(() => '');
             console.error('[saveAll] FAILED status=', resp.status, 'body=', errBody);
-            indicator.textContent = 'Save failed! (' + resp.status + ')';
-            indicator.className = 'save-indicator';
+            indicator.textContent = 'Save failed (' + resp.status + ') — click to retry';
+            indicator.className = 'save-indicator failed';
+            indicator.onclick = () => saveAll();
             alert('Save failed: HTTP ' + resp.status + '\n\n' + errBody);
         }
     } catch(e) {
         console.error('[saveAll] EXCEPTION', e);
-        indicator.textContent = 'Save error!';
+        indicator.textContent = 'Save error — click to retry';
+        indicator.className = 'save-indicator failed';
+        indicator.onclick = () => saveAll();
         alert('Save error: ' + e.message);
     }
 }
