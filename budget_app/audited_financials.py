@@ -1556,7 +1556,7 @@ async function uploadAll() {
             return opts;
         }
 
-        function makeDropdown(description, amount, section) {
+        function makeDropdown(description, amount, section, amount1) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
             const rulesForDesc = existingRules[normalized] || {};
@@ -1575,7 +1575,7 @@ async function uploadAll() {
             const bgStyle = currentMapping ? 'background:#fff3cd;' : '';
 
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
@@ -1584,11 +1584,11 @@ async function uploadAll() {
         }
 
         // Version for split rows — inherits parent mapping, starts yellow
-        function makeDropdownWithDefault(description, amount, section, defaultMapping) {
+        function makeDropdownWithDefault(description, amount, section, defaultMapping, amount1) {
             const id = 'map_' + itemIndex++;
             const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
@@ -1676,7 +1676,8 @@ async function uploadAll() {
                     newRows += '</td>';
                 }
                 for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:4px;">' + makeAmtReadonly(0) + '</td>'; }
-                newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping) + '</td></tr>';
+                const amount1 = amounts[1] || 0;
+                newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping, amount1) + '</td></tr>';
             }
             row.insertAdjacentHTML('afterend', newRows);
             row.remove();
@@ -1712,7 +1713,7 @@ async function uploadAll() {
                         else { html += makeAmtReadonly(item.amounts[yi]); }
                         html += '</td>';
                     }
-                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'revenue') + '</td></tr>';
+                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'revenue', (item.amounts && item.amounts[1]) || 0) + '</td></tr>';
                 }
                 if (rawExtraction.revenue.total) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
@@ -1757,7 +1758,7 @@ async function uploadAll() {
                             else { html += makeAmtReadonly(item.amounts[yi]); }
                             html += '</td>';
                         }
-                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'expense') + '</td></tr>';
+                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'expense', (item.amounts && item.amounts[1]) || 0) + '</td></tr>';
                     }
                     if (cat.total) {
                         html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
@@ -2041,7 +2042,38 @@ async function uploadAll() {
         }
 
         function confirmExtraction(uploadId) {
-            fetch('/api/af/confirm/' + uploadId, { method: 'POST' })
+            // Build mapped_data from the DOM dropdowns BEFORE confirming.
+            // Historical bug: this function used to POST straight to /confirm
+            // without saving the user's dropdown selections, leaving
+            // mapped_data empty in the DB and breaking col2 on the summary.
+            const mapped = {};
+            const selects = document.querySelectorAll('select[id^="map_"]');
+            selects.forEach(s => {
+                const cat = stripCatSuffix(s.value || '');
+                if (!cat) return;
+                const a0 = parseFloat(s.dataset.amount) || 0;
+                const a1 = parseFloat(s.dataset.amount1) || 0;
+                if (!mapped[cat]) {
+                    mapped[cat] = { total: 0, year_totals: [0, 0], years: [] };
+                }
+                mapped[cat].total += a0;
+                mapped[cat].year_totals[0] += a0;
+                mapped[cat].year_totals[1] += a1;
+            });
+
+            document.getElementById('confirmStatus').innerHTML = '<div>Saving mapping…</div>';
+            fetch('/api/af/uploads/' + uploadId, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mapped_data: mapped, status: 'mapped' })
+            })
+            .then(r => r.json())
+            .then(patchResp => {
+                if (!patchResp.success) {
+                    throw new Error(patchResp.error || 'Failed to save mapping');
+                }
+                return fetch('/api/af/confirm/' + uploadId, { method: 'POST' });
+            })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
@@ -2050,6 +2082,9 @@ async function uploadAll() {
                 } else {
                     document.getElementById('confirmStatus').innerHTML = '<div class="unmapped">Error: ' + data.error + '</div>';
                 }
+            })
+            .catch(err => {
+                document.getElementById('confirmStatus').innerHTML = '<div class="unmapped">Error: ' + err.message + '</div>';
             });
         }
 
