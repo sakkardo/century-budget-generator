@@ -9102,7 +9102,12 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: auto; }
-  thead { position: sticky; top: 48px; z-index: 20; }
+  .grid-container > table > thead { position: sticky; top: 48px; z-index: 20; }
+  /* Inner drill-down tables (invoice details) must NOT inherit sticky thead */
+  .invoice-detail-row table thead,
+  .invoice-detail-row table thead tr,
+  .invoice-detail-row table thead th,
+  .invoice-detail-row table thead td { position: static !important; top: auto !important; }
   th {
     padding: 8px 6px;
     text-align: left;
