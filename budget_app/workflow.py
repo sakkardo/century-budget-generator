@@ -10139,7 +10139,7 @@ async function toggleInvoices(glCode, linkEl) {
     html += '</div>';
 
     html += '<table style="width:auto; font-size:12px; border-collapse:separate; border-spacing:0; background:white; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,0.05); overflow:hidden;">';
-    html += '<thead><tr style="background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
+    html += '<thead style="position:static;"><tr style="position:static; background:var(--gray-100); color:var(--gray-600); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.3px;">';
     html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:100px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:90px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
