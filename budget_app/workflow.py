@@ -8833,7 +8833,8 @@ PM_PORTAL_TEMPLATE = r"""
 </div>
 
 <script>
-const editableStatuses = ['pm_pending', 'pm_in_progress', 'returned'];
+// fa_review included so PM can re-enter a building after submitting for FA review
+const editableStatuses = ['pm_pending', 'pm_in_progress', 'returned', 'fa_review'];
 const statusLabels = {
   'draft': 'Draft',
   'pm_pending': 'Pending PM',
