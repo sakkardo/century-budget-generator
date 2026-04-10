@@ -235,13 +235,12 @@ with app.app_context():
             for row in cap_lines:
                 line_id, gl_code = row[0], row[1]
                 prefix = (gl_code or "")[:4]
-                if prefix in CAPITAL_GL_PREFIX:
-                    desc = CAPITAL_GL_PREFIX[prefix]
-                    db.session.execute(
-                        db.text("UPDATE budget_lines SET sheet_name = 'Capital', category = 'capital', pm_editable = TRUE, description = :desc WHERE id = :id"),
-                        {"desc": desc, "id": line_id}
-                    )
-                    moved += 1
+                desc = CAPITAL_GL_PREFIX.get(prefix, f"Cap - {prefix}")
+                db.session.execute(
+                    db.text("UPDATE budget_lines SET sheet_name = 'Capital', category = 'capital', pm_editable = TRUE, description = :desc WHERE id = :id"),
+                    {"desc": desc, "id": line_id}
+                )
+                moved += 1
             if moved:
                 db.session.commit()
                 logger.info(f"Backfilled {moved} 7xxx lines from Unmapped to Capital")

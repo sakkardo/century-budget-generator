@@ -786,8 +786,9 @@ def create_workflow_blueprint(db):
                     sheet_name, row_num, desc = gl_mapping[gl_code]
                     category = SHEET_TO_CATEGORY.get(sheet_name, "other")
                     pm_editable = False
-                elif gl_code[:4] in CAPITAL_GL_PREFIX:
-                    desc = CAPITAL_GL_PREFIX[gl_code[:4]]
+                elif gl_code.startswith("7"):
+                    prefix = gl_code[:4]
+                    desc = CAPITAL_GL_PREFIX.get(prefix, f"Cap - {prefix}")
                     sheet_name = "Capital"
                     row_num = 0
                     category = "capital"
