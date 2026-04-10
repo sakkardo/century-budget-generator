@@ -1286,6 +1286,22 @@ async function uploadAll() {
     @bp.route("/audited-financials/review/<int:upload_id>", methods=["GET"])
     def review_page(upload_id):
         """Review and confirm extraction for an upload."""
+        try:
+            return _review_page_impl(upload_id)
+        except Exception as _rp_err:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[review_page ERROR] upload_id={upload_id}: {_rp_err}\n{tb}")
+            safe_tb = (tb or "").replace("<", "&lt;").replace(">", "&gt;")
+            return (
+                "<h2>Review page error</h2>"
+                f"<p><b>upload_id:</b> {upload_id}</p>"
+                f"<p><b>error:</b> {str(_rp_err)}</p>"
+                f"<pre style='background:#111;color:#0f0;padding:12px;white-space:pre-wrap;'>{safe_tb}</pre>"
+                "<p><a href='/audited-financials'>← Back</a></p>"
+            ), 500
+
+    def _review_page_impl(upload_id):
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return "Upload not found", 404
@@ -2117,8 +2133,8 @@ async function uploadAll() {
 </html>
         """
 
-        html = html.replace("{{ building_name }}", upload.building_name)
-        html = html.replace("{{ entity_code }}", upload.entity_code)
+        html = html.replace("{{ building_name }}", upload.building_name or "")
+        html = html.replace("{{ entity_code }}", upload.entity_code or "")
         html = html.replace("{{ fiscal_year }}", upload.fiscal_year_end or "")
         html = html.replace("{{ upload_id }}", str(upload_id))
         html = html.replace("{{ raw_json }}", json.dumps(raw_extraction))
