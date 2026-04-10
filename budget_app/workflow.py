@@ -3510,13 +3510,26 @@ DASHBOARD_TEMPLATE = r"""
 
 <script>
 const statusLabels = {
+  'not_started': 'Not Started',
+  'data_collection': 'Data Collection',
+  'data_ready': 'Data Ready',
   'draft': 'Draft',
   'pm_pending': 'Pending PM',
   'pm_in_progress': 'PM In Progress',
   'fa_review': 'FA Review',
+  'exec_review': 'Exec Review',
+  'presentation': 'Presentation',
   'approved': 'Approved',
-  'returned': 'Returned'
+  'returned': 'Returned',
+  'ar_pending': 'AR Pending',
+  'ar_complete': 'AR Complete'
 };
+// Fallback: any unknown status gets snake_case → Title Case automatically
+function formatStatus(s) {
+  if (!s) return '';
+  if (statusLabels[s]) return statusLabels[s];
+  return s.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 
 function showToast(msg, type='info') {
   const c = document.getElementById('toastContainer');
@@ -3565,7 +3578,7 @@ function renderStatusSummary(budgets) {
     card.className = 'status-card';
     card.innerHTML = `
       <div class="count">${count}</div>
-      <div class="label">${statusLabels[status]}</div>
+      <div class="label">${formatStatus(status)}</div>
     `;
     summary.appendChild(card);
   });
@@ -3577,7 +3590,7 @@ function renderBudgets(budgets) {
 
   budgets.forEach(b => {
     const tr = document.createElement('tr');
-    const statusLabel = statusLabels[b.status] || b.status;
+    const statusLabel = formatStatus(b.status);
     const statusClass = `pill-${b.status}`;
 
     // Data completeness indicators
@@ -3598,7 +3611,7 @@ function renderBudgets(budgets) {
       'approved': 'Approved',
       'returned': 'Returned'
     };
-    const pmLabel = pmStatusMap[b.status] || b.status;
+    const pmLabel = pmStatusMap[b.status] || formatStatus(b.status);
 
     let actionHtml = '';
     if (b.status === 'draft') {
@@ -3654,14 +3667,14 @@ function filterBudgetTable() {
 }
 
 async function changeStatus(entity, newStatus) {
-  if (!confirm(`Change status to ${statusLabels[newStatus]}?`)) return;
+  if (!confirm(`Change status to ${formatStatus(newStatus)}?`)) return;
   try {
     await fetch(`/api/budgets/${entity}/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus })
     });
-    showToast('Status updated to ' + statusLabels[newStatus], 'success');
+    showToast('Status updated to ' + formatStatus(newStatus), 'success');
     await loadBudgets();
   } catch (err) {
     showToast('Failed to update status', 'error');
@@ -4243,8 +4256,8 @@ function renderDetail(data) {
   `;
 
   // PM Track — collapsible panel with badge
-  const statusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
-  const pmStatus = statusLabels[b.status] || b.status;
+  const pmStatusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
+  const pmStatus = pmStatusLabels[b.status] || (b.status ? b.status.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : '');
   const pmBadgeClass = ['fa_review','approved'].includes(b.status) ? 'badge-green' : ['pm_pending','pm_in_progress'].includes(b.status) ? 'badge-amber' : 'badge-gray';
   document.getElementById('pmBadge').className = 'badge ' + pmBadgeClass;
   document.getElementById('pmBadge').textContent = pmStatus;
@@ -8850,13 +8863,26 @@ PM_PORTAL_TEMPLATE = r"""
 // fa_review included so PM can re-enter a building after submitting for FA review
 const editableStatuses = ['pm_pending', 'pm_in_progress', 'returned', 'fa_review'];
 const statusLabels = {
+  'not_started': 'Not Started',
+  'data_collection': 'Data Collection',
+  'data_ready': 'Data Ready',
   'draft': 'Draft',
   'pm_pending': 'Pending PM',
   'pm_in_progress': 'PM In Progress',
   'fa_review': 'FA Review',
+  'exec_review': 'Exec Review',
+  'presentation': 'Presentation',
   'approved': 'Approved',
-  'returned': 'Returned'
+  'returned': 'Returned',
+  'ar_pending': 'AR Pending',
+  'ar_complete': 'AR Complete'
 };
+// Fallback: any unknown status gets snake_case → Title Case automatically
+function formatStatus(s) {
+  if (!s) return '';
+  if (statusLabels[s]) return statusLabels[s];
+  return s.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 
 let allUsers = [];
 let allAssignments = [];
@@ -8940,7 +8966,7 @@ function renderBuildings(userId) {
       card.style.cursor = 'default';
     }
 
-    const statusLabel = budgetStatus ? (statusLabels[budgetStatus] || budgetStatus) : 'No Budget';
+    const statusLabel = budgetStatus ? formatStatus(budgetStatus) : 'No Budget';
     const pillClass = budgetStatus ? 'pill-' + budgetStatus : 'pill-draft';
     card.innerHTML = `
       <h3>${buildingName}</h3>
