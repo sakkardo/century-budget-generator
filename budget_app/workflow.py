@@ -1189,6 +1189,7 @@ def create_workflow_blueprint(db):
             entity_code=entity_code,
             building_name=budget.building_name,
             status=budget.status,
+            budget_status=budget.status,
             can_edit="true" if can_edit else "false",
             fa_notes=budget.fa_notes or "",
             lines_json=json_mod.dumps(lines_data),
@@ -9351,6 +9352,7 @@ PM_EDIT_TEMPLATE = r"""
 <script>
 const ENTITY = "{{ entity_code }}";
 const CAN_EDIT = {{ can_edit }};
+const BUDGET_STATUS = "{{ budget_status }}";
 const LINES = {{ lines_json | safe }};
 const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
@@ -10300,6 +10302,16 @@ async function saveAll() {
 async function submitForReview() {
     // Save first
     await saveAll();
+
+    // If the budget is already in fa_review (PM re-entered to tweak), just
+    // save — no status transition needed and the server won't allow fa→fa.
+    if (BUDGET_STATUS === 'fa_review') {
+        if (!confirm('Save changes and return to portal? (Already submitted for FA review.)')) return;
+        showToast('Changes saved.', 'success');
+        setTimeout(() => { window.location.href = '/pm'; }, 800);
+        return;
+    }
+
     if (!confirm('Submit this budget for FA review?')) return;
 
     const resp = await fetch('/api/budgets/' + ENTITY + '/status', {
