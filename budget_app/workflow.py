@@ -1874,13 +1874,25 @@ def create_workflow_blueprint(db):
         """Update R&M lines for a building (PM data entry)."""
         data = request.get_json()
 
+        # DIAG: log incoming notes
+        try:
+            _incoming_lines = (data or {}).get("lines", []) or []
+            _notes_in = [(l.get("gl_code"), l.get("notes")) for l in _incoming_lines if (l.get("notes") or "").strip()]
+            print(f"[update_lines] entity={entity_code} total_lines={len(_incoming_lines)} with_notes={len(_notes_in)} sample={_notes_in[:5]}", flush=True)
+        except Exception as _diag_err:
+            print(f"[update_lines] diag err: {_diag_err}", flush=True)
+
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
+            print(f"[update_lines] entity={entity_code} NOT FOUND for year {BUDGET_YEAR}", flush=True)
             return jsonify({"error": "Budget not found"}), 404
+
+        print(f"[update_lines] entity={entity_code} budget.id={budget.id} status={budget.status}", flush=True)
 
         # Check if PM can edit
         # fa_review is allowed so the PM can re-enter and save edits after submit.
         if budget.status not in ["pm_pending", "pm_in_progress", "returned", "fa_review"]:
+            print(f"[update_lines] REJECTED — status {budget.status} not editable", flush=True)
             return jsonify({"error": "Budget is not in editable status"}), 400
 
         # Mark as in progress
@@ -1918,6 +1930,7 @@ def create_workflow_blueprint(db):
                 new_val = line_data.get("notes", "")
                 if (line.notes or "") != new_val:
                     changes.append(("notes", line.notes or "", new_val))
+                    print(f"[update_lines] notes change gl={line.gl_code} '{line.notes or ''}' -> '{new_val}'", flush=True)
                 line.notes = new_val
 
             # Category
@@ -10217,7 +10230,8 @@ function onInput(el) {
     const gl = el.dataset.gl;
     const field = el.dataset.field;
     const line = LINES.find(l => l.gl_code === gl);
-    if (!line) return;
+    console.log('[onInput] gl=', gl, 'field=', field, 'value=', el.value, 'lineFound=', !!line);
+    if (!line) { console.warn('[onInput] no line for gl', gl); return; }
 
     if (field === 'increase_pct') {
         line.increase_pct = parseFloat(el.value) / 100 || 0;
@@ -10227,6 +10241,7 @@ function onInput(el) {
         line.unpaid_bills = parseFloat(el.value) || 0;
     } else if (field === 'notes') {
         line.notes = el.value;
+        console.log('[onInput] notes set on line', gl, '→', line.notes);
     } else if (field === 'category') {
         line.category = el.value;
     }
@@ -10254,20 +10269,31 @@ async function saveAll() {
             ytd_budget: l.ytd_budget || 0,
             current_budget: l.current_budget || 0
         }));
+        const linesWithNotes = payload.filter(p => p.notes && p.notes.trim().length > 0);
+        console.log('[saveAll] PUT /api/lines/' + ENTITY + ' lines=' + payload.length + ' withNotes=' + linesWithNotes.length, linesWithNotes.map(l => ({gl: l.gl_code, notes: l.notes})));
         const resp = await fetch('/api/lines/' + ENTITY, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({lines: payload})
         });
+        console.log('[saveAll] response status=', resp.status, resp.statusText);
         if (resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            console.log('[saveAll] response body=', body);
             indicator.textContent = 'Saved';
             indicator.className = 'save-indicator saved';
             setTimeout(() => { indicator.textContent = ''; }, 2000);
         } else {
-            indicator.textContent = 'Save failed!';
+            const errBody = await resp.text().catch(() => '');
+            console.error('[saveAll] FAILED status=', resp.status, 'body=', errBody);
+            indicator.textContent = 'Save failed! (' + resp.status + ')';
+            indicator.className = 'save-indicator';
+            alert('Save failed: HTTP ' + resp.status + '\n\n' + errBody);
         }
     } catch(e) {
+        console.error('[saveAll] EXCEPTION', e);
         indicator.textContent = 'Save error!';
+        alert('Save error: ' + e.message);
     }
 }
 
