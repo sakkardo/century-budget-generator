@@ -148,9 +148,29 @@ CAPITAL_GL_PREFIX = {
     "7900": "Cap - Contra",
 }
 
-# Load GL_Mapping.csv (412+ entries) for naming and category lookup of unmapped GLs.
+# Load GL_Mapping.csv (412+ entries) for routing and naming unmapped GLs.
 # Indexed by 4-digit prefix so entity-specific sub-accounts (e.g. 4010-1409) match the
-# base mapping entry (e.g. 4010-0000). Returns dict: prefix -> (category_tab, description).
+# base mapping entry (e.g. 4010-0000). Returns dict: prefix -> (description, sheet_name, category).
+# Only codes with an explicit routing rule are included — balance sheet codes and codes
+# not present in the mapping file stay Unmapped.
+def _csv_row_to_sheet(cat, sub, code):
+    """Return (sheet_name, category_key) or None if not explicitly routable."""
+    if cat == "Income":
+        return ("Income", "income")
+    if cat == "Gen & Admin Expenses":
+        return ("Gen & Admin", "gen_admin")
+    # Operating Expenses or blank category — use Sub-Category to pick the sheet
+    if sub == "Payroll Expenses":
+        return ("Payroll", "payroll")
+    if sub == "Utility Expenses":
+        # 63xx is Water/Sewer; all other utility codes are Energy
+        if code.startswith("63"):
+            return ("Water & Sewer", "water_sewer")
+        return ("Energy", "energy")
+    if sub in ("Supplies", "Repairs", "Maintenance"):
+        return ("Repairs & Supplies", "rm")
+    return None
+
 def _load_gl_mapping_csv():
     import csv as _csv
     from pathlib import Path as _Path
@@ -167,11 +187,16 @@ def _load_gl_mapping_csv():
                         code = (row.get("GL Code") or "").strip()
                         desc = (row.get("Description") or "").strip()
                         cat = (row.get("Category Tab") or "").strip()
-                        if code and desc:
-                            prefix = code[:4]
-                            # First entry wins (CSV is ordered by category)
-                            if prefix not in mapping:
-                                mapping[prefix] = (cat, desc)
+                        sub = (row.get("Sub-Category") or "").strip()
+                        if not (code and desc):
+                            continue
+                        routing = _csv_row_to_sheet(cat, sub, code)
+                        if routing is None:
+                            continue  # Skip rows we can't confidently route
+                        prefix = code[:4]
+                        # First explicit routing wins (CSV is ordered by category)
+                        if prefix not in mapping:
+                            mapping[prefix] = (desc, routing[0], routing[1])
             except Exception:
                 pass
             break
@@ -825,13 +850,20 @@ def create_workflow_blueprint(db):
                     category = "capital"
                     pm_editable = True
                 else:
-                    # Try GL_Mapping.csv for a friendly name (no re-routing, just naming)
+                    # Try GL_Mapping.csv for explicit routing to a real tab.
+                    # Only codes present in the mapping file get routed; everything else
+                    # (balance sheet codes, codes missing from mapping) stays Unmapped.
                     _csv_hit = GL_MAPPING_CSV.get(gl_code[:4])
-                    desc = _csv_hit[1] if _csv_hit else gl_code
-                    sheet_name = "Unmapped"
-                    row_num = 0
-                    category = "other"
-                    pm_editable = False
+                    if _csv_hit:
+                        desc, sheet_name, category = _csv_hit
+                        row_num = 0
+                        pm_editable = True
+                    else:
+                        desc = gl_code
+                        sheet_name = "Unmapped"
+                        row_num = 0
+                        category = "other"
+                        pm_editable = False
 
                 line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
                 if line:
