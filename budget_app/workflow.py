@@ -9173,6 +9173,8 @@ PM_EDIT_TEMPLATE = r"""
   .frozen-desc { left: 80px; min-width: 180px; width: auto; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); }
   thead th.frozen.frozen-desc { width: auto; min-width: 180px; }
   .col-notes { color: var(--gray-500); font-size: 12px; min-width: 40px; text-align: center; }
+  .col-notes input.note-warn { background: #fef3c7; border-color: #fbbf24; }
+  .col-notes input.note-warn::placeholder { color: #92400e; font-weight: 500; }
 
   .category-header td {
     background: var(--blue-light);
@@ -9885,6 +9887,9 @@ function pmLineChanged(gl, field, value) {
         pctEl.dataset.formula = '= (' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
     }
 
+    // Refresh material-variance note nudge
+    if (typeof pmUpdateNoteWarn === 'function') pmUpdateNoteWarn(gl);
+
     // Update subtotals and grand totals
     pmUpdateTotals();
 
@@ -10049,7 +10054,7 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
                 </td>
-                <td class="col-notes"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} style="min-width:80px;"></td>
+                <td class="col-notes"><input type="text" class="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'note-warn' : ''}" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="Why did this change? (context for FA)" maxlength="500" style="min-width:80px;"></td>
             `;
             tbody.appendChild(tr);
         });
@@ -10254,6 +10259,19 @@ async function inlineUndoReclass(invoiceId, fromGL) {
 }
 
 // Legacy stub — now uses pmLineChanged for cascade system
+function pmUpdateNoteWarn(gl) {
+    const noteEl = document.querySelector('.col-notes input[data-gl="' + gl + '"]');
+    if (!noteEl) return;
+    const pctEl = document.getElementById('pm_pct_' + gl);
+    const pct = pctEl ? (parseFloat(pctEl.dataset.raw) || 0) : 0;
+    const hasNote = (noteEl.value || '').trim().length > 0;
+    if (Math.abs(pct) > 0.10 && !hasNote) {
+        noteEl.classList.add('note-warn');
+    } else {
+        noteEl.classList.remove('note-warn');
+    }
+}
+
 function onInput(el) {
     const gl = el.dataset.gl;
     const field = el.dataset.field;
@@ -10270,6 +10288,7 @@ function onInput(el) {
     } else if (field === 'notes') {
         line.notes = el.value;
         console.log('[onInput] notes set on line', gl, '→', line.notes);
+        pmUpdateNoteWarn(gl);
     } else if (field === 'category') {
         line.category = el.value;
     }
