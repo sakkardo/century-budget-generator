@@ -1156,7 +1156,9 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "Budget not found"}), 404
 
         # Check if PM can edit this budget
-        can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned"]
+        # fa_review is included so the PM can re-enter and tweak a building
+        # after it's been submitted for FA review.
+        can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned", "fa_review"]
 
         # PM sees Repairs & Supplies + Gen & Admin lines
         lines = BudgetLine.query.filter(
@@ -1877,7 +1879,8 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "Budget not found"}), 404
 
         # Check if PM can edit
-        if budget.status not in ["pm_pending", "pm_in_progress", "returned"]:
+        # fa_review is allowed so the PM can re-enter and save edits after submit.
+        if budget.status not in ["pm_pending", "pm_in_progress", "returned", "fa_review"]:
             return jsonify({"error": "Budget is not in editable status"}), 400
 
         # Mark as in progress
