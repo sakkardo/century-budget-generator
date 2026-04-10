@@ -1384,7 +1384,8 @@ async function uploadAll() {
     <div class="confirm-section">
         <h3>Confirm Extraction</h3>
         <p>Accept each line item above, then confirm to save as official actuals for this building/year.</p>
-        <button id="confirmBtn" class="btn-green" disabled style="opacity:0.4; cursor:not-allowed;" onclick="confirmExtraction({{ upload_id }})">Confirm & Save</button>
+        <button id="confirmBtn" class="btn-green" disabled style="opacity:0.4; cursor:not-allowed;" onclick="confirmExtraction({{ upload_id }}, false)">Confirm & Save</button>
+        <button id="overrideBtn" disabled style="opacity:0.4; cursor:not-allowed; margin-left:8px; padding:10px 18px; background:#b45309; color:#fff; border:none; border-radius:4px; font-weight:600;" onclick="confirmExtraction({{ upload_id }}, true)" title="Save anyway when totals don't reconcile — use only if the mismatch is intentional">Override & Save (Skip Validation)</button>
         <div id="confirmStatus"></div>
     </div>
 </div>
@@ -1647,6 +1648,13 @@ async function uploadAll() {
                 confirmBtn.disabled = !allAccepted;
                 confirmBtn.style.opacity = allAccepted ? '1' : '0.4';
                 confirmBtn.style.cursor = allAccepted ? 'pointer' : 'not-allowed';
+            }
+            // Override button is gated the same way (all rows must be accepted)
+            const overrideBtn = document.getElementById('overrideBtn');
+            if (overrideBtn) {
+                overrideBtn.disabled = !allAccepted;
+                overrideBtn.style.opacity = allAccepted ? '1' : '0.4';
+                overrideBtn.style.cursor = allAccepted ? 'pointer' : 'not-allowed';
             }
         }
 
@@ -2041,7 +2049,7 @@ async function uploadAll() {
             });
         }
 
-        function confirmExtraction(uploadId) {
+        function confirmExtraction(uploadId, force) {
             // Build mapped_data from the DOM dropdowns BEFORE confirming.
             // Historical bug: this function used to POST straight to /confirm
             // without saving the user's dropdown selections, leaving
@@ -2061,6 +2069,11 @@ async function uploadAll() {
                 mapped[cat].year_totals[1] += a1;
             });
 
+            if (force) {
+                const ok = confirm('Override will save this mapping even though the totals do not reconcile against the extracted PDF amounts. Continue?');
+                if (!ok) return;
+            }
+
             document.getElementById('confirmStatus').innerHTML = '<div>Saving mapping…</div>';
             fetch('/api/af/uploads/' + uploadId, {
                 method: 'PATCH',
@@ -2072,15 +2085,23 @@ async function uploadAll() {
                 if (!patchResp.success) {
                     throw new Error(patchResp.error || 'Failed to save mapping');
                 }
-                return fetch('/api/af/confirm/' + uploadId, { method: 'POST' });
+                const confirmUrl = '/api/af/confirm/' + uploadId + (force ? '?force=true' : '');
+                return fetch(confirmUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: !!force })
+                });
             })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    document.getElementById('confirmStatus').innerHTML = '<div class="success">Extraction confirmed and saved!</div>';
+                    const msg = force
+                        ? 'Extraction confirmed (override — totals not reconciled).'
+                        : 'Extraction confirmed and saved!';
+                    document.getElementById('confirmStatus').innerHTML = '<div class="success">' + msg + '</div>';
                     setTimeout(() => window.location.href = '/audited-financials', 1500);
                 } else {
-                    document.getElementById('confirmStatus').innerHTML = '<div class="unmapped">Error: ' + data.error + '</div>';
+                    document.getElementById('confirmStatus').innerHTML = '<div class="unmapped">Error: ' + data.error + ' — use <b>Override &amp; Save</b> if the mismatch is intentional.</div>';
                 }
             })
             .catch(err => {
@@ -2406,14 +2427,27 @@ async function uploadAll() {
 
     @bp.route("/api/af/confirm/<int:upload_id>", methods=["POST"])
     def api_confirm(upload_id):
-        """Mark extraction as confirmed."""
+        """Mark extraction as confirmed.
+
+        Pass ``?force=true`` (or JSON body ``{"force": true}``) to bypass the
+        revenue/expense total reconciliation check. Use when the mismatch is
+        intentional — e.g. the auditor rolled categories together or the user
+        moved items in a way that intentionally doesn't tie to the source PDF.
+        """
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
 
+        # Parse force flag from query string or JSON body
+        body = request.get_json(silent=True) or {}
+        force = (
+            str(request.args.get("force", "")).lower() in ("1", "true", "yes")
+            or bool(body.get("force"))
+        )
+
         try:
-            # Validate totals match before confirming
-            if upload.raw_extraction and upload.mapped_data:
+            # Validate totals match before confirming (unless forced)
+            if not force and upload.raw_extraction and upload.mapped_data:
                 try:
                     raw_extraction = json.loads(upload.raw_extraction)
                     mapped_data = json.loads(upload.mapped_data)
