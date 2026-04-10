@@ -697,3 +697,73 @@ Transformed the AF review page (`/af/review/<id>`) from a static display into a 
 2. **Formula bar** — consider adding FA-style formula bar to AF review page
 3. **Remove `_debug_col2`** from summary API response (low priority cleanup)
 4. **Design updates** — visual polish pass deferred
+
+---
+
+## April 10, 2026 Session
+
+### Summary
+Stabilized the PM ↔ FA handoff: PMs can now re-enter a building after submitting for FA review, edit notes, and save without losing work. Fixed drill-down header overlap on the PM dashboard. Hardened the Audited Financials review page against 500s with a caught traceback screen. Added client + server instrumentation to make any future PM save failures loudly visible.
+
+### Bug Fixes & Enhancements
+
+#### PM can now edit buildings after submitting for FA review
+Previously, once a PM clicked "Submit for FA Review", the building card disappeared from the PM portal and the PM dashboard route blocked edits. PMs had no way to correct a typo or add a missed note without an FA-initiated "return".
+
+Fix spans **three** status-gate lists in `workflow.py` that must stay in sync — all three now include `fa_review` as editable:
+- `pm_edit_page()` route guard (~line 1161): `can_edit = budget.status in ["pm_pending", "pm_in_progress", "returned", "fa_review"]`
+- `update_lines()` save endpoint (~line 1883): same list — rejects save if status not in it
+- PM portal landing page JS `editableStatuses` (~line 8836): same list — controls whether building card is clickable on `/pm`
+
+A memory note (`project_pm_fa_workflow.md`) was added to flag the three-place sync requirement for future edits.
+
+#### PM re-submit on an already-`fa_review` budget now no-ops cleanly
+Symptom: after editing in `fa_review`, clicking "Submit for FA Review" threw "Cannot move from 'fa_review' to 'fa_review'". Root cause: `VALID_TRANSITIONS` has no self-loop on `fa_review`.
+
+Fix: `submitForReview()` in the PM template now checks `BUDGET_STATUS`. If already `fa_review`, it just runs `saveAll()`, confirms with the PM, and redirects back to the portal — no status API call. A new `budget_status` kwarg was added to `render_template_string()` and exposed as `const BUDGET_STATUS` in the PM JS scope.
+
+#### PM dashboard drill-down header overlapping invoice table
+The sticky `thead` rule (`.grid-container > table > thead { position: sticky; top: 48px; }`) was cascading into the nested invoice-detail tables inside drill-down rows, so the invoice header row was gluing itself under the fixed GL header and overlapping the PAYEE/DESCRIPTION row visually.
+
+First attempt — CSS-only scope fix with `.invoice-detail-row table thead { position: static !important; }` — did not stick because of specificity.
+
+Final fix: added inline `style="position:static;"` to the `<thead>` *and* `<tr>` elements in the JS HTML string construction inside `toggleInvoices()` (~line 10142). Confirmed resolved by Jacob.
+
+#### PM notes not saving from the PM dashboard
+Symptom: PM entered a note on 212, submitted for FA review, note did not appear on FA dashboard's PM Notes panel.
+
+Root cause (round 1): the notes `<input>` was wired to `onchange="pmLineChanged('${gl}', 'notes', this.value)"`, but `pmLineChanged()` is a pure cascade recompute — it never writes to the `line` object. So `saveAll()` downstream read stale `line.notes` and sent an empty value.
+
+Fix (round 1): changed the notes input to `onchange="onInput(this)"`. `onInput()` at ~line 10216 correctly does `line.notes = el.value` before calling `pmLineChanged()` to trigger the debounced save.
+
+Round 2: user reported notes still weren't saving. Added client + server instrumentation to pinpoint:
+- **Client (`onInput` + `saveAll`)**: `console.log` entries for GL, field, value, payload size, notes count, response status. `alert()` on any HTTP failure with status code + body text.
+- **Server (`update_lines`)**: `print(...)` of entity, budget id, status, incoming notes sample, and per-GL before/after on every notes change.
+
+After the instrumentation deploy, the notes save worked — so the fix from round 1 was correct; round 2 was likely a Railway deploy/cache lag. The instrumentation was left in place since it's cheap and catches any regression immediately.
+
+#### Audited Financials `/af/review/<id>` 500 handler
+Wrapped `review_page()` in an outer try/except that returns an HTML error page with the stringified exception and a full traceback `<pre>` block (HTML-escaped). Also hardened the `apply_mapping_rules()` call in the same route with a try/except that logs and falls back to `unmapped=[]`.
+
+Rationale: the page was throwing 500s for specific uploads with no way to see why from the browser. Now any exception surfaces the traceback in the response body itself — fast to diagnose without needing Railway logs.
+
+### Three-place PM status sync — rule of thumb
+Any future change to PM editability rules must update **all three** of these lists together:
+| File/Function | Line (approx) | Purpose |
+|---|---|---|
+| `workflow.py` `pm_edit_page()` — `can_edit` | ~1161 | Page-level read guard |
+| `workflow.py` `update_lines()` — status check | ~1883 | Save endpoint gate |
+| `workflow.py` `PM_PORTAL_TEMPLATE` — `editableStatuses` JS | ~8836 | Portal card click behavior |
+
+Missing any one of these results in a partial state (e.g., card clickable but save rejected, or save accepted but card greyed out).
+
+### Known Open Items Carried Forward
+- `/af/review/23` 500 never verified live — error handler is deployed but sandbox egress still blocks direct Railway hits from here. Needs Jacob to visit the page and paste the traceback.
+- Audited Financials for 4 test entities (805/302/206/733) still `has_audit: false`.
+- Excel export wiring — `excel_export_v2.py` exists but `/api/download-budget/<entity_code>` still uses the old `template_populator.populate_template()`.
+- Budget Summary RE Taxes total pulling from Gen & Admin 6315 GLs instead of the RE Taxes calc sheet.
+
+### Deploy Infrastructure Notes
+- `deploy.sh` copies both `budget_system/` and `budget_app/` files, git adds, commits, and pushes to main. Railway auto-redeploys on push.
+- Safety threshold: aborts if any file shows >50 net deletions (prevents stale-local stomps). Override with `--force`.
+- Sandbox network egress to `century-budget-generator-production.up.railway.app` is blocked — always verify deploys by asking Jacob to hard-refresh (Ctrl+Shift+R) and check DevTools.
