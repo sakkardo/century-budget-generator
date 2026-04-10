@@ -275,6 +275,34 @@ with app.app_context():
             db.session.rollback()
             logger.warning(f"GL_Mapping routing backfill skipped: {e}")
 
+        # Backfill: correct stale gl_prefixes_json on budget_summary_rows.
+        # Legacy push files carried pre-Yardi chart-of-accounts prefixes for
+        # Electric/Steam/Gas/Water & Sewer/Supplies, which prevented YTD from
+        # flowing on the Budget Summary tab. SUMMARY_PREFIX_OVERRIDES is the
+        # canonical Yardi prefix list keyed by label; this backfill rewrites
+        # gl_prefixes_json for any row whose label matches.
+        try:
+            import json as _json
+            from workflow import SUMMARY_PREFIX_OVERRIDES
+            fixed = 0
+            for label, correct_prefixes in SUMMARY_PREFIX_OVERRIDES.items():
+                new_json = _json.dumps(list(correct_prefixes))
+                result = db.session.execute(
+                    db.text(
+                        "UPDATE budget_summary_rows "
+                        "SET gl_prefixes_json = :p "
+                        "WHERE label = :l AND (gl_prefixes_json IS NULL OR gl_prefixes_json != :p)"
+                    ),
+                    {"p": new_json, "l": label}
+                )
+                fixed += result.rowcount or 0
+            if fixed:
+                db.session.commit()
+                logger.info(f"Corrected gl_prefixes_json on {fixed} budget_summary_rows via SUMMARY_PREFIX_OVERRIDES")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Summary prefix override backfill skipped: {e}")
+
 # Health check for Railway
 @app.route("/healthz")
 def healthz():

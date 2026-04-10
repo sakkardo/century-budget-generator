@@ -204,6 +204,52 @@ def _load_gl_mapping_csv():
 
 GL_MAPPING_CSV = _load_gl_mapping_csv()
 
+
+# ─── SUMMARY ROW PREFIX OVERRIDES ────────────────────────────────────────
+# Budget Summary tab rows carry gl_prefixes_json used to aggregate YTD/estimate/
+# forecast from budget_lines. Historical push files (generated from the legacy
+# GL_TO_SUMMARY_MAP.py) contain stale chart-of-accounts prefixes that predate
+# the Yardi re-numbering. These overrides are the canonical Yardi prefixes
+# keyed by canonical summary row label. Applied at BOTH import time (so future
+# imports auto-correct) and via startup backfill (so existing DB rows are
+# fixed). Source of truth: budget_system/GL_Mapping.csv (Utility Expenses +
+# Supplies sub-categories). If a label is added to SUMMARY_PREFIX_OVERRIDES
+# here, no per-building redeployment is needed.
+SUMMARY_PREFIX_OVERRIDES = {
+    "Electric": ["5255"],
+    "Gas Cooking / Heating": ["5250", "5251", "5252"],
+    "Gas": ["5250", "5251", "5252"],
+    "Gas - Heating": ["5250", "5251", "5252"],
+    "Gas Heating": ["5250", "5251", "5252"],
+    "Steam Heating": ["5265"],
+    "Steam": ["5265"],
+    "Fuel": ["5260"],
+    "Oil / Fuel": ["5260"],
+    "Fuel Oil": ["5260"],
+    "Water & Sewer": ["6305"],
+    "Supplies": [
+        "5405", "5406", "5408", "5410", "5415", "5420", "5425", "5430",
+        "5435", "5440", "5441", "5445", "5450", "5451", "5452", "5453",
+        "5455", "5460", "5465", "5466", "5495",
+    ],
+}
+
+
+def apply_summary_prefix_override(label, existing_prefixes):
+    """Return corrected prefix list for a summary row label.
+
+    Used at import time and in startup backfill. Only overrides labels
+    explicitly listed in SUMMARY_PREFIX_OVERRIDES; all other rows pass
+    through untouched.
+    """
+    if not label:
+        return existing_prefixes
+    override = SUMMARY_PREFIX_OVERRIDES.get(label.strip())
+    if override:
+        return list(override)
+    return existing_prefixes
+
+
 # Comprehensive mapping: budget_line category → Century audit category
 BUDGET_CAT_TO_CENTURY = {
     "supplies": "Supplies",
@@ -2442,9 +2488,15 @@ def create_workflow_blueprint(db):
                 display_order=display_order,
             ).first()
 
+            # Apply canonical Yardi prefix overrides for known-stale labels.
+            # This catches push files generated from the legacy chart-of-accounts
+            # (Electric/Steam/Gas/Water & Sewer/Supplies) and auto-corrects them
+            # on the way in, so no future per-building redeployment is needed.
+            incoming_prefixes = row.get("gl_prefixes") or []
+            corrected_prefixes = apply_summary_prefix_override(row.get("label"), incoming_prefixes)
             gl_pj = None
-            if row.get("gl_prefixes"):
-                gl_pj = _json.dumps(row["gl_prefixes"])
+            if corrected_prefixes:
+                gl_pj = _json.dumps(corrected_prefixes)
 
             if existing:
                 existing.label = row["label"]
