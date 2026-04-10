@@ -1326,7 +1326,14 @@ async function uploadAll() {
                     existing_rules[key] = {}
                 existing_rules[key][rule_section] = rule.century_category
             if upload.status in ["mapped", "confirmed"]:
-                _, unmapped = apply_mapping_rules(upload.raw_extraction, upload.profile.id)
+                try:
+                    _, unmapped = apply_mapping_rules(upload.raw_extraction, upload.profile.id)
+                    if not isinstance(unmapped, list):
+                        unmapped = []
+                except Exception as _amr_err:
+                    import traceback
+                    print(f"[review_page] apply_mapping_rules failed for upload {upload_id}: {_amr_err}\n{traceback.format_exc()}")
+                    unmapped = []
 
         html = """
 <!DOCTYPE html>
