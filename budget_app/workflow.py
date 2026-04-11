@@ -6494,8 +6494,7 @@ async function renderBudgetSummary(contentDiv) {
 
   // Table
   const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
-  let html = '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);overflow:hidden;">' +
-    '<div style="overflow-x:auto;">' +
+  let html = '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);">' +
     '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;background:white;border:1px solid var(--gray-200);border-radius:8px;margin:8px 8px 0;min-height:44px;transition:all .2s;position:sticky;top:48px;z-index:30;box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
     '<span style="font-size:11px;font-weight:800;color:white;background:var(--blue);padding:2px 8px;border-radius:4px;font-family:monospace;letter-spacing:1px;">fx</span>' +
     '<span id="sumFBLabel" style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;white-space:nowrap;min-width:60px;">Click a cell\u2026</span>' +
@@ -6510,10 +6509,10 @@ async function renderBudgetSummary(contentDiv) {
     '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
     '<th style="'+thS+'min-width:80px;">Tab</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
+    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
+    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
+    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
+    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
     '<th style="'+thS+'min-width:120px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
     '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
@@ -6578,7 +6577,7 @@ async function renderBudgetSummary(contentDiv) {
     }
   });
 
-  html += '</tbody></table></div></div>';
+  html += '</tbody></table></div>';
   contentDiv.innerHTML = html;
 
   // Recalculate totals
