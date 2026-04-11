@@ -6495,8 +6495,8 @@ async function renderBudgetSummary(contentDiv) {
   // Table
   const thS = 'text-align:right;padding:10px 10px;white-space:nowrap;font-weight:600;border-bottom:2px solid var(--gray-300);background:var(--gray-100);';
   let html = '<div style="background:white;border-radius:12px;border:1px solid var(--gray-200);overflow:hidden;">' +
-    '<div style="overflow-x:auto;max-height:75vh;overflow-y:auto;">' +
-    '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;background:white;border:1px solid var(--gray-200);border-radius:8px;margin:8px 8px 0;min-height:44px;transition:all .2s;position:sticky;top:0;z-index:30;box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
+    '<div style="overflow-x:auto;">' +
+    '<div id="sumFBar" style="display:flex;align-items:center;gap:12px;padding:10px 20px;background:white;border:1px solid var(--gray-200);border-radius:8px;margin:8px 8px 0;min-height:44px;transition:all .2s;position:sticky;top:48px;z-index:30;box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
     '<span style="font-size:11px;font-weight:800;color:white;background:var(--blue);padding:2px 8px;border-radius:4px;font-family:monospace;letter-spacing:1px;">fx</span>' +
     '<span id="sumFBLabel" style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;white-space:nowrap;min-width:60px;">Click a cell\u2026</span>' +
     '<input id="sumFBInput" type="text" disabled placeholder="Select an editable cell to enter a value or formula\u2026" style="font-family:monospace;font-size:13px;color:var(--gray-700);flex:1;padding:4px 8px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:4px;outline:none;">' +
@@ -6506,7 +6506,7 @@ async function renderBudgetSummary(contentDiv) {
     '<button id="sumFBClear" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(224,36,36,0.3);background:white;color:var(--red);">Clear</button>' +
     '</div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
-    '<thead style="position:sticky;top:52px;z-index:20;"><tr>' +
+    '<thead style="position:sticky;top:94px;z-index:20;"><tr>' +
     '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
     '<th style="'+thS+'min-width:80px;">Tab</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
