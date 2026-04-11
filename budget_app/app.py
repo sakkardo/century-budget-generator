@@ -15,6 +15,7 @@ from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify, send_file, make_response
 from flask_sqlalchemy import SQLAlchemy
 from functools import wraps
+from werkzeug.exceptions import InternalServerError
 
 # Detect cloud deployment (Railway sets PORT env var)
 IS_CLOUD = "PORT" in os.environ or "RAILWAY_ENVIRONMENT" in os.environ
@@ -103,6 +104,69 @@ def _ensure_clean_db_session():
         db.session.rollback()
     except Exception:
         pass
+
+# ─── Global error handlers ────────────────────────────────────────────────
+# Catches uncaught 500s anywhere in the app, logs the full traceback to
+# Railway stdout, and shows a branded error page (HTML) or JSON error
+# (for /api/* routes so frontend AJAX still parses cleanly).
+# Set SHOW_TRACEBACKS=1 in env to show tracebacks inline in the browser.
+@app.errorhandler(500)
+@app.errorhandler(InternalServerError)
+def _handle_500(err):
+    import traceback
+    tb = traceback.format_exc()
+    path = request.path if request else '?'
+    logger.error(f"[500] {path}: {err}\n{tb}")
+
+    # API requests get JSON so frontend code can parse it
+    wants_json = (
+        path.startswith('/api/')
+        or request.is_json
+        or 'application/json' in (request.headers.get('Accept') or '')
+    )
+    if wants_json:
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "path": path
+        }), 500
+
+    show_tb = os.environ.get("SHOW_TRACEBACKS", "").lower() in ("1", "true", "yes")
+    safe_tb = (tb or "").replace("<", "&lt;").replace(">", "&gt;") if show_tb else ""
+    tb_block = (
+        f"<pre style='background:#111;color:#0f0;padding:12px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:20px;'>{safe_tb}</pre>"
+        if show_tb else ""
+    )
+    return (
+        "<!DOCTYPE html><html><head><title>Error - Century Budget</title>"
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:720px;margin:60px auto;padding:20px;color:#1a1714;background:#f4f1eb;}"
+        "h1{color:#e02424;margin-bottom:12px;font-size:24px;}p{color:#4a4039;line-height:1.6;}"
+        "a{color:#5a4a3f;font-weight:600;text-decoration:none;}a:hover{text-decoration:underline;}"
+        "code{background:#ede9e1;padding:2px 8px;border-radius:4px;font-size:13px;}"
+        ".card{background:white;border-radius:12px;padding:32px;border:1px solid #e5e0d5;}</style></head><body>"
+        "<div class='card'>"
+        "<h1>Something went wrong</h1>"
+        f"<p>We hit an unexpected error on <code>{path}</code>. The issue has been logged and we'll take a look.</p>"
+        "<p style='margin-top:20px;'><a href='/'>← Home</a> &nbsp;·&nbsp; <a href='/dashboard'>Dashboard</a></p>"
+        f"{tb_block}"
+        "</div></body></html>"
+    ), 500
+
+@app.errorhandler(404)
+def _handle_404(err):
+    if request.path.startswith('/api/'):
+        return jsonify({"success": False, "error": "Not found", "path": request.path}), 404
+    return (
+        "<!DOCTYPE html><html><head><title>Not Found - Century Budget</title>"
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:720px;margin:60px auto;padding:20px;color:#1a1714;background:#f4f1eb;}"
+        "h1{color:#5a4a3f;font-size:24px;margin-bottom:12px;}p{color:#4a4039;line-height:1.6;}"
+        "a{color:#5a4a3f;font-weight:600;text-decoration:none;}a:hover{text-decoration:underline;}"
+        ".card{background:white;border-radius:12px;padding:32px;border:1px solid #e5e0d5;}</style></head><body>"
+        "<div class='card'>"
+        "<h1>Page not found</h1><p>That page doesn't exist.</p>"
+        "<p style='margin-top:20px;'><a href='/'>← Home</a> &nbsp;·&nbsp; <a href='/dashboard'>Dashboard</a></p>"
+        "</div></body></html>"
+    ), 404
 
 # Resolve all model relationships after ALL blueprints are registered
 try:
