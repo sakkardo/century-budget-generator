@@ -1159,10 +1159,31 @@ async function uploadAll() {
         function toggleEdit(id) {
             var card = document.getElementById(id);
             card.classList.toggle('editing');
-            // Auto-open if not already open
             if (card.classList.contains('editing') && !card.classList.contains('open')) {
                 card.classList.add('open');
             }
+        }
+
+        function toggleEditName(id) {
+            var profileId = id.replace('profile-', '');
+            var row = document.getElementById('nameEdit-' + profileId);
+            row.style.display = row.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function saveProfileName(profileId) {
+            var name = document.getElementById('editName-' + profileId).value;
+            var firm = document.getElementById('editFirm-' + profileId).value;
+            var notes = document.getElementById('editNotes-' + profileId).value;
+            fetch('/api/af/profiles/' + profileId, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, firm_name: firm, notes: notes })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) location.reload();
+                else alert('Error: ' + data.error);
+            });
         }
 
         function createProfile() {
@@ -1314,8 +1335,20 @@ async function uploadAll() {
                     </div>
                     <div class="profile-body">
                         <div class="profile-actions">
+                            <button class="btn-edit btn-small" onclick="event.stopPropagation(); toggleEditName('profile-{p.id}')">&#9998; Edit Name</button>
                             <button class="btn-edit btn-small" onclick="event.stopPropagation(); toggleEdit('profile-{p.id}')">&#9998; Edit Mapping</button>
                             <button class="btn-danger btn-small" onclick="event.stopPropagation(); deleteProfile({p.id})">Delete</button>
+                        </div>
+                        <div class="name-edit-row" id="nameEdit-{p.id}" style="display:none; margin-top:12px; padding:14px; background:var(--gray-50); border-radius:8px; border:1px solid var(--gray-200);">
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+                                <div><label style="font-size:11px;">Display Name</label><input type="text" id="editName-{p.id}" value="{p.name}" style="width:100%; margin-top:4px;" /></div>
+                                <div><label style="font-size:11px;">Firm Name</label><input type="text" id="editFirm-{p.id}" value="{p.firm_name}" style="width:100%; margin-top:4px;" /></div>
+                                <div><label style="font-size:11px;">Notes</label><input type="text" id="editNotes-{p.id}" value="{p.notes or ''}" style="width:100%; margin-top:4px;" /></div>
+                            </div>
+                            <div style="margin-top:10px; display:flex; gap:8px;">
+                                <button class="btn-green btn-small" onclick="saveProfileName({p.id})">Save</button>
+                                <button class="btn-small" style="background:var(--gray-100);color:var(--gray-700);" onclick="toggleEditName('profile-{p.id}')">Cancel</button>
+                            </div>
                         </div>
                         {rules_table}
                     </div>
