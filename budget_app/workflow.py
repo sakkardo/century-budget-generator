@@ -3496,8 +3496,7 @@ DASHBOARD_TEMPLATE = r"""
             <th>Building</th>
             <th>Entity</th>
             <th>PM</th>
-            <th>Data</th>
-            <th>Data Loaded</th>
+            <th>Data Status</th>
             <th>PM Review</th>
             <th>Status</th>
             <th>Days</th>
@@ -3595,19 +3594,16 @@ function renderBudgets(budgets) {
   const tbody = document.querySelector('#budgets-table tbody');
   tbody.innerHTML = '';
 
+  // Sort by entity code ascending
+  budgets.sort((a, b) => Number(a.entity_code) - Number(b.entity_code));
+
   budgets.forEach(b => {
     const tr = document.createElement('tr');
     const statusLabel = formatStatus(b.status);
     const statusClass = `pill-${b.status}`;
 
-    // Data completeness indicators
-    const budgetIcon = '<span style="color:var(--green);" title="Budget">&#10003; Budget</span>';
-    const expenseIcon = b.has_expenses
-      ? '<span style="color:var(--green);" title="Expenses uploaded">&#10003; Expenses</span>'
-      : '<span style="color:var(--gray-300);" title="No expenses">&#10007; Expenses</span>';
-    const auditIcon = b.has_audit
-      ? '<span style="color:var(--green);" title="Audit confirmed">&#10003; Audit</span>'
-      : '<span style="color:var(--gray-300);" title="No audit">&#10007; Audit</span>';
+    // Data completeness - compact inline format
+    function dataIcon(ok) { return ok ? '<span style="color:var(--green);">&#10003;</span>' : '<span style="color:var(--gray-300);">&#10007;</span>'; }
 
     // PM review status pill
     const pmStatusMap = {
@@ -3637,18 +3633,17 @@ function renderBudgets(budgets) {
         `</div></div>`;
     }
 
-    // Format timestamps for data-loaded column
+    // Compact data status: icons + dates on one line
     const ts = b.timestamps || {};
-    function fmtTs(iso) {
-      if (!iso) return '<span style="color:var(--gray-300);">—</span>';
-      const d = new Date(iso);
-      return '<span style="color:var(--green);">' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'}) + '</span>';
-    }
-    const tsHtml = '<div style="font-size:11px; line-height:1.7;">' +
-      '<div title="Approved budget summary imported"><b>Budget:</b> ' + fmtTs(ts.budget_summary) + '</div>' +
-      '<div title="YSL data collected from Yardi"><b>YSL:</b> ' + fmtTs(ts.ysl) + '</div>' +
-      '<div title="Open AP / Aging Payables imported"><b>AP Aging:</b> ' + fmtTs(ts.open_ap) + '</div>' +
-      '<div title="Expense Distribution uploaded"><b>Exp Dist:</b> ' + fmtTs(ts.expense_dist) + '</div>' +
+    function fmtDt(iso) { if (!iso) return '—'; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
+    const dataItems = [
+      { label: 'Bud', ok: true, dt: ts.budget_summary, tip: 'Budget summary imported' },
+      { label: 'Exp', ok: b.has_expenses, dt: ts.expense_dist, tip: 'Expense distribution' },
+      { label: 'YSL', ok: !!ts.ysl, dt: ts.ysl, tip: 'YSL data from Yardi' },
+      { label: 'AP', ok: !!ts.open_ap, dt: ts.open_ap, tip: 'AP Aging imported' }
+    ];
+    const dataHtml = '<div style="font-size:11px; display:flex; gap:8px; flex-wrap:nowrap; white-space:nowrap;">' +
+      dataItems.map(i => `<span title="${i.tip}" style="color:${i.ok ? 'var(--green)' : 'var(--gray-300)'};">${i.ok ? '&#10003;' : '&#10007;'}${i.label} <span style="font-size:10px;">${fmtDt(i.dt)}</span></span>`).join('') +
       '</div>';
 
     // SLA: days in current status (using updated_at as proxy)
@@ -3666,8 +3661,7 @@ function renderBudgets(budgets) {
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${pmName}</td>
-      <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
-      <td>${tsHtml}</td>
+      <td>${dataHtml}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
       <td style="text-align:center;">${daysHtml}</td>
