@@ -4898,6 +4898,7 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
 <div class="bp2-ftr"><span>Prepared by Century Management · Confidential</span><span>Generated ${today}</span></div>`;
 
     document.body.appendChild(overlay);
+    overlay.scrollTop = 0;
     overlay.querySelector('.bp2-close').onclick = () => { document.removeEventListener('keydown', escH); overlay.remove(); };
 
     // Build tabs
@@ -4914,6 +4915,7 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
     function renderTab(tn) {
       overlay.querySelectorAll('.bp2-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tn));
       if (tn === 'summary') renderSummary(); else renderDetail(tn);
+      overlay.scrollTop = 0;
     }
 
     // ── Summary Tab ──
@@ -5003,6 +5005,7 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
           const barData = expSheets.filter(s => (stotals[s]||{}).budget > 0 || (stotals[s]||{}).proposed > 0);
           const bc = body.querySelector('#bp2Bar');
           if (bc) new Chart(bc, { type:'bar', data:{ labels:barData.map(s=>s), datasets:[ { label:'Current Budget', data:barData.map(s=>Math.round(stotals[s].budget)), backgroundColor:'#cbd5e1', borderRadius:3 }, { label:'Proposed', data:barData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:barData.map(s=>stotals[s].proposed>stotals[s].budget?'#fbbf24':'#4ade80'), borderRadius:3 } ] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>ctx.dataset.label+': '+pFmt(ctx.parsed.y) } } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'K', font:{size:10} }, grid:{color:'#f1f5f9'} }, x:{ ticks:{font:{size:10},maxRotation:25}, grid:{display:false} } } } });
+          overlay.scrollTop = 0;
         }, 50);
       }
     }
