@@ -1323,7 +1323,7 @@ async function uploadAll() {
             """
             profiles_html.append(profile_card)
 
-        century_categories_options = "\n".join([
+        century_categories_options = "".join([
             f'<option value="{cat}">{cat}</option>'
             for cat in CENTURY_CATEGORIES
         ])
