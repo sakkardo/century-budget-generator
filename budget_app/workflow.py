@@ -4321,15 +4321,25 @@ function renderDetail(data) {
   const pmDone = ['fa_review','approved'].includes(b.status);
   const pmSent = ['pm_pending','pm_in_progress','fa_review','approved'].includes(b.status);
 
+  const reviewPct = lines.length ? Math.round(linesWithProposed / lines.length * 100) : 0;
   const checks = [
-    { label: 'YSL Data Imported', done: true, detail: lines.length + ' GL lines loaded' },
-    { label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
-    { label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
-    { label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
-    { label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
-    { label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values' },
-    { label: 'Final Approval', done: b.status === 'approved', detail: b.status === 'approved' ? 'Budget approved' : 'Complete all steps above first' }
+    { group: 'Data Collection', label: 'YSL Data Imported', done: true, detail: lines.length + ' GL lines loaded' },
+    { group: 'Data Collection', label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
+    { group: 'Data Collection', label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
+    { group: 'Configuration', label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
+    { group: 'Review', label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values (' + reviewPct + '%)', progress: reviewPct },
+    { group: 'Review', label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
+    { group: 'Approval', label: 'Final Approval', done: b.status === 'approved', detail: '', blocked: true }
   ];
+
+  // Build missing-deps detail for Final Approval
+  const missingDeps = [];
+  if (!data.audit.exists) missingDeps.push('Audited Financials');
+  if (!pmDone) missingDeps.push('PM Review');
+  if (linesWithProposed < lines.length * 0.5) missingDeps.push('Review All Sheets');
+  const approvalItem = checks[checks.length - 1];
+  approvalItem.detail = approvalItem.done ? 'Budget approved' : (missingDeps.length ? 'Requires: ' + missingDeps.join(', ') : 'Ready for approval');
+  if (!approvalItem.done && missingDeps.length === 0) approvalItem.blocked = false;
 
   const doneCount = checks.filter(c => c.done).length;
   const pct = Math.round(doneCount / checks.length * 100);
@@ -4345,14 +4355,28 @@ function renderDetail(data) {
     '<div style="display:flex; justify-content:space-between; font-size:12px; color:var(--gray-500); margin-bottom:4px;"><span>' + doneCount + ' of ' + checks.length + ' complete</span><span>' + pct + '%</span></div>' +
     '<div style="height:6px; background:var(--gray-100); border-radius:3px; overflow:hidden;"><div style="height:100%; width:' + pct + '%; background:' + barColor + '; border-radius:3px; transition:width 0.3s;"></div></div></div>';
 
-  checks.forEach((c, i) => {
+  let lastGroup = '';
+  checks.forEach((c) => {
+    // Group header
+    if (c.group !== lastGroup) {
+      assemblyHtml += '<div style="font-size:10px; font-weight:700; color:var(--gray-400); text-transform:uppercase; letter-spacing:0.5px; margin:10px 0 4px;">' + c.group + '</div>';
+      lastGroup = c.group;
+    }
     const iconClass = c.done ? 'check-done' : 'check-pending';
     const iconChar = c.done ? '✓' : '';
     const actionBtn = c.action ? ' <button onclick="' + c.action + '()" style="font-size:11px; padding:2px 8px; background:var(--blue); color:white; border:none; border-radius:4px; cursor:pointer; margin-left:8px;">Go</button>' : '';
-    assemblyHtml += '<div class="checklist-item">' +
+    const blockedBadge = (c.blocked && !c.done) ? ' <span style="font-size:10px; padding:1px 6px; border-radius:8px; background:var(--gray-100); color:var(--gray-400); margin-left:6px;">Blocked</span>' : '';
+    const dimStyle = (c.blocked && !c.done) ? ' opacity:0.5;' : '';
+    // Mini progress bar for items with progress
+    let progressBar = '';
+    if (c.progress !== undefined && !c.done) {
+      const pColor = c.progress >= 50 ? 'var(--blue)' : c.progress > 0 ? '#d97706' : 'var(--gray-300)';
+      progressBar = '<div style="height:4px; background:var(--gray-100); border-radius:2px; margin-top:4px; width:120px;"><div style="height:100%; width:' + c.progress + '%; background:' + pColor + '; border-radius:2px;"></div></div>';
+    }
+    assemblyHtml += '<div class="checklist-item" style="' + dimStyle + '">' +
       '<div class="check-icon ' + iconClass + '">' + iconChar + '</div>' +
-      '<div><div class="checklist-label">' + c.label + actionBtn + '</div>' +
-      '<div class="checklist-detail">' + c.detail + '</div></div></div>';
+      '<div style="flex:1;"><div class="checklist-label">' + c.label + actionBtn + blockedBadge + '</div>' +
+      '<div class="checklist-detail">' + c.detail + '</div>' + progressBar + '</div></div>';
   });
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
@@ -8816,38 +8840,47 @@ PM_PORTAL_TEMPLATE = r"""
     border-color: var(--blue);
     box-shadow: 0 0 0 3px var(--blue-light);
   }
-  .buildings-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 16px;
-    margin-top: 24px;
-  }
+  .summary-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+  .summary-chip { padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .chip-action { background: #fef3c7; color: #92400e; }
+  .chip-waiting { background: #e0e7ff; color: #3730a3; }
+  .chip-done { background: #dcfce7; color: #166534; }
+  .chip-total { background: var(--gray-100); color: var(--gray-700); }
+  .buildings-list { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
   .building-card {
     background: white;
     border: 1px solid var(--gray-200);
     border-radius: 12px;
-    padding: 24px;
+    padding: 18px 20px;
     text-decoration: none;
     color: var(--gray-900);
     transition: all 0.15s;
-    cursor: pointer;
+    border-left: 4px solid var(--gray-300);
   }
   .building-card:hover {
-    border-color: var(--blue);
-    box-shadow: 0 10px 25px rgba(26, 86, 219, 0.15);
-    transform: translateY(-4px);
+    border-color: var(--gray-200);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
   }
-  .building-card h3 {
-    font-size: 18px;
+  .building-card.card-action { border-left-color: #dc2626; }
+  .building-card.card-waiting { border-left-color: #d97706; }
+  .building-card.card-done { border-left-color: #16a34a; }
+  .building-card.card-notready { border-left-color: var(--gray-300); opacity: 0.6; }
+  .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .card-top h3 {
+    font-size: 15px;
     font-weight: 600;
-    margin-bottom: 8px;
-    color: var(--blue);
+    color: var(--gray-900);
   }
-  .building-card p {
-    font-size: 13px;
-    color: var(--gray-500);
-    margin-bottom: 4px;
-  }
+  .card-top h3 span { font-size: 12px; font-weight: 400; color: var(--gray-500); margin-left: 8px; }
+  .card-meta { display: flex; gap: 16px; font-size: 11px; color: var(--gray-500); margin-bottom: 8px; }
+  .card-actions { display: flex; justify-content: flex-end; }
+  .card-btn { font-size: 12px; padding: 5px 14px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; text-decoration: none; display: inline-block; }
+  .card-btn-primary { background: var(--blue); color: white; }
+  .card-btn-secondary { background: var(--gray-100); color: var(--gray-700); }
+  .days-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .days-red { background: #fef2f2; color: #dc2626; }
+  .days-yellow { background: #fffbeb; color: #d97706; }
+  .days-green { background: #f0fdf4; color: #16a34a; }
   .status-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
   .pill-pm_pending { background: #fef3c7; color: #a16207; }
   .pill-pm_in_progress { background: var(--blue-light); color: var(--blue); }
@@ -8883,7 +8916,8 @@ PM_PORTAL_TEMPLATE = r"""
     </select>
   </div>
 
-  <div class="buildings-grid" id="buildings-grid" style="display: none;"></div>
+  <div id="pm-summary" class="summary-bar" style="display:none;"></div>
+  <div class="buildings-list" id="buildings-grid" style="display: none;"></div>
 </div>
 
 <script>
@@ -8954,8 +8988,14 @@ function getBuildingName(entityCode) {
   return building ? (building.building_name || building.name || entityCode) : entityCode;
 }
 
+function calcDays(updatedAt) {
+  if (!updatedAt) return 0;
+  return Math.floor((Date.now() - new Date(updatedAt).getTime()) / 86400000);
+}
+
 function renderBuildings(userId) {
   const grid = document.getElementById('buildings-grid');
+  const summary = document.getElementById('pm-summary');
   const userAssignments = allAssignments.filter(a => a.user_id === userId && a.role === 'pm');
 
   // If PM has assignments, show those buildings; otherwise show all budgets (demo mode)
@@ -8966,41 +9006,77 @@ function renderBuildings(userId) {
       return { entity_code: a.entity_code, budget };
     });
   } else {
-    // Demo mode: show all budgets
     buildingList = allBudgets.map(b => ({ entity_code: b.entity_code, budget: b }));
   }
 
   if (buildingList.length === 0) {
     grid.style.display = 'none';
+    summary.style.display = 'none';
     return;
   }
 
+  // Classify each building
+  const actionStatuses = ['pm_pending', 'pm_in_progress', 'returned'];
+  const doneStatuses = ['approved', 'ar_pending', 'ar_complete'];
+  buildingList.forEach(item => {
+    const s = item.budget ? item.budget.status : null;
+    const days = item.budget ? calcDays(item.budget.updated_at) : 0;
+    item.days = days;
+    if (actionStatuses.includes(s)) { item.tier = 0; item.cardClass = days >= 14 ? 'card-action' : 'card-waiting'; }
+    else if (s === 'fa_review') { item.tier = 1; item.cardClass = 'card-waiting'; }
+    else if (doneStatuses.includes(s)) { item.tier = 2; item.cardClass = 'card-done'; }
+    else { item.tier = 3; item.cardClass = 'card-notready'; }
+  });
+  // Sort: action items first (longest waiting), then done, then not-ready
+  buildingList.sort((a, b) => a.tier - b.tier || b.days - a.days);
+
+  // Summary chips
+  const needReview = buildingList.filter(i => i.tier === 0).length;
+  const awaitingFA = buildingList.filter(i => i.tier === 1).length;
+  const done = buildingList.filter(i => i.tier === 2).length;
+  summary.innerHTML = '<span class="summary-chip chip-total">' + buildingList.length + ' buildings</span>' +
+    (needReview ? '<span class="summary-chip chip-action">' + needReview + ' need your review</span>' : '') +
+    (awaitingFA ? '<span class="summary-chip chip-waiting">' + awaitingFA + ' awaiting FA</span>' : '') +
+    (done ? '<span class="summary-chip chip-done">' + done + ' approved</span>' : '');
+  summary.style.display = 'flex';
+
   grid.innerHTML = '';
-  grid.style.display = 'grid';
+  grid.style.display = 'flex';
 
   buildingList.forEach(item => {
     const buildingName = item.budget ? (item.budget.building_name || getBuildingName(item.entity_code)) : getBuildingName(item.entity_code);
     const budgetStatus = item.budget ? item.budget.status : null;
     const isEditable = editableStatuses.includes(budgetStatus);
-
-    const card = document.createElement('div');
-    card.className = 'building-card';
-    if (isEditable) {
-      card.style.cursor = 'pointer';
-      card.onclick = () => window.location.href = `/pm/${item.entity_code}`;
-    } else {
-      card.style.opacity = '0.6';
-      card.style.cursor = 'default';
-    }
-
     const statusLabel = budgetStatus ? formatStatus(budgetStatus) : 'No Budget';
     const pillClass = budgetStatus ? 'pill-' + budgetStatus : 'pill-draft';
-    card.innerHTML = `
-      <h3>${buildingName}</h3>
-      <p style="margin-bottom:8px;"><span style="font-family:monospace; font-size:12px; color:var(--gray-500);">Entity ${item.entity_code}</span></p>
-      <span class="status-pill ${pillClass}">${statusLabel}</span>
-      ${isEditable ? '<p style="color: var(--blue); font-size: 12px; margin-top:8px; font-weight:600;">Click to edit &rarr;</p>' : ''}
-    `;
+
+    // Days badge
+    let daysBadge = '';
+    if (item.tier <= 1 && item.days > 0) {
+      const dc = item.days >= 14 ? 'days-red' : item.days >= 7 ? 'days-yellow' : 'days-green';
+      daysBadge = '<span class="days-badge ' + dc + '">' + item.days + 'd waiting</span>';
+    }
+
+    // Action button
+    let btn = '';
+    if (item.tier === 0 && budgetStatus === 'pm_pending') {
+      btn = '<a href="/pm/' + item.entity_code + '" class="card-btn card-btn-primary">Start Review &rarr;</a>';
+    } else if (item.tier === 0) {
+      btn = '<a href="/pm/' + item.entity_code + '" class="card-btn card-btn-primary">Continue Review &rarr;</a>';
+    } else if (item.tier === 1) {
+      btn = '<a href="/pm/' + item.entity_code + '" class="card-btn card-btn-secondary">View &rarr;</a>';
+    } else if (item.tier === 2) {
+      btn = '<a href="/pm/' + item.entity_code + '" class="card-btn card-btn-secondary">View &rarr;</a>';
+    } else {
+      btn = '<span style="font-size:11px; color:var(--gray-500);">Not sent to PM yet</span>';
+    }
+
+    const card = document.createElement('div');
+    card.className = 'building-card ' + item.cardClass;
+    card.innerHTML =
+      '<div class="card-top"><h3>' + buildingName + '<span>Entity ' + item.entity_code + '</span></h3>' +
+        '<div style="display:flex; gap:8px; align-items:center;">' + daysBadge + '<span class="status-pill ' + pillClass + '">' + statusLabel + '</span></div></div>' +
+      '<div class="card-actions">' + btn + '</div>';
     grid.appendChild(card);
   });
 }
