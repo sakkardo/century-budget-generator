@@ -5023,6 +5023,7 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
     }
 
     // ── Detail Tab ──
+    function bpIsZero(l) { return !l.prior_year && !l.ytd_actual && !l.accrual_adj && !l.unpaid_bills && !l.current_budget && !l.increase_pct; }
     function renderDetail(sheetName) {
       const body = overlay.querySelector('#bp2Body');
       const lines = sheets[sheetName] || [];
@@ -5047,18 +5048,20 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
           const cid = 'bp2c_' + sheetName.replace(/\W/g,'') + ci;
           h += '<tr class="bp2-exp" onclick="document.querySelectorAll(\'.' + cid + '\').forEach(r=>{r.style.display=r.style.display===\'none\'?\'\':\'none\'});this.classList.toggle(\'open\')" style="cursor:pointer"><td style="font-weight:600;padding-left:22px">' + cat.label + '</td><td class="num" style="font-weight:600">' + pFmt(ct.prior) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.forecast) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.budget) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.proposed) + '</td><td class="num ' + chgCls(cc,isExp) + '" style="font-weight:600">' + (cc >= 0 ? '+' : '-') + pFmt(Math.abs(cc)) + '</td><td class="num ' + chgCls(cp,isExp) + '" style="font-weight:600">' + pPct(cp) + '</td></tr>';
           cl.forEach(l => {
+            if (bpIsZero(l)) return;
             const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
             h += '<tr class="bp2-child ' + cid + '" style="display:none"><td>' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num">' + pPct(lpc) + '</td></tr>';
           });
         });
         // Uncategorized
         const matched = new Set(); cats.forEach(c => lines.filter(c.match).forEach(l => matched.add(l.id)));
-        lines.filter(l => !matched.has(l.id)).forEach(l => {
+        lines.filter(l => !matched.has(l.id) && !bpIsZero(l)).forEach(l => {
           const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
           h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
         });
       } else {
         lines.forEach(l => {
+          if (bpIsZero(l)) return;
           const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
           h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
         });
