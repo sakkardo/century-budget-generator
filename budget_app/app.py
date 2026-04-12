@@ -2182,171 +2182,223 @@ HOME_TEMPLATE = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <title>Century Management Budget System</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f9fafb; }
-  header {
-    background: linear-gradient(135deg, #5a4a3f 0%, #3d342c 100%);
-    color: white;
-    padding: 60px 20px;
-    text-align: center;
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f3f1; color: #2d2520; min-height: 100vh; }
+
+  /* Navbar */
+  .navbar { position: sticky; top: 0; z-index: 100; background: #2d2520; padding: 0 40px; display: flex; align-items: center; justify-content: space-between; height: 54px; }
+  .navbar .brand { font-size: 15px; font-weight: 700; color: #f5f3f1; letter-spacing: 0.5px; text-decoration: none; }
+  .navbar .brand span { font-weight: 300; color: #c4b5a6; margin-left: 6px; }
+  .nav-links { display: flex; gap: 4px; align-items: center; }
+  .nav-links a { font-size: 12px; font-weight: 500; color: #c4b5a6; text-decoration: none; padding: 8px 14px; border-radius: 6px; transition: all 0.15s; }
+  .nav-links a:hover { color: #f5f3f1; background: rgba(255,255,255,0.08); }
+  .nav-links a.active { color: #f5f3f1; background: rgba(255,255,255,0.12); }
+
+  /* Hero */
+  .hero { background: linear-gradient(135deg, #3d342c 0%, #2d2520 50%, #1a1512 100%); padding: 48px 40px 40px; position: relative; overflow: hidden; }
+  .hero::after { content: ''; position: absolute; top: -50%; right: -10%; width: 500px; height: 500px; background: radial-gradient(circle, rgba(196,181,166,0.06) 0%, transparent 70%); pointer-events: none; }
+  .hero-inner { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; align-items: flex-end; }
+  .hero h1 { font-size: 32px; font-weight: 300; color: #f5f3f1; line-height: 1.2; }
+  .hero h1 strong { font-weight: 700; }
+  .hero .subtitle { font-size: 13px; color: #a89888; margin-top: 8px; letter-spacing: 1px; text-transform: uppercase; font-weight: 500; }
+
+  /* Role Toggle */
+  .role-toggle { display: flex; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 3px; gap: 2px; }
+  .role-btn { padding: 8px 20px; font-size: 13px; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; transition: all 0.2s; background: transparent; color: #a89888; font-family: inherit; }
+  .role-btn.active { background: #f5f3f1; color: #2d2520; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+  .role-btn:not(.active):hover { color: #f5f3f1; }
+
+  /* Main */
+  .main { max-width: 1200px; margin: 0 auto; padding: 32px 40px 60px; }
+
+  /* Section Labels */
+  .section-label { font-size: 11px; font-weight: 700; color: #8b7b6b; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: #ddd5cc; }
+
+  /* Phase Stepper */
+  .stepper { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }
+  .phase-card { background: #fff; border-radius: 12px; padding: 28px 24px; border: 1px solid #e8e0d8; position: relative; transition: all 0.2s; }
+  .phase-card:hover { border-color: #c4b5a6; box-shadow: 0 4px 16px rgba(45,37,32,0.06); }
+  .phase-num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #2d2520; color: #f5f3f1; font-size: 13px; font-weight: 700; margin-bottom: 14px; }
+  .phase-card h3 { font-size: 17px; font-weight: 700; color: #2d2520; margin-bottom: 6px; }
+  .phase-card .phase-desc { font-size: 13px; color: #8b7b6b; line-height: 1.5; margin-bottom: 18px; }
+  .checklist { list-style: none; margin-bottom: 20px; }
+  .checklist li { font-size: 13px; color: #4a3f35; padding: 7px 0; border-bottom: 1px solid #f5f0eb; display: flex; align-items: flex-start; gap: 10px; line-height: 1.4; }
+  .checklist li:last-child { border-bottom: none; }
+  .checklist li::before { content: '\25CB'; color: #c4b5a6; font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+  .phase-link { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #2d2520; text-decoration: none; padding: 8px 16px; border-radius: 8px; background: #f5f0eb; transition: all 0.15s; }
+  .phase-link:hover { background: #2d2520; color: #f5f3f1; }
+  .phase-link svg { width: 14px; height: 14px; }
+
+  /* Quick Links */
+  .quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 40px; }
+  .quick-card { background: #fff; border: 1px solid #e8e0d8; border-radius: 10px; padding: 20px; display: flex; align-items: flex-start; gap: 14px; text-decoration: none; color: inherit; transition: all 0.15s; }
+  .quick-card:hover { border-color: #c4b5a6; box-shadow: 0 2px 8px rgba(45,37,32,0.05); transform: translateY(-1px); }
+  .quick-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+  .quick-icon.blue { background: #eff6ff; }
+  .quick-icon.green { background: #f0fdf4; }
+  .quick-icon.amber { background: #fffbeb; }
+  .quick-icon.purple { background: #faf5ff; }
+  .quick-icon.slate { background: #f8fafc; }
+  .quick-icon.rose { background: #fff1f2; }
+  .quick-card h4 { font-size: 14px; font-weight: 600; color: #2d2520; margin-bottom: 3px; }
+  .quick-card p { font-size: 12px; color: #8b7b6b; line-height: 1.4; }
+
+  /* Footer */
+  .footer { text-align: center; padding: 24px 40px; font-size: 11px; color: #a89888; letter-spacing: 0.5px; border-top: 1px solid #e8e0d8; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .stepper { grid-template-columns: 1fr; }
+    .quick-grid { grid-template-columns: repeat(2, 1fr); }
+    .hero-inner { flex-direction: column; align-items: flex-start; gap: 16px; }
   }
-  header h1 { font-size: 36px; font-weight: 700; margin-bottom: 8px; }
-  header p { font-size: 16px; opacity: 0.95; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-  .section-label {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    color: #9ca3af;
-    margin-bottom: 12px;
-    padding-left: 4px;
+  @media (max-width: 600px) {
+    .quick-grid { grid-template-columns: 1fr; }
+    .navbar { padding: 0 20px; }
+    .hero { padding: 32px 20px; }
+    .main { padding: 24px 20px 40px; }
   }
-  .section-group {
-    margin-bottom: 40px;
-  }
-  .nav-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 20px;
-  }
-  .nav-card {
-    background: white;
-    border-radius: 12px;
-    padding: 28px 24px;
-    border: 1px solid #e5e0d5;
-    text-decoration: none;
-    color: #1a1714;
-    transition: all 0.3s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    display: flex;
-    flex-direction: column;
-  }
-  .nav-card:hover {
-    border-color: #5a4a3f;
-    box-shadow: 0 10px 25px rgba(90,74,63, 0.15);
-    transform: translateY(-4px);
-  }
-  .nav-card h2 {
-    font-size: 18px;
-    color: #5a4a3f;
-    margin-bottom: 8px;
-    font-weight: 600;
-  }
-  .nav-card p {
-    font-size: 13px;
-    color: #8a7e72;
-    line-height: 1.5;
-    flex-grow: 1;
-    margin-bottom: 12px;
-  }
-  .nav-card .arrow {
-    display: inline-block;
-    color: #5a4a3f;
-    font-weight: 600;
-    font-size: 16px;
-  }
-  .nav-card:hover .arrow { transform: translateX(4px); transition: all 0.2s; }
-  .icon {
-    font-size: 28px;
-    margin-bottom: 8px;
-  }
-  /* ── Global Nav ── */
-  .top-nav { background: white; border-bottom: 1px solid #e5e0d5; padding: 0 20px; display: flex; align-items: center; height: 48px; position: sticky; top: 0; z-index: 100; }
-  .top-nav .nav-brand { font-weight: 700; font-size: 15px; color: #5a4a3f; text-decoration: none; margin-right: 32px; }
-  .top-nav .nav-links { display: flex; gap: 4px; }
-  .top-nav .nav-link { padding: 6px 14px; font-size: 13px; font-weight: 500; color: #8a7e72; text-decoration: none; border-radius: 6px; transition: all 0.15s; }
-  .top-nav .nav-link:hover { background: #ede9e1; color: #1a1714; }
-  .top-nav .nav-link.active { background: #f5efe7; color: #5a4a3f; }
+
+  /* Phase transition */
+  .phase-card { opacity: 1; transition: opacity 0.25s ease, transform 0.25s ease; }
+  .phase-card.fade-out { opacity: 0; transform: translateY(8px); }
 </style>
 </head>
 <body>
-<!-- Global Nav -->
-<nav class="top-nav">
-  <a href="/" class="nav-brand">Century Management</a>
+
+<!-- Navbar -->
+<nav class="navbar">
+  <a href="/" class="brand">CENTURY MANAGEMENT <span>Budget System</span></a>
   <div class="nav-links">
-    <a href="/" class="nav-link active">Home</a>
-    <a href="/dashboard" class="nav-link">FA Dashboard</a>
-    <a href="/pm" class="nav-link">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
-    <a href="/audited-financials" class="nav-link">Audited Financials</a>
-    <a href="/files" class="nav-link">Files</a>
+    <a href="/" class="active">Home</a>
+    <a href="/dashboard">FA Dashboard</a>
+    <a href="/pm">PM Portal</a>
+    <a href="/generate">Generator</a>
+    <a href="/audited-financials">Audited Financials</a>
+    <a href="/files">Files</a>
   </div>
 </nav>
-  <header>
-    <h1>Century Management</h1>
-    <p>Budget & Assumptions System</p>
-  </header>
-  <div class="container">
-    <div class="section-group">
-      <div class="section-label">Setup</div>
-      <div class="nav-grid">
-        <a href="/admin" class="nav-card">
-          <div class="icon">👤</div>
-          <h2>User Management</h2>
-          <p>Sync buildings, FAs, and PMs from Monday.com.</p>
-          <span class="arrow">→</span>
-        </a>
-      </div>
-    </div>
 
-    <div class="section-group">
-      <div class="section-label">Configuration</div>
-      <div class="nav-grid">
-        <a href="/assumptions/workbench" class="nav-card">
-          <div class="icon">⚙️</div>
-          <h2>Assumptions</h2>
-          <p>Portfolio defaults and per-building overrides in one unified workbench.</p>
-          <span class="arrow">→</span>
-        </a>
-      </div>
+<!-- Hero -->
+<div class="hero">
+  <div class="hero-inner">
+    <div>
+      <h1>Budget & <strong>Assumptions</strong></h1>
+      <div class="subtitle">2027 Budget Cycle</div>
     </div>
-
-    <div class="section-group">
-      <div class="section-label">Budget Process</div>
-      <div class="nav-grid">
-        <a href="/generate" class="nav-card">
-          <div class="icon">📊</div>
-          <h2>Budget Generator</h2>
-          <p>Download YSL reports from Yardi and generate 2027 budgets in one click.</p>
-          <span class="arrow">→</span>
-        </a>
-        <a href="/pm" class="nav-card">
-          <div class="icon">🔧</div>
-          <h2>PM Budget Review</h2>
-          <p>Property managers: review and enter R&M budget projections.</p>
-          <span class="arrow">→</span>
-        </a>
-        <a href="/dashboard" class="nav-card">
-          <div class="icon">📈</div>
-          <h2>FA Dashboard</h2>
-          <p>Review budget status, manage workflow, approve PM submissions.</p>
-          <span class="arrow">→</span>
-        </a>
-      </div>
-    </div>
-
-    <div class="section-group">
-      <div class="section-label">Data Sources</div>
-      <div class="nav-grid">
-        <a href="/audited-financials" class="nav-card">
-          <div class="icon">📋</div>
-          <h2>Audited Financials</h2>
-          <p>Extract and map audited financial data into budget templates.</p>
-          <span class="arrow">→</span>
-        </a>
-        <a href="/files" class="nav-card">
-          <div class="icon">📁</div>
-          <h2>File Repository</h2>
-          <p>Upload, browse, and manage supporting documents — maint proofs, YSL exports, GL detail, and more.</p>
-          <span class="arrow">→</span>
-        </a>
-      </div>
+    <div class="role-toggle" id="roleToggle">
+      <button class="role-btn active" data-role="fa" onclick="switchRole('fa')">Financial Analyst</button>
+      <button class="role-btn" data-role="pm" onclick="switchRole('pm')">Property Manager</button>
     </div>
   </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Process Checklist -->
+  <div class="section-label">Your Budget Process</div>
+  <div class="stepper" id="stepper"></div>
+
+  <!-- Quick Links -->
+  <div class="section-label">Quick Links</div>
+  <div class="quick-grid">
+    <a href="/generate" class="quick-card">
+      <div class="quick-icon blue">&#x1F4CA;</div>
+      <div><h4>Budget Generator</h4><p>Download Yardi reports and generate budgets for entities</p></div>
+    </a>
+    <a href="/dashboard" class="quick-card">
+      <div class="quick-icon green">&#x1F4C8;</div>
+      <div><h4>FA Dashboard</h4><p>Review status, manage workflow, approve submissions</p></div>
+    </a>
+    <a href="/pm" class="quick-card">
+      <div class="quick-icon amber">&#x1F527;</div>
+      <div><h4>PM Portal</h4><p>R&amp;M budget projections and building-level edits</p></div>
+    </a>
+    <a href="/assumptions/workbench" class="quick-card">
+      <div class="quick-icon purple">&#x2699;&#xFE0F;</div>
+      <div><h4>Assumptions</h4><p>Portfolio defaults and per-building overrides</p></div>
+    </a>
+    <a href="/audited-financials" class="quick-card">
+      <div class="quick-icon slate">&#x1F4CB;</div>
+      <div><h4>Audited Financials</h4><p>Extract and review prior-year financial data</p></div>
+    </a>
+    <a href="/files" class="quick-card">
+      <div class="quick-icon rose">&#x1F4C1;</div>
+      <div><h4>File Repository</h4><p>Upload and manage budget documents</p></div>
+    </a>
+  </div>
+
+</div>
+
+<!-- Footer -->
+<div class="footer">Century Management &middot; Budget &amp; Assumptions System &middot; 2027 Cycle</div>
+
+<script>
+var phases = {
+  fa: [
+    { num: 1, title: 'Setup', desc: 'Load Yardi data into the system for each building.',
+      items: ['Generate and run the Yardi script (YSL + AP Aging + Maint Proof)', 'Upload Expense Distribution manually for each entity', 'Verify all 4 data sources show a checkmark on the FA Dashboard', 'Set portfolio-wide assumptions (tax rates, escalations)'],
+      link: { label: 'Go to Generator', href: '/generate' } },
+    { num: 2, title: 'Review', desc: 'Edit budgets, review PM submissions, and check variances.',
+      items: ['Review each building on the FA Dashboard across all tabs', 'Monitor PM submissions and send back for edits if needed', 'Adjust line items, formulas, and overrides as needed', 'Verify variance and percent-change columns for accuracy'],
+      link: { label: 'Go to FA Dashboard', href: '/dashboard' } },
+    { num: 3, title: 'Finalize', desc: 'Approve budgets and prepare for board presentation.',
+      items: ['Run final review across all buildings', 'Approve each entity to lock edits', 'Open Board Presentation for each building', 'Export or print for board meeting materials'],
+      link: { label: 'Go to FA Dashboard', href: '/dashboard' } }
+  ],
+  pm: [
+    { num: 1, title: 'Setup', desc: 'Wait for your FA to load data. You will get access once it is ready.',
+      items: ['Your FA uploads Yardi reports and creates the budget', 'Once loaded, your assigned buildings appear in the PM Portal', 'Review the assumptions set by your FA for your buildings'],
+      link: { label: 'Check PM Portal', href: '/pm' } },
+    { num: 2, title: 'Review', desc: 'Edit R&M projections and review budget lines for your buildings.',
+      items: ['Open each assigned building in the PM Portal', 'Review and edit R&M line items and projections', 'Check income, utilities, and other expense tabs', 'Add notes or comments for your FA on any line'],
+      link: { label: 'Go to PM Portal', href: '/pm' } },
+    { num: 3, title: 'Finalize', desc: 'Submit your edits back to the FA for approval.',
+      items: ['Do a final check on all your buildings', 'Click Submit to FA for each completed building', 'Your FA may send it back for revisions. Check status.', 'Once approved, the budget is locked for board review'],
+      link: { label: 'Go to PM Portal', href: '/pm' } }
+  ]
+};
+
+function renderStepper(role) {
+  var el = document.getElementById('stepper');
+  var cards = el.querySelectorAll('.phase-card');
+  if (cards.length) {
+    cards.forEach(function(c) { c.classList.add('fade-out'); });
+    setTimeout(function() { buildCards(role); }, 250);
+  } else {
+    buildCards(role);
+  }
+}
+
+function buildCards(role) {
+  var el = document.getElementById('stepper');
+  var data = phases[role];
+  el.innerHTML = data.map(function(p) {
+    return '<div class="phase-card">' +
+      '<div class="phase-num">' + p.num + '</div>' +
+      '<h3>' + p.title + '</h3>' +
+      '<p class="phase-desc">' + p.desc + '</p>' +
+      '<ul class="checklist">' + p.items.map(function(i) { return '<li>' + i + '</li>'; }).join('') + '</ul>' +
+      '<a href="' + p.link.href + '" class="phase-link">' + p.link.label + ' <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>' +
+      '</div>';
+  }).join('');
+}
+
+function switchRole(role) {
+  document.querySelectorAll('.role-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.role === role);
+  });
+  renderStepper(role);
+}
+
+renderStepper('fa');
+</script>
+
 </body>
 </html>
 """

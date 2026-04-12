@@ -767,3 +767,37 @@ Missing any one of these results in a partial state (e.g., card clickable but sa
 - `deploy.sh` copies both `budget_system/` and `budget_app/` files, git adds, commits, and pushes to main. Railway auto-redeploys on push.
 - Safety threshold: aborts if any file shows >50 net deletions (prevents stale-local stomps). Override with `--force`.
 - Sandbox network egress to `century-budget-generator-production.up.railway.app` is blocked — always verify deploys by asking Jacob to hard-refresh (Ctrl+Shift+R) and check DevTools.
+
+---
+
+## April 12, 2026 Session
+
+### Summary
+Board Presentation v2 polish (scroll fix, hidden rows) and FA Dashboard table compacting.
+
+### FA Dashboard — Table Compacting
+- Merged the separate "Data" and "Data Loaded" columns into a single **"Data Status"** column
+- New column shows inline icons: ✓Bud ✓Exp ✓YSL ✓AP with short dates, all on one line (~11px font)
+- Row height dropped from ~120px to ~50px, making the 79-building table much more scannable
+- Added **entity code ascending sort** in `renderBudgets()` — buildings now display 93 → 931
+
+### Board Presentation — Auto-Scroll Fix
+- Problem: overlay kept scrolling uncontrollably when opened, reported 3 times
+- Root cause: Chart.js animations trigger repeated canvas resizes → scroll events inside the fixed overlay
+- Fix 1 (partial): `overlay.scrollTop = 0` after render + body `overflow:hidden` lock
+- Fix 2 (partial): Wrapped canvases in `max-height:260px` containers
+- Fix 3 (final): Disabled Chart.js animations (`animation:{duration:0}`), added `overflow:hidden` on chart wrapper divs, removed conflicting `height:auto !important` from canvas CSS, triple `scrollTop=0` reset at 0/100/300ms post-render
+
+### Board Presentation — Hidden Zero Rows
+- Mirrored the FA Dashboard's zero-row hiding logic into Board Presentation detail tabs
+- Added `bpIsZero(l)` helper: returns true when prior_year, ytd_actual, accrual_adj, unpaid_bills, current_budget, and increase_pct are all falsy
+- Applied filter in 3 places inside `renderDetail()`:
+  1. Categorized child rows: `if (bpIsZero(l)) return;`
+  2. Uncategorized rows: `.filter(l => !bpIsZero(l))`
+  3. Non-categorized sheet rows: `if (bpIsZero(l)) return;`
+- Category header rows still show (with their subtotals) — only individual zero lines are hidden
+
+### Deploys (3 pushes to main)
+1. FA table compact + entity sort + Board Presentation v2 (used `--force` for net deletion threshold)
+2. Board Presentation hidden zero rows
+3. Chart scroll fix (animation disable + overflow containment)
