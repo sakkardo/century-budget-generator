@@ -4738,404 +4738,337 @@ async function generatePresentationLink() {
   btn.disabled = false;
 }
 
-// ── Board Presentation Overlay ──────────────────────────────────────────
+// ── Board Presentation Overlay (v2 — charts, exec summary, notes) ─────
 function openBoardPresentation() {
   const data = window._data;
   if (!data || !data.budget) { showToast('Budget data not loaded yet', 'error'); return; }
-  const b = data.budget;
-  const sheets = allSheets;
-  const sheetOrder = data.sheet_order || Object.keys(sheets);
 
-  // Status label
-  const statusMap = {draft:'DRAFT', pm_pending:'PM REVIEW', pm_in_progress:'PM REVIEW', fa_review:'FA REVIEW', approved:'APPROVED'};
-  const statusLabel = statusMap[b.status] || (b.status || 'DRAFT').toUpperCase();
-  const statusColor = b.status === 'approved' ? '#16a34a' : b.status === 'fa_review' ? '#3b82f6' : '#d97706';
-
-  // Aggregate helpers
-  function sumField(lines, fn) { return lines.reduce((s, l) => s + (fn(l) || 0), 0); }
-  function pFmt(n) { return '$' + Math.abs(Math.round(n)).toLocaleString(); }
-  function pPct(n) { return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'; }
-  function chgCls(val, isExpense) {
-    if (Math.abs(val) < 0.05) return '';
-    if (isExpense) return val > 0 ? 'bp-change-up' : 'bp-change-down';
-    return val > 0 ? 'bp-change-down' : 'bp-change-up'; // income: increase is good
+  // Load Chart.js from CDN if not present
+  function loadChartJs() {
+    return new Promise(resolve => {
+      if (typeof Chart !== 'undefined') return resolve();
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+      s.onload = resolve;
+      s.onerror = () => { console.warn('Chart.js failed to load'); resolve(); };
+      document.head.appendChild(s);
+    });
   }
 
-  // Category definitions for expandable detail
-  const CATS = {
-    'Payroll': [{label:'Wages', match: l => (l.category||'').toLowerCase().includes('wage') || (l.row_num >= 1 && l.row_num <= 20)},
-                {label:'Benefits', match: l => (l.category||'').toLowerCase().includes('benefit') || (l.row_num >= 21 && l.row_num <= 40)},
-                {label:'Payroll Taxes', match: l => (l.category||'').toLowerCase().includes('tax') || l.row_num >= 41}],
-    'Repairs & Supplies': [{label:'Supplies', match: l => l.category === 'supplies'},
-                           {label:'Repairs', match: l => l.category === 'repairs'},
-                           {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}],
-    'Gen & Admin': [{label:'Professional Fees', match: l => l.row_num >= 8 && l.row_num <= 16},
-                    {label:'Administrative & Other', match: l => l.row_num >= 20 && l.row_num <= 49},
-                    {label:'Insurance', match: l => l.row_num >= 53 && l.row_num <= 64},
-                    {label:'Taxes', match: l => l.row_num >= 68 && l.row_num <= 78},
-                    {label:'Financial Expenses', match: l => l.row_num >= 82 && l.row_num <= 90}]
-  };
+  // Remove existing overlay if any
+  const existing = document.getElementById('boardPresOverlay');
+  if (existing) existing.remove();
 
-  // Build overlay
-  const overlay = document.createElement('div');
-  overlay.id = 'boardPresOverlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:white;z-index:9999;overflow-y:auto;';
+  loadChartJs().then(() => buildPresentation());
 
-  // Close on Escape
-  const escHandler = (e) => { if (e.key === 'Escape') closeBoardPres(); };
-  document.addEventListener('keydown', escHandler);
-  overlay._escHandler = escHandler;
+  function buildPresentation() {
+    const b = data.budget;
+    const sheets = allSheets;
+    const sheetOrder = data.sheet_order || Object.keys(sheets);
 
-  function closeBoardPres() {
-    document.removeEventListener('keydown', overlay._escHandler);
-    overlay.remove();
-  }
+    // Status
+    const statusMap = {draft:'DRAFT', pm_pending:'PM REVIEW', pm_in_progress:'PM REVIEW', fa_review:'FA REVIEW', approved:'APPROVED'};
+    const statusLabel = statusMap[b.status] || (b.status || 'DRAFT').toUpperCase();
+    const statusColor = b.status === 'approved' ? '#16a34a' : b.status === 'fa_review' ? '#3b82f6' : '#d97706';
 
-  // Compute totals by sheet
-  const sheetTotals = {};
-  const expenseSheets = sheetOrder.filter(s => s !== 'Income');
-  sheetOrder.forEach(s => {
-    const lines = sheets[s] || [];
-    sheetTotals[s] = {
-      prior: sumField(lines, l => l.prior_year),
-      forecast: sumField(lines, l => computeForecast(l)),
-      budget: sumField(lines, l => l.current_budget),
-      proposed: sumField(lines, l => l.proposed_budget || computeForecast(l) * (1 + (l.increase_pct || 0)))
+    // Helpers
+    function sumF(lines, fn) { return lines.reduce((s, l) => s + (fn(l) || 0), 0); }
+    function pFmt(n) { return '$' + Math.abs(Math.round(n)).toLocaleString(); }
+    function pPct(n) { return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'; }
+    function chgCls(val, isExp) {
+      if (Math.abs(val) < 0.05) return '';
+      return (isExp ? val > 0 : val < 0) ? 'bp-chg-bad' : 'bp-chg-good';
+    }
+    function getProposed(l) { return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))); }
+
+    // Category defs for expandable detail
+    const CATS = {
+      'Repairs & Supplies': [{label:'Supplies', match: l => l.category === 'supplies'}, {label:'Repairs', match: l => l.category === 'repairs'}, {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}],
+      'Gen & Admin': [{label:'Professional Fees', match: l => l.row_num >= 8 && l.row_num <= 16}, {label:'Administrative & Other', match: l => l.row_num >= 20 && l.row_num <= 49}, {label:'Insurance', match: l => l.row_num >= 53 && l.row_num <= 64}, {label:'Taxes', match: l => l.row_num >= 68 && l.row_num <= 78}, {label:'Financial Expenses', match: l => l.row_num >= 82 && l.row_num <= 90}]
     };
-  });
 
-  // Grand totals
-  const incT = sheetTotals['Income'] || {prior:0, forecast:0, budget:0, proposed:0};
-  let expT = {prior:0, forecast:0, budget:0, proposed:0};
-  expenseSheets.forEach(s => {
-    const t = sheetTotals[s] || {prior:0, forecast:0, budget:0, proposed:0};
-    expT.prior += t.prior; expT.forecast += t.forecast; expT.budget += t.budget; expT.proposed += t.proposed;
-  });
-  const noiBudget = incT.budget - expT.budget;
-  const noiProposed = incT.proposed - expT.proposed;
-  const budgetIncreasePct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
+    // Sheet totals
+    const stotals = {};
+    const expSheets = sheetOrder.filter(s => s !== 'Income');
+    sheetOrder.forEach(s => {
+      const ln = sheets[s] || [];
+      stotals[s] = { prior: sumF(ln, l => l.prior_year), forecast: sumF(ln, l => computeForecast(l)), budget: sumF(ln, l => l.current_budget), proposed: sumF(ln, l => getProposed(l)) };
+    });
+    const incT = stotals['Income'] || {prior:0, forecast:0, budget:0, proposed:0};
+    let expT = {prior:0, forecast:0, budget:0, proposed:0};
+    expSheets.forEach(s => { const t = stotals[s] || {prior:0,forecast:0,budget:0,proposed:0}; expT.prior += t.prior; expT.forecast += t.forecast; expT.budget += t.budget; expT.proposed += t.proposed; });
+    const noiBudget = incT.budget - expT.budget, noiProposed = incT.proposed - expT.proposed;
+    const budgetIncPct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
 
-  // Tab rendering
-  let activeTab = 'summary';
-  function renderTab(tabName) {
-    activeTab = tabName;
-    const content = overlay.querySelector('#bpContent');
-    // Update tab highlights
-    overlay.querySelectorAll('.bp-tab').forEach(t => {
-      t.classList.toggle('active', t.dataset.tab === tabName);
+    // Top movers
+    const movers = expSheets.map(s => { const t = stotals[s]; const chg = t.proposed - t.budget; return { label: s, chg, pct: t.budget ? (chg / Math.abs(t.budget)) * 100 : 0 }; }).sort((a, b) => Math.abs(b.chg) - Math.abs(a.chg));
+    const top3Up = movers.filter(m => m.chg > 0).slice(0, 3);
+
+    // Exec summary
+    const drivers = top3Up.slice(0, 2).map(m => m.label).join(' and ') || 'operational adjustments';
+    const expDir = budgetIncPct > 0 ? 'increase' : 'decrease';
+    const execSummary = 'The proposed ' + b.year + ' operating budget reflects a net expense ' + expDir + ' of ' + pPct(budgetIncPct) + ' (' + pFmt(Math.abs(expT.proposed - expT.budget)) + '), primarily driven by ' + drivers + '. ' +
+      (incT.proposed > incT.budget ? 'Income is projected to grow ' + pPct(incT.budget ? ((incT.proposed - incT.budget) / Math.abs(incT.budget)) * 100 : 0) + ' to help offset the change. ' : '') +
+      'Net Operating Income is projected at ' + pFmt(noiProposed) + ', a ' + (noiProposed >= noiBudget ? 'gain' : 'reduction') + ' of ' + pFmt(Math.abs(noiProposed - noiBudget)) + ' from the current budget.';
+
+    // In-memory notes store
+    const bpNotes = {};
+
+    // Overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'boardPresOverlay';
+    const today = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+    const displayTabs = ['summary'].concat(sheetOrder);
+
+    // Escape handler
+    const escH = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', escH); overlay.remove(); } };
+    document.addEventListener('keydown', escH);
+
+    overlay.innerHTML = `<style>
+#boardPresOverlay { position:fixed; inset:0; z-index:9999; overflow-y:auto; background:white; font-family:'Plus Jakarta Sans',-apple-system,sans-serif; }
+#boardPresOverlay * { box-sizing:border-box; }
+.bp2-hdr { background:linear-gradient(135deg,#1e293b,#0f172a); padding:28px 48px 22px; display:flex; justify-content:space-between; align-items:flex-start; position:relative; }
+.bp2-hdr h1 { font-size:26px; font-weight:300; color:#f8fafc; margin:0; }
+.bp2-hdr .sub { font-size:12px; color:#94a3b8; margin-top:5px; text-transform:uppercase; letter-spacing:1.5px; font-weight:500; }
+.bp2-badge { display:inline-block; padding:3px 10px; border-radius:10px; font-size:10px; font-weight:700; letter-spacing:.5px; margin-left:10px; vertical-align:middle; }
+.bp2-close { position:absolute; top:14px; right:18px; background:rgba(255,255,255,.1); border:none; color:#94a3b8; width:34px; height:34px; border-radius:50%; font-size:18px; cursor:pointer; }
+.bp2-close:hover { background:rgba(255,255,255,.2); color:#fff; }
+.bp2-right { text-align:right; font-size:13px; color:#94a3b8; }
+.bp2-tabs { background:#f8fafc; border-bottom:1px solid #e2e8f0; padding:0 48px; display:flex; gap:0; overflow-x:auto; }
+.bp2-tab { padding:13px 20px; font-size:13px; font-weight:500; color:#64748b; border-bottom:2px solid transparent; cursor:pointer; white-space:nowrap; background:none; border-top:none; border-left:none; border-right:none; }
+.bp2-tab:hover { color:#1e293b; }
+.bp2-tab.active { color:#1e293b; font-weight:600; border-bottom-color:#1e293b; }
+.bp2-body { max-width:1400px; padding:0 48px 32px; }
+.bp2-exec { background:#eff6ff; border:1px solid #bfdbfe; border-left:4px solid #3b82f6; border-radius:6px; padding:16px 20px; margin:24px 0; font-size:14px; line-height:1.7; color:#1e40af; }
+.bp2-exec b { font-weight:700; }
+.bp2-cards { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:20px 0; }
+.bp2-card { border:1px solid #e2e8f0; border-radius:10px; padding:18px 22px; position:relative; overflow:hidden; background:#fff; }
+.bp2-card-lbl { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#64748b; font-weight:600; margin-bottom:6px; }
+.bp2-card-val { font-size:24px; font-weight:700; color:#0f172a; font-variant-numeric:tabular-nums; }
+.bp2-card-sub { font-size:12px; font-weight:600; margin-top:5px; }
+.bp2-card-bar { position:absolute; bottom:0; left:0; right:0; height:3px; }
+.bp2-card-hl { background:linear-gradient(135deg,#fefce8,#fef9c3); border-color:#fbbf24; }
+.bp2-good { color:#16a34a; } .bp2-bad { color:#dc2626; } .bp2-muted { color:#64748b; }
+.bp2-top3 { background:#fef3c7; border:1px solid #fcd34d; border-left:4px solid #f59e0b; border-radius:6px; padding:16px 20px; margin:20px 0; }
+.bp2-top3 h4 { font-size:13px; font-weight:700; color:#92400e; margin:0 0 12px; }
+.bp2-top3-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.bp2-top3-item { background:#fff; border:1px solid #fde68a; border-radius:6px; padding:14px; }
+.bp2-top3-item .cat { font-size:11px; color:#64748b; text-transform:uppercase; font-weight:600; }
+.bp2-top3-item .amt { font-size:18px; font-weight:700; color:#dc2626; margin:4px 0 2px; font-variant-numeric:tabular-nums; }
+.bp2-top3-item .pc { font-size:11px; color:#64748b; }
+.bp2-charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:20px 0; }
+.bp2-chart-box { border:1px solid #e2e8f0; border-radius:10px; padding:20px; }
+.bp2-chart-box h4 { font-size:13px; font-weight:700; color:#334155; margin:0 0 12px; }
+.bp2-tbl-title { font-size:14px; font-weight:700; color:#0f172a; margin:24px 0 10px; }
+.bp2-chip { font-size:10px; font-weight:600; background:#dbeafe; color:#1d4ed8; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.5px; margin-left:8px; }
+table.bp2-tbl { width:100%; border-collapse:collapse; }
+table.bp2-tbl thead th { text-align:left; padding:9px 12px; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:#64748b; font-weight:600; border-bottom:2px solid #e2e8f0; background:#f8fafc; }
+table.bp2-tbl thead th.num { text-align:right; }
+table.bp2-tbl tbody td { padding:9px 12px; font-size:13px; color:#334155; border-bottom:1px solid #f1f5f9; }
+table.bp2-tbl tbody td.num { text-align:right; font-variant-numeric:tabular-nums; font-weight:500; }
+table.bp2-tbl tbody tr:hover { background:#f8fafc; }
+table.bp2-tbl tbody tr.clickable { cursor:pointer; }
+table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
+.bp2-inc td { color:#166534; }
+.bp2-sub td { font-weight:700; color:#0f172a; border-top:2px solid #e2e8f0; border-bottom:2px solid #e2e8f0; background:#f8fafc; }
+.bp2-noi td { font-weight:800; color:#0f172a; font-size:14px; border-top:3px double #1e293b; border-bottom:3px double #1e293b; background:#fefce8; }
+.bp2-chg-bad { color:#dc2626 !important; font-weight:600; }
+.bp2-chg-good { color:#16a34a !important; font-weight:600; }
+.bp2-exp td:first-child::before { content:'▶'; font-size:10px; margin-right:8px; color:#94a3b8; display:inline-block; transition:transform .15s; }
+.bp2-exp.open td:first-child::before { transform:rotate(90deg); }
+.bp2-child td { padding-left:44px !important; font-size:12px; color:#64748b; background:#fafafa; }
+.bp2-child td.num { color:#64748b; font-weight:400; }
+.bp2-notes { margin:20px 0; padding:16px 20px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; }
+.bp2-notes label { font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.5px; display:block; margin-bottom:6px; }
+.bp2-notes textarea { width:100%; padding:10px; border:1px solid #e2e8f0; border-radius:6px; font:13px/1.5 inherit; resize:vertical; min-height:60px; }
+.bp2-ftr { border-top:1px solid #e2e8f0; padding:14px 48px; font-size:11px; color:#94a3b8; display:flex; justify-content:space-between; }
+.bp2-detail-cards { display:flex; gap:14px; margin:20px 0; }
+.bp2-detail-cards .bp2-card { flex:1; }
+@media print {
+  .bp2-close,.bp2-tabs,.bp2-notes { display:none !important; }
+  .bp2-hdr { background:#fff !important; border-bottom:2px solid #1e293b; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  .bp2-hdr h1 { color:#0f172a !important; } .bp2-hdr .sub { color:#334155 !important; }
+  .bp2-card-hl,.bp2-noi td { background:#fefce8 !important; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  .bp2-ftr { position:fixed; bottom:0; left:0; right:0; }
+  @page { margin:.5in; size:landscape; }
+}
+</style>
+<div class="bp2-hdr">
+  <div><h1>${b.building_name} <span class="bp2-badge" style="background:${statusColor}20;color:${statusColor};border:1px solid ${statusColor}">${statusLabel}</span></h1>
+  <div class="sub">${b.year} Operating Budget</div></div>
+  <div class="bp2-right"><div style="font-weight:600">Century Management</div><div style="font-size:12px;color:#64748b;margin-top:3px">${today}</div></div>
+  <button class="bp2-close" title="Close (Esc)">✕</button>
+</div>
+<div class="bp2-tabs" id="bp2Tabs"></div>
+<div class="bp2-body" id="bp2Body"></div>
+<div class="bp2-ftr"><span>Prepared by Century Management · Confidential</span><span>Generated ${today}</span></div>`;
+
+    document.body.appendChild(overlay);
+    overlay.querySelector('.bp2-close').onclick = () => { document.removeEventListener('keydown', escH); overlay.remove(); };
+
+    // Build tabs
+    const tabsEl = overlay.querySelector('#bp2Tabs');
+    displayTabs.forEach(tn => {
+      const btn = document.createElement('button');
+      btn.className = 'bp2-tab' + (tn === 'summary' ? ' active' : '');
+      btn.dataset.tab = tn;
+      btn.textContent = tn === 'summary' ? 'Summary' : tn;
+      btn.onclick = () => renderTab(tn);
+      tabsEl.appendChild(btn);
     });
 
-    if (tabName === 'summary') {
-      renderSummaryTab(content);
-    } else {
-      renderDetailTab(content, tabName);
+    function renderTab(tn) {
+      overlay.querySelectorAll('.bp2-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tn));
+      if (tn === 'summary') renderSummary(); else renderDetail(tn);
     }
-  }
 
-  function renderSummaryTab(container) {
-    const expChgPct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
-    const incChgPct = incT.budget ? ((incT.proposed - incT.budget) / Math.abs(incT.budget)) * 100 : 0;
+    // ── Summary Tab ──
+    function renderSummary() {
+      const body = overlay.querySelector('#bp2Body');
+      const incPct = incT.budget ? ((incT.proposed - incT.budget) / Math.abs(incT.budget)) * 100 : 0;
+      const expPct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
+      const noiDelta = noiProposed - noiBudget;
+      const noiPctV = noiBudget ? (noiDelta / Math.abs(noiBudget)) * 100 : 0;
 
-    let html = '<div class="bp-hero-cards">';
-    // Card 1: Total Income
-    html += '<div class="bp-hero-card"><div class="bp-card-label">Total Income</div><div class="bp-card-value">' + pFmt(incT.proposed) + '</div>';
-    html += '<div class="bp-card-delta ' + (incChgPct >= 0 ? 'bp-delta-good' : 'bp-delta-bad') + '">' + pPct(incChgPct) + ' vs current budget</div>';
-    html += '<div class="bp-card-bar bp-bar-green"></div></div>';
-    // Card 2: Total Expenses
-    html += '<div class="bp-hero-card"><div class="bp-card-label">Total Expenses</div><div class="bp-card-value">' + pFmt(expT.proposed) + '</div>';
-    html += '<div class="bp-card-delta ' + (expChgPct > 0 ? 'bp-delta-bad' : 'bp-delta-good') + '">' + pPct(expChgPct) + ' vs current budget</div>';
-    html += '<div class="bp-card-bar bp-bar-red"></div></div>';
-    // Card 3: NOI
-    html += '<div class="bp-hero-card"><div class="bp-card-label">Net Operating Income</div><div class="bp-card-value">' + pFmt(noiProposed) + '</div>';
-    const noiDelta = noiProposed - noiBudget;
-    html += '<div class="bp-card-delta ' + (noiDelta >= 0 ? 'bp-delta-good' : 'bp-delta-bad') + '">' + (noiDelta >= 0 ? '+' : '-') + pFmt(Math.abs(noiDelta)) + ' vs current</div>';
-    html += '<div class="bp-card-bar bp-bar-blue"></div></div>';
-    // Card 4: Budget Increase (highlight)
-    html += '<div class="bp-hero-card bp-highlight-card"><div class="bp-card-label">Budget Increase</div><div class="bp-card-value" style="color:#b45309;">' + pPct(budgetIncreasePct) + '</div>';
-    html += '<div class="bp-card-delta bp-delta-neutral">' + pFmt(expT.budget) + ' → ' + pFmt(expT.proposed) + '</div>';
-    html += '<div class="bp-card-bar bp-bar-amber"></div></div>';
-    html += '</div>';
+      let h = '';
 
-    // Summary table
-    html += '<div class="bp-table-wrap"><div class="bp-table-title">Operating Budget Summary <span class="bp-chip">Current Budget → Proposed</span></div>';
-    html += '<table class="bp-table"><thead><tr><th style="width:28%">Category</th>' +
-      '<th class="num">Prior Year</th><th class="num">Forecast</th><th class="num">Current Budget</th>' +
-      '<th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+      // Executive Summary
+      h += '<div class="bp2-exec">📋 <b>Executive Summary</b> — ' + execSummary + '</div>';
 
-    // Income section
-    if (sheetTotals['Income']) {
-      const t = sheetTotals['Income'];
-      const chg = t.proposed - t.budget;
-      const pct = t.budget ? (chg / Math.abs(t.budget)) * 100 : 0;
-      html += '<tr class="bp-row-income"><td style="font-weight:600">Income</td>' +
-        '<td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td>' +
-        '<td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td>' +
-        '<td class="num ' + chgCls(chg, false) + '">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + '</td>' +
-        '<td class="num ' + chgCls(pct, false) + '">' + pPct(pct) + '</td></tr>';
-    }
-    html += '<tr><td colspan="7" style="height:6px;border:none;"></td></tr>';
+      // Hero Cards
+      h += '<div class="bp2-cards">';
+      h += '<div class="bp2-card"><div class="bp2-card-lbl">Total Income</div><div class="bp2-card-val">' + pFmt(incT.proposed) + '</div><div class="bp2-card-sub ' + (incPct >= 0 ? 'bp2-good' : 'bp2-bad') + '">' + pPct(incPct) + ' vs current</div><div class="bp2-card-bar" style="background:#16a34a"></div></div>';
+      h += '<div class="bp2-card"><div class="bp2-card-lbl">Total Expenses</div><div class="bp2-card-val">' + pFmt(expT.proposed) + '</div><div class="bp2-card-sub ' + (expPct > 0 ? 'bp2-bad' : 'bp2-good') + '">' + pPct(expPct) + ' vs current</div><div class="bp2-card-bar" style="background:#dc2626"></div></div>';
+      h += '<div class="bp2-card"><div class="bp2-card-lbl">Net Operating Income</div><div class="bp2-card-val">' + pFmt(noiProposed) + '</div><div class="bp2-card-sub ' + (noiDelta >= 0 ? 'bp2-good' : 'bp2-bad') + '">' + (noiDelta >= 0 ? '+' : '-') + pFmt(Math.abs(noiDelta)) + ' vs current</div><div class="bp2-card-bar" style="background:#3b82f6"></div></div>';
+      h += '<div class="bp2-card bp2-card-hl"><div class="bp2-card-lbl">Budget Increase</div><div class="bp2-card-val" style="color:#b45309">' + pPct(budgetIncPct) + '</div><div class="bp2-card-sub bp2-muted">' + pFmt(expT.budget) + ' → ' + pFmt(expT.proposed) + '</div><div class="bp2-card-bar" style="background:#f59e0b"></div></div>';
+      h += '</div>';
 
-    // Expense sheets
-    expenseSheets.forEach(s => {
-      const t = sheetTotals[s];
-      if (!t) return;
-      const chg = t.proposed - t.budget;
-      const pct = t.budget ? (chg / Math.abs(t.budget)) * 100 : 0;
-      html += '<tr><td style="font-weight:600">' + s + '</td>' +
-        '<td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td>' +
-        '<td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td>' +
-        '<td class="num ' + chgCls(chg, true) + '">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + '</td>' +
-        '<td class="num ' + chgCls(pct, true) + '">' + pPct(pct) + '</td></tr>';
-    });
-
-    // Total Expenses
-    const expChg = expT.proposed - expT.budget;
-    const expPctVal = expT.budget ? (expChg / Math.abs(expT.budget)) * 100 : 0;
-    html += '<tr class="bp-row-subtotal"><td>TOTAL EXPENSES</td>' +
-      '<td class="num">' + pFmt(expT.prior) + '</td><td class="num">' + pFmt(expT.forecast) + '</td>' +
-      '<td class="num">' + pFmt(expT.budget) + '</td><td class="num">' + pFmt(expT.proposed) + '</td>' +
-      '<td class="num ' + chgCls(expChg, true) + '">' + (expChg >= 0 ? '+' : '-') + pFmt(Math.abs(expChg)) + '</td>' +
-      '<td class="num ' + chgCls(expPctVal, true) + '">' + pPct(expPctVal) + '</td></tr>';
-
-    // NOI
-    html += '<tr><td colspan="7" style="height:4px;border:none;"></td></tr>';
-    const noiChg = noiProposed - noiBudget;
-    const noiPct = noiBudget ? (noiChg / Math.abs(noiBudget)) * 100 : 0;
-    html += '<tr class="bp-row-noi"><td>NET OPERATING INCOME</td>' +
-      '<td class="num">' + pFmt(incT.prior - expT.prior) + '</td><td class="num">' + pFmt(incT.forecast - expT.forecast) + '</td>' +
-      '<td class="num">' + pFmt(noiBudget) + '</td><td class="num">' + pFmt(noiProposed) + '</td>' +
-      '<td class="num ' + chgCls(noiChg, false) + '">' + (noiChg >= 0 ? '+' : '-') + pFmt(Math.abs(noiChg)) + '</td>' +
-      '<td class="num ' + chgCls(noiPct, false) + '">' + pPct(noiPct) + '</td></tr>';
-
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
-  }
-
-  function renderDetailTab(container, sheetName) {
-    const lines = sheets[sheetName] || [];
-    const t = sheetTotals[sheetName] || {prior:0, forecast:0, budget:0, proposed:0};
-    const chg = t.proposed - t.budget;
-    const pct = t.budget ? (chg / Math.abs(t.budget)) * 100 : 0;
-    const isExpense = sheetName !== 'Income';
-
-    // Sheet hero cards
-    let html = '<div class="bp-detail-hero">';
-    html += '<div class="bp-hero-card" style="flex:1"><div class="bp-card-label">Current Budget</div><div class="bp-card-value" style="font-size:22px">' + pFmt(t.budget) + '</div></div>';
-    html += '<div class="bp-hero-card" style="flex:1"><div class="bp-card-label">Proposed Budget</div><div class="bp-card-value" style="font-size:22px">' + pFmt(t.proposed) + '</div></div>';
-    html += '<div class="bp-hero-card bp-highlight-card" style="flex:1"><div class="bp-card-label">Change</div>';
-    html += '<div class="bp-card-value" style="font-size:22px;color:#b45309">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + ' (' + pPct(pct) + ')</div></div>';
-    html += '</div>';
-
-    // Table
-    html += '<div class="bp-table-wrap"><table class="bp-table"><thead><tr>' +
-      '<th style="width:35%">Description</th><th class="num">Prior Year</th><th class="num">Forecast</th>' +
-      '<th class="num">Current Budget</th><th class="num">Proposed Budget</th><th class="num">$ Change</th><th class="num">% Change</th>' +
-      '</tr></thead><tbody>';
-
-    const cats = CATS[sheetName];
-    if (cats) {
-      // Grouped view with expandable categories
-      const catIds = [];
-      cats.forEach((cat, ci) => {
-        const catLines = lines.filter(cat.match);
-        if (catLines.length === 0) return;
-        const ct = {
-          prior: sumField(catLines, l => l.prior_year),
-          forecast: sumField(catLines, l => computeForecast(l)),
-          budget: sumField(catLines, l => l.current_budget),
-          proposed: sumField(catLines, l => l.proposed_budget || computeForecast(l) * (1 + (l.increase_pct || 0)))
-        };
-        const cChg = ct.proposed - ct.budget;
-        const cPct = ct.budget ? (cChg / Math.abs(ct.budget)) * 100 : 0;
-        const catId = 'bpCat_' + sheetName.replace(/\s/g,'') + '_' + ci;
-        catIds.push(catId);
-
-        html += '<tr class="bp-expandable" onclick="document.querySelectorAll(\'.' + catId + '\').forEach(r=>{r.style.display=r.style.display===\'none\'?\'\':\'none\'});this.classList.toggle(\'open\')">' +
-          '<td style="font-weight:600;cursor:pointer;padding-left:24px">' + cat.label + '</td>' +
-          '<td class="num" style="font-weight:600">' + pFmt(ct.prior) + '</td>' +
-          '<td class="num" style="font-weight:600">' + pFmt(ct.forecast) + '</td>' +
-          '<td class="num" style="font-weight:600">' + pFmt(ct.budget) + '</td>' +
-          '<td class="num" style="font-weight:600">' + pFmt(ct.proposed) + '</td>' +
-          '<td class="num ' + chgCls(cChg, isExpense) + '" style="font-weight:600">' + (cChg >= 0 ? '+' : '-') + pFmt(Math.abs(cChg)) + '</td>' +
-          '<td class="num ' + chgCls(cPct, isExpense) + '" style="font-weight:600">' + pPct(cPct) + '</td></tr>';
-
-        // Child GL lines (hidden by default)
-        catLines.forEach(l => {
-          const lForecast = computeForecast(l);
-          const lProposed = l.proposed_budget || lForecast * (1 + (l.increase_pct || 0));
-          const lChg = lProposed - (l.current_budget || 0);
-          const lPct = (l.current_budget || 0) ? (lChg / Math.abs(l.current_budget)) * 100 : 0;
-          html += '<tr class="bp-child-row ' + catId + '" style="display:none">' +
-            '<td>' + (l.gl_code || '') + ' · ' + (l.description || '') + '</td>' +
-            '<td class="num">' + pFmt(l.prior_year || 0) + '</td>' +
-            '<td class="num">' + pFmt(lForecast) + '</td>' +
-            '<td class="num">' + pFmt(l.current_budget || 0) + '</td>' +
-            '<td class="num">' + pFmt(lProposed) + '</td>' +
-            '<td class="num">' + (lChg >= 0 ? '+' : '-') + pFmt(Math.abs(lChg)) + '</td>' +
-            '<td class="num">' + pPct(lPct) + '</td></tr>';
+      // Top 3 Increases
+      if (top3Up.length > 0) {
+        h += '<div class="bp2-top3"><h4>⚡ Top ' + top3Up.length + ' Budget Increases</h4><div class="bp2-top3-grid">';
+        top3Up.forEach((m, i) => {
+          h += '<div class="bp2-top3-item"><div class="cat">#' + (i + 1) + ' ' + m.label + '</div><div class="amt">+' + pFmt(m.chg) + '</div><div class="pc">' + pPct(m.pct) + '</div></div>';
         });
+        h += '</div></div>';
+      }
+
+      // Charts
+      h += '<div class="bp2-charts">';
+      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><canvas id="bp2Donut" height="260"></canvas></div>';
+      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><canvas id="bp2Bar" height="260"></canvas></div>';
+      h += '</div>';
+
+      // Summary Table
+      h += '<div class="bp2-tbl-title">Operating Budget Summary <span class="bp2-chip">Current Budget → Proposed</span></div>';
+      h += '<table class="bp2-tbl"><thead><tr><th style="width:26%">Category</th><th class="num">Prior Year</th><th class="num">Forecast</th><th class="num">Current Budget</th><th class="num">Proposed</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+
+      // Income row (clickable)
+      if (stotals['Income']) {
+        const t = stotals['Income'], c = t.proposed - t.budget, p = t.budget ? (c / Math.abs(t.budget)) * 100 : 0;
+        h += '<tr class="bp2-inc clickable" data-nav="Income"><td style="font-weight:600">Income</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(c, false) + '">' + (c >= 0 ? '+' : '-') + pFmt(Math.abs(c)) + '</td><td class="num ' + chgCls(p, false) + '">' + pPct(p) + '</td></tr>';
+      }
+      h += '<tr><td colspan="7" style="height:5px;border:none"></td></tr>';
+
+      expSheets.forEach(s => {
+        const t = stotals[s]; if (!t) return;
+        const c = t.proposed - t.budget, p = t.budget ? (c / Math.abs(t.budget)) * 100 : 0;
+        h += '<tr class="clickable" data-nav="' + s + '"><td style="font-weight:600">' + s + '</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(c, true) + '">' + (c >= 0 ? '+' : '-') + pFmt(Math.abs(c)) + '</td><td class="num ' + chgCls(p, true) + '">' + pPct(p) + '</td></tr>';
       });
 
-      // Uncategorized lines
-      const catLineIds = new Set();
-      cats.forEach(cat => lines.filter(cat.match).forEach(l => catLineIds.add(l.id)));
-      const uncatLines = lines.filter(l => !catLineIds.has(l.id));
-      if (uncatLines.length > 0) {
-        uncatLines.forEach(l => {
-          const lForecast = computeForecast(l);
-          const lProposed = l.proposed_budget || lForecast * (1 + (l.increase_pct || 0));
-          const lChg = lProposed - (l.current_budget || 0);
-          const lPct = (l.current_budget || 0) ? (lChg / Math.abs(l.current_budget)) * 100 : 0;
-          html += '<tr><td style="padding-left:24px">' + (l.gl_code || '') + ' · ' + (l.description || '') + '</td>' +
-            '<td class="num">' + pFmt(l.prior_year || 0) + '</td><td class="num">' + pFmt(lForecast) + '</td>' +
-            '<td class="num">' + pFmt(l.current_budget || 0) + '</td><td class="num">' + pFmt(lProposed) + '</td>' +
-            '<td class="num">' + (lChg >= 0 ? '+' : '-') + pFmt(Math.abs(lChg)) + '</td>' +
-            '<td class="num">' + pPct(lPct) + '</td></tr>';
+      // Total Expenses
+      const ec = expT.proposed - expT.budget, ep = expT.budget ? (ec / Math.abs(expT.budget)) * 100 : 0;
+      h += '<tr class="bp2-sub"><td>TOTAL EXPENSES</td><td class="num">' + pFmt(expT.prior) + '</td><td class="num">' + pFmt(expT.forecast) + '</td><td class="num">' + pFmt(expT.budget) + '</td><td class="num">' + pFmt(expT.proposed) + '</td><td class="num ' + chgCls(ec, true) + '">' + (ec >= 0 ? '+' : '-') + pFmt(Math.abs(ec)) + '</td><td class="num ' + chgCls(ep, true) + '">' + pPct(ep) + '</td></tr>';
+      h += '<tr><td colspan="7" style="height:3px;border:none"></td></tr>';
+
+      // NOI
+      h += '<tr class="bp2-noi"><td>NET OPERATING INCOME</td><td class="num">' + pFmt(incT.prior - expT.prior) + '</td><td class="num">' + pFmt(incT.forecast - expT.forecast) + '</td><td class="num">' + pFmt(noiBudget) + '</td><td class="num">' + pFmt(noiProposed) + '</td><td class="num ' + chgCls(noiDelta, false) + '">' + (noiDelta >= 0 ? '+' : '-') + pFmt(Math.abs(noiDelta)) + '</td><td class="num ' + chgCls(noiPctV, false) + '">' + pPct(noiPctV) + '</td></tr>';
+      h += '</tbody></table>';
+
+      // Notes
+      h += '<div class="bp2-notes"><label>📝 Presentation Notes <span style="font-weight:400;text-transform:none;letter-spacing:0">(FA talking points — not saved)</span></label><textarea placeholder="Add notes for the board meeting...">' + (bpNotes['_general'] || '') + '</textarea></div>';
+
+      body.innerHTML = h;
+
+      // Wire clickable rows
+      body.querySelectorAll('tr.clickable').forEach(r => { r.onclick = () => renderTab(r.dataset.nav); });
+
+      // Save notes on change
+      const ta = body.querySelector('.bp2-notes textarea');
+      if (ta) ta.oninput = () => { bpNotes['_general'] = ta.value; };
+
+      // Render charts
+      if (typeof Chart !== 'undefined') {
+        setTimeout(() => {
+          // Donut
+          const donutData = expSheets.filter(s => (stotals[s]||{}).proposed > 0);
+          const donutColors = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#ec4899','#06b6d4','#64748b'];
+          const dc = body.querySelector('#bp2Donut');
+          if (dc) new Chart(dc, { type:'doughnut', data:{ labels:donutData.map(s=>s), datasets:[{ data:donutData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:donutColors.slice(0,donutData.length), borderWidth:0, hoverOffset:6 }] }, options:{ responsive:true, maintainAspectRatio:false, cutout:'60%', plugins:{ legend:{ position:'right', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>{ const tot=ctx.dataset.data.reduce((a,b)=>a+b,0); return ctx.label+': '+pFmt(ctx.parsed)+' ('+(ctx.parsed/tot*100).toFixed(1)+'%)'; } } } } } });
+
+          // Bar
+          const barData = expSheets.filter(s => (stotals[s]||{}).budget > 0 || (stotals[s]||{}).proposed > 0);
+          const bc = body.querySelector('#bp2Bar');
+          if (bc) new Chart(bc, { type:'bar', data:{ labels:barData.map(s=>s), datasets:[ { label:'Current Budget', data:barData.map(s=>Math.round(stotals[s].budget)), backgroundColor:'#cbd5e1', borderRadius:3 }, { label:'Proposed', data:barData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:barData.map(s=>stotals[s].proposed>stotals[s].budget?'#fbbf24':'#4ade80'), borderRadius:3 } ] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>ctx.dataset.label+': '+pFmt(ctx.parsed.y) } } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'K', font:{size:10} }, grid:{color:'#f1f5f9'} }, x:{ ticks:{font:{size:10},maxRotation:25}, grid:{display:false} } } } });
+        }, 50);
+      }
+    }
+
+    // ── Detail Tab ──
+    function renderDetail(sheetName) {
+      const body = overlay.querySelector('#bp2Body');
+      const lines = sheets[sheetName] || [];
+      const t = stotals[sheetName] || {prior:0,forecast:0,budget:0,proposed:0};
+      const chg = t.proposed - t.budget, pc = t.budget ? (chg / Math.abs(t.budget)) * 100 : 0;
+      const isExp = sheetName !== 'Income';
+
+      let h = '<div class="bp2-detail-cards">';
+      h += '<div class="bp2-card"><div class="bp2-card-lbl">Current Budget</div><div class="bp2-card-val" style="font-size:22px">' + pFmt(t.budget) + '</div></div>';
+      h += '<div class="bp2-card"><div class="bp2-card-lbl">Proposed Budget</div><div class="bp2-card-val" style="font-size:22px">' + pFmt(t.proposed) + '</div></div>';
+      h += '<div class="bp2-card bp2-card-hl"><div class="bp2-card-lbl">Change</div><div class="bp2-card-val" style="font-size:22px;color:#b45309">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + ' (' + pPct(pc) + ')</div></div>';
+      h += '</div>';
+
+      h += '<table class="bp2-tbl"><thead><tr><th style="width:32%">Description</th><th class="num">Prior Year</th><th class="num">Forecast</th><th class="num">Current Budget</th><th class="num">Proposed</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
+
+      const cats = CATS[sheetName];
+      if (cats) {
+        cats.forEach((cat, ci) => {
+          const cl = lines.filter(cat.match); if (!cl.length) return;
+          const ct = { prior:sumF(cl,l=>l.prior_year), forecast:sumF(cl,l=>computeForecast(l)), budget:sumF(cl,l=>l.current_budget), proposed:sumF(cl,l=>getProposed(l)) };
+          const cc = ct.proposed - ct.budget, cp = ct.budget ? (cc / Math.abs(ct.budget)) * 100 : 0;
+          const cid = 'bp2c_' + sheetName.replace(/\W/g,'') + ci;
+          h += '<tr class="bp2-exp" onclick="document.querySelectorAll(\'.' + cid + '\').forEach(r=>{r.style.display=r.style.display===\'none\'?\'\':\'none\'});this.classList.toggle(\'open\')" style="cursor:pointer"><td style="font-weight:600;padding-left:22px">' + cat.label + '</td><td class="num" style="font-weight:600">' + pFmt(ct.prior) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.forecast) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.budget) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.proposed) + '</td><td class="num ' + chgCls(cc,isExp) + '" style="font-weight:600">' + (cc >= 0 ? '+' : '-') + pFmt(Math.abs(cc)) + '</td><td class="num ' + chgCls(cp,isExp) + '" style="font-weight:600">' + pPct(cp) + '</td></tr>';
+          cl.forEach(l => {
+            const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
+            h += '<tr class="bp2-child ' + cid + '" style="display:none"><td>' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num">' + pPct(lpc) + '</td></tr>';
+          });
+        });
+        // Uncategorized
+        const matched = new Set(); cats.forEach(c => lines.filter(c.match).forEach(l => matched.add(l.id)));
+        lines.filter(l => !matched.has(l.id)).forEach(l => {
+          const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
+          h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
+        });
+      } else {
+        lines.forEach(l => {
+          const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
+          h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
         });
       }
-    } else {
-      // Flat list (Income, Energy, Water & Sewer, Capital, etc.)
-      lines.forEach(l => {
-        const lForecast = computeForecast(l);
-        const lProposed = l.proposed_budget || lForecast * (1 + (l.increase_pct || 0));
-        const lChg = lProposed - (l.current_budget || 0);
-        const lPct = (l.current_budget || 0) ? (lChg / Math.abs(l.current_budget)) * 100 : 0;
-        html += '<tr><td style="padding-left:24px">' + (l.gl_code || '') + ' · ' + (l.description || '') + '</td>' +
-          '<td class="num">' + pFmt(l.prior_year || 0) + '</td><td class="num">' + pFmt(lForecast) + '</td>' +
-          '<td class="num">' + pFmt(l.current_budget || 0) + '</td><td class="num">' + pFmt(lProposed) + '</td>' +
-          '<td class="num ' + chgCls(lChg, isExpense) + '">' + (lChg >= 0 ? '+' : '-') + pFmt(Math.abs(lChg)) + '</td>' +
-          '<td class="num ' + chgCls(lPct, isExpense) + '">' + pPct(lPct) + '</td></tr>';
-      });
+
+      // Total
+      h += '<tr class="bp2-sub"><td>TOTAL ' + sheetName.toUpperCase() + '</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(chg,isExp) + '">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + '</td><td class="num ' + chgCls(pc,isExp) + '">' + pPct(pc) + '</td></tr>';
+      h += '</tbody></table>';
+
+      // Notes
+      h += '<div class="bp2-notes"><label>📝 Notes — ' + sheetName + '</label><textarea placeholder="Add talking points for ' + sheetName + '...">' + (bpNotes[sheetName] || '') + '</textarea></div>';
+
+      body.innerHTML = h;
+      const ta = body.querySelector('.bp2-notes textarea');
+      if (ta) ta.oninput = () => { bpNotes[sheetName] = ta.value; };
     }
 
-    // Sheet total
-    html += '<tr class="bp-row-subtotal"><td>TOTAL ' + sheetName.toUpperCase() + '</td>' +
-      '<td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td>' +
-      '<td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td>' +
-      '<td class="num ' + chgCls(chg, isExpense) + '">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + '</td>' +
-      '<td class="num ' + chgCls(pct, isExpense) + '">' + pPct(pct) + '</td></tr>';
-
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
+    renderSummary();
   }
-
-  // Build the full overlay HTML
-  const today = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
-  const displayTabs = ['summary'].concat(sheetOrder);
-
-  overlay.innerHTML = `
-  <style>
-    #boardPresOverlay { font-family: 'Plus Jakarta Sans', -apple-system, sans-serif; }
-    #boardPresOverlay * { box-sizing: border-box; }
-
-    .bp-header { background: linear-gradient(135deg, #1e293b, #0f172a); padding: 32px 48px 24px; display: flex; align-items: flex-start; justify-content: space-between; }
-    .bp-header h1 { font-size: 28px; font-weight: 300; color: #f8fafc; letter-spacing: -0.5px; margin: 0; }
-    .bp-header .bp-subtitle { font-size: 13px; color: #94a3b8; margin-top: 6px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500; }
-    .bp-header .bp-right { text-align: right; }
-    .bp-header .bp-logo { font-size: 14px; color: #94a3b8; font-weight: 600; }
-    .bp-header .bp-date { font-size: 12px; color: #64748b; margin-top: 4px; }
-    .bp-status-badge { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; margin-left: 12px; vertical-align: middle; }
-    .bp-close { position: absolute; top: 16px; right: 20px; background: rgba(255,255,255,0.1); border: none; color: #94a3b8; width: 36px; height: 36px; border-radius: 50%; font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-    .bp-close:hover { background: rgba(255,255,255,0.2); color: white; }
-
-    .bp-tabs { background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 0 48px; display: flex; gap: 0; overflow-x: auto; }
-    .bp-tab { padding: 14px 22px; font-size: 13px; font-weight: 500; color: #64748b; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; transition: all 0.15s; background: none; border-top: none; border-left: none; border-right: none; }
-    .bp-tab:hover { color: #1e293b; }
-    .bp-tab.active { color: #1e293b; font-weight: 600; border-bottom-color: #1e293b; }
-
-    .bp-hero-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 28px 48px 0; }
-    .bp-detail-hero { display: flex; gap: 16px; padding: 24px 48px 0; }
-    .bp-hero-card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px 24px; position: relative; overflow: hidden; background: white; }
-    .bp-card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: 600; margin-bottom: 8px; }
-    .bp-card-value { font-size: 26px; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
-    .bp-card-delta { font-size: 13px; font-weight: 600; margin-top: 6px; }
-    .bp-delta-good { color: #16a34a; }
-    .bp-delta-bad { color: #dc2626; }
-    .bp-delta-neutral { color: #64748b; }
-    .bp-card-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; }
-    .bp-bar-green { background: #16a34a; }
-    .bp-bar-red { background: #dc2626; }
-    .bp-bar-blue { background: #3b82f6; }
-    .bp-bar-amber { background: #f59e0b; }
-    .bp-highlight-card { background: linear-gradient(135deg, #fefce8, #fef9c3); border-color: #fbbf24; }
-
-    .bp-table-wrap { padding: 24px 48px 36px; }
-    .bp-table-title { font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 12px; }
-    .bp-chip { font-size: 10px; font-weight: 600; background: #dbeafe; color: #1d4ed8; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-left: 8px; }
-
-    table.bp-table { width: 100%; border-collapse: collapse; }
-    table.bp-table thead th { text-align: left; padding: 10px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; border-bottom: 2px solid #e2e8f0; background: #f8fafc; }
-    table.bp-table thead th.num { text-align: right; }
-    table.bp-table tbody td { padding: 10px 14px; font-size: 13px; color: #334155; border-bottom: 1px solid #f1f5f9; }
-    table.bp-table tbody td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
-    table.bp-table tbody tr:hover { background: #f8fafc; }
-
-    .bp-row-income td { color: #166534; }
-    .bp-row-subtotal td { font-weight: 700; color: #0f172a; border-top: 2px solid #e2e8f0; border-bottom: 2px solid #e2e8f0; background: #f8fafc; }
-    .bp-row-noi td { font-weight: 800; color: #0f172a; font-size: 14px; border-top: 3px double #1e293b; border-bottom: 3px double #1e293b; background: #fefce8; }
-    .bp-change-up { color: #dc2626 !important; font-weight: 600; }
-    .bp-change-down { color: #16a34a !important; font-weight: 600; }
-
-    .bp-expandable td:first-child::before { content: '▶'; font-size: 10px; margin-right: 8px; color: #94a3b8; display: inline-block; transition: transform 0.15s; }
-    .bp-expandable.open td:first-child::before { transform: rotate(90deg); }
-    .bp-child-row td { padding-left: 48px !important; font-size: 12px; color: #64748b; background: #fafafa; }
-    .bp-child-row td.num { color: #64748b; font-weight: 400; }
-
-    .bp-footer { border-top: 1px solid #e2e8f0; padding: 16px 48px; font-size: 11px; color: #94a3b8; display: flex; justify-content: space-between; }
-    .bp-print-hint { text-align: center; padding: 10px; font-size: 12px; color: #94a3b8; }
-    .bp-print-hint kbd { background: #f1f5f9; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 11px; }
-
-    @media print {
-      .bp-close, .bp-print-hint { display: none !important; }
-      .bp-header { background: white !important; border-bottom: 2px solid #1e293b; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .bp-header h1 { color: #0f172a !important; }
-      .bp-header .bp-subtitle, .bp-header .bp-logo { color: #334155 !important; }
-      .bp-tabs { display: none !important; }
-      .bp-hero-card { border: 1px solid #cbd5e1; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .bp-highlight-card { background: #fefce8 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .bp-row-noi td { background: #fefce8 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .bp-row-subtotal td { background: #f8fafc !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .bp-footer { position: fixed; bottom: 0; left: 0; right: 0; }
-      @page { margin: 0.5in; size: landscape; }
-    }
-  </style>
-
-  <div class="bp-header" style="position:relative;">
-    <div>
-      <h1>${b.building_name} <span class="bp-status-badge" style="background:${statusColor}20;color:${statusColor};border:1px solid ${statusColor}">${statusLabel}</span></h1>
-      <div class="bp-subtitle">${b.year} Operating Budget</div>
-    </div>
-    <div class="bp-right">
-      <div class="bp-logo">Century Management</div>
-      <div class="bp-date">${today}</div>
-    </div>
-    <button class="bp-close" onclick="document.getElementById('boardPresOverlay').remove()" title="Close (Esc)">✕</button>
-  </div>
-
-  <div class="bp-tabs" id="bpTabs"></div>
-  <div id="bpContent" style="max-width:1400px;"></div>
-
-  <div class="bp-print-hint">Press <kbd>Ctrl+P</kbd> to print · Optimized for landscape print layout</div>
-  <div class="bp-footer">
-    <span>Prepared by Century Management · Confidential</span>
-    <span>Generated ${today}</span>
-  </div>`;
-
-  document.body.appendChild(overlay);
-
-  // Build tabs
-  const tabsContainer = overlay.querySelector('#bpTabs');
-  displayTabs.forEach(tabName => {
-    const btn = document.createElement('button');
-    btn.className = 'bp-tab' + (tabName === 'summary' ? ' active' : '');
-    btn.dataset.tab = tabName;
-    btn.textContent = tabName === 'summary' ? 'Summary' : tabName;
-    btn.onclick = () => renderTab(tabName);
-    tabsContainer.appendChild(btn);
-  });
-
-  // Render summary by default
-  renderTab('summary');
 }
 
 function openAssumptions() {
