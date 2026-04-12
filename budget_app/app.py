@@ -2613,6 +2613,12 @@ GENERATE_TEMPLATE = r"""
     border-radius: 12px;
     font-weight: 600;
   }
+  .gen-pill { display:inline-block; font-size:10px; font-weight:600; padding:1px 7px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+  .gen-pill-done { background:#dcfce7; color:#166534; }
+  .gen-pill-partial { background:#fef3c7; color:#92400e; }
+  .gen-pill-none { background:#f1f5f9; color:#64748b; }
+  .building-item.gen-done { opacity:0.55; }
+
   .page-header {
     background: linear-gradient(135deg, var(--blue) 0%, #3d342c 100%);
     color: white;
@@ -2643,6 +2649,7 @@ GENERATE_TEMPLATE = r"""
 
     <input type="text" class="search-box" id="buildingSearch" placeholder="Search buildings..." oninput="filterBuildings()">
     <div class="select-actions">
+      <button onclick="selectRemaining()" id="runRemainingBtn" style="background:var(--blue);color:white;font-weight:600;">▶ Run All Remaining</button>
       <button onclick="selectAll()">Select All</button>
       <button onclick="selectNone()">Select None</button>
       <span id="selectedCount" class="count-badge">0 selected</span>
@@ -2734,6 +2741,64 @@ GENERATE_TEMPLATE = r"""
 
 <script>
 // Auto-upload: no manual file management needed
+
+// ── Batch: tag buildings with budget status on load ──
+const _budgetStatus = {};  // entity_code → {status, done}
+(async function tagBuildings() {
+  try {
+    const resp = await fetch('/api/budgets');
+    const budgets = await resp.json();
+    budgets.forEach(b => {
+      const ts = b.timestamps || {};
+      const hasYsl = !!ts.ysl;
+      const hasAp = !!ts.open_ap;
+      const hasBudget = !!ts.budget_summary;
+      const hasExp = !!ts.expense_dist;
+      const allDone = hasYsl && hasAp && hasBudget;
+      const partial = hasYsl || hasAp || hasBudget || hasExp;
+      _budgetStatus[String(b.entity_code)] = { done: allDone, partial: partial && !allDone };
+    });
+    // Tag each building checkbox
+    let doneCount = 0, remainCount = 0;
+    document.querySelectorAll('.building-item').forEach(el => {
+      const code = el.dataset.code;
+      const info = _budgetStatus[code];
+      const pill = document.createElement('span');
+      pill.className = 'gen-pill';
+      if (info && info.done) {
+        pill.className += ' gen-pill-done';
+        pill.textContent = 'Done';
+        el.classList.add('gen-done');
+        doneCount++;
+      } else if (info && info.partial) {
+        pill.className += ' gen-pill-partial';
+        pill.textContent = 'Partial';
+        remainCount++;
+      } else {
+        pill.className += ' gen-pill-none';
+        pill.textContent = 'Not started';
+        remainCount++;
+      }
+      el.querySelector('span').appendChild(pill);
+    });
+    // Update button label with count
+    const btn = document.getElementById('runRemainingBtn');
+    if (btn) btn.textContent = `▶ Run All Remaining (${remainCount})`;
+  } catch (e) {
+    console.warn('Could not load budget status:', e);
+  }
+})();
+
+function selectRemaining() {
+  document.querySelectorAll('#buildingGrid .building-item').forEach(el => {
+    const code = el.dataset.code;
+    const info = _budgetStatus[code];
+    const cb = el.querySelector('input');
+    const visible = !el.style.display || el.style.display !== 'none';
+    cb.checked = visible && !(info && info.done);
+  });
+  updateCount();
+}
 
 function getSelected() {
   return [...document.querySelectorAll('#buildingGrid input:checked')].map(c => parseInt(c.value));
