@@ -4813,9 +4813,10 @@ function openBoardPresentation() {
     overlay.id = 'boardPresOverlay';
     const today = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
     const displayTabs = ['summary'].concat(sheetOrder);
+    const _savedScrollY = window.scrollY;
 
     // Escape handler
-    const escH = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', escH); overlay.remove(); } };
+    const escH = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', escH); overlay.remove(); document.body.style.overflow=''; document.documentElement.style.overflow=''; window.scrollTo(0, _savedScrollY || 0); } };
     document.addEventListener('keydown', escH);
 
     overlay.innerHTML = `<style>
@@ -4897,9 +4898,19 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
 <div class="bp2-body" id="bp2Body"></div>
 <div class="bp2-ftr"><span>Prepared by Century Management · Confidential</span><span>Generated ${today}</span></div>`;
 
+    // Lock body scroll and reset overlay position
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    window.scrollTo(0, 0);
     document.body.appendChild(overlay);
     overlay.scrollTop = 0;
-    overlay.querySelector('.bp2-close').onclick = () => { document.removeEventListener('keydown', escH); overlay.remove(); };
+    overlay.querySelector('.bp2-close').onclick = () => {
+      document.removeEventListener('keydown', escH);
+      overlay.remove();
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+      window.scrollTo(0, _savedScrollY);
+    };
 
     // Build tabs
     const tabsEl = overlay.querySelector('#bp2Tabs');
