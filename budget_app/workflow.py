@@ -3499,6 +3499,7 @@ DASHBOARD_TEMPLATE = r"""
             <th>Data Loaded</th>
             <th>PM Review</th>
             <th>Status</th>
+            <th>Days</th>
             <th>Action</th>
           </tr>
         </thead>
@@ -3644,6 +3645,16 @@ function renderBudgets(budgets) {
       '<div title="Expense Distribution uploaded"><b>Exp Dist:</b> ' + fmtTs(ts.expense_dist) + '</div>' +
       '</div>';
 
+    // SLA: days in current status (using updated_at as proxy)
+    const doneStatuses = ['approved','ar_pending','ar_complete'];
+    let daysHtml = '<span style="color:var(--gray-300);">\u2014</span>';
+    if (!doneStatuses.includes(b.status) && b.updated_at) {
+      const days = Math.floor((Date.now() - new Date(b.updated_at).getTime()) / 86400000);
+      const color = days >= 14 ? 'var(--red)' : days >= 7 ? '#d97706' : 'var(--green)';
+      const icon = days >= 14 ? ' \uD83D\uDD34' : days >= 7 ? ' \uD83D\uDFE1' : '';
+      daysHtml = `<span style="font-weight:700;color:${color};">${days}d</span>${icon}`;
+    }
+
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
@@ -3651,6 +3662,7 @@ function renderBudgets(budgets) {
       <td>${tsHtml}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
       <td><span class="pill ${statusClass}">${statusLabel}</span></td>
+      <td style="text-align:center;">${daysHtml}</td>
       <td>${actionHtml}</td>
     `;
     tbody.appendChild(tr);
@@ -6509,10 +6521,10 @@ async function renderBudgetSummary(contentDiv) {
     '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
     '<th style="'+thS+'min-width:80px;">Tab</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
-    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
-    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
-    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
-    '<th style="'+thS+'min-width:95px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
+    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
     '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
     '<th style="'+thS+'min-width:120px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
     '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
