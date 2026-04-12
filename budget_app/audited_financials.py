@@ -1081,15 +1081,37 @@ async function uploadAll() {
         .btn-danger { background: var(--red); }
         .btn-danger:hover { background: #d01f1f; }
         .btn-small { padding: 6px 12px; font-size: 12px; }
-        .profile-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
-        .profile-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
-        .profile-header h3 { font-size: 16px; font-weight: 600; color: var(--gray-900); }
-        .profile-meta { font-size: 13px; color: var(--gray-500); margin-top: 2px; }
+        .btn-edit { background: #eff6ff; color: #2563eb; }
+        .btn-edit:hover { background: #dbeafe; }
+        .profile-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; margin-bottom: 16px; overflow: hidden; transition: box-shadow 0.2s; }
+        .profile-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+        .profile-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; cursor: pointer; user-select: none; transition: background 0.15s; }
+        .profile-header:hover { background: #fafafa; }
+        .profile-header-left { display: flex; align-items: center; gap: 14px; }
+        .collapse-chevron { width: 20px; height: 20px; transition: transform 0.25s ease; color: var(--gray-500); flex-shrink: 0; display: inline-block; }
+        .profile-card.open .collapse-chevron { transform: rotate(90deg); }
+        .profile-card.open .profile-header { border-bottom: 1px solid var(--gray-200); }
+        .profile-header h3 { font-size: 15px; font-weight: 600; color: var(--gray-900); }
+        .profile-meta { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+        .profile-header-right { display: flex; align-items: center; gap: 8px; }
+        .rule-count { font-size: 11px; font-weight: 600; color: var(--gray-500); background: var(--gray-100); padding: 3px 10px; border-radius: 12px; }
+        .profile-body { max-height: 0; overflow: hidden; transition: max-height 0.35s ease, padding 0.35s ease; padding: 0 24px; }
+        .profile-card.open .profile-body { max-height: 3000px; padding: 0 24px 20px; }
+        .profile-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
         .rules-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        .rules-table th { background: var(--gray-100); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
-        .rules-table td { padding: 6px 10px; border-bottom: 1px solid var(--gray-200); }
+        .rules-table th { background: var(--gray-100); padding: 8px 10px; text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+        .rules-table td { padding: 8px 10px; border-bottom: 1px solid #f3f4f6; font-size: 13px; color: #374151; }
+        .rules-table tr:last-child td { border-bottom: none; }
+        .rules-table tr:hover td { background: #fafbfc; }
         .rules-table input, .rules-table select { padding: 6px 8px; font-size: 13px; }
-        .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+        .category-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f0fdf4; color: #166534; }
+        .read-field { display: inline; }
+        .edit-field { display: none; }
+        .profile-card.editing .read-field { display: none; }
+        .profile-card.editing .edit-field { display: inline; }
+        .profile-card.editing .edit-field select,
+        .profile-card.editing .edit-field input { padding: 5px 8px; font-size: 12px; border: 1px solid var(--gray-200); border-radius: 4px; font-family: inherit; }
+        .btn-row { display: flex; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--gray-200); }
         .alert { padding: 10px 14px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
         .alert-success { background: var(--green-light); color: #065f46; }
         .alert-error { background: #fde8e8; color: #9b1c1c; }
@@ -1130,6 +1152,19 @@ async function uploadAll() {
     </div>
 
     <script>
+        function toggleProfile(id) {
+            document.getElementById(id).classList.toggle('open');
+        }
+
+        function toggleEdit(id) {
+            var card = document.getElementById(id);
+            card.classList.toggle('editing');
+            // Auto-open if not already open
+            if (card.classList.contains('editing') && !card.classList.contains('open')) {
+                card.classList.add('open');
+            }
+        }
+
         function createProfile() {
             const name = document.getElementById('newProfileName').value;
             const firm = document.getElementById('newFirmName').value;
@@ -1165,31 +1200,25 @@ async function uploadAll() {
         }
 
         function addRuleRow(profileId) {
-            const container = document.getElementById('rules-' + profileId);
-            const newRow = document.createElement('tr');
+            var table = document.getElementById('rules-' + profileId);
+            var newRow = document.createElement('tr');
             newRow.className = 'new-rule';
-            newRow.innerHTML = `
-                <td><input type="text" placeholder="Auditor line item" /></td>
-                <td><input type="text" placeholder="Auditor category" /></td>
-                <td>
-                    <select>
-                        <option value="">-- Select Century Category --</option>
-                        {{ century_categories_options }}
-                    </select>
-                </td>
-                <td><input type="number" placeholder="1.0" step="0.01" value="1.0" style="width: 60px;" /></td>
-                <td><input type="text" placeholder="Notes" /></td>
-            `;
-            container.appendChild(newRow);
+            newRow.innerHTML = '<td><span class="edit-field" style="display:inline;"><input type="text" placeholder="Auditor line item" /></span></td>' +
+                '<td><span class="edit-field" style="display:inline;"><input type="text" placeholder="Auditor category" /></span></td>' +
+                '<td><span class="edit-field" style="display:inline;"><select><option value="">-- Select --</option>{{ century_categories_options }}</select></span></td>' +
+                '<td><span class="edit-field" style="display:inline;"><input type="number" placeholder="1.0" step="0.01" value="1.0" style="width: 60px;" /></span></td>' +
+                '<td><span class="edit-field" style="display:inline;"><input type="text" placeholder="Notes" /></span></td>';
+            table.appendChild(newRow);
         }
 
         function saveRules(profileId) {
-            const rows = document.querySelectorAll('#rules-' + profileId + ' tr');
-            const rules = [];
+            var rows = document.querySelectorAll('#rules-' + profileId + ' tr');
+            var rules = [];
 
-            rows.forEach(row => {
-                const inputs = row.querySelectorAll('input, select');
-                if (inputs[0].value.trim()) {
+            rows.forEach(function(row) {
+                // Get inputs from edit-field spans
+                var inputs = row.querySelectorAll('.edit-field input, .edit-field select');
+                if (inputs.length >= 5 && inputs[0].value.trim()) {
                     rules.push({
                         id: row.dataset.ruleId || null,
                         auditor_line_item: inputs[0].value,
@@ -1224,23 +1253,35 @@ async function uploadAll() {
         for p in profiles:
             rules_rows = []
             for r in p.rules:
+                cat_options = "".join([f'<option value="{cat}" {"selected" if r.century_category == cat else ""}>{cat}</option>' for cat in CENTURY_CATEGORIES])
                 rules_rows.append(f"""
                     <tr data-rule-id="{r.id}">
-                        <td><input type="text" value="{r.auditor_line_item}" /></td>
-                        <td><input type="text" value="{r.auditor_category}" /></td>
                         <td>
-                            <select>
-                                <option value="">-- Select Category --</option>
-                                {"".join([f'<option value="{cat}" {"selected" if r.century_category == cat else ""}>{cat}</option>' for cat in CENTURY_CATEGORIES])}
-                            </select>
+                            <span class="read-field">{r.auditor_line_item}</span>
+                            <span class="edit-field"><input type="text" value="{r.auditor_line_item}" /></span>
                         </td>
-                        <td><input type="number" value="{r.split_pct}" step="0.01" style="width: 60px;" /></td>
-                        <td><input type="text" value="{r.notes}" /></td>
+                        <td>
+                            <span class="read-field">{r.auditor_category}</span>
+                            <span class="edit-field"><input type="text" value="{r.auditor_category}" /></span>
+                        </td>
+                        <td>
+                            <span class="read-field"><span class="category-badge">{r.century_category or '—'}</span></span>
+                            <span class="edit-field"><select><option value="">-- Select --</option>{cat_options}</select></span>
+                        </td>
+                        <td>
+                            <span class="read-field">{r.split_pct}</span>
+                            <span class="edit-field"><input type="number" value="{r.split_pct}" step="0.01" style="width: 60px;" /></span>
+                        </td>
+                        <td>
+                            <span class="read-field">{r.notes or '—'}</span>
+                            <span class="edit-field"><input type="text" value="{r.notes or ''}" /></span>
+                        </td>
                     </tr>
                 """)
 
+            rule_count = len(p.rules)
             rules_table = f"""
-                <table class="rules-table">
+                <table class="rules-table" id="rules-{p.id}">
                     <tr>
                         <th>Auditor Line Item</th>
                         <th>Auditor Category</th>
@@ -1250,22 +1291,32 @@ async function uploadAll() {
                     </tr>
                     {"".join(rules_rows)}
                 </table>
-                <div class="btn-row">
-                    <button class="btn-small" onclick="addRuleRow({p.id})">+ Add Rule</button>
+                <div class="btn-row edit-field">
+                    <button class="btn-small" style="background:var(--gray-100);color:var(--gray-700);" onclick="addRuleRow({p.id})">+ Add Rule</button>
                     <button class="btn-green btn-small" onclick="saveRules({p.id})">Save All Rules</button>
+                    <button class="btn-small" style="background:var(--gray-100);color:var(--gray-700);margin-left:auto;" onclick="toggleEdit('profile-{p.id}')">Cancel</button>
                 </div>
             """
 
             profile_card = f"""
-                <div class="profile-card">
-                    <div class="profile-header">
-                        <div>
-                            <h3>{p.name}</h3>
-                            <div class="profile-meta">Firm: {p.firm_name}{(' | ' + p.notes) if p.notes else ''}</div>
+                <div class="profile-card" id="profile-{p.id}">
+                    <div class="profile-header" onclick="toggleProfile('profile-{p.id}')">
+                        <div class="profile-header-left">
+                            <svg class="collapse-chevron" viewBox="0 0 20 20" fill="currentColor"><path d="M7.293 4.293a1 1 0 011.414 0L14.414 10l-5.707 5.707a1 1 0 01-1.414-1.414L11.586 10 7.293 5.707a1 1 0 010-1.414z"/></svg>
+                            <div>
+                                <h3>{p.name}</h3>
+                                <div class="profile-meta">Firm: {p.firm_name}{(' | ' + p.notes) if p.notes else ''}</div>
+                            </div>
                         </div>
-                        <button class="btn-danger btn-small" onclick="deleteProfile({p.id})">Delete</button>
+                        <div class="profile-header-right">
+                            <span class="rule-count">{rule_count} rule{'s' if rule_count != 1 else ''}</span>
+                        </div>
                     </div>
-                    <div id="rules-{p.id}">
+                    <div class="profile-body">
+                        <div class="profile-actions">
+                            <button class="btn-edit btn-small" onclick="event.stopPropagation(); toggleEdit('profile-{p.id}')">&#9998; Edit Mapping</button>
+                            <button class="btn-danger btn-small" onclick="event.stopPropagation(); deleteProfile({p.id})">Delete</button>
+                        </div>
                         {rules_table}
                     </div>
                 </div>
