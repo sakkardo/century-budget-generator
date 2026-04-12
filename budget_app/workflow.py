@@ -7246,13 +7246,13 @@ async function renderPayrollTab(sheetLines, contentDiv) {
 
   // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
   html += '<style>' +
-    '#prGLContent .cell { width:80px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
+    '#prGLContent .cell { width:auto; min-width:50px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
     '#prGLContent .fa-fx { display:none !important; }' +
-    '#prGLContent .cell-pct { width:55px; }' +
+    '#prGLContent .cell-pct { width:auto; min-width:45px; }' +
     '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
     '#prGLContent td.num { position:relative; padding:5px 8px !important; }' +
     '</style>';
@@ -8035,7 +8035,7 @@ function renderPayrollGL() {
       };
 
       html += '<tr class="prgl-row" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
-        '<td style="' + cs + ' padding-left:24px; font-family:monospace; font-size:11px; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
+        '<td style="' + cs + ' padding-left:24px; font-size:13px; font-variant-numeric:tabular-nums; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
         '<td style="' + cs + '">' + (l.description || '') + '</td>' +
         '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
         prDollarCell('prior_year', l.prior_year) +
