@@ -4854,7 +4854,7 @@ function openBoardPresentation() {
 .bp2-charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:20px 0; }
 .bp2-chart-box { border:1px solid #e2e8f0; border-radius:10px; padding:20px; position:relative; }
 .bp2-chart-box h4 { font-size:13px; font-weight:700; color:#334155; margin:0 0 12px; }
-.bp2-chart-box canvas { max-height:260px; width:100% !important; height:auto !important; }
+.bp2-chart-box canvas { width:100% !important; height:100% !important; max-height:260px; }
 .bp2-tbl-title { font-size:14px; font-weight:700; color:#0f172a; margin:24px 0 10px; }
 .bp2-chip { font-size:10px; font-weight:600; background:#dbeafe; color:#1d4ed8; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.5px; margin-left:8px; }
 table.bp2-tbl { width:100%; border-collapse:collapse; }
@@ -4962,8 +4962,8 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
 
       // Charts
       h += '<div class="bp2-charts">';
-      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><div style="position:relative;height:260px;max-height:260px;"><canvas id="bp2Donut"></canvas></div></div>';
-      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><div style="position:relative;height:260px;max-height:260px;"><canvas id="bp2Bar"></canvas></div></div>';
+      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><div style="position:relative;height:260px;max-height:260px;overflow:hidden;"><canvas id="bp2Donut"></canvas></div></div>';
+      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><div style="position:relative;height:260px;max-height:260px;overflow:hidden;"><canvas id="bp2Bar"></canvas></div></div>';
       h += '</div>';
 
       // Summary Table
@@ -5011,13 +5011,16 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
           const donutData = expSheets.filter(s => (stotals[s]||{}).proposed > 0);
           const donutColors = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#ec4899','#06b6d4','#64748b'];
           const dc = body.querySelector('#bp2Donut');
-          if (dc) new Chart(dc, { type:'doughnut', data:{ labels:donutData.map(s=>s), datasets:[{ data:donutData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:donutColors.slice(0,donutData.length), borderWidth:0, hoverOffset:6 }] }, options:{ responsive:true, maintainAspectRatio:false, cutout:'60%', plugins:{ legend:{ position:'right', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>{ const tot=ctx.dataset.data.reduce((a,b)=>a+b,0); return ctx.label+': '+pFmt(ctx.parsed)+' ('+(ctx.parsed/tot*100).toFixed(1)+'%)'; } } } } } });
+          if (dc) new Chart(dc, { type:'doughnut', data:{ labels:donutData.map(s=>s), datasets:[{ data:donutData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:donutColors.slice(0,donutData.length), borderWidth:0, hoverOffset:6 }] }, options:{ responsive:true, maintainAspectRatio:false, animation:{duration:0}, cutout:'60%', plugins:{ legend:{ position:'right', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>{ const tot=ctx.dataset.data.reduce((a,b)=>a+b,0); return ctx.label+': '+pFmt(ctx.parsed)+' ('+(ctx.parsed/tot*100).toFixed(1)+'%)'; } } } } } });
 
           // Bar
           const barData = expSheets.filter(s => (stotals[s]||{}).budget > 0 || (stotals[s]||{}).proposed > 0);
           const bc = body.querySelector('#bp2Bar');
-          if (bc) new Chart(bc, { type:'bar', data:{ labels:barData.map(s=>s), datasets:[ { label:'Current Budget', data:barData.map(s=>Math.round(stotals[s].budget)), backgroundColor:'#cbd5e1', borderRadius:3 }, { label:'Proposed', data:barData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:barData.map(s=>stotals[s].proposed>stotals[s].budget?'#fbbf24':'#4ade80'), borderRadius:3 } ] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>ctx.dataset.label+': '+pFmt(ctx.parsed.y) } } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'K', font:{size:10} }, grid:{color:'#f1f5f9'} }, x:{ ticks:{font:{size:10},maxRotation:25}, grid:{display:false} } } } });
+          if (bc) new Chart(bc, { type:'bar', data:{ labels:barData.map(s=>s), datasets:[ { label:'Current Budget', data:barData.map(s=>Math.round(stotals[s].budget)), backgroundColor:'#cbd5e1', borderRadius:3 }, { label:'Proposed', data:barData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:barData.map(s=>stotals[s].proposed>stotals[s].budget?'#fbbf24':'#4ade80'), borderRadius:3 } ] }, options:{ responsive:true, maintainAspectRatio:false, animation:{duration:0}, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>ctx.dataset.label+': '+pFmt(ctx.parsed.y) } } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'K', font:{size:10} }, grid:{color:'#f1f5f9'} }, x:{ ticks:{font:{size:10},maxRotation:25}, grid:{display:false} } } } });
+          // Kill scroll repeatedly to beat any async Chart.js resizes
           overlay.scrollTop = 0;
+          setTimeout(() => { overlay.scrollTop = 0; }, 100);
+          setTimeout(() => { overlay.scrollTop = 0; }, 300);
         }, 50);
       }
     }
