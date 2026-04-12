@@ -2670,7 +2670,17 @@ GENERATE_TEMPLATE = r"""
       </div>
       <div class="setting">
         <label>Budget Period</label>
-        <input type="text" id="period" value="02/2026" placeholder="MM/YYYY">
+        <div style="display:flex; gap:6px;">
+          <select id="periodMonth" style="padding:8px 10px; border:1px solid var(--gray-300); border-radius:6px; font-size:14px; background:white;">
+            <option value="01">January</option><option value="02">February</option><option value="03">March</option>
+            <option value="04">April</option><option value="05">May</option><option value="06">June</option>
+            <option value="07">July</option><option value="08">August</option><option value="09">September</option>
+            <option value="10">October</option><option value="11">November</option><option value="12">December</option>
+          </select>
+          <select id="periodYear" style="padding:8px 10px; border:1px solid var(--gray-300); border-radius:6px; font-size:14px; background:white;">
+            <option value="2025">2025</option><option value="2026">2026</option><option value="2027">2027</option><option value="2028">2028</option>
+          </select>
+        </div>
       </div>
       <div class="setting">
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -2834,10 +2844,19 @@ function filterBuildings() {
   });
 }
 
+// Default period dropdowns to current month/year
+(function() {
+  const now = new Date();
+  const m = document.getElementById('periodMonth');
+  const y = document.getElementById('periodYear');
+  if (m) m.value = String(now.getMonth()+1).padStart(2,'0');
+  if (y) y.value = String(now.getFullYear());
+})();
+
 async function generateScript() {
   const entities = getSelected();
   const email = document.getElementById('email').value;
-  const period = document.getElementById('period').value;
+  const period = document.getElementById('periodMonth').value + '/' + document.getElementById('periodYear').value;
 
   if (!entities.length) { alert('Select at least one building'); return; }
   if (!email) { alert('Enter your email'); return; }
@@ -2869,7 +2888,7 @@ function copyScript() {
 async function generateAPAgingScript() {
   const entities = getSelected();
   const email = document.getElementById('email').value;
-  const period = document.getElementById('period').value;
+  const period = document.getElementById('periodMonth').value + '/' + document.getElementById('periodYear').value;
 
   if (!entities.length) { alert('Select at least one building'); return; }
 

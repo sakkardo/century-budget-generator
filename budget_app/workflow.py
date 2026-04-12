@@ -3495,6 +3495,7 @@ DASHBOARD_TEMPLATE = r"""
           <tr>
             <th>Building</th>
             <th>Entity</th>
+            <th>PM</th>
             <th>Data</th>
             <th>Data Loaded</th>
             <th>PM Review</th>
@@ -3541,10 +3542,15 @@ function showToast(msg, type='info') {
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3000);
 }
 
+const _pmByEntity = {};
 async function loadBudgets() {
   try {
-    const res = await fetch('/api/budgets');
+    const [res, aRes] = await Promise.all([fetch('/api/budgets'), fetch('/api/assignments')]);
     const budgets = await res.json();
+    try {
+      const assignments = await aRes.json();
+      assignments.forEach(a => { if (a.role === 'pm') _pmByEntity[a.entity_code] = a.user_name; });
+    } catch(e) { console.warn('Assignments fetch failed:', e); }
     renderBudgets(budgets);
     renderStatusSummary(budgets);
     document.getElementById('loadingState').style.display = 'none';
@@ -3655,9 +3661,11 @@ function renderBudgets(budgets) {
       daysHtml = `<span style="font-weight:700;color:${color};">${days}d</span>${icon}`;
     }
 
+    const pmName = _pmByEntity[b.entity_code] || '\u2014';
     tr.innerHTML = `
       <td><a href="/dashboard/${b.entity_code}" style="color: var(--blue); text-decoration: none; font-weight:500;">${b.building_name}</a></td>
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
+      <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${pmName}</td>
       <td style="font-size:12px; line-height:1.8;">${budgetIcon}<br>${expenseIcon}<br>${auditIcon}</td>
       <td>${tsHtml}</td>
       <td><span class="pill ${statusClass}">${pmLabel}</span></td>
@@ -4248,6 +4256,14 @@ function renderDetail(data) {
     totalPM += proposed;
   });
 
+  const variance = totalBudget - totalForecast;
+  const pctChange = totalForecast ? ((variance) / totalForecast * 100) : 0;
+  const absPct = Math.abs(pctChange);
+  const varColor = absPct > 10 ? 'var(--red)' : absPct > 5 ? '#d97706' : 'var(--green)';
+  const varBg = absPct > 10 ? '#fef2f2' : absPct > 5 ? '#fffbeb' : '#f0fdf4';
+  const varBorder = absPct > 10 ? '#fca5a5' : absPct > 5 ? '#fde68a' : '#86efac';
+  const arrow = pctChange > 0 ? ' \u25B2' : pctChange < 0 ? ' \u25BC' : '';
+
   document.getElementById('summaryCards').innerHTML = `
     <div class="summary-card">
       <div class="card-value">${fmt(totalPrior)}</div>
@@ -4257,12 +4273,12 @@ function renderDetail(data) {
       <div class="card-value">${fmt(totalBudget)}</div>
       <div class="card-label">Current Budget</div>
     </div>
-    <div class="summary-card">
-      <div class="card-value">${fmt(totalBudget - totalForecast)}</div>
+    <div class="summary-card" style="background:${varBg};border-color:${varBorder};">
+      <div class="card-value" style="color:${varColor};">${fmt(variance)}</div>
       <div class="card-label">Variance</div>
     </div>
-    <div class="summary-card">
-      <div class="card-value">${totalForecast ? ((totalBudget - totalForecast) / totalForecast * 100).toFixed(1) + '%' : '\u2014'}</div>
+    <div class="summary-card" style="background:${varBg};border-color:${varBorder};">
+      <div class="card-value" style="color:${varColor};">${totalForecast ? pctChange.toFixed(1) + '%' + arrow : '\u2014'}</div>
       <div class="card-label">% Change</div>
     </div>
   `;
@@ -9388,8 +9404,8 @@ PM_EDIT_TEMPLATE = r"""
   </style>
 
   <div class="pm-sheet-tabs">
-    <div class="pm-sheet-tab active" onclick="pmSwitchSheet('Repairs & Supplies', this)">Repairs & Supplies</div>
-    <div class="pm-sheet-tab" onclick="pmSwitchSheet('Gen & Admin', this)">General & Admin</div>
+    <div class="pm-sheet-tab active" onclick="pmSwitchSheet('Repairs &amp; Supplies', this)">Repairs &amp; Supplies <span id="rsCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
+    <div class="pm-sheet-tab" onclick="pmSwitchSheet('Gen &amp; Admin', this)">General &amp; Admin <span id="gaCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
   </div>
 
   <div class="grid-wrapper">
@@ -9463,6 +9479,16 @@ const PM_SHEET_CATEGORIES = {
     grandLabel: 'GRAND TOTAL G&A'
   }
 };
+
+// Populate sub-tab count badges
+(function() {
+  const rs = LINES.filter(l => l.sheet_name === 'Repairs & Supplies').length;
+  const ga = LINES.filter(l => l.sheet_name === 'Gen & Admin').length;
+  const rsEl = document.getElementById('rsCount');
+  const gaEl = document.getElementById('gaCount');
+  if (rsEl && rs) rsEl.textContent = rs;
+  if (gaEl && ga) gaEl.textContent = ga;
+})();
 
 function pmSwitchSheet(sheetName, tabEl) {
   _pmActiveSheet = sheetName;
