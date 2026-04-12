@@ -4852,8 +4852,9 @@ function openBoardPresentation() {
 .bp2-top3-item .amt { font-size:18px; font-weight:700; color:#dc2626; margin:4px 0 2px; font-variant-numeric:tabular-nums; }
 .bp2-top3-item .pc { font-size:11px; color:#64748b; }
 .bp2-charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:20px 0; }
-.bp2-chart-box { border:1px solid #e2e8f0; border-radius:10px; padding:20px; }
+.bp2-chart-box { border:1px solid #e2e8f0; border-radius:10px; padding:20px; position:relative; }
 .bp2-chart-box h4 { font-size:13px; font-weight:700; color:#334155; margin:0 0 12px; }
+.bp2-chart-box canvas { max-height:260px; width:100% !important; height:auto !important; }
 .bp2-tbl-title { font-size:14px; font-weight:700; color:#0f172a; margin:24px 0 10px; }
 .bp2-chip { font-size:10px; font-weight:600; background:#dbeafe; color:#1d4ed8; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.5px; margin-left:8px; }
 table.bp2-tbl { width:100%; border-collapse:collapse; }
@@ -4961,8 +4962,8 @@ table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
 
       // Charts
       h += '<div class="bp2-charts">';
-      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><canvas id="bp2Donut" height="260"></canvas></div>';
-      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><canvas id="bp2Bar" height="260"></canvas></div>';
+      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><div style="position:relative;height:260px;max-height:260px;"><canvas id="bp2Donut"></canvas></div></div>';
+      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><div style="position:relative;height:260px;max-height:260px;"><canvas id="bp2Bar"></canvas></div></div>';
       h += '</div>';
 
       // Summary Table
