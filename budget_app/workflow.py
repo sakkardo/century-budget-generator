@@ -3492,25 +3492,30 @@ DASHBOARD_TEMPLATE = r"""
 
     <div class="section">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h2 style="margin-bottom:0;">All Buildings</h2>
+        <div onclick="toggleBuildingsCollapse()" style="display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;" title="Click to collapse/expand">
+          <span id="buildingsChevron" style="display:inline-block; transition:transform 0.2s; font-size:12px; color:var(--gray-500);">&#9660;</span>
+          <h2 style="margin-bottom:0;">All Buildings</h2>
+        </div>
         <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
           style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
       </div>
-      <table id="budgets-table">
-        <thead>
-          <tr>
-            <th>Building</th>
-            <th>Entity</th>
-            <th>PM</th>
-            <th>Data Status</th>
-            <th>PM Review</th>
-            <th>Status</th>
-            <th>Days</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div id="buildingsTableWrap">
+        <table id="budgets-table">
+          <thead>
+            <tr>
+              <th data-sort="building_name" onclick="sortBuildings('building_name')" style="cursor:pointer; user-select:none;">Building <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="entity_code" onclick="sortBuildings('entity_code')" style="cursor:pointer; user-select:none;">Entity <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="pm_name" onclick="sortBuildings('pm_name')" style="cursor:pointer; user-select:none;">PM <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th>Data Status</th>
+              <th data-sort="pm_review" onclick="sortBuildings('pm_review')" style="cursor:pointer; user-select:none;">PM Review <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="status" onclick="sortBuildings('status')" style="cursor:pointer; user-select:none;">Status <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="days" onclick="sortBuildings('days')" style="cursor:pointer; user-select:none;">Days <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
@@ -3548,6 +3553,17 @@ function showToast(msg, type='info') {
 }
 
 const _pmByEntity = {};
+let _budgetsCache = [];
+let _sortState = { column: 'entity_code', direction: 'asc' };
+const _pmStatusMap = {
+  'draft': 'Not Sent',
+  'pm_pending': 'Sent to PM',
+  'pm_in_progress': 'PM Working',
+  'fa_review': 'Submitted',
+  'approved': 'Approved',
+  'returned': 'Returned'
+};
+
 async function loadBudgets() {
   try {
     const [res, aRes] = await Promise.all([fetch('/api/budgets'), fetch('/api/assignments')]);
@@ -3556,8 +3572,10 @@ async function loadBudgets() {
       const assignments = await aRes.json();
       assignments.forEach(a => { if (a.role === 'pm') _pmByEntity[a.entity_code] = a.user_name; });
     } catch(e) { console.warn('Assignments fetch failed:', e); }
+    _budgetsCache = budgets;
     renderBudgets(budgets);
     renderStatusSummary(budgets);
+    updateSortArrows();
     document.getElementById('loadingState').style.display = 'none';
     document.getElementById('dashboardContent').style.display = '';
     return budgets;
@@ -3565,6 +3583,61 @@ async function loadBudgets() {
     console.error('Failed to load budgets:', err);
     document.getElementById('loadingState').innerHTML = '<p style="color:var(--red);">Failed to load budgets. Please refresh.</p>';
     return [];
+  }
+}
+
+function _getSortValue(b, col) {
+  if (col === 'entity_code') return Number(b.entity_code) || 0;
+  if (col === 'building_name') return (b.building_name || '').toLowerCase();
+  if (col === 'pm_name') return (_pmByEntity[b.entity_code] || '').toLowerCase();
+  if (col === 'status') return (b.status || '').toLowerCase();
+  if (col === 'pm_review') return (_pmStatusMap[b.status] || b.status || '').toLowerCase();
+  if (col === 'days') {
+    const doneStatuses = ['approved','ar_pending','ar_complete'];
+    if (doneStatuses.includes(b.status) || !b.updated_at) return -1;
+    return Math.floor((Date.now() - new Date(b.updated_at).getTime()) / 86400000);
+  }
+  return '';
+}
+
+function sortBuildings(col) {
+  if (_sortState.column === col) {
+    _sortState.direction = _sortState.direction === 'asc' ? 'desc' : 'asc';
+  } else {
+    _sortState.column = col;
+    _sortState.direction = 'asc';
+  }
+  renderBudgets(_budgetsCache);
+  updateSortArrows();
+  filterBudgetTable();
+}
+
+function updateSortArrows() {
+  document.querySelectorAll('#budgets-table th[data-sort]').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (!arrow) return;
+    if (th.dataset.sort === _sortState.column) {
+      arrow.innerHTML = _sortState.direction === 'asc' ? '&#9650;' : '&#9660;';
+      arrow.style.opacity = '1';
+    } else {
+      arrow.innerHTML = '&#9650;';
+      arrow.style.opacity = '0.25';
+    }
+  });
+}
+
+function toggleBuildingsCollapse() {
+  const wrap = document.getElementById('buildingsTableWrap');
+  const chevron = document.getElementById('buildingsChevron');
+  const isCollapsed = wrap.style.display === 'none';
+  if (isCollapsed) {
+    wrap.style.display = '';
+    chevron.style.transform = 'rotate(0deg)';
+    localStorage.setItem('fa-dashboard-buildings-collapsed', 'false');
+  } else {
+    wrap.style.display = 'none';
+    chevron.style.transform = 'rotate(-90deg)';
+    localStorage.setItem('fa-dashboard-buildings-collapsed', 'true');
   }
 }
 
@@ -3600,8 +3673,16 @@ function renderBudgets(budgets) {
   const tbody = document.querySelector('#budgets-table tbody');
   tbody.innerHTML = '';
 
-  // Sort by entity code ascending
-  budgets.sort((a, b) => Number(a.entity_code) - Number(b.entity_code));
+  // Sort by current sort state
+  const col = _sortState.column;
+  const dir = _sortState.direction === 'asc' ? 1 : -1;
+  budgets.sort((a, b) => {
+    const va = _getSortValue(a, col);
+    const vb = _getSortValue(b, col);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
 
   budgets.forEach(b => {
     const tr = document.createElement('tr');
@@ -3752,6 +3833,13 @@ async function deleteBudget(budgetId, name, version) {
 
 // Initialize on page load
 (async () => {
+  // Restore collapse state before loading
+  if (localStorage.getItem('fa-dashboard-buildings-collapsed') === 'true') {
+    const wrap = document.getElementById('buildingsTableWrap');
+    const chevron = document.getElementById('buildingsChevron');
+    if (wrap) wrap.style.display = 'none';
+    if (chevron) chevron.style.transform = 'rotate(-90deg)';
+  }
   await loadBudgets();
 })();
 </script>
