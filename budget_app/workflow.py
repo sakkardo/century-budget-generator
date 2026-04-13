@@ -3503,13 +3503,13 @@ DASHBOARD_TEMPLATE = r"""
         <table id="budgets-table">
           <thead>
             <tr>
-              <th data-sort="building_name" onclick="sortBuildings('building_name')" style="cursor:pointer; user-select:none;">Building <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th data-sort="entity_code" onclick="sortBuildings('entity_code')" style="cursor:pointer; user-select:none;">Entity <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th data-sort="pm_name" onclick="sortBuildings('pm_name')" style="cursor:pointer; user-select:none;">PM <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="building_name" onclick="sortBuildings('building_name')" style="cursor:pointer; user-select:none; white-space:nowrap;">Building <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="entity_code" onclick="sortBuildings('entity_code')" style="cursor:pointer; user-select:none; white-space:nowrap;">Entity <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="pm_name" onclick="sortBuildings('pm_name')" style="cursor:pointer; user-select:none; white-space:nowrap;">PM <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th>Data Status</th>
-              <th data-sort="pm_review" onclick="sortBuildings('pm_review')" style="cursor:pointer; user-select:none;">PM Review <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th data-sort="status" onclick="sortBuildings('status')" style="cursor:pointer; user-select:none;">Status <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th data-sort="days" onclick="sortBuildings('days')" style="cursor:pointer; user-select:none;">Days <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="pm_review" onclick="sortBuildings('pm_review')" style="cursor:pointer; user-select:none; white-space:nowrap;">PM Review <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="status" onclick="sortBuildings('status')" style="cursor:pointer; user-select:none; white-space:nowrap;">Status <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th data-sort="days" onclick="sortBuildings('days')" style="cursor:pointer; user-select:none; white-space:nowrap;">Days <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th>Action</th>
             </tr>
           </thead>
@@ -3601,11 +3601,13 @@ function _getSortValue(b, col) {
 }
 
 function sortBuildings(col) {
+  // Days defaults to desc (most stale first); others default to asc
+  const defaultDir = col === 'days' ? 'desc' : 'asc';
   if (_sortState.column === col) {
     _sortState.direction = _sortState.direction === 'asc' ? 'desc' : 'asc';
   } else {
     _sortState.column = col;
-    _sortState.direction = 'asc';
+    _sortState.direction = defaultDir;
   }
   renderBudgets(_budgetsCache);
   updateSortArrows();
