@@ -2909,6 +2909,13 @@ ADMIN_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>User Management - Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
     --blue: #5a4a3f;
@@ -3236,6 +3243,13 @@ DASHBOARD_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FA Dashboard - Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
     --blue: #5a4a3f;
@@ -3753,6 +3767,13 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Building Detail - Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
     --blue: #5a4a3f;
@@ -9091,6 +9112,13 @@ PM_PORTAL_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM Portal - Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
     --blue: #5a4a3f;
@@ -9420,6 +9448,13 @@ PM_EDIT_TEMPLATE = r"""
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM Edit — {{ building_name }} — Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
   :root {
     --blue: #5a4a3f;
@@ -11257,6 +11292,13 @@ PRESENTATION_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ building_name }} - {{ year }} Budget Presentation</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #1e293b; }
+::-webkit-scrollbar-thumb { background: #475569; border-radius: 6px; border: 2px solid #1e293b; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+::-webkit-scrollbar-corner { background: #1e293b; }
+* { scrollbar-width: thin; scrollbar-color: #475569 #1e293b; }
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:'Inter',sans-serif; background:#0f172a; color:#e2e8f0; }

@@ -596,6 +596,13 @@ RULES:
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Bulk Upload - Audited Financials</title>
     <style>
+        /* Force scrollbars always visible (fixes macOS auto-hide) */
+        ::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        ::-webkit-scrollbar-corner { background: #f1f5f9; }
+        * { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
         :root { --blue: #1a56db; --green: #057a55; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db; --gray-500: #6b7280; --gray-700: #374151; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #fdf6ee 0%, #f5ebe0 100%); min-height: 100vh; color: var(--gray-700); }
@@ -812,6 +819,13 @@ async function uploadAll() {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Audited Financials - Century Management</title>
     <style>
+        /* Force scrollbars always visible (fixes macOS auto-hide) */
+        ::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        ::-webkit-scrollbar-corner { background: #f1f5f9; }
+        * { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1057,6 +1071,13 @@ async function uploadAll() {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Auditor Profiles - Century Management</title>
     <style>
+        /* Force scrollbars always visible (fixes macOS auto-hide) */
+        ::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        ::-webkit-scrollbar-corner { background: #f1f5f9; }
+        * { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1427,6 +1448,13 @@ async function uploadAll() {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Review - {{ building_name }} - Century Management</title>
     <style>
+        /* Force scrollbars always visible (fixes macOS auto-hide) */
+        ::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        ::-webkit-scrollbar-corner { background: #f1f5f9; }
+        * { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         :root { --blue: #5a4a3f; --blue-light: #f5efe7; --green: #057a55; --green-light: #def7ec; --red: #e02424; --gray-50: #f4f1eb; --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5; --gray-500: #8a7e72; --gray-700: #4a4039; --gray-900: #1a1714; }
         * { box-sizing: border-box; margin: 0; padding: 0; }

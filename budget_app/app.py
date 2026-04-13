@@ -2185,6 +2185,13 @@ HOME_TEMPLATE = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <title>Century Management Budget System</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f3f1; color: #2d2520; min-height: 100vh; }
 
@@ -2412,6 +2419,13 @@ GENERATE_TEMPLATE = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <title>Budget Generator — Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
   :root {
     --blue: #5a4a3f;
     --blue-light: #f5efe7;
@@ -3014,6 +3028,13 @@ _MANAGE_REMOVED = """
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <title>Manage Buildings — Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
   :root {
     --blue: #5a4a3f;
     --blue-light: #f5efe7;
@@ -4507,6 +4528,13 @@ ASSUMPTIONS_WORKBENCH_TEMPLATE = r"""
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <title>Assumptions Workbench — Century Management</title>
 <style>
+/* Force scrollbars always visible (fixes macOS auto-hide) */
+::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid #f1f5f9; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-corner { background: #f1f5f9; }
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f5f5; color: #222; font-size: 14px; }
   header { background: #5a4a3f; color: white; padding: 18px 24px; display: flex; align-items: center; gap: 20px; }
