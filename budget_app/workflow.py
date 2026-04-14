@@ -8844,7 +8844,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }
       .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }
       .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
-      .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:auto; }
+      .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }
       .fa-grid thead { position:sticky; top:0; z-index:20; }
       .fa-grid th { padding:8px 6px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
@@ -8868,7 +8868,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid tr.drill-row td.frozen { border-right:none; box-shadow:none; }
       .fa-grid .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
-      .fa-grid .cell-fx { background:#f0fdf4; border-color:#bbf7d0; }
+      .fa-grid .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
       .fa-fx { display:none !important; }
       .fa-grid .sub-row td.fx-td { background:#e8f5e9; }
