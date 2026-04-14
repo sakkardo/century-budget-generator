@@ -8088,8 +8088,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
     '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
     '#prGLContent thead th.frozen { z-index:25; background:var(--gray-100); }' +
-    '#prGLContent .frozen-gl { left:0; min-width:80px; }' +
-    '#prGLContent .frozen-desc { left:80px; min-width:200px; border-right:2px solid var(--gray-300); box-shadow:2px 0 8px rgba(90,74,63,0.08); }' +
+    '#prGLContent .frozen-gl { left:0; width:115px; min-width:115px; max-width:115px; }' +
+    '#prGLContent .frozen-desc { left:115px; width:240px; min-width:240px; max-width:240px; border-right:2px solid var(--gray-300); box-shadow:2px 0 8px rgba(90,74,63,0.08); }' +
     '#prGLContent .cat-hdr td { background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:14px; padding:10px 12px; border-bottom:2px solid #5a4a3f; cursor:pointer; user-select:none; }' +
     '#prGLContent .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }' +
     '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
