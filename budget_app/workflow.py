@@ -6339,12 +6339,12 @@ function renderRETaxesTab(contentDiv) {
   // Styles matching FA dashboard grid
   const thStyle = 'padding:8px 10px; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; color:var(--gray-600); white-space:nowrap;';
   const cellEdit = 'text-align:right; padding:4px; border-bottom:1px solid var(--gray-200);';
-  const cellCalc = 'text-align:right; padding:8px 10px; border-bottom:1px solid var(--gray-200); background:#f0faf0; font-weight:600;';
+  const cellCalc = 'text-align:right; padding:8px 10px; border-bottom:1px solid var(--gray-200); box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600;';
   const cellLabel = 'padding:8px 10px; font-size:13px; border-bottom:1px solid var(--gray-200);';
   const cellNote = 'padding:8px 10px; font-size:11px; color:var(--gray-400); border-bottom:1px solid var(--gray-200);';
   const inputDollar = 'width:100%; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
   const inputRate = 'width:90px; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
-  const fxBadge = '<span class="re-fx-badge" style="display:inline-block; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">fx</span>';
+  const fxBadge = '<span class="re-fx-badge" style="display:none; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;"></span>';
   // Wrap calculated values in a span so reCalcTaxes can update value without destroying the fx badge
   // Each fx cell is clickable: onclick populates the formula bar
   const fxCell = (id, val, formula, label) => {
@@ -6356,7 +6356,7 @@ function renderRETaxesTab(contentDiv) {
   const ex = d.exemptions || {};
 
   let html = `
-  <div style="max-width:960px; margin:0 auto;">
+  <div style="max-width:100%; margin:0 auto;">
     <!-- Formula bar — matches FA grid style exactly, sticky like Excel -->
     <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:10;">
       <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
@@ -6434,7 +6434,7 @@ function renderRETaxesTab(contentDiv) {
       <!-- Gross -->
       <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700; font-size:14px;">GROSS TAX LIABILITY</td>
-        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; background:#f0faf0; cursor:pointer;" id="re_gross" data-formula="= re_h1_tax + re_h2_tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; cursor:pointer;" id="re_gross" data-formula="= re_h1_tax + re_h2_tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
         <td style="${cellNote}" colspan="2">= re_h1_tax + re_h2_tax</td>
       </tr>
 
@@ -6467,14 +6467,14 @@ function renderRETaxesTab(contentDiv) {
       <tr style="border-top:2px solid var(--gray-300);">
         <td style="padding:10px; font-weight:700;">TOTAL EXEMPTIONS</td>
         <td></td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_current" data-formula="= SUM(current exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; background:#f0faf0;" id="re_ex_total_budget" data-formula="= SUM(budget exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; box-shadow:inset 3px 0 0 #16a34a; color:#15803d;" id="re_ex_total_current" data-formula="= SUM(current exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; box-shadow:inset 3px 0 0 #16a34a; color:#15803d;" id="re_ex_total_budget" data-formula="= SUM(budget exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
       </tr>
 
       <!-- Net Tax -->
-      <tr style="border-top:3px solid var(--gray-400); background:#f0faf0;">
+      <tr style="border-top:3px solid var(--gray-400);">
         <td style="padding:12px 10px; font-weight:700; font-size:15px;">NET TAX LIABILITY</td>
-        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; background:#f0faf0; cursor:pointer;" id="re_net" data-formula="= re_gross - re_ex_total_budget" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
+        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; cursor:pointer;" id="re_net" data-formula="= re_gross - re_ex_total_budget" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
         <td style="${cellNote}" colspan="2">= re_gross - re_ex_total_budget</td>
       </tr>
     </table>
@@ -6677,7 +6677,7 @@ function reTaxFormulaAccept() {
     el.dataset.overrideVal = typed;
     // Badge → blue fx (formula override)
     const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
+    if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; badge.style.display = 'inline-block'; }
   } else if (typed !== '' && numericVal !== null && /^[\d$,.\-\s]+$/.test(typed)) {
     // User typed a plain number — store as override
     const rounded = Math.round(numericVal);
@@ -6687,13 +6687,13 @@ function reTaxFormulaAccept() {
     el.dataset.overrideVal = typed;
     // Badge → pencil (manual override)
     const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = '\u270e'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
+    if (badge) { badge.textContent = '\u270e'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; badge.style.display = 'inline-block'; }
   } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
     // Revert to auto formula
     el.dataset.override = 'false';
     el.dataset.overrideVal = '';
     const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = 'fx'; badge.style.background = '#4ade80'; badge.style.color = '#fff'; badge.style.borderColor = ''; }
+    if (badge) { badge.textContent = ''; badge.style.display = 'none'; }
     reCalcTaxes();
   }
 
@@ -6740,7 +6740,7 @@ function reTaxFormulaClear() {
   el.dataset.override = 'false';
   el.dataset.overrideVal = '';
   const badge = el.querySelector('.re-fx-badge');
-  if (badge) { badge.textContent = 'fx'; badge.style.background = '#4ade80'; badge.style.color = '#fff'; badge.style.borderColor = ''; }
+  if (badge) { badge.textContent = ''; badge.style.display = 'none'; }
   reCalcTaxes();
   const bar = document.getElementById('reTaxFormulaBar');
   if (bar) bar.value = el.dataset.formula || '';
