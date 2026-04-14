@@ -7388,8 +7388,8 @@ function sumRenderDrillPanel(label, col) {
         '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Estimate</th>' +
         '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Forecast</th>' +
         '</tr></thead><tbody>';
+      const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
       lines.forEach(l => {
-        const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
         const cell = (key) => {
           const v = l[key];
           const bg = (key === hi) ? 'background:#f0fdf4;font-weight:700;color:#15803d;' : '';
