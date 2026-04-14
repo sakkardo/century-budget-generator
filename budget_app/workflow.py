@@ -7308,10 +7308,16 @@ function sumCellFocus(el) {
 
 // ── Summary inspector: render lineage drill-down for a c2-c5 cell ──
 function sumRenderDrillPanel(label, col) {
+  console.log('[inspector] render', {label: label, col: col, hasPanel: !!document.getElementById('sumDrillPanel'), hasLineageMap: !!window._sumLineage, lineageKeys: Object.keys(window._sumLineage||{}).length});
   const panel = document.getElementById('sumDrillPanel');
-  if (!panel) return;
+  if (!panel) { console.warn('[inspector] panel element not found'); return; }
   const lineage = (window._sumLineage || {})[label];
-  if (!lineage) { panel.style.display = 'none'; return; }
+  if (!lineage) {
+    // Show visible fallback so user sees something rather than silent failure
+    panel.innerHTML = '<div style="color:#92400e;background:#fffbeb;padding:10px 12px;border-radius:6px;">No lineage data for "<b>' + label + '</b>". Available keys: ' + Object.keys(window._sumLineage||{}).slice(0,5).join(', ') + '\u2026</div>';
+    panel.style.display = 'block';
+    return;
+  }
   const fmt = (n) => {
     if (n === null || n === undefined || isNaN(n)) return '\u2014';
     const r = Math.round(Number(n));
@@ -7477,7 +7483,25 @@ document.addEventListener('click', function(e) {
   if (e.target.id === 'sumFBAccept') sumAcceptFormula();
   if (e.target.id === 'sumFBCancel') sumCancelFormula();
   if (e.target.id === 'sumFBInspect' || (e.target.closest && e.target.closest('#sumFBInspect'))) {
-    if (_sumActiveCell) sumRenderDrillPanel(_sumActiveCell.dataset.label, _sumActiveCell.dataset.col);
+    console.log('[inspector] Inspect clicked, _sumActiveCell:', _sumActiveCell);
+    try {
+      if (_sumActiveCell) {
+        sumRenderDrillPanel(_sumActiveCell.dataset.label, _sumActiveCell.dataset.col);
+      } else {
+        const panel = document.getElementById('sumDrillPanel');
+        if (panel) {
+          panel.innerHTML = '<div style="color:#92400e;background:#fffbeb;padding:10px 12px;border-radius:6px;">No active cell. Click a Col 2-5 cell first, then click Inspect.</div>';
+          panel.style.display = 'block';
+        }
+      }
+    } catch (err) {
+      console.error('[inspector] render error', err);
+      const panel = document.getElementById('sumDrillPanel');
+      if (panel) {
+        panel.innerHTML = '<div style="color:#991b1b;background:#fee2e2;padding:10px 12px;border-radius:6px;">Inspector error: ' + (err.message || err) + '</div>';
+        panel.style.display = 'block';
+      }
+    }
     return;
   }
   if (e.target.id === 'sumFBClear') {
