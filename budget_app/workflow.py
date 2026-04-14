@@ -2596,6 +2596,8 @@ def create_workflow_blueprint(db):
 
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         col2_lookup = {}
+        col2_meta = {}        # {summary_label: {matched_category, match_type}}
+        audit_info = None     # {id, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename}
         try:
             # Label aliases: audit category variant → canonical summary label
             _LABEL_ALIASES = {
@@ -2611,12 +2613,19 @@ def create_workflow_blueprint(db):
             # Query audit_uploads directly (model defined in factory, can't import)
             fy = str(budget_year - 2)  # Col 2 = BY-2 actual
             row_au = db.session.execute(db.text(
-                "SELECT mapped_data FROM audit_uploads "
+                "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename FROM audit_uploads "
                 "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
                 "ORDER BY confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
-            if row_au and row_au[0]:
-                mapped_raw = _json.loads(row_au[0])
+            if row_au and row_au[1]:
+                audit_info = {
+                    "id": row_au[0],
+                    "fiscal_year_end": row_au[2],
+                    "confirmed_at": row_au[3].isoformat() if row_au[3] else None,
+                    "confirmed_by": row_au[4] or "",
+                    "pdf_filename": row_au[5] or "",
+                }
+                mapped_raw = _json.loads(row_au[1])
                 # Extract {category: year_totals[0]} from mapped_data
                 confirmed = {}
                 for cat, info in mapped_raw.items():
@@ -2638,19 +2647,46 @@ def create_workflow_blueprint(db):
                     # Direct match first
                     if cat in building_labels:
                         col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
+                        col2_meta[cat] = {"matched_category": cat, "match_type": "direct"}
                     else:
                         # Try alias: audit category might be a variant
                         canonical = _LABEL_ALIASES.get(cat, cat)
                         if canonical in building_labels:
                             col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
+                            col2_meta[canonical] = {"matched_category": cat, "match_type": "alias"}
                         else:
                             # Try reverse: building label might be a variant of audit category
                             for variant in alias_reverse.get(cat, []):
                                 if variant in building_labels:
                                     col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
+                                    col2_meta[variant] = {"matched_category": cat, "match_type": "alias_reverse"}
                                     break
         except Exception as _col2_err:
             col2_lookup = {"_error": str(_col2_err)}
+
+        # Helper: per-line detail for a given GL prefix set (lineage breakdown)
+        def _lines_for_prefixes(prefixes):
+            out = []
+            remaining = 12 - ytd_months
+            for line in bl_dicts:
+                gl = line.get("gl_code", "")
+                if not _gl_matches_prefixes(gl, prefixes):
+                    continue
+                ytd = float(line.get("ytd_actual", 0) or 0)
+                accrual = float(line.get("accrual_adj", 0) or 0)
+                unpaid = float(line.get("unpaid_bills", 0) or 0)
+                ytd_total = ytd + accrual + unpaid
+                est = (ytd_total / ytd_months) * remaining if ytd_months > 0 else 0
+                out.append({
+                    "gl": gl,
+                    "desc": line.get("description") or line.get("gl_description") or "",
+                    "ytd": round(ytd, 2),
+                    "accrual": round(accrual, 2),
+                    "unpaid": round(unpaid, 2),
+                    "estimate": round(est, 2),
+                    "forecast": round(ytd_total + est, 2),
+                })
+            return out
 
         # Build response rows
         result_rows = []
@@ -2672,11 +2708,13 @@ def create_workflow_blueprint(db):
             col7 = row.col7_proposed_budget
 
             # Compute cols 3-5 from budget_lines via GL prefix aggregation
-            col2 = col2_lookup.get(row.label)  # 2025 Actual from confirmed audited financials
+            col2 = col2_lookup.get(row.label) if isinstance(col2_lookup, dict) and "_error" not in col2_lookup else None
             col3 = None   # 2026 YTD actual
             col4 = None   # 2026 estimate
             col5 = None   # 2026 forecast
 
+            prefixes = []
+            agg_count = 0
             if row.row_type == "data" and row.gl_prefixes_json and bl_dicts:
                 try:
                     prefixes = _json.loads(row.gl_prefixes_json)
@@ -2684,7 +2722,8 @@ def create_workflow_blueprint(db):
                     prefixes = []
                 if prefixes:
                     agg = _aggregate_by_prefix(bl_dicts, prefixes, ytd_months)
-                    if agg["count"] > 0:
+                    agg_count = agg.get("count", 0)
+                    if agg_count > 0:
                         col3 = round(agg["ytd_actual"], 2)
                         col4 = round(agg["estimate"], 2)
                         col5 = round(agg["forecast"], 2)
@@ -2693,6 +2732,31 @@ def create_workflow_blueprint(db):
             col8 = None
             if col7 is not None and col5 and col5 != 0:
                 col8 = round(((col7 - col5) / abs(col5)) * 100, 1)
+
+            # ── Lineage payload for inspector drill-down ──────────
+            lineage = None
+            if row.row_type == "data":
+                c2_meta = col2_meta.get(row.label, {}) if isinstance(col2_meta, dict) else {}
+                lineage = {
+                    "c2": {
+                        "value": col2,
+                        "audit_year": str(budget_year - 2),
+                        "matched_category": c2_meta.get("matched_category"),
+                        "match_type": c2_meta.get("match_type"),
+                        "audit_id": audit_info.get("id") if audit_info else None,
+                        "audit_fy": audit_info.get("fiscal_year_end") if audit_info else None,
+                        "audit_confirmed_at": audit_info.get("confirmed_at") if audit_info else None,
+                        "audit_confirmed_by": audit_info.get("confirmed_by") if audit_info else None,
+                        "audit_filename": audit_info.get("pdf_filename") if audit_info else None,
+                        "has_audit": bool(audit_info),
+                    },
+                    "gl": {
+                        "prefixes": prefixes,
+                        "ytd_months": ytd_months,
+                        "remaining_months": 12 - ytd_months,
+                        "lines": _lines_for_prefixes(prefixes) if (prefixes and bl_dicts) else [],
+                    },
+                }
 
             rd = {
                 "id": row.id,
@@ -2705,6 +2769,7 @@ def create_workflow_blueprint(db):
                 "col4": col4, "col5": col5, "col6": col6,
                 "col7": col7, "col8": col8,
                 "source_tab": row.source_tab,
+                "lineage": lineage,
             }
             result_rows.append(rd)
 
@@ -6931,6 +6996,12 @@ async function renderBudgetSummary(contentDiv) {
     return;
   }
 
+  // Build label-keyed lineage map for the inspector drill-down
+  window._sumLineage = {};
+  sumData.rows.forEach(r => {
+    if (r.lineage && r.label) window._sumLineage[r.label] = r.lineage;
+  });
+
   // Build section-aware data structure
   const rows = sumData.rows;
   const sections = {};
@@ -6989,7 +7060,9 @@ async function renderBudgetSummary(contentDiv) {
     '<button id="sumFBAccept" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;background:var(--green);color:white;">Accept</button>' +
     '<button id="sumFBCancel" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;color:var(--gray-600);">Cancel</button>' +
     '<button id="sumFBClear" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(224,36,36,0.3);background:white;color:var(--red);">Clear</button>' +
+    '<button id="sumFBInspect" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #16a34a;background:#f0fdf4;color:#15803d;" title="Show how this number was calculated">\ud83d\udd0d Inspect</button>' +
     '</div>' +
+    '<div id="sumDrillPanel" style="display:none;margin:0 8px 8px;background:white;border:1px solid #bbf7d0;border-left:4px solid #16a34a;border-radius:8px;padding:14px 18px;font-size:13px;position:sticky;top:100px;z-index:29;box-shadow:0 4px 12px rgba(0,0,0,0.08);max-height:60vh;overflow-y:auto;"></div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
     '<thead style="position:sticky;top:94px;z-index:20;"><tr>' +
     '<th style="text-align:left;padding:10px;min-width:200px;max-width:240px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
@@ -7008,10 +7081,15 @@ async function renderBudgetSummary(contentDiv) {
   function makeInput(val, label, col, bg) {
     const raw = (val!==null&&val!==undefined&&val!==0) ? Math.round(val) : '';
     const disp = raw!=='' ? raw.toLocaleString('en-US') : '';
+    // Cols c2-c5 are computed from sources (audit / GL lines). Mark them as inspectable
+    // with a green left-stripe + data-fx flag so sumCellFocus can show the "Inspect" button.
+    const isFx = (col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5');
+    const stripe = isFx ? 'box-shadow:inset 3px 0 0 #16a34a;color:#15803d;font-weight:600;' : '';
+    const fxAttr = isFx ? ' data-fx="1"' : '';
     return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;">' +
-      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'" ' +
+      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+' ' +
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
-      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;"></td>';
+      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;'+stripe+'"></td>';
   }
   const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
@@ -7220,7 +7298,117 @@ function sumCellFocus(el) {
   const inp = document.getElementById('sumFBInput');
   if (inp) { inp.disabled = false; inp.style.opacity = '1'; inp.value = el.dataset.raw || el.value || ''; inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)'; }
   ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display=''; });
+  // Show Inspect button only for computed cols (c2-c5) when lineage exists for this row
+  const isFx = el.dataset.fx === '1';
+  const lineage = (window._sumLineage || {})[el.dataset.label];
+  const inspBtn = document.getElementById('sumFBInspect');
+  if (inspBtn) inspBtn.style.display = (isFx && lineage) ? '' : 'none';
   el.value = el.dataset.raw || '';
+}
+
+// ── Summary inspector: render lineage drill-down for a c2-c5 cell ──
+function sumRenderDrillPanel(label, col) {
+  const panel = document.getElementById('sumDrillPanel');
+  if (!panel) return;
+  const lineage = (window._sumLineage || {})[label];
+  if (!lineage) { panel.style.display = 'none'; return; }
+  const fmt = (n) => {
+    if (n === null || n === undefined || isNaN(n)) return '\u2014';
+    const r = Math.round(Number(n));
+    return r < 0 ? '(' + Math.abs(r).toLocaleString('en-US') + ')' : r.toLocaleString('en-US');
+  };
+  const COL_TITLES = {c2:'Col 2 \u00b7 '+(typeof BY2!=='undefined'?BY2:'')+' Actual',
+    c3:'Col 3 \u00b7 '+(typeof BY1!=='undefined'?BY1:'')+' YTD',
+    c4:'Col 4 \u00b7 '+(typeof BY1!=='undefined'?BY1:'')+' Est.',
+    c5:'Col 5 \u00b7 '+(typeof BY1!=='undefined'?BY1:'')+' Forecast'};
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+    '<div style="font-weight:700;color:#15803d;font-size:14px;">\ud83d\udd0d Inspector \u00b7 ' + label + ' \u2192 ' + (COL_TITLES[col]||col) + '</div>' +
+    '<button onclick="document.getElementById(\'sumDrillPanel\').style.display=\'none\'" style="background:transparent;border:none;cursor:pointer;color:var(--gray-500);font-size:18px;line-height:1;">\u00d7</button>' +
+    '</div>';
+
+  if (col === 'c2') {
+    const c2 = lineage.c2 || {};
+    if (!c2.has_audit) {
+      html += '<div style="background:#fffbeb;padding:10px 12px;border-radius:6px;color:#92400e;">No confirmed audited financials for FY ' + (c2.audit_year || '?') + '. Upload + confirm an audit on the Audited Financials tab to populate Col 2.</div>';
+    } else if (c2.matched_category) {
+      html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px;margin-bottom:10px;">' +
+        '<div style="color:var(--gray-500);">Source:</div><div><b>Confirmed Audited Financials</b> \u00b7 FY ' + (c2.audit_year || '?') + '</div>' +
+        '<div style="color:var(--gray-500);">Matched category:</div><div><code style="background:var(--gray-100);padding:1px 6px;border-radius:3px;">' + c2.matched_category + '</code> <span style="color:var(--gray-500);font-size:11px;">(' + (c2.match_type||'') + ')</span></div>' +
+        '<div style="color:var(--gray-500);">Confirmed by:</div><div>' + (c2.audit_confirmed_by || '\u2014') + ' on ' + (c2.audit_confirmed_at ? c2.audit_confirmed_at.slice(0,10) : '\u2014') + '</div>' +
+        '<div style="color:var(--gray-500);">Source file:</div><div>' + (c2.audit_filename || '\u2014') + '</div>' +
+        '</div>' +
+        '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;">' +
+        '<b>= ' + fmt(c2.value) + '</b> <span style="color:var(--gray-500);">(directly from audit total for "' + c2.matched_category + '")</span></div>';
+    } else {
+      html += '<div style="background:#fffbeb;padding:10px 12px;border-radius:6px;color:#92400e;">Audit is confirmed for FY ' + (c2.audit_year || '?') + ', but no category matched the row label "<b>' + label + '</b>". Add an alias in <code>_LABEL_ALIASES</code> (workflow.py).</div>';
+    }
+  } else {
+    // Cols 3-5: GL aggregation breakdown
+    const gl = lineage.gl || {};
+    const lines = gl.lines || [];
+    const ytdM = gl.ytd_months || 0;
+    const remM = gl.remaining_months || 0;
+    if (!lines.length) {
+      html += '<div style="background:#f4f1eb;padding:10px 12px;border-radius:6px;color:var(--gray-700);">No GL prefixes mapped for this row, or no budget_lines data found. Map GL prefixes in the Budget Setup configuration to populate Cols 3-5.</div>';
+    } else {
+      const totalYtd = lines.reduce((s,l) => s + l.ytd, 0);
+      const totalAcc = lines.reduce((s,l) => s + l.accrual, 0);
+      const totalUnp = lines.reduce((s,l) => s + l.unpaid, 0);
+      const totalEst = lines.reduce((s,l) => s + l.estimate, 0);
+      const totalFc  = lines.reduce((s,l) => s + l.forecast, 0);
+      html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px;margin-bottom:10px;">' +
+        '<div style="color:var(--gray-500);">Source:</div><div><b>Budget Lines</b> (GL aggregation)</div>' +
+        '<div style="color:var(--gray-500);">GL prefixes:</div><div><code style="background:var(--gray-100);padding:1px 6px;border-radius:3px;">' + (gl.prefixes || []).join(', ') + '</code></div>' +
+        '<div style="color:var(--gray-500);">YTD period:</div><div>' + ytdM + ' months actual + ' + remM + ' months projected</div>' +
+        '</div>';
+      // Math box
+      const mathLabel = col === 'c3' ? 'YTD Actual' : col === 'c4' ? 'Estimate (remaining ' + remM + ' months)' : 'Forecast (YTD + Estimate)';
+      const mathFormula = col === 'c3' ? '\u03a3 ytd_actual' :
+                          col === 'c4' ? '(\u03a3 ytd / ' + ytdM + ') \u00d7 ' + remM :
+                          '\u03a3 (ytd + accrual + unpaid + estimate)';
+      const mathTotal   = col === 'c3' ? totalYtd : col === 'c4' ? totalEst : totalFc;
+      html += '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;margin-bottom:10px;">' +
+        '<div style="color:var(--gray-500);font-size:11px;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;">' + mathLabel + '</div>' +
+        '<b>' + mathFormula + ' = ' + fmt(mathTotal) + '</b>' +
+        '</div>';
+      // Per-line table
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+        '<thead><tr style="background:var(--gray-100);color:var(--gray-700);">' +
+        '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--gray-200);">GL</th>' +
+        '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Description</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">YTD Actual</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Accrual</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Unpaid</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Estimate</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Forecast</th>' +
+        '</tr></thead><tbody>';
+      lines.forEach(l => {
+        const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
+        const cell = (key) => {
+          const v = l[key];
+          const bg = (key === hi) ? 'background:#f0fdf4;font-weight:700;color:#15803d;' : '';
+          return '<td style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-100);font-variant-numeric:tabular-nums;'+bg+'">' + fmt(v) + '</td>';
+        };
+        html += '<tr>' +
+          '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);font-family:monospace;">' + (l.gl||'') + '</td>' +
+          '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);color:var(--gray-700);">' + (l.desc||'') + '</td>' +
+          cell('ytd') + cell('accrual') + cell('unpaid') + cell('estimate') + cell('forecast') +
+          '</tr>';
+      });
+      const tcell = (key, val) => {
+        const bg = (key === hi) ? 'background:#f0fdf4;color:#15803d;font-weight:700;' : 'color:var(--gray-500);';
+        return '<td style="text-align:right;padding:6px 8px;border-top:2px solid var(--gray-300);font-variant-numeric:tabular-nums;'+bg+'">' + fmt(val) + '</td>';
+      };
+      html += '<tr style="background:var(--gray-50);">' +
+        '<td colspan="2" style="padding:6px 8px;border-top:2px solid var(--gray-300);color:var(--gray-500);">Total (' + lines.length + ' lines)</td>' +
+        tcell('ytd', totalYtd) + tcell('accrual', totalAcc) + tcell('unpaid', totalUnp) +
+        tcell('estimate', totalEst) + tcell('forecast', totalFc) +
+        '</tr>';
+      html += '</tbody></table>';
+    }
+  }
+  panel.innerHTML = html;
+  panel.style.display = 'block';
 }
 
 function sumCellBlur(el) {
@@ -7280,7 +7468,7 @@ function sumResetBar() {
   if (lbl) lbl.textContent = 'Click a cell\u2026';
   const prev = document.getElementById('sumFBPreview');
   if (prev) prev.textContent = '';
-  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display='none'; });
+  ['sumFBAccept','sumFBCancel','sumFBClear','sumFBInspect'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display='none'; });
   _sumActiveCell = null;
 }
 
@@ -7288,6 +7476,10 @@ function sumResetBar() {
 document.addEventListener('click', function(e) {
   if (e.target.id === 'sumFBAccept') sumAcceptFormula();
   if (e.target.id === 'sumFBCancel') sumCancelFormula();
+  if (e.target.id === 'sumFBInspect' || (e.target.closest && e.target.closest('#sumFBInspect'))) {
+    if (_sumActiveCell) sumRenderDrillPanel(_sumActiveCell.dataset.label, _sumActiveCell.dataset.col);
+    return;
+  }
   if (e.target.id === 'sumFBClear') {
     if (_sumActiveCell) { _sumActiveCell.value=''; _sumActiveCell.dataset.raw=''; _sumActiveCell.style.background=_sumActiveCell.dataset.col==='c7'?'#fffbeb':'#fbfaf4'; _sumActiveCell.style.borderColor='var(--gray-300)'; }
     sumRecalcTotals(); sumResetBar();
