@@ -82,10 +82,10 @@ PROPERTY_TAX_CONFIG = {
     "212": {
         "building_name": "221 East 36th Owners Corp.",
         "address": "225 East 36th St, New York, NY 10016",
-        "bbl": "",
+        "bbl": "1-00917-0017",
         "borough": "1",
-        "block": "",
-        "lot": "",
+        "block": "00917",
+        "lot": "0017",
         "tax_class": "2",
         "property_type": "coop",
         "units": 285,
