@@ -8545,12 +8545,10 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   // fx cell helper for roster calculated fields (click to view formula, read-only)
   // Matches FA `.cell-fx` pattern: transparent bg + inset green left-border + dark green text.
   const rosterFx = (id, field, val, formula, posIdx, bgColor, fontWeight) => {
-    const badge = '<span class="fa-fx" style="position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; z-index:5;">fx</span>';
     const displayVal = (field === 'postIncrRate') ? '$' + val.toFixed(2) : fD(val);
     const tdStyle = 'padding:6px 8px; border-bottom:1px solid var(--gray-200); text-align:right; position:relative; cursor:pointer;';
     const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px 4px 9px; border:1px solid #e5e1d8; border-radius:4px; background:transparent; box-shadow:inset 3px 0 0 #16a34a; text-align:right; font-family:inherit; font-size:13px; font-variant-numeric:tabular-nums; box-sizing:border-box; ' + (bgColor || 'color:#15803d;') + ' ' + (fontWeight || 'font-weight:600;');
     return '<td style="' + tdStyle + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' +
-      badge +
       '<input id="' + id + '" type="text" readonly ' +
         'data-readonly="true" ' +
         'data-gl="Roster[' + posIdx + ']" ' +
@@ -8833,12 +8831,8 @@ function renderPayrollGL() {
 
       // Helper: build fx cell input matching R&S style (class="cell cell-fx" + top-right fx badge)
       const fxInput = (id, val, formula, field, overrideFlag, extraAttr, linkedFlag) => {
-        const badgeClass = linkedFlag ? 'fa-fx fa-fx-linked' : (overrideFlag ? 'fa-fx fa-fx-override' : 'fa-fx');
-        const badgeText = linkedFlag ? '🔗fx' : (overrideFlag ? '✎' : 'fx');
         const cellClass = linkedFlag ? 'cell cell-fx cell-fx-linked' : 'cell cell-fx';
-        const badge = '<span class="' + badgeClass + '">' + badgeText + '</span>';
-        return badge +
-          '<input id="' + id + '" class="' + cellClass + '" type="text" readonly' +
+        return '<input id="' + id + '" class="' + cellClass + '" type="text" readonly' +
           ' value="' + fD(val) + '"' +
           ' data-raw="' + Math.round(val) + '"' +
           ' data-formula="' + formula.replace(/"/g, '&quot;') + '"' +
@@ -8862,7 +8856,6 @@ function renderPayrollGL() {
       if (isLinked) {
         // Linked row: read-only blue-styled cell with 🔗fx badge — no click handler (not editable)
         propCellHtml = '<td class="num" title="' + propFormulaDisplay + '">' +
-          '<span class="fa-fx fa-fx-linked">🔗fx</span>' +
           '<input class="cell cell-fx cell-fx-linked" type="text" readonly value="' + fD(prop) + '" data-raw="' + Math.round(prop) + '"' +
           ' style="cursor:not-allowed; pointer-events:none;">' +
           '</td>';
