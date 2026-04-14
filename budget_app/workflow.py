@@ -3997,7 +3997,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     background: white;
     border: 2px solid var(--blue);
     border-radius: 12px;
-    overflow: hidden;
+    overflow: clip;
     margin-bottom: 28px;
   }
   .workbook-section .workbook-header {
@@ -4247,7 +4247,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
       </div>
     </div>
     <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap; padding:0 24px; background:var(--gray-50);"></div>
-    <div id="sheetContent" style="overflow-x:auto; padding:0 24px;"></div>
+    <div id="sheetContent" style="padding:0 24px;"></div>
     <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px; padding:0 24px 12px;"></div>
   </div>
 
@@ -6992,17 +6992,17 @@ async function renderBudgetSummary(contentDiv) {
     '</div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
     '<thead style="position:sticky;top:94px;z-index:20;"><tr>' +
-    '<th style="text-align:left;padding:10px;min-width:240px;max-width:300px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
-    '<th style="'+thS+'min-width:80px;">Tab</th>' +
-    '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
-    '<th style="'+thS+'min-width:110px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
-    '<th style="'+thS+'min-width:110px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
-    '<th style="'+thS+'min-width:120px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
-    '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
-    '<th style="text-align:left;padding:10px;min-width:180px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
+    '<th style="text-align:left;padding:10px;min-width:200px;max-width:240px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
+    '<th style="'+thS+'min-width:70px;">Tab</th>' +
+    '<th style="'+thS+'min-width:100px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
+    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
+    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
+    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
+    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
+    '<th style="'+thS+'min-width:100px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
+    '<th style="'+thS+'min-width:110px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
+    '<th style="'+thS+'min-width:70px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
+    '<th style="text-align:left;padding:10px;min-width:110px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
     '</tr></thead><tbody id="sumBody">';
 
   function makeInput(val, label, col, bg) {
@@ -7031,7 +7031,7 @@ async function renderBudgetSummary(contentDiv) {
     } else if (r.row_type === 'data') {
       const fn = r.footnote_marker ? '<span style="color:var(--gray-500);font-size:11px;font-weight:600;vertical-align:super;margin-left:2px;">'+r.footnote_marker+'</span>' : '';
       html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'">' +
-        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+'</td>' +
+        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
         makeInput(r.col2, r.label, 'c2', '#f9f9f7') +
@@ -7050,7 +7050,7 @@ async function renderBudgetSummary(contentDiv) {
       const tdFrozen = isGrand ? 'background:#1e3a5f;color:white;' : isNet ? 'background:#f0f4f8;' : 'background:var(--gray-100);';
 
       html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
-        '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
+        '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
         '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
       const fxColor = isGrand ? 'background:#38bdf8;color:#1e3a5f;' : '';
       COLS.forEach(c => {
@@ -7358,7 +7358,7 @@ function sumDoInsert(secKey) {
 
   const tr = document.createElement('tr');
   tr.dataset.sec = secKey; tr.dataset.type = 'd';
-  tr.innerHTML = '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:240px;max-width:300px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+label+' <span style="color:var(--yellow);font-size:10px;font-weight:700;">NEW</span></td>' +
+  tr.innerHTML = '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+label+' <span style="color:var(--yellow);font-size:10px;font-weight:700;">NEW</span></td>' +
     '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+chipH+'</td>' +
     mkIn('c1','#fbfaf4')+mkIn('c2','#f9f9f7')+mkIn('c3','#f9f9f7')+mkIn('c4','#f9f9f7')+mkIn('c5','#f9f9f7')+mkIn('c6','#fbfaf4')+mkIn('c7','#fffbeb') +
     '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);">\u2014</td>' +
