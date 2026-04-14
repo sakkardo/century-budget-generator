@@ -8080,10 +8080,12 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }' +
     '#prGLContent thead { position:sticky; top:0; z-index:20; }' +
     '#prGLContent th { padding:8px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }' +
-    '#prGLContent th.num { text-align:right; }' +
+    '#prGLContent th.num { text-align:right; padding-right:15px; }' +
     '#prGLContent td, #prGLContent th { white-space:nowrap; width:1px; }' +
     '#prGLContent td { padding:6px 8px; border-bottom:1px solid var(--gray-200); }' +
     '#prGLContent td.num { text-align:right; font-variant-numeric:tabular-nums; position:relative; }' +
+    '#prGLContent td.num-plain { padding-right:15px; }' +
+    '#prGLContent .sub-row td.num, #prGLContent .total-row td.num { padding-right:15px; }' +
     '#prGLContent tbody tr:hover td { background:#eef2ff; }' +
     '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
     '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
@@ -8101,7 +8103,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff !important; border-color:#93c5fd !important; box-shadow:inset 3px 0 0 #2563eb !important; color:#1e40af !important; font-weight:700; }' +
     '#prGLContent .cell-pct { width:auto; min-width:45px; }' +
-    '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
+    '#prGLContent .cell-pct[disabled] { background:#fbfaf4; color:#6b7280; cursor:not-allowed; }' +
     '#prGLContent .cell-notes { text-align:left; min-width:120px; width:auto; font-size:12px; background:white; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-family:inherit; }' +
     '#prGLContent .fa-fx { display:none !important; }' +
     '#prGLContent tr.prgl-zero-row { display:none; }' +
@@ -8885,8 +8887,8 @@ function renderPayrollGL() {
         prDollarCell('current_budget', curr) +
         '<td class="num"><input class="cell cell-pct pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)"' + pctDisabled + '></td>' +
         propCellHtml +
-        '<td class="num" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</td>' +
-        '<td class="num">' + (varP * 100).toFixed(1) + '%</td>' +
+        '<td class="num num-plain" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</td>' +
+        '<td class="num num-plain">' + (varP * 100).toFixed(1) + '%</td>' +
         '<td><input class="cell cell-notes pr-gl-note" type="text" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" placeholder="Add note..."></td>' +
         '</tr>';
     });
