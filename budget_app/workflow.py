@@ -250,6 +250,44 @@ def apply_summary_prefix_override(label, existing_prefixes):
     return existing_prefixes
 
 
+# ─── FIXED-FORECAST INCOME GLs ──────────────────────────────────────────
+# Business rule (from Jacob, 2026-04-14): for Maintenance / Common Charges /
+# Commercial Rent income rows on the Budget Summary tab, forecast (Col 5)
+# must equal Approved Budget (Col 6) — these are predictable contractual
+# amounts, not forecast-from-YTD. Col 4 (Estimate) is then set so the math
+# ties out: Col 4 = Col 5 - Col 3. Matched by GL prefix (not label) since
+# labels vary across buildings (co-op vs condo).
+#
+# Full GLs provided: 4010-0000, 4020-0000, 4020-0005, 4030-0000,
+#                    4040-0000, 4040-0010
+# Stored as 4-digit bases to match _gl_matches_prefixes behavior.
+FIXED_FORECAST_GL_BASES = {"4010", "4020", "4030", "4040"}
+FIXED_FORECAST_GL_FULL = [
+    "4010-0000", "4020-0000", "4020-0005",
+    "4030-0000", "4040-0000", "4040-0010",
+]
+
+
+def _row_has_fixed_forecast_gl(gl_prefixes_json):
+    """Check if a summary row's stored prefixes intersect the fixed-forecast set."""
+    if not gl_prefixes_json:
+        return False
+    try:
+        import json as _j
+        prefixes = _j.loads(gl_prefixes_json)
+    except Exception:
+        return False
+    if not isinstance(prefixes, list):
+        return False
+    for p in prefixes:
+        if not p:
+            continue
+        base = str(p).split("-")[0].strip()
+        if base in FIXED_FORECAST_GL_BASES:
+            return True
+    return False
+
+
 # Comprehensive mapping: budget_line category → Century audit category
 BUDGET_CAT_TO_CENTURY = {
     "supplies": "Supplies",
@@ -2728,6 +2766,18 @@ def create_workflow_blueprint(db):
                         col4 = round(agg["estimate"], 2)
                         col5 = round(agg["forecast"], 2)
 
+            # ── Fixed-forecast GL override ─────────────────────────────
+            # Maintenance / Common Charges / Commercial Rent rows: pin
+            # Col 5 (Forecast) to Col 6 (Approved Budget), back-solve
+            # Col 4 (Estimate) = Col 5 - Col 3. Matched by GL prefix.
+            fixed_forecast_applied = False
+            if (row.row_type == "data"
+                    and _row_has_fixed_forecast_gl(row.gl_prefixes_json)
+                    and col6 is not None):
+                col5 = round(float(col6), 2)
+                col4 = round(col5 - (col3 or 0), 2)
+                fixed_forecast_applied = True
+
             # Col 8: % variance = (col7 - col5) / |col5| * 100
             col8 = None
             if col7 is not None and col5 and col5 != 0:
@@ -2755,6 +2805,14 @@ def create_workflow_blueprint(db):
                         "ytd_months": ytd_months,
                         "remaining_months": 12 - ytd_months,
                         "lines": _lines_for_prefixes(prefixes) if (prefixes and bl_dicts) else [],
+                    },
+                    "fixed_forecast": {
+                        "applied": fixed_forecast_applied,
+                        "col5_source": "approved_budget" if fixed_forecast_applied else "gl_aggregation",
+                        "col4_formula": "col5 - col3" if fixed_forecast_applied else "gl_aggregation",
+                        "note": ("Forecast pinned to Approved Budget "
+                                 "(Maintenance / Common Charges / Commercial Rent rule)")
+                                 if fixed_forecast_applied else None,
                     },
                 }
 
@@ -6998,8 +7056,10 @@ async function renderBudgetSummary(contentDiv) {
 
   // Build label-keyed lineage map for the inspector drill-down
   window._sumLineage = {};
+  window._sumRowMap = {};
   sumData.rows.forEach(r => {
     if (r.lineage && r.label) window._sumLineage[r.label] = r.lineage;
+    if (r.label) window._sumRowMap[r.label] = r;
   });
 
   // Build section-aware data structure
@@ -7358,6 +7418,24 @@ function sumRenderDrillPanel(label, col) {
     const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
     const lines = allLines.filter(l => Math.round(Number(l[hi]) || 0) !== 0);
     const hiddenCount = allLines.length - lines.length;
+    // Fixed-forecast override banner (Maintenance / Common Charges / Commercial Rent)
+    const ff = lineage.fixed_forecast || {};
+    if (ff.applied && (col === 'c4' || col === 'c5')) {
+      const rowData = (window._sumRowMap || {})[label] || {};
+      const c3v = Number(rowData.col3 || 0);
+      const c5v = Number(rowData.col5 || 0);
+      const c6v = Number(rowData.col6 || 0);
+      const c4v = Number(rowData.col4 || 0);
+      const formulaLine = (col === 'c5')
+        ? 'Col 5 = Col 6 (Approved Budget) = <b>' + fmt(c6v) + '</b>'
+        : 'Col 4 = Col 5 \u2212 Col 3 = ' + fmt(c5v) + ' \u2212 ' + fmt(c3v) + ' = <b>' + fmt(c4v) + '</b>';
+      html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:12px;color:#1e40af;">' +
+        '<div style="font-weight:700;margin-bottom:4px;">\ud83d\udccc Forecast pinned to Approved Budget</div>' +
+        '<div>This row matches the Maintenance / Common Charges / Commercial Rent rule (GL 4010 / 4020 / 4030 / 4040). Forecast is locked to the approved budget rather than aggregated from YTD.</div>' +
+        '<div style="margin-top:6px;font-family:monospace;">' + formulaLine + '</div>' +
+        '<div style="margin-top:4px;color:#475569;">GL breakdown below is shown for reference only.</div>' +
+        '</div>';
+    }
     if (!lines.length) {
       html += '<div style="background:#f4f1eb;padding:10px 12px;border-radius:6px;color:var(--gray-700);">No GL prefixes mapped for this row, or no budget_lines data found. Map GL prefixes in the Budget Setup configuration to populate Cols 3-5.</div>';
     } else {
