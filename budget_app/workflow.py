@@ -8209,14 +8209,14 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Hourly Rate</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Bonus $/Emp</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Override the global Effective Week for this position only. Leave blank to use global.">Eff Wk Override</th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Weekly Pay <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Pre-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Rate <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Wages <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Annual Base <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">OT <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Vac/Sick/Hol <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); font-weight:800;">Total Comp <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Weekly Pay</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Pre-Incr Wages</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Rate</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Wages</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Annual Base</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">OT</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Vac/Sick/Hol</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); font-weight:800;">Total Comp</th>
               <th class="filler"></th>
             </tr>
           </thead>
@@ -8245,7 +8245,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
             <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:200px;">Category</th>
             <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:80px;">Rate</th>
             <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:220px;">Basis</th>
-            <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:120px;">Calculated Total <span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; vertical-align:super;">fx</span></th>
+            <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); width:120px;">Calculated Total</th>
           </tr>
         </thead>
         <tbody id="prTaxBody"></tbody>
@@ -8804,9 +8804,7 @@ function renderPayrollGL() {
       // Linked rows are auto-driven by roster — show 🔗 icon, lock Inc%, highlight Proposed
       const isLinked = !!l._linked;
       const linkIcon = isLinked ? '<span title="Driven by roster calculation" style="color:#2563eb; font-size:11px; margin-right:3px;">🔗</span>' : '';
-      const pctInputAttrs = isLinked
-        ? 'class="cell cell-pct" disabled title="Locked — driven by roster calculation"'
-        : 'class="cell cell-pct"';
+      const pctDisabled = isLinked ? ' disabled title="Locked — driven by roster calculation"' : '';
 
       // Build human-readable formulas (Payroll uses simplified base — no accrual/unpaid)
       const pyr = float(l.prior_year), yta = float(l.ytd_actual);
@@ -8892,7 +8890,7 @@ function renderPayrollGL() {
         estCellHtml +
         fcstCellHtml +
         prDollarCell('current_budget', curr) +
-        '<td class="num"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
+        '<td class="num"><input class="cell cell-pct pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)"' + pctDisabled + '></td>' +
         propCellHtml +
         '<td class="num" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</td>' +
         '<td class="num">' + (varP * 100).toFixed(1) + '%</td>' +
