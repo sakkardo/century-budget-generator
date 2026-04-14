@@ -7678,13 +7678,13 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   const fmtPctInput = v => (v * 100).toFixed(3);
 
   // Scrollable wrapper so sticky formula bar has a scroll context (matches R&S behavior)
-  let html = '<div style="max-width:1200px; margin:0 auto; max-height:calc(100vh - 220px); overflow-y:auto; padding-right:8px;">';
+  let html = '<div style="max-width:100%; margin:0 auto; max-height:calc(100vh - 220px); overflow-y:auto; padding-right:8px;">';
 
   // Inject R&S-matching CSS for Payroll GL cells (applies only inside #prGLContent)
   html += '<style>' +
     '#prGLContent .cell { width:auto; min-width:50px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
-    '#prGLContent .cell-fx { background:#f0fdf4; border-color:#bbf7d0; color:#16a34a; font-weight:600; }' +
+    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
     '#prGLContent .fa-fx { display:none !important; }' +
@@ -9822,7 +9822,7 @@ PM_EDIT_TEMPLATE = r"""
   /* PM Cell Styles */
   .pm-cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; }
   .pm-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
-  input.pm-cell-fx { background:#f0fdf4; border:1px solid #bbf7d0; }
+  input.pm-cell-fx { background:transparent; border:1px solid #e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; }
   input.pm-cell-fx:focus { background:#ecfdf5; }
   .pm-fx { display:none !important; }
   .subtotal-row td.pm-fx-td { background:#e8f5e9; }
