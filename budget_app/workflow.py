@@ -8097,7 +8097,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cat-hdr td { background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:14px; padding:10px 12px; border-bottom:2px solid #5a4a3f; cursor:pointer; user-select:none; }' +
     '#prGLContent .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }' +
     '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
-    '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 12px; }' +
+    '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 8px; }' +
     '#prGLContent .total-row td.frozen { background:#1e3a5f; color:white; }' +
     // CRITICAL: `font:inherit` (not just font-family) overrides browser-default
     // font on form controls — without it, disabled/some inputs render in a
