@@ -9249,9 +9249,9 @@ PM_PORTAL_TEMPLATE = r"""
     font-weight: 700;
   }
   .container {
-    max-width: 1000px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 40px 20px;
+    padding: 40px 40px;
   }
   .form-group {
     margin-bottom: 24px;
