@@ -8067,29 +8067,56 @@ async function renderPayrollTab(sheetLines, contentDiv) {
   // Scrollable wrapper so sticky formula bar has a scroll context (matches R&S behavior)
   let html = '<div style="max-width:100%; margin:0 auto; max-height:calc(100vh - 220px); overflow-y:auto; padding-right:8px;">';
 
-  // Inject Payroll-specific CSS — auto-width cells, filler col, zero-row hiding.
-  // Scoped to #prGLContent and #prRosterTable so other tabs are unaffected.
+  // Inject Payroll-specific CSS — FA design language (.fa-grid tokens),
+  // scoped to #prGLContent and #prRosterTable so other tabs are unaffected.
   html += '<style>' +
-    // GL Detail cells — sized via HTML `size` attribute, no min-width.
-    '#prGLContent .cell { padding:3px 5px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; font-family:inherit; box-sizing:content-box; width:auto; }' +
+    // ── GL Detail: .fa-grid parity (frozen GL Code + Description, navy total, cream cat-hdr) ──
+    '#prGLContent { background:white; border-radius:10px; border:1px solid var(--gray-200); overflow:hidden; }' +
+    '#prGLContent .prgl-scroll { overflow-x:auto; max-height:75vh; overflow-y:auto; }' +
+    '#prGLContent .prgl-scroll::-webkit-scrollbar { width:10px; height:12px; }' +
+    '#prGLContent .prgl-scroll::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }' +
+    '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }' +
+    '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }' +
+    '#prGLContent table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }' +
+    '#prGLContent thead { position:sticky; top:0; z-index:20; }' +
+    '#prGLContent th { padding:8px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }' +
+    '#prGLContent th.num { text-align:right; }' +
+    '#prGLContent td, #prGLContent th { white-space:nowrap; width:1px; }' +
+    '#prGLContent td { padding:6px 8px; border-bottom:1px solid var(--gray-200); }' +
+    '#prGLContent td.num { text-align:right; font-variant-numeric:tabular-nums; position:relative; }' +
+    '#prGLContent tbody tr:hover td { background:#eef2ff; }' +
+    '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
+    '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
+    '#prGLContent thead th.frozen { z-index:25; background:var(--gray-100); }' +
+    '#prGLContent .frozen-gl { left:0; min-width:80px; }' +
+    '#prGLContent .frozen-desc { left:80px; min-width:200px; border-right:2px solid var(--gray-300); box-shadow:2px 0 8px rgba(90,74,63,0.08); }' +
+    '#prGLContent .cat-hdr td { background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:14px; padding:10px 12px; border-bottom:2px solid #5a4a3f; cursor:pointer; user-select:none; }' +
+    '#prGLContent .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }' +
+    '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
+    '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 12px; }' +
+    '#prGLContent .total-row td.frozen { background:#1e3a5f; color:white; }' +
+    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-family:inherit; font-variant-numeric:tabular-nums; box-sizing:content-box; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
-    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:7px; }' +
+    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:9px; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
-    '#prGLContent .cell-fx-linked { background:#eff6ff; border-color:#93c5fd; color:#1e40af; font-weight:700; }' +
-    '#prGLContent .fa-fx { display:none !important; }' +
-    '#prGLContent .cell-pct { width:auto; }' +
+    '#prGLContent .cell-fx-linked { background:#eff6ff !important; border-color:#93c5fd !important; box-shadow:inset 3px 0 0 #2563eb !important; color:#1e40af !important; font-weight:700; }' +
+    '#prGLContent .cell-pct { width:auto; min-width:45px; }' +
     '#prGLContent .cell-pct[disabled] { background:#f3f4f6; color:#9ca3af; cursor:not-allowed; }' +
-    '#prGLContent td.num { position:relative; padding:4px 6px !important; }' +
-    '#prGLContent table { width:100%; }' +
-    '#prGLContent th.filler, #prGLContent td.filler { width:100%; padding:0; border-bottom:1px solid #f3f4f6; background:transparent; }' +
+    '#prGLContent .cell-notes { text-align:left; min-width:120px; width:auto; font-size:12px; background:white; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-family:inherit; }' +
+    '#prGLContent .fa-fx { display:none !important; }' +
     '#prGLContent tr.prgl-zero-row { display:none; }' +
     '#prGLContent tr.prgl-zero-row.prgl-zero-show { display:table-row; }' +
-    // Roster — auto-width too, filler col, no fixed min-width
-    '#prRosterTable { width:100% !important; min-width:0 !important; }' +
-    '#prRosterTable th, #prRosterTable td { padding:5px 7px !important; }' +
-    '#prRosterTable th.filler, #prRosterTable td.filler { width:100%; padding:0 !important; background:transparent; }' +
-    '#prRosterTable input { box-sizing:content-box; width:auto !important; padding:3px 5px; font-size:12px; font-variant-numeric:tabular-nums; font-family:inherit; border:1px solid var(--gray-300); border-radius:4px; background:#fbfaf4; text-align:right; }' +
+    // ── Roster: FA tokens (gray-100 header, cream inputs, gray-200 borders) ──
+    '#prRosterTable { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }' +
+    '#prRosterTable thead th { padding:8px 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); border-bottom:2px solid var(--gray-300); white-space:nowrap; text-align:left; }' +
+    '#prRosterTable thead th.r { text-align:right; }' +
+    '#prRosterTable tbody td { padding:6px 8px; border-bottom:1px solid var(--gray-200); font-size:13px; font-variant-numeric:tabular-nums; }' +
+    '#prRosterTable tbody tr:hover td { background:#eef2ff; }' +
+    '#prRosterTable input { padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; background:#fbfaf4; font-size:13px; font-family:inherit; font-variant-numeric:tabular-nums; box-sizing:content-box; text-align:right; }' +
     '#prRosterTable input:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
+    '#prRosterTable .pr-pos-name { text-align:left; }' +
+    '#prRosterTable th.filler, #prRosterTable td.filler { width:100%; padding:0 !important; background:transparent; }' +
+    '#prRosterTable tfoot td { padding:8px 8px; border-top:2px solid var(--gray-300); border-bottom:2px solid var(--gray-200); background:var(--gray-100); font-weight:700; font-variant-numeric:tabular-nums; }' +
     '</style>';
 
   // Formula bar — Excel-style with live preview + Accept/Cancel (same as other tabs)
@@ -8516,13 +8543,12 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   const is = 'padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; box-sizing:content-box;';
 
   // fx cell helper for roster calculated fields (click to view formula, read-only)
-  // Renders a clickable cell with fx badge + invisible input holding data attributes
-  // Matches R&S cell-fx styling: light green background with darker green border
+  // Matches FA `.cell-fx` pattern: transparent bg + inset green left-border + dark green text.
   const rosterFx = (id, field, val, formula, posIdx, bgColor, fontWeight) => {
     const badge = '<span class="fa-fx" style="position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; color:#2563eb; background:#e1effe; border:1px solid #2563eb; border-radius:3px; padding:0 3px; cursor:pointer; z-index:5;">fx</span>';
     const displayVal = (field === 'postIncrRate') ? '$' + val.toFixed(2) : fD(val);
-    const tdStyle = 'padding:7px 10px; border-bottom:1px solid #f3f4f6; text-align:right; position:relative; cursor:pointer;';
-    const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px; border:1px solid #bbf7d0; border-radius:4px; background:#f0fdf4; text-align:right; font-family:inherit; font-size:12px; font-variant-numeric:tabular-nums; ' + (bgColor || 'color:#16a34a;') + ' ' + (fontWeight || 'font-weight:600;');
+    const tdStyle = 'padding:6px 8px; border-bottom:1px solid var(--gray-200); text-align:right; position:relative; cursor:pointer;';
+    const inputStyle = 'cursor:pointer; pointer-events:none; width:100%; padding:4px 6px 4px 9px; border:1px solid #e5e1d8; border-radius:4px; background:transparent; box-shadow:inset 3px 0 0 #16a34a; text-align:right; font-family:inherit; font-size:13px; font-variant-numeric:tabular-nums; box-sizing:border-box; ' + (bgColor || 'color:#15803d;') + ' ' + (fontWeight || 'font-weight:600;');
     return '<td style="' + tdStyle + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' +
       badge +
       '<input id="' + id + '" type="text" readonly ' +
@@ -8727,25 +8753,19 @@ function renderPayrollGL() {
     grouped[gk].push(l);
   });
 
-  const ths = 'padding:8px 10px; text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.3px; border-bottom:2px solid var(--gray-200); background:var(--gray-50); white-space:nowrap;';
-  const thR = ths + ' text-align:right;';
-  const fxB = '<span style="font-size:8px; font-weight:800; color:#2563eb; background:#eff6ff; border:1px solid #2563eb; border-radius:3px; padding:0 3px; margin-left:3px; vertical-align:super;">fx</span>';
-
-  let html = '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
-  html += '<thead><tr>' +
-    '<th style="' + ths + '">GL Code</th>' +
-    '<th style="' + ths + '">Description</th>' +
-    '<th style="' + ths + '">Notes</th>' +
-    '<th style="' + thR + '">Prior Year</th>' +
-    '<th style="' + thR + '">YTD Actual</th>' +
-    '<th style="' + thR + '">' + estLbl + ' ' + fxB + '</th>' +
-    '<th style="' + thR + '">Forecast ' + fxB + '</th>' +
-    '<th style="' + thR + '">Curr Budget</th>' +
-    '<th style="' + thR + '">Inc %</th>' +
-    '<th style="' + thR + '">Proposed ' + fxB + '</th>' +
-    '<th style="' + thR + '">$ Var ' + fxB + '</th>' +
-    '<th style="' + thR + '">% Chg ' + fxB + '</th>' +
-    '<th class="filler"></th>' +
+  let html = '<div class="prgl-scroll"><table><thead><tr>' +
+    '<th class="frozen frozen-gl">GL Code</th>' +
+    '<th class="frozen frozen-desc">Description</th>' +
+    '<th class="num">Prior Year</th>' +
+    '<th class="num">YTD Actual</th>' +
+    '<th class="num">' + estLbl + '</th>' +
+    '<th class="num">12 Mo Forecast</th>' +
+    '<th class="num">Curr Budget</th>' +
+    '<th class="num">Inc %</th>' +
+    '<th class="num">Proposed</th>' +
+    '<th class="num">$ Var</th>' +
+    '<th class="num">% Chg</th>' +
+    '<th>Notes</th>' +
     '</tr></thead><tbody>';
 
   let grandTotals = {prior:0, ytd:0, estimate:0, forecast:0, currBudget:0, proposed:0};
@@ -8754,9 +8774,9 @@ function renderPayrollGL() {
     const gLines = grouped[g.key];
     if (gLines.length === 0) return;
 
-    // Category header (clickable)
-    html += '<tr onclick="togglePrGLGroup(\'' + g.key + '\')" style="background:#f5efe7; cursor:pointer; user-select:none;">' +
-      '<td colspan="13" style="font-weight:700; color:#5a4a3f; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; padding:8px 10px; border-bottom:2px solid #e5e7eb;">' +
+    // Category header (clickable, spans full width, scrolls with content)
+    html += '<tr class="cat-hdr" onclick="togglePrGLGroup(\'' + g.key + '\')">' +
+      '<td colspan="12">' +
       '<span id="prgl_' + g.key + '_arrow" style="display:inline-block; transition:transform 0.2s; margin-right:6px; font-size:10px;">▶</span>' +
       g.label + '<span style="font-size:10px; font-weight:500; color:var(--gray-400); margin-left:8px; text-transform:none; letter-spacing:0;">' + gLines.length + ' GL lines</span>' +
       '</td></tr>';
@@ -8780,8 +8800,6 @@ function renderPayrollGL() {
       subTotals.proposed += prop;
 
       const hidden = g.key !== 'wages' ? ' style="display:none;"' : '';
-      const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
-      const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums; font-size:12px;';
 
       // Linked rows are auto-driven by roster — show 🔗 icon, lock Inc%, highlight Proposed
       const isLinked = !!l._linked;
@@ -8845,7 +8863,7 @@ function renderPayrollGL() {
       let propCellHtml;
       if (isLinked) {
         // Linked row: read-only blue-styled cell with 🔗fx badge — no click handler (not editable)
-        propCellHtml = '<td class="num" title="' + propFormulaDisplay + '" style="position:relative;">' +
+        propCellHtml = '<td class="num" title="' + propFormulaDisplay + '">' +
           '<span class="fa-fx fa-fx-linked">🔗fx</span>' +
           '<input class="cell cell-fx cell-fx-linked" type="text" readonly value="' + fD(prop) + '" data-raw="' + Math.round(prop) + '"' +
           ' style="cursor:not-allowed; pointer-events:none;">' +
@@ -8857,7 +8875,7 @@ function renderPayrollGL() {
           fxInput(propId, prop, propFormulaDisplay, 'proposed_budget', propOverride, pfAttr) + '</td>';
       }
 
-      // Editable $ cell (Prior, YTD, Accrual, Unpaid, Curr Budget) — matches R&S
+      // Editable $ cell (Prior, YTD, Curr Budget) — matches R&S
       const prDollarCell = (field, val) => {
         return '<td class="num"><input class="cell pr-gl-dollar" type="text" ' +
           'data-gl="' + l.gl_code + '" data-field="' + field + '" ' +
@@ -8867,57 +8885,58 @@ function renderPayrollGL() {
 
       const zeroClass = prGlIsZero(l) ? ' prgl-zero-row' : '';
       html += '<tr class="prgl-row' + zeroClass + '" data-prgroup="' + g.key + '" data-gl="' + l.gl_code + '"' + hidden + '>' +
-        '<td style="' + cs + ' padding-left:24px; font-size:13px; font-variant-numeric:tabular-nums; font-weight:600;">' + linkIcon + l.gl_code + '</td>' +
-        '<td style="' + cs + '">' + (l.description || '') + '</td>' +
-        '<td style="' + cs + '"><input class="pr-gl-note" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" style="width:100%; padding:3px 6px; border:1px solid #e5e7eb; border-radius:3px; font-size:11px; background:white;" placeholder="Add note..."></td>' +
+        '<td class="frozen frozen-gl"><span style="font-size:13px; font-variant-numeric:tabular-nums; font-weight:600;">' + linkIcon + l.gl_code + '</span></td>' +
+        '<td class="frozen frozen-desc">' + (l.description || '') + '</td>' +
         prDollarCell('prior_year', l.prior_year) +
         prDollarCell('ytd_actual', l.ytd_actual) +
         estCellHtml +
         fcstCellHtml +
         prDollarCell('current_budget', curr) +
-        '<td style="' + ns + '"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
+        '<td class="num"><input class="pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)" ' + pctInputAttrs + '></td>' +
         propCellHtml +
-        '<td style="' + ns + (varD >= 0 ? ' color:#2563eb;' : ' color:#16a34a;') + '">' + fD(varD) + '</td>' +
-        '<td style="' + ns + '">' + (varP * 100).toFixed(1) + '%</td>' +
-        '<td class="filler"></td>' +
+        '<td class="num" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</td>' +
+        '<td class="num">' + (varP * 100).toFixed(1) + '%</td>' +
+        '<td><input class="cell cell-notes pr-gl-note" type="text" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" placeholder="Add note..."></td>' +
         '</tr>';
     });
 
-    // Subtotal row
-    html += '<tr style="background:var(--gray-50); font-weight:700;">' +
-      '<td colspan="3" style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">Total ' + g.label + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.prior) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.ytd) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.estimate) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.forecast) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.currBudget) + '</td>' +
-      '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800;">' + fD(subTotals.proposed) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(subTotals.proposed - subTotals.currBudget) + '</td>' +
-      '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + (subTotals.currBudget ? ((subTotals.proposed - subTotals.currBudget) / subTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
-      '<td class="filler" style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    // Subtotal row (frozen GL + Description cells carry the label; numeric cells scroll)
+    html += '<tr class="sub-row">' +
+      '<td class="frozen frozen-gl"></td>' +
+      '<td class="frozen frozen-desc">Total ' + g.label + '</td>' +
+      '<td class="num">' + fD(subTotals.prior) + '</td>' +
+      '<td class="num">' + fD(subTotals.ytd) + '</td>' +
+      '<td class="num">' + fD(subTotals.estimate) + '</td>' +
+      '<td class="num">' + fD(subTotals.forecast) + '</td>' +
+      '<td class="num">' + fD(subTotals.currBudget) + '</td>' +
+      '<td></td>' +
+      '<td class="num" style="font-weight:800;">' + fD(subTotals.proposed) + '</td>' +
+      '<td class="num">' + fD(subTotals.proposed - subTotals.currBudget) + '</td>' +
+      '<td class="num">' + (subTotals.currBudget ? ((subTotals.proposed - subTotals.currBudget) / subTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+      '<td></td>' +
       '</tr>';
 
     // Accumulate grand totals
     Object.keys(grandTotals).forEach(k => { grandTotals[k] += subTotals[k]; });
   });
 
-  // Grand total row
-  html += '<tr style="background:#1e3a5f; color:white; font-weight:700; font-size:14px;">' +
-    '<td colspan="3" style="padding:10px 12px;">TOTAL PAYROLL</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.prior) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.ytd) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.estimate) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.forecast) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.currBudget) + '</td>' +
-    '<td style="padding:10px 12px;"></td>' +
-    '<td style="padding:10px 12px; text-align:right; font-size:14px;">' + fD(grandTotals.proposed) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</td>' +
-    '<td style="padding:10px 12px; text-align:right;">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
-    '<td class="filler"></td>' +
+  // Grand total row (navy #1e3a5f, matches R&S/Repairs/Gen&Admin total-row)
+  html += '<tr class="total-row">' +
+    '<td class="frozen frozen-gl"></td>' +
+    '<td class="frozen frozen-desc">TOTAL PAYROLL</td>' +
+    '<td class="num">' + fD(grandTotals.prior) + '</td>' +
+    '<td class="num">' + fD(grandTotals.ytd) + '</td>' +
+    '<td class="num">' + fD(grandTotals.estimate) + '</td>' +
+    '<td class="num">' + fD(grandTotals.forecast) + '</td>' +
+    '<td class="num">' + fD(grandTotals.currBudget) + '</td>' +
+    '<td></td>' +
+    '<td class="num">' + fD(grandTotals.proposed) + '</td>' +
+    '<td class="num">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</td>' +
+    '<td class="num">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+    '<td></td>' +
     '</tr>';
 
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   contentDiv.innerHTML = html;
 
   // Auto-expand wages group arrow
