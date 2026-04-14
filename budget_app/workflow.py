@@ -7351,9 +7351,13 @@ function sumRenderDrillPanel(label, col) {
   } else {
     // Cols 3-5: GL aggregation breakdown
     const gl = lineage.gl || {};
-    const lines = gl.lines || [];
+    const allLines = gl.lines || [];
     const ytdM = gl.ytd_months || 0;
     const remM = gl.remaining_months || 0;
+    // Filter out lines where the inspected column is zero
+    const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
+    const lines = allLines.filter(l => Math.round(Number(l[hi]) || 0) !== 0);
+    const hiddenCount = allLines.length - lines.length;
     if (!lines.length) {
       html += '<div style="background:#f4f1eb;padding:10px 12px;border-radius:6px;color:var(--gray-700);">No GL prefixes mapped for this row, or no budget_lines data found. Map GL prefixes in the Budget Setup configuration to populate Cols 3-5.</div>';
     } else {
@@ -7388,7 +7392,6 @@ function sumRenderDrillPanel(label, col) {
         '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Estimate</th>' +
         '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--gray-200);">Forecast</th>' +
         '</tr></thead><tbody>';
-      const hi = (col === 'c3') ? 'ytd' : (col === 'c4') ? 'estimate' : 'forecast';
       lines.forEach(l => {
         const cell = (key) => {
           const v = l[key];
@@ -7405,8 +7408,9 @@ function sumRenderDrillPanel(label, col) {
         const bg = (key === hi) ? 'background:#f0fdf4;color:#15803d;font-weight:700;' : 'color:var(--gray-500);';
         return '<td style="text-align:right;padding:6px 8px;border-top:2px solid var(--gray-300);font-variant-numeric:tabular-nums;'+bg+'">' + fmt(val) + '</td>';
       };
+      const hiddenNote = hiddenCount > 0 ? ' <span style="color:var(--gray-400);font-weight:400;font-size:11px;">(' + hiddenCount + ' zero hidden)</span>' : '';
       html += '<tr style="background:var(--gray-50);">' +
-        '<td colspan="2" style="padding:6px 8px;border-top:2px solid var(--gray-300);color:var(--gray-500);">Total (' + lines.length + ' lines)</td>' +
+        '<td colspan="2" style="padding:6px 8px;border-top:2px solid var(--gray-300);color:var(--gray-500);">Total (' + lines.length + ' lines)' + hiddenNote + '</td>' +
         tcell('ytd', totalYtd) + tcell('accrual', totalAcc) + tcell('unpaid', totalUnp) +
         tcell('estimate', totalEst) + tcell('forecast', totalFc) +
         '</tr>';
