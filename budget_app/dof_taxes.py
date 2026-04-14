@@ -79,6 +79,20 @@ PROPERTY_TAX_CONFIG = {
         "annual_tax": 0,
         "tax_rate": 0.0,
     },
+    "212": {
+        "building_name": "221 East 36th Owners Corp.",
+        "address": "225 East 36th St, New York, NY 10016",
+        "bbl": "",
+        "borough": "1",
+        "block": "",
+        "lot": "",
+        "tax_class": "2",
+        "property_type": "coop",
+        "units": 285,
+        "assessed_value": 0,
+        "annual_tax": 0,
+        "tax_rate": 0.0,
+    },
 }
 
 # NYC Open Data SODA API endpoint for property valuation
