@@ -8080,12 +8080,14 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }' +
     '#prGLContent thead { position:sticky; top:0; z-index:20; }' +
     '#prGLContent th { padding:8px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }' +
-    '#prGLContent th.num { text-align:right; padding-right:15px; }' +
+    '#prGLContent th.num { text-align:right; }' +
     '#prGLContent td, #prGLContent th { white-space:nowrap; width:1px; }' +
     '#prGLContent td { padding:6px 8px; border-bottom:1px solid var(--gray-200); }' +
     '#prGLContent td.num { text-align:right; font-variant-numeric:tabular-nums; position:relative; }' +
-    '#prGLContent td.num-plain { padding-right:15px; }' +
-    '#prGLContent .sub-row td.num, #prGLContent .total-row td.num { padding-right:15px; }' +
+    // num-box: wrap class that mirrors .cell input outer dimensions exactly.
+    // Wrapping plain text in <span class="num-box"> aligns its right edge with
+    // input.cell text inside body rows, regardless of browser quirks.
+    '#prGLContent .num-box { display:inline-block; padding:4px 6px; border:1px solid transparent; box-sizing:content-box; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit; font-size:inherit; line-height:inherit; min-width:50px; }' +
     '#prGLContent tbody tr:hover td { background:#eef2ff; }' +
     '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
     '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
@@ -8097,13 +8099,16 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
     '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 12px; }' +
     '#prGLContent .total-row td.frozen { background:#1e3a5f; color:white; }' +
-    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-family:inherit; font-variant-numeric:tabular-nums; box-sizing:content-box; }' +
+    // CRITICAL: `font:inherit` (not just font-family) overrides browser-default
+    // font on form controls — without it, disabled/some inputs render in a
+    // different font than plain text, causing visual mismatch.
+    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font:inherit; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:9px; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff !important; border-color:#93c5fd !important; box-shadow:inset 3px 0 0 #2563eb !important; color:#1e40af !important; font-weight:700; }' +
-    '#prGLContent .cell-pct { width:auto; min-width:45px; }' +
-    '#prGLContent .cell-pct[disabled] { background:#fbfaf4; color:#6b7280; cursor:not-allowed; }' +
+    '#prGLContent .cell-pct { width:auto; min-width:45px; font:inherit; font-size:13px; font-variant-numeric:tabular-nums; }' +
+    '#prGLContent .cell-pct[disabled] { background:#fbfaf4; color:#6b7280; cursor:not-allowed; opacity:1; -webkit-text-fill-color:#6b7280; }' +
     '#prGLContent .cell-notes { text-align:left; min-width:120px; width:auto; font-size:12px; background:white; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-family:inherit; }' +
     '#prGLContent .fa-fx { display:none !important; }' +
     '#prGLContent tr.prgl-zero-row { display:none; }' +
@@ -8268,7 +8273,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
       </div>
     </div>
     <div id="prGL">
-      <div id="prGLContent" style="overflow-x:auto;"></div>
+      <div id="prGLContent"></div>
       <div id="prTieOut"></div>
     </div>
   </div>`;
@@ -8756,15 +8761,15 @@ function renderPayrollGL() {
   let html = '<div class="prgl-scroll"><table><thead><tr>' +
     '<th class="frozen frozen-gl">GL Code</th>' +
     '<th class="frozen frozen-desc">Description</th>' +
-    '<th class="num">Prior Year</th>' +
-    '<th class="num">YTD Actual</th>' +
-    '<th class="num">' + estLbl + '</th>' +
-    '<th class="num">12 Mo Forecast</th>' +
-    '<th class="num">Curr Budget</th>' +
-    '<th class="num">Inc %</th>' +
-    '<th class="num">Proposed</th>' +
-    '<th class="num">$ Var</th>' +
-    '<th class="num">% Chg</th>' +
+    '<th class="num"><span class="num-box">Prior Year</span></th>' +
+    '<th class="num"><span class="num-box">YTD Actual</span></th>' +
+    '<th class="num"><span class="num-box">' + estLbl + '</span></th>' +
+    '<th class="num"><span class="num-box">12 Mo Forecast</span></th>' +
+    '<th class="num"><span class="num-box">Curr Budget</span></th>' +
+    '<th class="num"><span class="num-box">Inc %</span></th>' +
+    '<th class="num"><span class="num-box">Proposed</span></th>' +
+    '<th class="num"><span class="num-box">$ Var</span></th>' +
+    '<th class="num"><span class="num-box">% Chg</span></th>' +
     '<th>Notes</th>' +
     '</tr></thead><tbody>';
 
@@ -8887,8 +8892,8 @@ function renderPayrollGL() {
         prDollarCell('current_budget', curr) +
         '<td class="num"><input class="cell cell-pct pr-gl-pct" data-gl="' + l.gl_code + '" value="' + fP(l.increase_pct) + '" onchange="savePrGLIncrease(this)"' + pctDisabled + '></td>' +
         propCellHtml +
-        '<td class="num num-plain" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</td>' +
-        '<td class="num num-plain">' + (varP * 100).toFixed(1) + '%</td>' +
+        '<td class="num"><span class="num-box" style="' + (varD >= 0 ? 'color:#2563eb;' : 'color:#16a34a;') + '">' + fD(varD) + '</span></td>' +
+        '<td class="num"><span class="num-box">' + (varP * 100).toFixed(1) + '%</span></td>' +
         '<td><input class="cell cell-notes pr-gl-note" type="text" data-gl="' + l.gl_code + '" value="' + (l.notes || '').replace(/"/g, '&quot;') + '" onchange="savePrGLNote(this)" placeholder="Add note..."></td>' +
         '</tr>';
     });
@@ -8897,15 +8902,15 @@ function renderPayrollGL() {
     html += '<tr class="sub-row">' +
       '<td class="frozen frozen-gl"></td>' +
       '<td class="frozen frozen-desc">Total ' + g.label + '</td>' +
-      '<td class="num">' + fD(subTotals.prior) + '</td>' +
-      '<td class="num">' + fD(subTotals.ytd) + '</td>' +
-      '<td class="num">' + fD(subTotals.estimate) + '</td>' +
-      '<td class="num">' + fD(subTotals.forecast) + '</td>' +
-      '<td class="num">' + fD(subTotals.currBudget) + '</td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.prior) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.ytd) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.estimate) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.forecast) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.currBudget) + '</span></td>' +
       '<td></td>' +
-      '<td class="num" style="font-weight:800;">' + fD(subTotals.proposed) + '</td>' +
-      '<td class="num">' + fD(subTotals.proposed - subTotals.currBudget) + '</td>' +
-      '<td class="num">' + (subTotals.currBudget ? ((subTotals.proposed - subTotals.currBudget) / subTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+      '<td class="num"><span class="num-box" style="font-weight:800;">' + fD(subTotals.proposed) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + fD(subTotals.proposed - subTotals.currBudget) + '</span></td>' +
+      '<td class="num"><span class="num-box">' + (subTotals.currBudget ? ((subTotals.proposed - subTotals.currBudget) / subTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</span></td>' +
       '<td></td>' +
       '</tr>';
 
@@ -8917,15 +8922,15 @@ function renderPayrollGL() {
   html += '<tr class="total-row">' +
     '<td class="frozen frozen-gl"></td>' +
     '<td class="frozen frozen-desc">TOTAL PAYROLL</td>' +
-    '<td class="num">' + fD(grandTotals.prior) + '</td>' +
-    '<td class="num">' + fD(grandTotals.ytd) + '</td>' +
-    '<td class="num">' + fD(grandTotals.estimate) + '</td>' +
-    '<td class="num">' + fD(grandTotals.forecast) + '</td>' +
-    '<td class="num">' + fD(grandTotals.currBudget) + '</td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.prior) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.ytd) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.estimate) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.forecast) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.currBudget) + '</span></td>' +
     '<td></td>' +
-    '<td class="num">' + fD(grandTotals.proposed) + '</td>' +
-    '<td class="num">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</td>' +
-    '<td class="num">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.proposed) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</span></td>' +
+    '<td class="num"><span class="num-box">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</span></td>' +
     '<td></td>' +
     '</tr>';
 
