@@ -3926,7 +3926,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   }
   header h1 { font-size: 24px; font-weight: 700; }
   header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
-  .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+  .container { max-width: 1760px; margin: 0 auto; padding: 24px 20px; }
   .summary-cards {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -6993,16 +6993,16 @@ async function renderBudgetSummary(contentDiv) {
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
     '<thead style="position:sticky;top:94px;z-index:20;"><tr>' +
     '<th style="text-align:left;padding:10px;min-width:200px;max-width:240px;position:sticky;left:0;z-index:25;background:var(--gray-100);border-right:2px solid var(--gray-300);border-bottom:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">Line Item</th>' +
-    '<th style="'+thS+'min-width:70px;">Tab</th>' +
-    '<th style="'+thS+'min-width:100px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
-    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
-    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
-    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
-    '<th style="'+thS+'min-width:100px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
-    '<th style="'+thS+'min-width:100px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
-    '<th style="'+thS+'min-width:110px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
-    '<th style="'+thS+'min-width:70px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
-    '<th style="text-align:left;padding:10px;min-width:110px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
+    '<th style="'+thS+'min-width:80px;">Tab</th>' +
+    '<th style="'+thS+'min-width:120px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 1</span>'+BY3+' Actual*</th>' +
+    '<th style="'+thS+'min-width:120px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 2</span>'+BY2+' Actual</th>' +
+    '<th style="'+thS+'min-width:120px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 3</span>'+BY1+' YTD</th>' +
+    '<th style="'+thS+'min-width:120px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 4</span>'+BY1+' Est.</th>' +
+    '<th style="'+thS+'min-width:120px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
+    '<th style="'+thS+'min-width:120px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
+    '<th style="'+thS+'min-width:130px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
+    '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
+    '<th style="text-align:left;padding:10px;min-width:170px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
     '</tr></thead><tbody id="sumBody">';
 
   function makeInput(val, label, col, bg) {
@@ -7052,12 +7052,14 @@ async function renderBudgetSummary(contentDiv) {
       html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
         '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
         '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
-      const fxColor = isGrand ? 'background:#38bdf8;color:#1e3a5f;' : '';
+      // Option F: green fill for computed cells (subtotal + net), light-green text on dark blue for grand total. No fx badge.
+      const computedCellStyle = isGrand
+        ? 'background:#1e3a5f;color:#86efac;'
+        : 'background:#f0fdf4;color:#16a34a;';
       COLS.forEach(c => {
-        const extra = isGrand ? 'background:#1e3a5f;color:white;' : '';
-        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+extra+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span><span class="sum-fx" style="display:inline-block;background:'+(isGrand?'#38bdf8':'#4ade80')+';color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span></td>';
+        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+computedCellStyle+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span></td>';
       });
-      html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+(isGrand?'background:#1e3a5f;color:white;':'')+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span><span class="sum-fx" style="display:inline-block;background:'+(isGrand?'#38bdf8':'#4ade80')+';color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span></td>';
+      html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+computedCellStyle+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span></td>';
       html += '<td style="'+(isGrand?'background:#1e3a5f;':'')+'padding:4px 6px;">'+(isGrand?'':'<input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;">')+'</td>';
       html += '</tr>';
     }
