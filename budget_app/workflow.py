@@ -9730,7 +9730,7 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container::-webkit-scrollbar-thumb:hover { background:#6b5740; }
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
-  table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: auto; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
   .grid-container > table > thead { position: sticky; top: 48px; z-index: 20; }
   /* Inner drill-down tables (invoice details) must NOT inherit sticky thead */
   .invoice-detail-row table thead,
