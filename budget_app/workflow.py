@@ -4301,23 +4301,6 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Historical Actuals (from Audited Financials) — collapsible -->
-  <div class="panel" id="auditActualsSection" style="display:none; margin-bottom:16px;">
-    <div class="panel-header" onclick="togglePanel(this)">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <h3>Historical Actuals</h3>
-        <span class="badge badge-gray" id="auditBadge"></span>
-      </div>
-      <span class="chevron">▾</span>
-    </div>
-    <div class="panel-body">
-      <table id="auditActualsTable">
-        <thead id="auditActualsHead"></thead>
-        <tbody id="auditActualsBody"></tbody>
-      </table>
-    </div>
-  </div>
-
   <!-- PM Review Panel — Notes + Invoice Reclasses -->
   <div class="panel" id="pmReviewPanel" style="display:none; margin-bottom:16px;">
     <div class="panel-header" style="background:linear-gradient(to right,#fefce8,#fef9c3); border-bottom:1px solid #fde68a;" onclick="togglePanel(this)">
@@ -4635,45 +4618,6 @@ function renderDetail(data) {
   });
 
   document.getElementById('assemblyContent').innerHTML = assemblyHtml;
-
-  // Historical Actuals Panel (from audited financials)
-  const auditYears = data.audit.exists ? data.audit.years : {};
-  const auditYearKeys = Object.keys(auditYears).sort().reverse();
-  const catMapping = data.audit.category_mapping || {};
-
-  if (auditYearKeys.length > 0) {
-    document.getElementById('auditActualsSection').style.display = '';
-    document.getElementById('auditBadge').textContent = auditYearKeys.length + ' years';
-    const auditHead = document.getElementById('auditActualsHead');
-    const auditBody = document.getElementById('auditActualsBody');
-    auditHead.innerHTML = '<tr><th>Century Category</th>' + auditYearKeys.map(y => '<th style="text-align:right">' + y + ' Actual</th>').join('') + '</tr>';
-    auditBody.innerHTML = '';
-
-    // Collect all categories across all years
-    const allCats = new Set();
-    auditYearKeys.forEach(y => Object.keys(auditYears[y]).forEach(c => allCats.add(c)));
-    const sortedCats = Array.from(allCats).sort();
-
-    let auditGrandTotals = auditYearKeys.map(() => 0);
-    sortedCats.forEach(cat => {
-      const tr = document.createElement('tr');
-      let cells = '<td>' + cat + '</td>';
-      auditYearKeys.forEach((y, i) => {
-        const val = auditYears[y][cat] || 0;
-        auditGrandTotals[i] += val;
-        cells += '<td style="text-align:right">' + fmt(val) + '</td>';
-      });
-      tr.innerHTML = cells;
-      auditBody.appendChild(tr);
-    });
-
-    // Total row
-    const totalTr = document.createElement('tr');
-    totalTr.style.fontWeight = '700';
-    totalTr.style.background = 'var(--gray-100)';
-    totalTr.innerHTML = '<td>Total</td>' + auditGrandTotals.map(t => '<td style="text-align:right">' + fmt(t) + '</td>').join('');
-    auditBody.appendChild(totalTr);
-  }
 
   // ── PM Review Panel: Notes + Invoice Reclasses ──────────────────────
   (async function populatePmReview() {
