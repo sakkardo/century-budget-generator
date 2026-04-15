@@ -6893,6 +6893,12 @@ const RE_TAXES_TAB_HTML = `<style>
     color: #92400e;
   }
 .re-taxes-wrap .formula-bar button.fx-btn.revert:hover { background: #fef3c7; }
+.re-taxes-wrap .formula-bar button.fx-btn.accept {
+    border-color: #16a34a;
+    color: #166534;
+    font-weight: 700;
+  }
+.re-taxes-wrap .formula-bar button.fx-btn.accept:hover { background: #dcfce7; }
 .re-taxes-wrap .formula-bar .override-badge {
     padding: 3px 7px;
     background: var(--warn);
@@ -7024,7 +7030,7 @@ const RE_TAXES_TAB_HTML = `<style>
     <input type="text" class="fx-input" id="fxInput" placeholder="Select a cell to see or edit its formula" disabled>
     <div class="fx-result" id="fxResult">—</div>
     <span class="override-badge" id="fxOverrideBadge" style="display:none;">OVERRIDDEN</span>
-    <span class="re-save-status" id="reTaxSaveStatus"></span><button class="fx-btn revert" id="fxRevertBtn" onclick="revertActiveCell()" style="display:none;">⟲ Revert</button>
+    <span class="re-save-status" id="reTaxSaveStatus"></span><button class="fx-btn accept" id="fxAcceptBtn" onclick="commitFormulaBar(); autosaveReTaxes();" style="display:none;">✓ Accept</button><button class="fx-btn revert" id="fxRevertBtn" onclick="revertActiveCell()" style="display:none;">⟲ Revert</button>
   </div>
 
   <!-- Property / BBL card -->
@@ -7901,6 +7907,51 @@ function selectCell(id) {
   syncFormulaBar();
 }
 
+// Format a raw numeric value according to a cell format type (no cell ID needed).
+function _reFmtByFormat(val, format) {
+  const n = (typeof val === 'number' && !isNaN(val)) ? val : 0;
+  if (format === 'pct') return fmtPct(n);
+  if (format === 'dollar') return fmtDollar(n);
+  return String(n);
+}
+
+// Replace cell references in an Excel-style formula with their current numeric
+// values. Handles SUM(X1:X9) column ranges by summing the member cells.
+// Unknown tokens are left literal so we don't corrupt the expression shape.
+function _reSubstituteFormulaWithNumbers(formula) {
+  if (!formula) return '';
+  let s = String(formula);
+  // 1. Expand SUM(X1:X9) → sum of member CELL_STATE.values (formatted)
+  s = s.replace(/SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)/gi, (full, c1, n1, c2, n2) => {
+    if (c1.toLowerCase() !== c2.toLowerCase()) return full;
+    const start = parseInt(n1, 10);
+    const end   = parseInt(n2, 10);
+    if (!(end >= start)) return full;
+    let sum = 0, fmt = 'dollar', anyFound = false;
+    for (let i = start; i <= end; i++) {
+      const id = c1.toLowerCase() + i;
+      const st = CELL_STATE[id];
+      if (st && typeof st.value === 'number') {
+        sum += st.value;
+        const m = CELL_META[id];
+        if (m && m.format) fmt = m.format;
+        anyFound = true;
+      }
+    }
+    return anyFound ? _reFmtByFormat(sum, fmt) : full;
+  });
+  // 2. Replace individual cell tokens (case-insensitive) with formatted values
+  s = s.replace(/\b([A-Z]{1,3}\d{1,3})\b/gi, (token) => {
+    const id = token.toLowerCase();
+    const st = CELL_STATE[id];
+    const meta = CELL_META[id];
+    if (!st || !meta) return token;
+    const v = (typeof st.value === 'number') ? st.value : 0;
+    return _reFmtByFormat(v, meta.format);
+  });
+  return s;
+}
+
 function syncFormulaBar() {
   const barRef    = document.getElementById('fxCellRef');
   const barLabel  = document.getElementById('fxCellLabel');
@@ -7908,6 +7959,7 @@ function syncFormulaBar() {
   const barResult = document.getElementById('fxResult');
   const badge     = document.getElementById('fxOverrideBadge');
   const revertBtn = document.getElementById('fxRevertBtn');
+  const acceptBtn = document.getElementById('fxAcceptBtn');
   if (!activeCellId) {
     barRef.textContent = '—';
     barLabel.textContent = 'Click any cell';
@@ -7916,6 +7968,7 @@ function syncFormulaBar() {
     barResult.textContent = '—';
     badge.style.display = 'none';
     revertBtn.style.display = 'none';
+    if (acceptBtn) acceptBtn.style.display = 'none';
     return;
   }
   const meta = CELL_META[activeCellId];
@@ -7928,16 +7981,17 @@ function syncFormulaBar() {
     // For input cells, the bar shows the current literal value
     barInput.value = fmtForCell(activeCellId, cellRaw(activeCellId));
   } else {
-    // Computed cell — show the Excel formula if not overridden; show the numeric override value if overridden
+    // Computed cell — show formula with cell refs replaced by live numeric values
     if (overridden) {
       barInput.value = fmtForCell(activeCellId, st.override);
     } else {
-      barInput.value = meta.excel || '';
+      barInput.value = _reSubstituteFormulaWithNumbers(meta.excel || '');
     }
   }
   barResult.textContent = fmtForCell(activeCellId, (st && st.value) || 0);
   badge.style.display = overridden ? 'inline-block' : 'none';
   revertBtn.style.display = overridden ? 'inline-block' : 'none';
+  if (acceptBtn) acceptBtn.style.display = 'inline-block';
 }
 
 function commitFormulaBar() {
