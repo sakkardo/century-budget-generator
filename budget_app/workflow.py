@@ -1896,6 +1896,10 @@ def create_workflow_blueprint(db):
                 except Exception:
                     pass
             result = compute_re_taxes(entity_code, overrides)
+            # Pass through saved per-cell overrides (numeric + formula sources)
+            # so the frontend can restore user edits on reload.
+            if isinstance(overrides, dict) and overrides.get("cell_overrides"):
+                result["cell_overrides"] = overrides["cell_overrides"]
             return jsonify({"is_coop": True, "re_taxes": result})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -8034,73 +8038,57 @@ function syncFormulaBar() {
   if (acceptBtn) acceptBtn.style.display = 'inline-block';
 }
 
-// ─── FORMULA EVALUATOR (supports SUM, AVERAGE, MIN, MAX, COUNT + arithmetic) ──
-// Expand a function arg list into a flat array of numbers, handling ranges and
-// comma-separated mixes. Used by SUM/AVG/MIN/MAX/COUNT.
-function _reExpandFuncArgs(argStr) {
-  const parts = argStr.split(',').map(s => s.trim()).filter(Boolean);
-  const vals = [];
-  parts.forEach(part => {
-    const rng = part.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i);
-    if (rng) {
-      if (rng[1].toLowerCase() !== rng[3].toLowerCase()) return;
-      const col = rng[1].toLowerCase();
-      const s = parseInt(rng[2], 10);
-      const e = parseInt(rng[4], 10);
-      const lo = Math.min(s, e), hi = Math.max(s, e);
-      for (let i = lo; i <= hi; i++) {
-        const id = col + i;
-        const st = CELL_STATE[id];
-        if (st && typeof st.value === 'number') vals.push(st.value);
-      }
-      return;
-    }
-    const cell = part.match(/^[A-Z]+\d+$/i);
-    if (cell) {
-      const st = CELL_STATE[part.toLowerCase()];
-      if (st && typeof st.value === 'number') vals.push(st.value);
-      return;
-    }
-    const n = parseFloat(part);
-    if (!isNaN(n)) vals.push(n);
-  });
-  return vals;
+// ─── FORMULA EVALUATOR ─────────────────────────────────────────────────
+// Supports: SUM, AVERAGE/AVG, MIN, MAX, COUNT, IF, ROUND, ABS
+//           + arithmetic (+ - * / parens)
+//           + comparisons (< > <= >= == !=)
+//           + cell refs (G11, GP26, etc.)
+//           + ranges (F26:F29)
+//           + trailing % (5% → 0.05)
+//           + nested function calls
+//
+// Strategy: pre-process ranges into JS array literals, substitute cell refs
+// with their numeric values, then evaluate with the Function constructor and
+// inject the supported functions by parameter (strict mode blocks unknown
+// identifiers, so unsupported names throw cleanly).
+const _RE_FN_NAMES = ['SUM','AVERAGE','AVG','MIN','MAX','COUNT','IF','ROUND','ABS'];
+
+function _reMakeFnImpls() {
+  const flat = (args) => args.flat(Infinity).map(Number).filter(n => !isNaN(n));
+  return {
+    SUM:     (...a) => flat(a).reduce((x, y) => x + y, 0),
+    AVERAGE: (...a) => { const f = flat(a); return f.length ? f.reduce((x,y)=>x+y,0) / f.length : 0; },
+    AVG:     (...a) => { const f = flat(a); return f.length ? f.reduce((x,y)=>x+y,0) / f.length : 0; },
+    MIN:     (...a) => { const f = flat(a); return f.length ? Math.min.apply(null, f) : 0; },
+    MAX:     (...a) => { const f = flat(a); return f.length ? Math.max.apply(null, f) : 0; },
+    COUNT:   (...a) => flat(a).length,
+    IF:      (c, x, y) => (c ? Number(x) : Number(y)),
+    ROUND:   (x, n) => { const k = Math.pow(10, n || 0); return Math.round(Number(x) * k) / k; },
+    ABS:     (x) => Math.abs(Number(x)),
+  };
 }
 
-function _reApplyFunc(fn, vals) {
-  if (!vals.length) return 0;
-  switch (fn) {
-    case 'SUM':     return vals.reduce((a, b) => a + b, 0);
-    case 'AVERAGE':
-    case 'AVG':     return vals.reduce((a, b) => a + b, 0) / vals.length;
-    case 'MIN':     return Math.min.apply(null, vals);
-    case 'MAX':     return Math.max.apply(null, vals);
-    case 'COUNT':   return vals.length;
-    default:        throw new Error('Unknown function: ' + fn);
-  }
-}
-
-// Evaluate an Excel-like formula string (with or without leading `=`).
-// Throws on syntax/unknown-cell errors so the caller can show feedback.
 function _reEvalFormula(expr) {
   if (expr == null) throw new Error('Empty formula');
   let s = String(expr).trim();
   if (s.charAt(0) === '=') s = s.slice(1).trim();
   if (!s) throw new Error('Empty formula');
 
-  // 1. Repeatedly expand innermost function calls (no nested funcs needed for now)
-  const FUNC = /(SUM|AVERAGE|AVG|MIN|MAX|COUNT)\s*\(([^()]*)\)/i;
-  let guard = 0;
-  while (FUNC.test(s)) {
-    s = s.replace(FUNC, (_, fn, argStr) => {
-      const vals = _reExpandFuncArgs(argStr);
-      const r = _reApplyFunc(fn.toUpperCase(), vals);
-      return '(' + r + ')';
-    });
-    if (++guard > 50) throw new Error('Formula nesting too deep');
-  }
+  // 1. Expand range refs X1:X9 → JS array literal [v1,v2,...]
+  s = s.replace(/\b([A-Z]+)(\d+)\s*:\s*([A-Z]+)(\d+)\b/gi, (full, c1, n1, c2, n2) => {
+    if (c1.toLowerCase() !== c2.toLowerCase()) throw new Error('Cross-column range not supported: ' + full);
+    const col = c1.toLowerCase();
+    const lo = Math.min(+n1, +n2), hi = Math.max(+n1, +n2);
+    const vals = [];
+    for (let i = lo; i <= hi; i++) {
+      const st = CELL_STATE[col + i];
+      vals.push(st && typeof st.value === 'number' ? st.value : 0);
+    }
+    return '[' + vals.join(',') + ']';
+  });
 
-  // 2. Substitute cell refs (e.g. G11, GP26) with numeric values
+  // 2. Substitute individual cell refs (skip tokens that match allowed function names)
+  const fnSet = new Set(_RE_FN_NAMES);
   const unknown = [];
   s = s.replace(/\b([A-Z]{1,3}\d{1,3})\b/gi, (tok) => {
     const id = tok.toLowerCase();
@@ -8110,13 +8098,25 @@ function _reEvalFormula(expr) {
   });
   if (unknown.length) throw new Error('Unknown cell(s): ' + unknown.join(', '));
 
-  // 3. Sanitize the remaining expression and evaluate
-  if (!/^[\d+\-*/().\s%]+$/.test(s)) throw new Error('Invalid characters: ' + s);
-  // Allow trailing % on numbers: turn N% into (N/100)
+  // 3. Trailing % on numbers → /100 (supports =G11*5%)
   s = s.replace(/(\d+(?:\.\d+)?)%/g, '($1/100)');
+
+  // 4. Reject any stray alphabetic identifier that isn't one of the allowed functions
+  const stripped = s.replace(/\b(SUM|AVERAGE|AVG|MIN|MAX|COUNT|IF|ROUND|ABS)\b/gi, '');
+  const badIdent = stripped.match(/[A-Za-z_][A-Za-z_0-9]*/);
+  if (badIdent) throw new Error('Unsupported: ' + badIdent[0]);
+
+  // 5. Structural whitelist — block statement separators, block literals, etc.
+  if (/[;{}`$\\]/.test(s)) throw new Error('Invalid characters');
+
+  // 6. Evaluate with injected function implementations
+  const impls = _reMakeFnImpls();
   let result;
   try {
-    result = Function('"use strict"; return (' + s + ');')();
+    result = new Function(
+      'SUM','AVERAGE','AVG','MIN','MAX','COUNT','IF','ROUND','ABS',
+      '"use strict"; return (' + s + ');'
+    )(impls.SUM, impls.AVERAGE, impls.AVG, impls.MIN, impls.MAX, impls.COUNT, impls.IF, impls.ROUND, impls.ABS);
   } catch (e) {
     throw new Error('Parse error');
   }
@@ -8295,10 +8295,18 @@ function reTaxLoadFromBackend(re) {
       _reSetInput(gpid, g, 'pct');
     });
 
-    // Restore any saved per-cell overrides from assumptions_json (future-proofing)
+    // Restore saved per-cell overrides (numeric values + user-typed formula sources).
+    // Each entry is either a raw number (legacy) or {override, overrideSrc}.
     if (re.cell_overrides) {
       Object.entries(re.cell_overrides).forEach(([id, val]) => {
-        if (CELL_STATE[id]) CELL_STATE[id].override = val;
+        if (!CELL_STATE[id]) return;
+        if (val && typeof val === 'object') {
+          CELL_STATE[id].override    = (val.override != null) ? val.override : null;
+          CELL_STATE[id].overrideSrc = val.overrideSrc || null;
+        } else {
+          CELL_STATE[id].override    = val;
+          CELL_STATE[id].overrideSrc = null;
+        }
       });
     }
 
@@ -8350,6 +8358,19 @@ function _rePopulatePropertyCard(entityCode, re) {
 // Build the 12-key payload the backend expects.
 // Sends DERIVED current-year values (G column) for exemptions, not base (F).
 function reTaxBuildPayload() {
+  // Serialize any per-cell overrides (both numeric and formula-source).
+  // Stored in assumptions_json.re_taxes_overrides.cell_overrides for round-trip.
+  const cellOverrides = {};
+  Object.keys(CELL_STATE).forEach(id => {
+    const st = CELL_STATE[id];
+    if (!st) return;
+    if (st.override != null || st.overrideSrc) {
+      cellOverrides[id] = {
+        override: (st.override != null) ? st.override : null,
+        overrideSrc: st.overrideSrc || null,
+      };
+    }
+  });
   return {
     first_half_av:     cellRaw('g11'),
     tax_rate:          cellRaw('g12'),
@@ -8367,6 +8388,8 @@ function reTaxBuildPayload() {
     // Extra fields — backend currently ignores these, persisted for UI round-trip
     rate_adjustment:   cellRaw('g13'),
     j51_amount:        cellRaw('i15'),
+    // Per-cell overrides (numeric values + user-typed formula sources)
+    cell_overrides:    cellOverrides,
   };
 }
 
