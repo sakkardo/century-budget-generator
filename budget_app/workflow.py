@@ -8087,7 +8087,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     // num-box: wrap class that mirrors .cell input outer dimensions exactly.
     // Wrapping plain text in <span class="num-box"> aligns its right edge with
     // input.cell text inside body rows, regardless of browser quirks.
-    '#prGLContent .num-box { display:inline-block; padding:4px 6px; border:1px solid transparent; box-sizing:content-box; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit; font-size:inherit; line-height:inherit; min-width:50px; }' +
+    '#prGLContent .num-box { display:inline-block; padding:4px 6px; border:1px solid transparent; box-sizing:content-box; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit; font-size:inherit; line-height:inherit; min-width:9ch; }' +
     '#prGLContent tbody tr:hover td { background:#eef2ff; }' +
     '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
     '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
