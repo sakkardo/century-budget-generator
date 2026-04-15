@@ -212,6 +212,7 @@ with app.app_context():
             ("payroll_positions", "effective_week_override", "FLOAT"),
             ("payroll_positions", "wage_increase_mode", "VARCHAR(10)"),
             ("payroll_positions", "wage_increase_value", "FLOAT"),
+            ("payroll_positions", "extra_bonuses_json", "TEXT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [

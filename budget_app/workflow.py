@@ -12,6 +12,7 @@ from flask import Blueprint, render_template_string, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from decimal import Decimal
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -738,11 +739,21 @@ def create_workflow_blueprint(db):
         # wage_increase_value: if mode='pct', decimal (0.03 = 3%); if mode='dollar', $/hr
         wage_increase_mode = db.Column(db.String(10), nullable=True)
         wage_increase_value = db.Column(db.Float, nullable=True)
+        # Optional extra bonus lines stacked on top of bonus_per_employee.
+        # JSON text: [{"label":"Perf","amount":0.02,"basis":"pct_wages"}, ...]
+        # basis one of: 'per_emp' | 'lump' | 'pct_wages'
+        extra_bonuses_json = db.Column(db.Text, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
         def to_dict(self):
+            try:
+                extras = json.loads(self.extra_bonuses_json) if self.extra_bonuses_json else []
+                if not isinstance(extras, list):
+                    extras = []
+            except Exception:
+                extras = []
             return {
                 "id": self.id, "entity_code": self.entity_code,
                 "budget_year": self.budget_year,
@@ -753,6 +764,7 @@ def create_workflow_blueprint(db):
                 "effective_week_override": float(self.effective_week_override) if self.effective_week_override is not None else None,
                 "wage_increase_mode": self.wage_increase_mode,
                 "wage_increase_value": float(self.wage_increase_value) if self.wage_increase_value is not None else None,
+                "extra_bonuses": extras,
                 "sort_order": self.sort_order
             }
 
@@ -2289,6 +2301,26 @@ def create_workflow_blueprint(db):
                 wi_val = float(wi_val_raw) if wi_val_raw not in (None, "") else None
             except (TypeError, ValueError):
                 wi_val = None
+            # Extra bonus lines — normalize, validate, json-serialize. Empty list => NULL.
+            raw_extras = p.get("extra_bonuses") or []
+            clean_extras = []
+            if isinstance(raw_extras, list):
+                for e in raw_extras:
+                    if not isinstance(e, dict):
+                        continue
+                    basis = e.get("basis")
+                    if basis not in ("per_emp", "lump", "pct_wages"):
+                        continue
+                    try:
+                        amt = float(e.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        amt = 0.0
+                    clean_extras.append({
+                        "label": str(e.get("label") or "").strip()[:80],
+                        "amount": amt,
+                        "basis": basis,
+                    })
+            extras_json = json.dumps(clean_extras) if clean_extras else None
             pos = PayrollPosition(
                 entity_code=entity_code,
                 budget_year=BUDGET_YEAR,
@@ -2299,6 +2331,7 @@ def create_workflow_blueprint(db):
                 effective_week_override=(float(p["effective_week_override"]) if p.get("effective_week_override") not in (None, "", 0) else None),
                 wage_increase_mode=wi_mode,
                 wage_increase_value=wi_val,
+                extra_bonuses_json=extras_json,
                 sort_order=i
             )
             db.session.add(pos)
@@ -8578,6 +8611,7 @@ function prRosterChanged() {
       effective_week_override: effWkRaw === '' ? null : (parseFloat(effWkRaw) || null),
       wage_increase_mode: priorRow.wage_increase_mode || null,
       wage_increase_value: (priorRow.wage_increase_value != null) ? priorRow.wage_increase_value : null,
+      extra_bonuses: Array.isArray(priorRow.extra_bonuses) ? priorRow.extra_bonuses : [],
       sort_order: i
     });
   });
@@ -8625,7 +8659,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, wage_increase_mode: null, wage_increase_value: null, sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, wage_increase_mode: null, wage_increase_value: null, extra_bonuses: [], sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -8687,7 +8721,15 @@ function recalcPayroll() {
     const annualBase = preIncrWages + postIncrWages;
     const ot = annualBase * otFactor;
     const vsh = annualBase * vshFactor;
-    const bonus = bonusPerEmp * count;
+    // Base bonus cell + optional stacked extra bonus lines (per_emp / lump / pct_wages)
+    let bonus = bonusPerEmp * count;
+    const extras = Array.isArray(p.extra_bonuses) ? p.extra_bonuses : [];
+    for (const e of extras) {
+      const amt = e.amount || 0;
+      if (e.basis === 'per_emp')        bonus += amt * count;
+      else if (e.basis === 'lump')      bonus += amt;
+      else if (e.basis === 'pct_wages') bonus += amt * annualBase;
+    }
     const comp = annualBase + ot + vsh;
 
     totalEmployees += count;
@@ -8770,6 +8812,208 @@ function recalcPayroll() {
   }
 }
 
+// ── Bonus Cell Shell + Popover ────────────────────────────────────────────
+// The common-case bonus stays as a plain number input. Additional bonus lines
+// (label + amount + basis) live behind a "+" affordance that opens a popover.
+
+function prBonusCellHTML(p, idx, c) {
+  const extras = Array.isArray(p.extra_bonuses) ? p.extra_bonuses : [];
+  const hasExtras = extras.length > 0;
+  const base = p.bonus_per_employee || 0;
+  // Build hover tooltip showing the breakdown
+  const count = p.employee_count || 0;
+  const annualBase = (c && c.annualBase) || 0;
+  const tipLines = [];
+  if (base) tipLines.push('Base: $' + base + '/emp × ' + count + ' = $' + Math.round(base * count).toLocaleString());
+  extras.forEach(e => {
+    const amt = e.amount || 0;
+    let v = 0, desc = '';
+    if (e.basis === 'per_emp')        { v = amt * count; desc = '$' + amt + '/emp × ' + count; }
+    else if (e.basis === 'lump')      { v = amt;         desc = 'lump sum'; }
+    else if (e.basis === 'pct_wages') { v = amt * annualBase; desc = (amt * 100).toFixed(2) + '% of wages'; }
+    tipLines.push((e.label || '(unnamed)') + ': ' + desc + ' = $' + Math.round(v).toLocaleString());
+  });
+  const tooltip = (tipLines.join('\n') || 'Single bonus line').replace(/"/g, '&quot;');
+  const cellBg = hasExtras ? '#fefce8' : '#fbfaf4';
+  const cellBorder = hasExtras ? '#fde68a' : '#d1d5db';
+  const badge = hasExtras
+    ? '<span style="font-size:9px; font-weight:700; color:#2563eb; background:#eff6ff; border:1px solid #bfdbfe; border-radius:3px; padding:0 3px; margin-right:2px;">+' + extras.length + '</span>'
+    : '';
+  return '<span class="pr-bonus-cell" title="' + tooltip + '" style="display:inline-flex; align-items:center; gap:3px; padding:1px 2px 1px 6px; border:1px solid ' + cellBorder + '; border-radius:4px; background:' + cellBg + ';">' +
+    '<input class="pr-pos-bonus" type="text" value="' + base + '" onchange="prRosterChanged()" ' +
+    'style="border:none; outline:none; background:transparent; width:62px; padding:2px 0; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit;">' +
+    badge +
+    '<button type="button" onclick="openBonusPopover(event,' + idx + ')" title="Add additional bonus lines" ' +
+    'style="width:18px; height:18px; border:none; background:transparent; color:#9ca3af; cursor:pointer; font-size:14px; line-height:1; border-radius:3px; padding:0;">+</button>' +
+    '</span>';
+}
+
+let _prBonusPopoverIdx = null;
+
+function closeBonusPopover() {
+  const pop = document.getElementById('prBonusPopover');
+  if (pop) pop.remove();
+  document.removeEventListener('mousedown', _prBonusOutsideClick, true);
+  _prBonusPopoverIdx = null;
+}
+
+function _prBonusOutsideClick(e) {
+  const pop = document.getElementById('prBonusPopover');
+  if (!pop) return;
+  if (pop.contains(e.target)) return;
+  // Ignore clicks on any "+" button or within a bonus cell (re-open will rebuild)
+  if (e.target.closest && e.target.closest('.pr-bonus-cell')) return;
+  closeBonusPopover();
+}
+
+function openBonusPopover(evt, idx) {
+  if (evt && evt.stopPropagation) evt.stopPropagation();
+  closeBonusPopover();
+  const p = _payrollPositions[idx];
+  if (!p) return;
+  if (!Array.isArray(p.extra_bonuses)) p.extra_bonuses = [];
+  const pop = document.createElement('div');
+  pop.id = 'prBonusPopover';
+  pop.style.cssText = 'position:absolute; z-index:1000; background:white; border:1px solid #d1d5db; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12); padding:12px; min-width:380px; font-size:12px;';
+  pop.innerHTML = buildBonusPopoverHTML(idx);
+  document.body.appendChild(pop);
+  // Position near the click target, anchored to the button
+  const anchor = (evt && evt.target) ? evt.target.getBoundingClientRect() : { left: 100, bottom: 100 };
+  const popWidth = 380;
+  let leftPx = anchor.left + window.scrollX - popWidth + 20;
+  if (leftPx < 10) leftPx = 10;
+  pop.style.left = leftPx + 'px';
+  pop.style.top  = (anchor.bottom + window.scrollY + 6) + 'px';
+  _prBonusPopoverIdx = idx;
+  setTimeout(() => document.addEventListener('mousedown', _prBonusOutsideClick, true), 0);
+}
+
+function buildBonusPopoverHTML(idx) {
+  const p = _payrollPositions[idx];
+  if (!p) return '';
+  const extras = p.extra_bonuses || [];
+  const count = p.employee_count || 0;
+  // Compute a live preview total (base + extras). Uses the cached annualBase for pct_wages.
+  let annualBase = 0;
+  try {
+    // Derive annualBase on the fly (mirrors recalcPayroll math, without the full side effects)
+    const a = _payrollAssumptions || {};
+    const preWks = a.pre_increase_weeks || 15;
+    const postWks = a.post_increase_weeks || 37;
+    const gm = a.wage_increase_mode || 'pct';
+    const gv = (a.wage_increase_value != null) ? a.wage_increase_value : (a.wage_increase_pct || 0);
+    const pm = p.wage_increase_mode || gm;
+    const pv = (p.wage_increase_value != null) ? p.wage_increase_value : gv;
+    const rate = p.hourly_rate || 0;
+    const effOv = p.effective_week_override;
+    const preW = (effOv && effOv > 0) ? Math.max(effOv - 1, 0) : preWks;
+    const postW = (effOv && effOv > 0) ? (52 - preW) : postWks;
+    const postRate = applyWageIncrease(rate, pm, pv);
+    annualBase = (rate * 40 * preW * count) + (postRate * 40 * postW * count);
+  } catch (e) {}
+  let total = (p.bonus_per_employee || 0) * count;
+  extras.forEach(e => {
+    const amt = e.amount || 0;
+    if (e.basis === 'per_emp')        total += amt * count;
+    else if (e.basis === 'lump')      total += amt;
+    else if (e.basis === 'pct_wages') total += amt * annualBase;
+  });
+  const fD = v => { const n = Math.round(v); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); };
+  let rowsHtml = '';
+  extras.forEach((e, ei) => {
+    const displayAmt = (e.basis === 'pct_wages') ? ((e.amount || 0) * 100).toFixed(2) : (e.amount || 0);
+    rowsHtml +=
+      '<input type="text" placeholder="Label (e.g. Performance)" value="' + (e.label || '').replace(/"/g, '&quot;') + '" ' +
+      'onchange="updateBonusExtraField(' + idx + ',' + ei + ',\'label\',this.value)" ' +
+      'style="padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; font-family:inherit;">' +
+      '<input type="text" value="' + displayAmt + '" ' +
+      'onchange="updateBonusExtraAmount(' + idx + ',' + ei + ',this.value)" ' +
+      'style="padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; background:#fbfaf4; font-family:inherit;">' +
+      '<select onchange="updateBonusExtraField(' + idx + ',' + ei + ',\'basis\',this.value)" ' +
+      'style="padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; font-family:inherit;">' +
+      '<option value="per_emp"' + (e.basis === 'per_emp' ? ' selected' : '') + '>$ per emp</option>' +
+      '<option value="lump"' + (e.basis === 'lump' ? ' selected' : '') + '>$ lump sum</option>' +
+      '<option value="pct_wages"' + (e.basis === 'pct_wages' ? ' selected' : '') + '>% of wages</option>' +
+      '</select>' +
+      '<button type="button" onclick="removeBonusExtra(' + idx + ',' + ei + ')" title="Remove" ' +
+      'style="background:none; border:none; color:#dc2626; cursor:pointer; font-size:14px; padding:0;">✕</button>';
+  });
+  const emptyMsg = (extras.length === 0)
+    ? '<span style="grid-column:1/-1; color:#9ca3af; font-style:italic; padding:8px 0; text-align:center; font-size:11px;">No extra bonus lines yet.</span>'
+    : '';
+  return (
+    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #f3f4f6;">' +
+      '<strong style="font-size:11px; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.4px;">' + (p.position_name || 'Position') + ' — Additional Bonuses</strong>' +
+      '<button type="button" onclick="closeBonusPopover()" style="background:none; border:none; color:#9ca3af; cursor:pointer; font-size:14px; padding:2px 6px; border-radius:3px;">✕</button>' +
+    '</div>' +
+    '<div style="display:grid; grid-template-columns: 1fr 90px 110px 24px; gap:6px; align-items:center;">' +
+      '<span style="font-size:10px; color:#6b7280; text-transform:uppercase; font-weight:700;">Label</span>' +
+      '<span style="font-size:10px; color:#6b7280; text-transform:uppercase; font-weight:700; text-align:right;">Amount</span>' +
+      '<span style="font-size:10px; color:#6b7280; text-transform:uppercase; font-weight:700;">Basis</span>' +
+      '<span></span>' +
+      rowsHtml + emptyMsg +
+    '</div>' +
+    '<button type="button" onclick="addBonusExtra(' + idx + ')" ' +
+    'style="margin-top:8px; padding:5px 10px; font-size:11px; font-weight:600; background:white; color:#2563eb; border:1px solid #2563eb; border-radius:4px; cursor:pointer;">+ Add Bonus Line</button>' +
+    '<div style="margin-top:10px; padding-top:8px; border-top:1px dashed #e5e7eb; display:flex; justify-content:space-between; font-size:11px;">' +
+      '<span style="color:#6b7280;">Total bonus (base + extras):</span>' +
+      '<strong style="font-size:13px; color:#15803d; font-variant-numeric:tabular-nums;">' + fD(total) + '</strong>' +
+    '</div>' +
+    '<div style="margin-top:6px; font-size:10px; color:#9ca3af; font-style:italic;">Base $/emp cell stays as-is for the simple case. Lines added here stack on top.</div>'
+  );
+}
+
+function refreshBonusPopover() {
+  if (_prBonusPopoverIdx == null) return;
+  const pop = document.getElementById('prBonusPopover');
+  if (!pop) return;
+  pop.innerHTML = buildBonusPopoverHTML(_prBonusPopoverIdx);
+}
+
+function addBonusExtra(idx) {
+  const p = _payrollPositions[idx];
+  if (!p) return;
+  if (!Array.isArray(p.extra_bonuses)) p.extra_bonuses = [];
+  p.extra_bonuses.push({label: '', amount: 0, basis: 'per_emp'});
+  refreshBonusPopover();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
+function removeBonusExtra(idx, ei) {
+  const p = _payrollPositions[idx];
+  if (!p || !Array.isArray(p.extra_bonuses)) return;
+  p.extra_bonuses.splice(ei, 1);
+  refreshBonusPopover();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
+function updateBonusExtraField(idx, ei, field, value) {
+  const p = _payrollPositions[idx];
+  if (!p || !p.extra_bonuses || !p.extra_bonuses[ei]) return;
+  p.extra_bonuses[ei][field] = value;
+  refreshBonusPopover();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
+function updateBonusExtraAmount(idx, ei, raw) {
+  const p = _payrollPositions[idx];
+  if (!p || !p.extra_bonuses || !p.extra_bonuses[ei]) return;
+  const num = parseFloat((raw || '').replace(/[^0-9.\-]/g, '')) || 0;
+  const e = p.extra_bonuses[ei];
+  // For pct_wages, user enters a whole-percent (2 for 2%), store as decimal (0.02)
+  e.amount = (e.basis === 'pct_wages') ? (num / 100) : num;
+  refreshBonusPopover();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
 // ── Render Roster Table ───────────────────────────────────────────────────
 
 function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, totalComp, assumpCtx) {
@@ -8850,7 +9094,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; box-sizing:content-box;"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + '" min="0"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
-      '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + ns + '">' + prBonusCellHTML(p, i, c) + '</td>' +
       '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged()" title="Override global Effective Week for this position only" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-wage-incr-pct" type="text" placeholder="—" value="' + incrPctDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'pct\')" title="Override wage increase % for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-wage-incr-dollar" type="text" placeholder="—" value="' + incrDollarDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'dollar\')" title="Override wage increase $/hr for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
@@ -8873,7 +9117,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">TOTAL</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p)=> s+((p.bonus_per_employee||0)*(p.employee_count||0)),0)) + '</td>' +
+    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.bonus||0),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
