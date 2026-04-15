@@ -7653,6 +7653,30 @@ function recalc() {
 
   // GL output panel (preview-only debug panel, stripped in production port)
 
+  // Live re-eval of any user-entered override formulas. Runs AFTER the main
+  // formula pass so override cells see up-to-date dependency values. Updates
+  // the DOM cell and CELL_STATE so subsequent reads are consistent.
+  Object.keys(CELL_STATE).forEach(id => {
+    const st = CELL_STATE[id];
+    if (!st || !st.overrideSrc) return;
+    try {
+      const v = _reEvalFormula(st.overrideSrc);
+      st.override = v;
+      st.value = v;
+      const meta = CELL_META[id];
+      if (!meta) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (meta.type === 'computed') {
+        el.textContent = fmtForCell(id, v);
+      } else if (el.tagName === 'INPUT') {
+        el.value = fmtForCell(id, v);
+      }
+    } catch (e) {
+      // Leave previous override in place if re-eval fails
+    }
+  });
+
   // Paint override indicators + refresh formula bar for the active cell
   paintOverrideIndicators();
   syncFormulaBar();
@@ -7994,8 +8018,11 @@ function syncFormulaBar() {
     // For input cells, the bar shows the current literal value
     barInput.value = fmtForCell(activeCellId, cellRaw(activeCellId));
   } else {
-    // Computed cell — show formula with cell refs replaced by live numeric values
-    if (overridden) {
+    // Computed cell — show user override formula raw; numeric override formatted;
+    // built-in formula with cell refs replaced by live numeric values.
+    if (st && st.overrideSrc) {
+      barInput.value = st.overrideSrc;
+    } else if (overridden) {
       barInput.value = fmtForCell(activeCellId, st.override);
     } else {
       barInput.value = _reSubstituteFormulaWithNumbers(meta.excel || '');
@@ -8007,30 +8034,154 @@ function syncFormulaBar() {
   if (acceptBtn) acceptBtn.style.display = 'inline-block';
 }
 
+// ─── FORMULA EVALUATOR (supports SUM, AVERAGE, MIN, MAX, COUNT + arithmetic) ──
+// Expand a function arg list into a flat array of numbers, handling ranges and
+// comma-separated mixes. Used by SUM/AVG/MIN/MAX/COUNT.
+function _reExpandFuncArgs(argStr) {
+  const parts = argStr.split(',').map(s => s.trim()).filter(Boolean);
+  const vals = [];
+  parts.forEach(part => {
+    const rng = part.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i);
+    if (rng) {
+      if (rng[1].toLowerCase() !== rng[3].toLowerCase()) return;
+      const col = rng[1].toLowerCase();
+      const s = parseInt(rng[2], 10);
+      const e = parseInt(rng[4], 10);
+      const lo = Math.min(s, e), hi = Math.max(s, e);
+      for (let i = lo; i <= hi; i++) {
+        const id = col + i;
+        const st = CELL_STATE[id];
+        if (st && typeof st.value === 'number') vals.push(st.value);
+      }
+      return;
+    }
+    const cell = part.match(/^[A-Z]+\d+$/i);
+    if (cell) {
+      const st = CELL_STATE[part.toLowerCase()];
+      if (st && typeof st.value === 'number') vals.push(st.value);
+      return;
+    }
+    const n = parseFloat(part);
+    if (!isNaN(n)) vals.push(n);
+  });
+  return vals;
+}
+
+function _reApplyFunc(fn, vals) {
+  if (!vals.length) return 0;
+  switch (fn) {
+    case 'SUM':     return vals.reduce((a, b) => a + b, 0);
+    case 'AVERAGE':
+    case 'AVG':     return vals.reduce((a, b) => a + b, 0) / vals.length;
+    case 'MIN':     return Math.min.apply(null, vals);
+    case 'MAX':     return Math.max.apply(null, vals);
+    case 'COUNT':   return vals.length;
+    default:        throw new Error('Unknown function: ' + fn);
+  }
+}
+
+// Evaluate an Excel-like formula string (with or without leading `=`).
+// Throws on syntax/unknown-cell errors so the caller can show feedback.
+function _reEvalFormula(expr) {
+  if (expr == null) throw new Error('Empty formula');
+  let s = String(expr).trim();
+  if (s.charAt(0) === '=') s = s.slice(1).trim();
+  if (!s) throw new Error('Empty formula');
+
+  // 1. Repeatedly expand innermost function calls (no nested funcs needed for now)
+  const FUNC = /(SUM|AVERAGE|AVG|MIN|MAX|COUNT)\s*\(([^()]*)\)/i;
+  let guard = 0;
+  while (FUNC.test(s)) {
+    s = s.replace(FUNC, (_, fn, argStr) => {
+      const vals = _reExpandFuncArgs(argStr);
+      const r = _reApplyFunc(fn.toUpperCase(), vals);
+      return '(' + r + ')';
+    });
+    if (++guard > 50) throw new Error('Formula nesting too deep');
+  }
+
+  // 2. Substitute cell refs (e.g. G11, GP26) with numeric values
+  const unknown = [];
+  s = s.replace(/\b([A-Z]{1,3}\d{1,3})\b/gi, (tok) => {
+    const id = tok.toLowerCase();
+    const st = CELL_STATE[id];
+    if (!st || typeof st.value !== 'number') { unknown.push(tok); return '0'; }
+    return '(' + st.value + ')';
+  });
+  if (unknown.length) throw new Error('Unknown cell(s): ' + unknown.join(', '));
+
+  // 3. Sanitize the remaining expression and evaluate
+  if (!/^[\d+\-*/().\s%]+$/.test(s)) throw new Error('Invalid characters: ' + s);
+  // Allow trailing % on numbers: turn N% into (N/100)
+  s = s.replace(/(\d+(?:\.\d+)?)%/g, '($1/100)');
+  let result;
+  try {
+    result = Function('"use strict"; return (' + s + ');')();
+  } catch (e) {
+    throw new Error('Parse error');
+  }
+  if (typeof result !== 'number' || !isFinite(result)) throw new Error('Non-numeric result');
+  return result;
+}
+
+// Show a transient error in the formula bar result area.
+function _reShowFormulaError(msg) {
+  const barResult = document.getElementById('fxResult');
+  if (!barResult) return;
+  const prevText = barResult.textContent;
+  const prevColor = barResult.style.color;
+  barResult.textContent = '✗ ' + msg;
+  barResult.style.color = '#dc2626';
+  setTimeout(() => {
+    barResult.textContent = prevText;
+    barResult.style.color = prevColor || '';
+  }, 3000);
+}
+
 function commitFormulaBar() {
   if (!activeCellId) return;
   const meta = CELL_META[activeCellId];
   const st   = CELL_STATE[activeCellId];
   const raw  = document.getElementById('fxInput').value.trim();
+  const isFormula = raw.charAt(0) === '=';
+
   if (meta.type === 'input') {
-    // If the user started with `=`, treat it as a literal number (no formula eval in MVP)
-    const cleaned = raw.replace(/^=/, '');
-    const el = document.getElementById(activeCellId);
-    if (el) el.value = cleaned;
+    // Input cell: formula → evaluate and stamp the numeric result; plain → write literal
+    if (isFormula) {
+      try {
+        const v = _reEvalFormula(raw);
+        const el = document.getElementById(activeCellId);
+        if (el) el.value = String(v);
+      } catch (e) {
+        _reShowFormulaError(e.message);
+        return;
+      }
+    } else {
+      const el = document.getElementById(activeCellId);
+      if (el) el.value = raw;
+    }
     recalc();
     return;
   }
+
   // Computed cell
   if (raw === '' || raw === meta.excel) {
-    // Empty or reverted to formula — clear override
     st.override = null;
-  } else if (raw.startsWith('=')) {
-    // Custom formula expression — MVP: only honored if it equals the default; future: parse expression
-    st.override = null;
-    // (Could expand: allow simple `=G11*0.5` etc. — parked for later.)
+    st.overrideSrc = null;
+  } else if (isFormula) {
+    // Live formula override — stored as source so recalc() re-evaluates it
+    try {
+      const v = _reEvalFormula(raw);
+      st.override = v;
+      st.overrideSrc = raw;
+    } catch (e) {
+      _reShowFormulaError(e.message);
+      return;
+    }
   } else {
     // Numeric override
     st.override = parseForCell(activeCellId, raw);
+    st.overrideSrc = null;
   }
   recalc();
 }
@@ -8041,6 +8192,7 @@ function revertActiveCell() {
   const st   = CELL_STATE[activeCellId];
   if (meta.type === 'computed') {
     st.override = null;
+    st.overrideSrc = null;
   } else {
     // Revert an input: clear value to 0 — user can retype
     const el = document.getElementById(activeCellId);
