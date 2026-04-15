@@ -6821,24 +6821,23 @@ const RE_TAXES_TAB_HTML = `<style>
     box-shadow: 0 2px 8px rgba(15,23,42,0.04);
   }
 .re-taxes-wrap .formula-bar .cell-ref {
-    min-width: 110px;
-    padding: 5px 8px;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 6px 12px;
     background: #f1f5f9;
     border: 1px solid var(--border);
     border-radius: 4px;
-    font-family: "SF Mono", Consolas, monospace;
-    font-size: 12px;
+    font-family: inherit;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text);
-    text-align: center;
-  }
-.re-taxes-wrap .formula-bar .cell-label {
-    color: var(--muted);
-    font-size: 12px;
-    min-width: 170px;
+    text-align: left;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+.re-taxes-wrap .formula-bar .cell-label {
+    display: none;
   }
 .re-taxes-wrap .formula-bar .fx-icon {
     font-style: italic;
@@ -6955,8 +6954,8 @@ const RE_TAXES_TAB_HTML = `<style>
   }
 .re-taxes-wrap .prop-card .prop-row {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    align-items: flex-end;
+    gap: 12px;
     flex-wrap: wrap;
   }
 .re-taxes-wrap .prop-card label {
@@ -6965,20 +6964,34 @@ const RE_TAXES_TAB_HTML = `<style>
     letter-spacing: 0.03em;
     color: var(--muted);
     font-weight: 600;
+    display: block;
+    margin-bottom: 4px;
   }
 .re-taxes-wrap .prop-card .prop-field {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
   }
-.re-taxes-wrap .prop-card select.prop-input, .re-taxes-wrap .prop-card input.prop-input {
-    padding: 5px 8px;
+.re-taxes-wrap .prop-card .prop-field.f-borough { width: 150px; }
+.re-taxes-wrap .prop-card .prop-field.f-block   { width: 110px; }
+.re-taxes-wrap .prop-card .prop-field.f-lot     { width: 90px; }
+.re-taxes-wrap .prop-card .prop-field.f-bbl     { width: 160px; }
+.re-taxes-wrap .prop-card select.prop-input,
+.re-taxes-wrap .prop-card input.prop-input,
+.re-taxes-wrap .prop-card div.prop-input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 32px;
+    padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 13px;
+    line-height: 18px;
     background: #f8fafc;
     color: var(--text);
     font-family: inherit;
+    display: flex;
+    align-items: center;
   }
 .re-taxes-wrap .prop-card .prop-input[disabled] {
     background: #f1f5f9;
@@ -7038,7 +7051,7 @@ const RE_TAXES_TAB_HTML = `<style>
     <div class="prop-title" id="propBuildingName">—</div>
     <div class="prop-addr" id="propAddress">—</div>
     <div class="prop-row">
-      <div class="prop-field">
+      <div class="prop-field f-borough">
         <label>Borough</label>
         <select class="prop-input" id="propBorough" disabled onchange="onPropFieldChange()">
           <option value="1">Manhattan</option>
@@ -7048,17 +7061,17 @@ const RE_TAXES_TAB_HTML = `<style>
           <option value="5">Staten Island</option>
         </select>
       </div>
-      <div class="prop-field">
+      <div class="prop-field f-block">
         <label>Block</label>
-        <input type="text" class="prop-input" id="propBlock" disabled style="width:90px;" onchange="onPropFieldChange()">
+        <input type="text" class="prop-input" id="propBlock" disabled onchange="onPropFieldChange()">
       </div>
-      <div class="prop-field">
+      <div class="prop-field f-lot">
         <label>Lot</label>
-        <input type="text" class="prop-input" id="propLot" disabled style="width:70px;" onchange="onPropFieldChange()">
+        <input type="text" class="prop-input" id="propLot" disabled onchange="onPropFieldChange()">
       </div>
-      <div class="prop-field">
+      <div class="prop-field f-bbl">
         <label>BBL</label>
-        <div class="prop-input" id="propBbl" style="min-width:120px; background:#f1f5f9; color:var(--muted); cursor:default;">—</div>
+        <div class="prop-input" id="propBbl" style="background:#f1f5f9; color:var(--muted); cursor:default;">—</div>
       </div>
       <button class="lock-btn" id="propLockBtn" onclick="togglePropLock()" title="Unlock to edit BBL fields">🔒 Locked</button>
       <a class="dof-btn" id="propDofLink" href="#" target="_blank" rel="noopener noreferrer">🔗 Verify on DOF</a>
@@ -7961,8 +7974,8 @@ function syncFormulaBar() {
   const revertBtn = document.getElementById('fxRevertBtn');
   const acceptBtn = document.getElementById('fxAcceptBtn');
   if (!activeCellId) {
-    barRef.textContent = '—';
-    barLabel.textContent = 'Click any cell';
+    barRef.textContent = 'Click any cell';
+    barLabel.textContent = '';
     barInput.value = '';
     barInput.disabled = true;
     barResult.textContent = '—';
@@ -7973,8 +7986,8 @@ function syncFormulaBar() {
   }
   const meta = CELL_META[activeCellId];
   const st   = CELL_STATE[activeCellId];
-  barRef.textContent = activeCellId.toUpperCase();
-  barLabel.textContent = meta.label;
+  barRef.textContent = meta.label;
+  barLabel.textContent = '';
   barInput.disabled = false;
   const overridden = (st && st.override != null);
   if (meta.type === 'input') {
