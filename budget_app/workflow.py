@@ -6319,15 +6319,15 @@ function ancRenderDrawer(gl) {
       const lineTotal = _ancComputeLineTotal(l);
       const esc = (l.label || '').replace(/"/g, '&quot;');
       linesHtml += '<tr>' +
-        '<td><input type="text" value="' + esc + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'label\',this.value,false)"></td>' +
-        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.qty)||0) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'qty\',this.value,true)"></td>' +
-        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.rate)||0).toFixed(2) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'rate\',this.value,true)"></td>' +
+        '<td><input type="text" value="' + esc + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'label\',this.value,false)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.qty)||0) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'qty\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.rate)||0).toFixed(2) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'rate\',this.value,true)"></td>' +
         '<td><select onchange="ancUpdLine(\'' + gl + '\',' + idx + ',\'period\',this.value,false)">' +
           '<option value="mo"' + (l.period === 'mo' ? ' selected' : '') + '>Monthly</option>' +
           '<option value="yr"' + (l.period === 'yr' ? ' selected' : '') + '>Annual</option>' +
         '</select></td>' +
-        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.monthsActive)||12) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'monthsActive\',this.value,true)"></td>' +
-        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.occupancy)||100) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'occupancy\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.monthsActive)||12) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'monthsActive\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.occupancy)||100) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'occupancy\',this.value,true)"></td>' +
         '<td class="num anc-line-total">' + _ancFmtD2(lineTotal) + '</td>' +
         '<td><button class="anc-remove-btn" onclick="ancRemoveLine(\'' + gl + '\',' + idx + ')" title="Remove">✕</button></td>' +
       '</tr>';
@@ -6364,7 +6364,64 @@ function ancUpdLine(gl, idx, field, value, numeric) {
   if (!items[idx]) return;
   items[idx][field] = numeric ? _ancParseNum(value) : value;
   faAutoSave(gl, 'backup_json', items);
-  ancRedrawDrawer(gl, field, idx);
+  // Only update derived cells — DO NOT rewrite the input the user is typing in,
+  // otherwise value gets re-formatted (e.g. "1" → "1.00") and backspace breaks.
+  ancUpdateDerived(gl);
+}
+
+function ancUpdateDerived(gl) {
+  const row = document.querySelector('tr[data-anc-drawer="' + gl + '"]');
+  if (!row) return;
+  const line = _ancGetLine(gl);
+  if (!line) return;
+  const items = _ancGetBackup(gl);
+  const backupTotal = _ancComputeBackupTotal(gl);
+  const col6 = Number(line.proposed_budget) || 0;
+  const drift = col6 - backupTotal;
+  const inSync = Math.abs(drift) < 1;
+
+  // 1) Update per-line totals
+  const tbodyTrs = row.querySelectorAll('table.anc-lines tbody tr');
+  items.forEach(function(l, idx) {
+    const tr = tbodyTrs[idx];
+    if (!tr) return;
+    const totalCell = tr.querySelector('td.anc-line-total');
+    if (totalCell) totalCell.textContent = _ancFmtD2(_ancComputeLineTotal(l));
+  });
+
+  // 2) Update backup-total row
+  const totalRowCell = row.querySelector('tr.anc-total-row td.num');
+  if (totalRowCell) totalRowCell.textContent = _ancFmtD2(backupTotal);
+
+  // 3) Update compare strip — backup total + drift cell
+  const highlightVal = row.querySelector('.anc-compare-cell.highlight .anc-value');
+  if (highlightVal) highlightVal.textContent = _ancFmtD(backupTotal);
+
+  const driftCell = row.querySelector('.anc-compare-cell.ok, .anc-compare-cell.drift');
+  if (driftCell) {
+    driftCell.className = 'anc-compare-cell ' + (inSync ? 'ok' : 'drift');
+    const valEl = driftCell.querySelector('.anc-value');
+    if (valEl) valEl.textContent = _ancFmtD(col6);
+    const hintEl = driftCell.querySelector('.anc-hint');
+    if (hintEl) {
+      hintEl.textContent = inSync
+        ? '✓ In sync'
+        : '⚠ Drift ' + _ancFmtD(Math.abs(drift)) + (drift > 0 ? ' (Col 6 high)' : ' (Col 6 low)');
+    }
+  }
+
+  // 4) Update sync button
+  const actions = row.querySelector('.anc-actions');
+  if (actions) {
+    const oldBtn = actions.querySelector('.anc-sync-btn');
+    if (oldBtn) {
+      if (inSync) {
+        oldBtn.outerHTML = '<button class="anc-sync-btn in-sync" disabled>✓ In sync</button>';
+      } else {
+        oldBtn.outerHTML = '<button class="anc-sync-btn" onclick="ancSyncToCol6(\'' + gl + '\')">Sync Col 6 → ' + _ancFmtD(backupTotal) + '</button>';
+      }
+    }
+  }
 }
 
 function ancAddLine(gl) {
