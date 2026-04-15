@@ -339,6 +339,39 @@ with app.app_context():
             db.session.rollback()
             logger.warning(f"GL_Mapping routing backfill skipped: {e}")
 
+        # Backfill: split Repairs & Supplies lines from the lumped 'rm' category
+        # into proper 'supplies' / 'repairs' / 'maintenance' sub-buckets.
+        # The FA dashboard, PM portal, and Board Presentation all group the R&S
+        # tab by matching BudgetLine.category against those three strings, so
+        # any line left as 'rm' silently disappeared from its sub-group.
+        # Re-look-up each 'rm' row by 4-digit prefix in GL_Mapping.csv; if the
+        # CSV has no hit, leave the row untouched (we do not guess).
+        try:
+            from workflow import GL_MAPPING_CSV
+            if GL_MAPPING_CSV:
+                rm_rows = db.session.execute(
+                    db.text("SELECT id, gl_code FROM budget_lines WHERE category = 'rm'")
+                ).fetchall()
+                fixed = 0
+                for r in rm_rows:
+                    line_id, gl_code = r[0], r[1] or ""
+                    hit = GL_MAPPING_CSV.get(gl_code[:4])
+                    if not hit:
+                        continue
+                    new_cat = hit[2]
+                    if new_cat in ("supplies", "repairs", "maintenance"):
+                        db.session.execute(
+                            db.text("UPDATE budget_lines SET category = :c WHERE id = :id"),
+                            {"c": new_cat, "id": line_id}
+                        )
+                        fixed += 1
+                if fixed:
+                    db.session.commit()
+                    logger.info(f"Split {fixed} budget_lines from 'rm' into supplies/repairs/maintenance")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"R&S sub-category backfill skipped: {e}")
+
         # Backfill: correct stale gl_prefixes_json on budget_summary_rows.
         # Legacy push files carried pre-Yardi chart-of-accounts prefixes for
         # Electric/Steam/Gas/Water & Sewer/Supplies, which prevented YTD from

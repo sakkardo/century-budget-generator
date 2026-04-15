@@ -154,7 +154,14 @@ CAPITAL_GL_PREFIX = {
 # Only codes with an explicit routing rule are included — balance sheet codes and codes
 # not present in the mapping file stay Unmapped.
 def _csv_row_to_sheet(cat, sub, code):
-    """Return (sheet_name, category_key) or None if not explicitly routable."""
+    """Return (sheet_name, category_key) or None if not explicitly routable.
+
+    Note on R&S sub-categories: the UI groups the Repairs & Supplies tab into
+    Supplies / Repairs / Maintenance Contracts buckets by matching BudgetLine.category
+    against the strings 'supplies' / 'repairs' / 'maintenance'. Historically this
+    function returned a lumped 'rm' bucket which made most R&S lines invisible in
+    the Supplies group. We now preserve the sub-category from the CSV.
+    """
     if cat == "Income":
         return ("Income", "income")
     if cat == "Gen & Admin Expenses":
@@ -167,8 +174,12 @@ def _csv_row_to_sheet(cat, sub, code):
         if code.startswith("63"):
             return ("Water & Sewer", "water_sewer")
         return ("Energy", "energy")
-    if sub in ("Supplies", "Repairs", "Maintenance"):
-        return ("Repairs & Supplies", "rm")
+    if sub == "Supplies":
+        return ("Repairs & Supplies", "supplies")
+    if sub == "Repairs":
+        return ("Repairs & Supplies", "repairs")
+    if sub == "Maintenance":
+        return ("Repairs & Supplies", "maintenance")
     return None
 
 def _load_gl_mapping_csv():
@@ -925,6 +936,12 @@ def create_workflow_blueprint(db):
                 elif gl_code in gl_mapping:
                     sheet_name, row_num, desc = gl_mapping[gl_code]
                     category = SHEET_TO_CATEGORY.get(sheet_name, "other")
+                    # Repairs & Supplies needs sub-category split (supplies/repairs/maintenance)
+                    # for the UI grouping. SHEET_TO_CATEGORY returns the lumped "rm" bucket,
+                    # so look up the actual sub-category in GL_Mapping.csv by 4-digit prefix.
+                    if category == "rm":
+                        _csv_hit = GL_MAPPING_CSV.get(gl_code[:4])
+                        category = _csv_hit[2] if _csv_hit else "repairs"
                     pm_editable = False
                 elif gl_code.startswith("7"):
                     prefix = gl_code[:4]
