@@ -5649,6 +5649,54 @@ function cellBlur(el) {
   faLineChanged(gl, field, raw);
 }
 
+// ── Excel-style Tab navigation ──────────────────────────────────────────
+// Tab accepts the current cell (via blur → save), then moves focus to the
+// next editable cell in document order within the active sheet. Shift+Tab
+// moves backward. Stops at end-of-sheet (no wrap). Skips formula-display
+// cells (.cell-fx) since those open the formula bar on focus.
+function _gridTabNavigate(e) {
+  if (e.key !== 'Tab') return;
+  const t = e.target;
+  if (!t || !t.matches) return;
+  // Only hijack when focus is inside a grid data cell input
+  if (!t.matches('input.cell, input.cell-pct, input.cell-notes, input.num-input')) return;
+  // Don't interfere with formula-display cells (they open formula bar)
+  if (t.classList.contains('cell-fx')) return;
+  // Find the scroll container for the active grid
+  const container = t.closest('.fa-grid-scroll, .prgl-scroll, .grid-container, #sumTable');
+  if (!container) return;
+  // Collect all eligible editable inputs in document order
+  const nodes = container.querySelectorAll(
+    'input.cell:not(.cell-fx):not([readonly]):not([disabled]),' +
+    'input.cell-pct:not([readonly]):not([disabled]),' +
+    'input.cell-notes:not([readonly]):not([disabled]),' +
+    'input.num-input:not([readonly]):not([disabled])'
+  );
+  const all = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    // Skip hidden (display:none ancestor or offsetParent null)
+    if (el.offsetParent === null) continue;
+    all.push(el);
+  }
+  const idx = all.indexOf(t);
+  if (idx === -1) return;
+  const dir = e.shiftKey ? -1 : 1;
+  const nextIdx = idx + dir;
+  // Stop at end-of-sheet (no wrap)
+  if (nextIdx < 0 || nextIdx >= all.length) {
+    e.preventDefault();
+    return;
+  }
+  e.preventDefault();
+  // Blur current (fires cellBlur / pctCellBlur / sumCellBlur → save)
+  t.blur();
+  const next = all[nextIdx];
+  next.focus();
+  if (typeof next.select === 'function') next.select();
+}
+document.addEventListener('keydown', _gridTabNavigate, true);
+
 // Track the currently selected formula cell
 let _activeFxCell = null;
 let _formulaBarOriginal = '';  // track original value to detect changes
@@ -9971,7 +10019,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }' +
     '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }' +
     '#prGLContent table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }' +
-    '#prGLContent thead { position:sticky; top:0; z-index:20; }' +
+    '#prGLContent thead { position:sticky; top:60px; z-index:20; }' +
     '#prGLContent th { padding:8px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }' +
     '#prGLContent th.num { text-align:right; }' +
     '#prGLContent td, #prGLContent th { white-space:nowrap; width:1px; }' +
@@ -11520,7 +11568,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }
       .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
       .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }
-      .fa-grid thead { position:sticky; top:0; z-index:20; }
+      .fa-grid thead { position:sticky; top:60px; z-index:20; }
       .fa-grid th { padding:8px 6px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
       .fa-grid td, .fa-grid th { white-space:nowrap; width:1px; }
@@ -11625,7 +11673,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
   // Formula bar — Excel-style with live preview + Accept/Cancel
-  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
     '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
     '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
     '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
@@ -12464,7 +12512,7 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
-  .grid-container > table > thead { position: sticky; top: 48px; z-index: 20; }
+  .grid-container > table > thead { position: sticky; top: 60px; z-index: 20; }
   /* Inner drill-down tables (invoice details) must NOT inherit sticky thead */
   .invoice-detail-row table thead,
   .invoice-detail-row table thead tr,
