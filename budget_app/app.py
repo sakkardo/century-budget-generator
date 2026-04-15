@@ -208,6 +208,7 @@ with app.app_context():
             ("budget_lines", "fa_proposed_status", "VARCHAR(20)"),
             ("budget_lines", "fa_proposed_note", "TEXT DEFAULT ''"),
             ("budget_lines", "fa_override_value", "FLOAT"),
+            ("budget_lines", "backup_json", "TEXT"),
             ("payroll_positions", "bonus_per_employee", "FLOAT DEFAULT 0"),
             ("payroll_positions", "effective_week_override", "FLOAT"),
             ("payroll_positions", "wage_increase_mode", "VARCHAR(10)"),

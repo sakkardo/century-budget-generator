@@ -380,6 +380,16 @@ def create_workflow_blueprint(db):
 
     # ─── SQLAlchemy Models ────────────────────────────────────────────────────
 
+    def _parse_backup_json(raw):
+        """Parse a BudgetLine.backup_json string into a list of line-item dicts; empty list on any error."""
+        if not raw:
+            return []
+        try:
+            val = json.loads(raw)
+            return val if isinstance(val, list) else []
+        except Exception:
+            return []
+
     class User(db.Model):
         """User account for FA, PM, or admin roles."""
         __tablename__ = "users"
@@ -526,6 +536,10 @@ def create_workflow_blueprint(db):
         estimate_override = db.Column(db.Float, nullable=True)
         forecast_override = db.Column(db.Float, nullable=True)
 
+        # Ancillary backup worksheet (JSON list of line items for 4130/4135/4250-series income GLs)
+        # Shape: [{"label": str, "qty": num, "rate": num, "period": "mo"|"yr", "monthsActive": num, "occupancy": num}, ...]
+        backup_json = db.Column(db.Text, nullable=True)
+
         # Proposed budget (computed or manually entered)
         proposed_budget = db.Column(db.Float, default=0.0)
         proposed_formula = db.Column(db.Text, nullable=True)  # e.g. "=3462.12*1.04*12"
@@ -568,6 +582,7 @@ def create_workflow_blueprint(db):
                 "fa_proposed_status": self.fa_proposed_status,
                 "fa_proposed_note": self.fa_proposed_note or "",
                 "fa_override_value": self.fa_override_value,
+                "backup_json": _parse_backup_json(self.backup_json),
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
@@ -2129,6 +2144,25 @@ def create_workflow_blueprint(db):
                     if old_val != new_val:
                         changes.append((ofield, str(old_val), str(new_val)))
                     setattr(line, ofield, new_val)
+
+            # Ancillary backup worksheet (JSON list of line items)
+            if "backup_json" in line_data:
+                raw_bj = line_data["backup_json"]
+                if raw_bj is None or raw_bj == "":
+                    new_json = None
+                elif isinstance(raw_bj, (list, dict)):
+                    new_json = json.dumps(raw_bj)
+                else:
+                    # string — validate it parses
+                    try:
+                        json.loads(raw_bj)
+                        new_json = raw_bj
+                    except Exception:
+                        new_json = None
+                old_json = line.backup_json or ""
+                if old_json != (new_json or ""):
+                    changes.append(("backup_json", old_json[:200], (new_json or "")[:200]))
+                line.backup_json = new_json
 
             for field, old_v, new_v in changes:
                 db.session.add(BudgetRevision(
@@ -6162,6 +6196,220 @@ function faAutoSave(gl, field, value) {
     }
     setTimeout(function() { indicator.textContent = ''; }, 2000);
   }, 800);
+}
+
+// ── Ancillary Charges Backup Worksheet ───────────────────────────────
+// Enabled for Income-tab GL codes in 4130-* (storage/locker/bike/gym/maids room),
+// 4135-* (garage & parking), 4250-* (cable/appliances). Each GL can have its own
+// "backup" worksheet of line items that justify the Col 6 number. Backup total is
+// saved as BudgetLine.backup_json. Users can sync the backup total to Col 6 (clears
+// any formula and writes proposed_budget) or keep them drifted.
+const _ancExpanded = new Set();
+
+function _isAncillaryGl(gl) {
+  if (!gl) return false;
+  return /^(4130|4135|4250)-/.test(gl);
+}
+
+function _ancGetLine(gl) {
+  // Ancillary GLs always live on the Income sheet.
+  const income = (typeof allSheets !== 'undefined' && allSheets && allSheets.Income) || [];
+  return income.find(function(l) { return l.gl_code === gl; });
+}
+
+function _ancGetBackup(gl) {
+  const line = _ancGetLine(gl);
+  if (!line) return [];
+  if (!Array.isArray(line.backup_json)) line.backup_json = [];
+  return line.backup_json;
+}
+
+function _ancParseNum(s) {
+  if (typeof s === 'number') return s;
+  if (!s) return 0;
+  const n = parseFloat(String(s).replace(/[$,\s%]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+function _ancComputeLineTotal(line) {
+  const qty = Number(line.qty) || 0;
+  const rate = Number(line.rate) || 0;
+  const annualRate = line.period === 'mo' ? rate * 12 : rate;
+  const monthsFactor = (Number(line.monthsActive) || 12) / 12;
+  const occFactor = (Number(line.occupancy) || 100) / 100;
+  return qty * annualRate * monthsFactor * occFactor;
+}
+
+function _ancComputeBackupTotal(gl) {
+  return _ancGetBackup(gl).reduce(function(s, l) { return s + _ancComputeLineTotal(l); }, 0);
+}
+
+function _ancFmtD(n) {
+  if (n == null || isNaN(n)) return '$0';
+  return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+}
+
+function _ancFmtD2(n) {
+  if (n == null || isNaN(n)) return '$0.00';
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function ancToggleDrawer(gl, ev) {
+  if (ev) ev.stopPropagation();
+  const row = document.querySelector('tr[data-anc-drawer="' + gl + '"]');
+  if (!row) return;
+  const icon = document.getElementById('anc_icon_' + gl);
+  if (_ancExpanded.has(gl)) {
+    _ancExpanded.delete(gl);
+    row.style.display = 'none';
+    row.querySelector('td').innerHTML = '';
+    if (icon) icon.textContent = '+';
+  } else {
+    _ancExpanded.add(gl);
+    row.style.display = '';
+    row.querySelector('td').innerHTML = ancRenderDrawer(gl);
+    if (icon) icon.textContent = '−';
+  }
+}
+
+function ancRedrawDrawer(gl, focusField, focusIdx) {
+  const row = document.querySelector('tr[data-anc-drawer="' + gl + '"]');
+  if (!row) return;
+  row.querySelector('td').innerHTML = ancRenderDrawer(gl);
+  if (focusField != null && focusIdx != null) {
+    const fieldMap = { label:0, qty:1, rate:2, period:3, monthsActive:4, occupancy:5 };
+    const colIdx = fieldMap[focusField];
+    if (colIdx != null) {
+      const tr = row.querySelectorAll('table.anc-lines tbody tr')[focusIdx];
+      if (tr) {
+        const input = tr.children[colIdx] && tr.children[colIdx].querySelector('input, select');
+        if (input) {
+          input.focus();
+          if (input.tagName === 'INPUT' && typeof input.setSelectionRange === 'function') {
+            const len = input.value.length;
+            input.setSelectionRange(len, len);
+          }
+        }
+      }
+    }
+  }
+}
+
+function ancRenderDrawer(gl) {
+  const line = _ancGetLine(gl);
+  if (!line) return '<div class="anc-drawer"><em>Line not found.</em></div>';
+  const items = _ancGetBackup(gl);
+  const backupTotal = _ancComputeBackupTotal(gl);
+  const col6 = Number(line.proposed_budget) || 0;
+  const drift = col6 - backupTotal;
+  const inSync = Math.abs(drift) < 1;
+  const compareCls = inSync ? 'ok' : 'drift';
+  const driftLabel = inSync
+    ? '✓ In sync'
+    : '⚠ Drift ' + _ancFmtD(Math.abs(drift)) + (drift > 0 ? ' (Col 6 high)' : ' (Col 6 low)');
+  const syncBtn = inSync
+    ? '<button class="anc-sync-btn in-sync" disabled>✓ In sync</button>'
+    : '<button class="anc-sync-btn" onclick="ancSyncToCol6(\'' + gl + '\')">Sync Col 6 → ' + _ancFmtD(backupTotal) + '</button>';
+
+  let linesHtml = '';
+  if (items.length === 0) {
+    linesHtml = '<tr><td colspan="8" style="text-align:center; color:var(--gray-500); padding:16px;"><em>No backup lines yet — click "+ Add line" to start.</em></td></tr>';
+  } else {
+    items.forEach(function(l, idx) {
+      const lineTotal = _ancComputeLineTotal(l);
+      const esc = (l.label || '').replace(/"/g, '&quot;');
+      linesHtml += '<tr>' +
+        '<td><input type="text" value="' + esc + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'label\',this.value,false)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.qty)||0) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'qty\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.rate)||0).toFixed(2) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'rate\',this.value,true)"></td>' +
+        '<td><select onchange="ancUpdLine(\'' + gl + '\',' + idx + ',\'period\',this.value,false)">' +
+          '<option value="mo"' + (l.period === 'mo' ? ' selected' : '') + '>Monthly</option>' +
+          '<option value="yr"' + (l.period === 'yr' ? ' selected' : '') + '>Annual</option>' +
+        '</select></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.monthsActive)||12) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'monthsActive\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.occupancy)||100) + '" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'occupancy\',this.value,true)"></td>' +
+        '<td class="num anc-line-total">' + _ancFmtD2(lineTotal) + '</td>' +
+        '<td><button class="anc-remove-btn" onclick="ancRemoveLine(\'' + gl + '\',' + idx + ')" title="Remove">✕</button></td>' +
+      '</tr>';
+    });
+    linesHtml += '<tr class="anc-total-row"><td colspan="6" style="text-align:right;">Backup Total</td><td class="num">' + _ancFmtD2(backupTotal) + '</td><td></td></tr>';
+  }
+
+  const priorYear = Number(line.prior_year) || 0;
+  const ytd = Number(line.ytd_actual) || 0;
+
+  return '<div class="anc-drawer">' +
+    '<h3>Backup Worksheet <span class="anc-gl-small">· ' + gl + ' ' + (line.description || '') + '</span></h3>' +
+    '<div class="anc-compare-strip">' +
+      '<div class="anc-compare-cell"><div class="anc-label">Prior Year Col 6</div><div class="anc-value">' + _ancFmtD(priorYear) + '</div></div>' +
+      '<div class="anc-compare-cell"><div class="anc-label">YTD Actual</div><div class="anc-value">' + _ancFmtD(ytd) + '</div></div>' +
+      '<div class="anc-compare-cell highlight"><div class="anc-label">Backup Total</div><div class="anc-value">' + _ancFmtD(backupTotal) + '</div></div>' +
+      '<div class="anc-compare-cell ' + compareCls + '"><div class="anc-label">Current Col 6</div><div class="anc-value">' + _ancFmtD(col6) + '</div><div class="anc-hint">' + driftLabel + '</div></div>' +
+    '</div>' +
+    '<table class="anc-lines">' +
+      '<colgroup><col style="width:28%"><col style="width:10%"><col style="width:13%"><col style="width:11%"><col style="width:10%"><col style="width:11%"><col style="width:14%"><col style="width:3%"></colgroup>' +
+      '<thead><tr><th>Label</th><th class="num">Qty</th><th class="num">Rate</th><th>Period</th><th class="num">Months</th><th class="num">Occ %</th><th class="num">Annual Total</th><th></th></tr></thead>' +
+      '<tbody>' + linesHtml + '</tbody>' +
+    '</table>' +
+    '<div class="anc-actions">' +
+      '<button class="anc-add-btn" onclick="ancAddLine(\'' + gl + '\')">+ Add line</button>' +
+      syncBtn +
+    '</div>' +
+    '<div class="anc-hint">Formula: <code>Qty × Rate × (Period: mo×12 | yr×1) × (MonthsActive / 12) × (Occupancy / 100)</code></div>' +
+  '</div>';
+}
+
+function ancUpdLine(gl, idx, field, value, numeric) {
+  const items = _ancGetBackup(gl);
+  if (!items[idx]) return;
+  items[idx][field] = numeric ? _ancParseNum(value) : value;
+  faAutoSave(gl, 'backup_json', items);
+  ancRedrawDrawer(gl, field, idx);
+}
+
+function ancAddLine(gl) {
+  const items = _ancGetBackup(gl);
+  items.push({ label: 'New line', qty: 0, rate: 0, period: 'mo', monthsActive: 12, occupancy: 100 });
+  faAutoSave(gl, 'backup_json', items);
+  ancRedrawDrawer(gl);
+}
+
+function ancRemoveLine(gl, idx) {
+  const items = _ancGetBackup(gl);
+  items.splice(idx, 1);
+  faAutoSave(gl, 'backup_json', items);
+  ancRedrawDrawer(gl);
+}
+
+function ancSyncToCol6(gl) {
+  const line = _ancGetLine(gl);
+  if (!line) return;
+  const total = Math.round(_ancComputeBackupTotal(gl));
+  line.proposed_budget = total;
+  line.proposed_formula = '';
+  // Update the proposed input in the row (if visible)
+  const propInput = document.getElementById('prop_' + gl);
+  if (propInput) {
+    propInput.value = fmt(total);
+    propInput.dataset.raw = total;
+    propInput.dataset.formula = '';
+    propInput.dataset.override = 'false';
+    if (propInput.hasAttribute('data-proposed-formula')) propInput.removeAttribute('data-proposed-formula');
+    // Reset fx badge color (strip the user-formula blue styling)
+    const badgeCell = propInput.parentElement;
+    const badge = badgeCell && badgeCell.querySelector('.fa-fx');
+    if (badge) {
+      badge.style.background = '';
+      badge.style.color = '';
+      badge.style.borderColor = '';
+      badge.textContent = 'fx';
+    }
+  }
+  // Save both fields and recalc totals + drawer
+  faAutoSave(gl, 'proposed_budget', total);
+  faAutoSave(gl, 'proposed_formula', null);
+  if (typeof recalcRow === 'function') recalcRow(gl);
+  ancRedrawDrawer(gl);
 }
 
 async function dismissReclass(glCode) {
@@ -11267,6 +11515,49 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-reclass-modal .rm-gl-row .gl-code { font-family:monospace; font-weight:600; min-width:90px; }
       .fa-reclass-modal .rm-gl-row .gl-desc { flex:1; color:var(--gray-700); }
       .fa-reclass-modal .rm-footer { padding:12px 20px; border-top:1px solid var(--gray-200); display:flex; gap:8px; justify-content:flex-end; }
+
+      /* ── Ancillary backup drawer ───────────────────────── */
+      .fa-grid .anc-expand-icon { display:inline-block; width:16px; height:16px; line-height:15px; text-align:center; border-radius:3px; background:var(--blue, #2563eb); color:white; font-weight:700; font-size:12px; margin-right:6px; cursor:pointer; user-select:none; vertical-align:middle; }
+      .fa-grid .anc-expand-icon:hover { background:#1d4ed8; }
+      .fa-grid tr.anc-drawer-row td { padding:0 !important; background:#f9fafb; border-bottom:2px solid #cbd5e1; box-shadow:inset 4px 0 0 var(--blue, #2563eb); }
+      .fa-grid tr.anc-drawer-row:hover td { background:#f9fafb !important; }
+      .fa-grid .anc-drawer { padding:16px 20px 20px 36px; }
+      .fa-grid .anc-drawer h3 { font-size:13px; margin:0 0 12px 0; color:var(--text, #0f172a); font-weight:700; display:flex; align-items:center; gap:8px; }
+      .fa-grid .anc-drawer .anc-gl-small { color:var(--gray-500); font-weight:500; font-family:"SF Mono", Consolas, monospace; font-size:11px; }
+      .fa-grid .anc-compare-strip { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+      .fa-grid .anc-compare-cell { background:white; border:1px solid var(--gray-200); border-radius:6px; padding:8px 12px; min-width:130px; flex:1; }
+      .fa-grid .anc-compare-cell .anc-label { font-size:10px; text-transform:uppercase; letter-spacing:0.04em; color:var(--gray-500); font-weight:600; margin-bottom:2px; }
+      .fa-grid .anc-compare-cell .anc-value { font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }
+      .fa-grid .anc-compare-cell.highlight { background:#dbeafe; border-color:var(--blue, #2563eb); }
+      .fa-grid .anc-compare-cell.highlight .anc-value { color:var(--blue, #2563eb); }
+      .fa-grid .anc-compare-cell.ok { background:#dcfce7; border-color:#16a34a; }
+      .fa-grid .anc-compare-cell.ok .anc-value { color:#15803d; }
+      .fa-grid .anc-compare-cell.drift { background:#fef3c7; border-color:#f59e0b; }
+      .fa-grid .anc-compare-cell.drift .anc-value { color:#92400e; }
+      .fa-grid .anc-compare-cell .anc-hint { font-size:10px; color:var(--gray-500); margin-top:2px; text-align:right; }
+      .fa-grid table.anc-lines { width:100%; border-collapse:collapse; background:white; border:1px solid var(--gray-200); border-radius:6px; overflow:hidden; margin-bottom:10px; }
+      .fa-grid table.anc-lines th { font-size:10px; text-transform:uppercase; letter-spacing:0.03em; color:var(--gray-500); border-bottom:1px solid var(--gray-200); padding:8px 10px; text-align:left; font-weight:700; background:#fafbfc; }
+      .fa-grid table.anc-lines th.num { text-align:right; }
+      .fa-grid table.anc-lines td { padding:6px 10px; border-bottom:1px solid var(--gray-200); vertical-align:middle; white-space:normal; }
+      .fa-grid table.anc-lines tr:last-child td { border-bottom:none; }
+      .fa-grid table.anc-lines td.num { text-align:right; font-variant-numeric:tabular-nums; }
+      .fa-grid table.anc-lines input[type="text"] { width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; background:#fffbeb; font-family:inherit; font-variant-numeric:tabular-nums; }
+      .fa-grid table.anc-lines input.num-input { text-align:right; }
+      .fa-grid table.anc-lines input:focus { outline:none; border-color:var(--blue, #2563eb); box-shadow:0 0 0 2px #dbeafe; }
+      .fa-grid table.anc-lines select { width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; background:#fffbeb; font-family:inherit; }
+      .fa-grid table.anc-lines .anc-line-total { font-weight:600; color:var(--text, #0f172a); }
+      .fa-grid table.anc-lines .anc-remove-btn { background:none; border:none; color:var(--gray-500); cursor:pointer; font-size:14px; padding:2px 6px; border-radius:3px; }
+      .fa-grid table.anc-lines .anc-remove-btn:hover { color:#dc2626; background:#fee2e2; }
+      .fa-grid table.anc-lines tr.anc-total-row td { background:#f1f5f9; border-top:2px solid var(--text, #0f172a); font-weight:700; font-size:14px; }
+      .fa-grid .anc-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; }
+      .fa-grid .anc-add-btn { background:var(--blue, #2563eb); color:white; border:none; padding:6px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; }
+      .fa-grid .anc-add-btn:hover { background:#1d4ed8; }
+      .fa-grid .anc-sync-btn { background:#16a34a; color:white; border:none; padding:8px 16px; border-radius:4px; font-size:13px; font-weight:600; cursor:pointer; }
+      .fa-grid .anc-sync-btn:hover { background:#15803d; }
+      .fa-grid .anc-sync-btn.in-sync { background:#f1f5f9; color:var(--gray-500); cursor:default; }
+      .fa-grid .anc-hint { font-size:11px; color:var(--gray-500); }
+      .fa-grid .anc-hint code { background:#f1f5f9; padding:1px 4px; border-radius:3px; font-size:10px; }
+      @media print { .fa-grid tr.anc-drawer-row, .fa-grid .anc-expand-icon { display:none !important; } }
     `;
     document.head.appendChild(style);
   }
@@ -11362,8 +11653,15 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' style="cursor:pointer; pointer-events:none;"></td>';
     }
 
-    return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
-      '<td class="frozen frozen-gl"><span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
+    // Ancillary backup expand icon (only on Income sheet for eligible GL prefixes)
+    const isAnc = (sheetName === 'Income') && _isAncillaryGl(gl);
+    const ancExpanded = isAnc && _ancExpanded.has(gl);
+    const ancIcon = isAnc
+      ? '<span id="anc_icon_' + gl + '" class="anc-expand-icon" onclick="ancToggleDrawer(\'' + gl + '\', event)" title="Open backup worksheet">' + (ancExpanded ? '−' : '+') + '</span>'
+      : '';
+
+    const mainRow = '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
+      '<td class="frozen frozen-gl">' + ancIcon + '<span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td class="frozen frozen-desc"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a>' + oneTimeBadge + '</td>' +
       '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
@@ -11391,6 +11689,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' data-gl="' + gl + '" data-field="pct_change"' +
         ' style="cursor:pointer; pointer-events:none;"></td>' +
       '<td class="col-notes"><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td></tr>';
+
+    // Ancillary drawer row (hidden by default; filled on expand)
+    const ancDrawerRow = isAnc
+      ? '<tr class="anc-drawer-row" data-anc-drawer="' + gl + '"' + (ancExpanded ? '' : ' style="display:none;"') + '><td colspan="' + NC + '">' + (ancExpanded ? ancRenderDrawer(gl) : '') + '</td></tr>'
+      : '';
+
+    return mainRow + ancDrawerRow;
   }
 
   function sumLines(lines) {
