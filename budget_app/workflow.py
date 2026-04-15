@@ -6523,573 +6523,1712 @@ function renderSheet(sheetName, sheetLines, tabEl) {
 }
 
 // ── RE Taxes Tab — Custom Calculation Layout ──────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// RE TAXES TAB — ported from re_taxes_template_preview.html (2026-04-15)
+// ----------------------------------------------------------------------
+// Replaces the legacy renderRETaxesTab. Backend contract unchanged:
+//   GET  /api/re-taxes/<entity>  → populate cells via reTaxLoadFromBackend
+//   PUT  /api/re-taxes/<entity>  → autosave via saveRETaxes (debounced)
+// Cells: 71 registered (Section 1 + exemptions + per-GL budget lines).
+// Formula bar: click any cell → see/edit value or override formula.
+// ══════════════════════════════════════════════════════════════════════
+
 function renderRETaxesTab(contentDiv) {
   const reTaxes = window._reTaxesData;
   if (!reTaxes) {
-    contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">RE Taxes data not available. This building may not be a co-op, or DOF data has not been fetched yet.</p>';
+    contentDiv.innerHTML = '<div style="padding:40px; text-align:center; color:#64748b;">Loading RE Taxes data…</div>';
     return;
   }
-  // Formatters matching the budget workbook
-  const fmtD = v => '$' + Math.round(v).toLocaleString();
-  const fmtPct = v => (v * 100).toFixed(2) + '%';
-  const fmtRate = v => (v * 100).toFixed(4) + '%';
-  const fmtDollarInput = v => '$' + Math.round(v).toLocaleString();
-  // Styles matching FA dashboard grid
-  const thStyle = 'padding:8px 10px; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; color:var(--gray-600); white-space:nowrap;';
-  const cellEdit = 'text-align:right; padding:4px; border-bottom:1px solid var(--gray-200);';
-  const cellCalc = 'text-align:right; padding:8px 10px; border-bottom:1px solid var(--gray-200); box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600;';
-  const cellLabel = 'padding:8px 10px; font-size:13px; border-bottom:1px solid var(--gray-200);';
-  const cellNote = 'padding:8px 10px; font-size:11px; color:var(--gray-400); border-bottom:1px solid var(--gray-200);';
-  const inputDollar = 'width:100%; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
-  const inputRate = 'width:90px; text-align:right; padding:6px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-weight:500; background:var(--gray-50);';
-  const fxBadge = '<span class="re-fx-badge" style="display:none; background:#4ade80; color:#fff; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;"></span>';
-  // Wrap calculated values in a span so reCalcTaxes can update value without destroying the fx badge
-  // Each fx cell is clickable: onclick populates the formula bar
-  const fxCell = (id, val, formula, label) => {
-    return '<td style="' + cellCalc + ' cursor:pointer;" id="' + id + '" data-formula="' + formula + '" data-label="' + label + '" onclick="reTaxFxClick(this)" tabindex="0">' +
-      '<span class="re-fx-val">' + val + '</span>' + fxBadge + '</td>';
-  };
-
-  const d = reTaxes;
-  const ex = d.exemptions || {};
-
-  let html = `
-  <div style="max-width:100%; margin:0 auto;">
-    <!-- Formula bar — matches FA grid style exactly, sticky like Excel -->
-    <div id="reTaxFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:10;">
-      <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
-      <span id="reTaxFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:120px;"></span>
-      <input id="reTaxFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="reTaxFormulaPreview()" onkeydown="reTaxFormulaKeydown(event)">
-      <span id="reTaxFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:var(--green); white-space:nowrap; min-width:80px; text-align:right;"></span>
-      <button id="reTaxFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="reTaxFormulaAccept()">Accept</button>
-      <button id="reTaxFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="reTaxFormulaCancel()">Cancel</button>
-      <button id="reTaxFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="reTaxFormulaClear()" title="Remove override, revert to auto-calc">Clear</button>
-    </div>
-
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <div>
-        <div style="font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.5px;">Real Estate Tax Calculation</div>
-        <div style="font-size:12px; color:var(--gray-400); margin-top:2px;">BBL: ${d.bbl || 'N/A'} | Tax Class: ${d.tax_class || '2'} | Source: ${d.source || 'N/A'}${d.year ? ' | Year: ' + d.year : ''}</div>
-      </div>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button onclick="refreshDOFData()" style="padding:6px 14px; background:var(--primary); color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px;">
-          Refresh DOF
-        </button>
-        <a href="https://propertyinformationportal.nyc.gov/parcels/parcel/${(d.bbl || '').replace(/-/g, '')}" target="_blank" rel="noopener"
-           style="padding:6px 14px; background:#f59e0b; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px; text-decoration:none; font-weight:500;">
-          Verify on DOF
-        </a>
-      </div>
-    </div>
-
-    <table style="width:100%; border-collapse:collapse; font-size:13px;">
-      <colgroup>
-        <col style="width:32%">
-        <col style="width:18%">
-        <col style="width:18%">
-        <col style="width:32%">
-      </colgroup>
-
-      <!-- 1st Half Header -->
-      <tr style="background:var(--gray-100); border-bottom:2px solid var(--gray-300);">
-        <td colspan="4" style="padding:8px 10px; font-weight:700; font-size:13px;">1ST HALF — Current Fiscal Year (Jul–Dec)</td>
-      </tr>
-
-      <tr>
-        <td style="${cellLabel}">Transitional AV (Prior Year)</td>
-        <td style="${cellEdit}"><input type="text" id="re_av" data-raw="${d.assessed_value}" value="${fmtDollarInput(d.assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        ${fxCell('re_h1_tax', fmtD(d.first_half_tax), '= (re_av × re_rate) / 2', '1st Half Tax')}
-        <td style="${cellNote}">= (re_av × re_rate) / 2</td>
-      </tr>
-      <tr>
-        <td style="${cellLabel}">Tax Rate</td>
-        <td style="${cellEdit}"><input type="text" id="re_rate" data-raw="${d.tax_rate}" value="${fmtRate(d.tax_rate)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurRate(this)" style="${inputRate}"></td>
-        <td style="${cellNote}" colspan="2"></td>
-      </tr>
-
-      <!-- 2nd Half Header -->
-      <tr style="background:var(--gray-100); border-bottom:2px solid var(--gray-300); border-top:2px solid var(--gray-300);">
-        <td colspan="4" style="padding:8px 10px; font-weight:700; font-size:13px;">2ND HALF — Next Fiscal Year (Jan–Jun)</td>
-      </tr>
-
-      <tr>
-        <td style="${cellLabel}">Transitional AV (Current)</td>
-        <td style="${cellEdit}"><input type="text" id="re_av2" data-raw="${d.est_assessed_value}" value="${fmtDollarInput(d.est_assessed_value)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-        ${fxCell('re_h2_tax', fmtD(d.second_half_tax), '= (re_av2 × re_est_rate) / 2', '2nd Half Tax')}
-        <td style="${cellNote}">= (re_av2 × re_est_rate) / 2</td>
-      </tr>
-      <tr>
-        <td style="${cellLabel}">Trans AV Change</td>
-        ${fxCell('re_trans_pct', d.prior_trans_av > 0 ? fmtPct((d.est_assessed_value / d.assessed_value) - 1) : '\u2014', '= re_av2 / re_av - 1', 'Trans AV Change')}
-        <td style="${cellNote}" colspan="2">= re_av2 / re_av - 1</td>
-      </tr>
-      <tr>
-        <td style="${cellLabel}">Estimated Tax Rate</td>
-        <td style="${cellEdit}"><input type="text" id="re_est_rate" data-raw="${d.est_tax_rate}" value="${fmtRate(d.est_tax_rate)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurRate(this)" style="${inputRate}"></td>
-        <td style="${cellNote}" colspan="2"></td>
-      </tr>
-
-      <!-- Gross -->
-      <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300);">
-        <td style="padding:10px; font-weight:700; font-size:14px;">GROSS TAX LIABILITY</td>
-        <td style="text-align:right; padding:10px; font-weight:700; font-size:14px; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; cursor:pointer;" id="re_gross" data-formula="= re_h1_tax + re_h2_tax" data-label="Gross Tax" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.gross_tax)}</span>${fxBadge}</td>
-        <td style="${cellNote}" colspan="2">= re_h1_tax + re_h2_tax</td>
-      </tr>
-
-      <!-- Exemptions Header -->
-      <tr style="background:var(--gray-100); border-top:2px solid var(--gray-300); border-bottom:2px solid var(--gray-300);">
-        <td style="padding:8px 10px; font-weight:700; font-size:13px;">EXEMPTIONS & ABATEMENTS</td>
-        <td style="${thStyle} text-align:center;">Growth %</td>
-        <td style="${thStyle} text-align:right;">Current Year</td>
-        <td style="${thStyle} text-align:right;">Budget Year</td>
-      </tr>`;
-
-  // Exemption rows
-  const exRows = [
-    {key:'veteran', label:'Veteran Exemption', gl:'6315-0025'},
-    {key:'sche', label:'Senior Citizen (SCHE)', gl:'6315-0035'},
-    {key:'star', label:'STAR Exemption', gl:'6315-0020'},
-    {key:'coop_abatement', label:'Co-op Abatement', gl:'6315-0010'},
-  ];
-  exRows.forEach(r => {
-    const e = ex[r.key] || {growth_pct:0, current_year:0, budget_year:0};
-    html += `<tr>
-      <td style="${cellLabel}">${r.label} <span style="font-size:10px; color:var(--gray-400);">${r.gl}</span></td>
-      <td style="${cellEdit} text-align:center;"><input type="text" id="re_ex_${r.key}_growth" data-raw="${e.growth_pct}" value="${e.growth_pct ? fmtPct(e.growth_pct) : '0.00%'}" onfocus="reTaxFocus(this)" onblur="reTaxBlurPct(this)" style="${inputRate}"></td>
-      <td style="${cellEdit}"><input type="text" id="re_ex_${r.key}_current" data-raw="${e.current_year}" value="${fmtDollarInput(e.current_year)}" onfocus="reTaxFocus(this)" onblur="reTaxBlurDollar(this)" style="${inputDollar}"></td>
-      <td style="${cellCalc} cursor:pointer;" id="re_ex_${r.key}_budget" data-formula="= current × (1 + growth)" data-label="${r.label} Budget" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(e.budget_year)}</span>${fxBadge}</td>
-    </tr>`;
-  });
-
-  html += `
-      <tr style="border-top:2px solid var(--gray-300);">
-        <td style="padding:10px; font-weight:700;">TOTAL EXEMPTIONS</td>
-        <td></td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; box-shadow:inset 3px 0 0 #16a34a; color:#15803d;" id="re_ex_total_current" data-formula="= SUM(current exemptions)" data-label="Total Exemptions (Current)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_current)}</span>${fxBadge}</td>
-        <td style="text-align:right; padding:10px; font-weight:600; cursor:pointer; box-shadow:inset 3px 0 0 #16a34a; color:#15803d;" id="re_ex_total_budget" data-formula="= SUM(budget exemptions)" data-label="Total Exemptions (Budget)" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.total_exemptions_budget)}</span>${fxBadge}</td>
-      </tr>
-
-      <!-- Net Tax -->
-      <tr style="border-top:3px solid var(--gray-400);">
-        <td style="padding:12px 10px; font-weight:700; font-size:15px;">NET TAX LIABILITY</td>
-        <td style="text-align:right; padding:12px 10px; font-weight:700; font-size:15px; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; cursor:pointer;" id="re_net" data-formula="= re_gross - re_ex_total_budget" data-label="Net Tax Liability" onclick="reTaxFxClick(this)" tabindex="0"><span class="re-fx-val">${fmtD(d.net_tax)}</span>${fxBadge}</td>
-        <td style="${cellNote}" colspan="2">= re_gross - re_ex_total_budget</td>
-      </tr>
-    </table>
-
-    <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
-      <button onclick="saveRETaxes()" style="padding:8px 20px; background:var(--green, #22c55e); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600;">
-        Save RE Taxes
-      </button>
-      <span id="reTaxSaveStatus" style="font-size:12px; color:var(--gray-400);"></span>
-    </div>
-  </div>`;
-
-  contentDiv.innerHTML = html;
+  if (reTaxes.is_coop === false) {
+    contentDiv.innerHTML = '<div style="padding:40px; text-align:center; color:#64748b;">This building is not configured as a co-op. RE Taxes tab is only available for co-op buildings.</div>';
+    return;
+  }
+  const entityCode = reTaxes.entity_code;
+  window._reActiveEntity = entityCode;
+  contentDiv.innerHTML = RE_TAXES_TAB_HTML;
+  // Initialize the tab (builds GL rows, wires cell selection, loads from backend)
+  try {
+    initReTaxesTab();
+    reTaxLoadFromBackend(reTaxes);
+  } catch (err) {
+    console.error('RE Taxes init error:', err);
+    contentDiv.innerHTML = '<div style="padding:40px; text-align:center; color:#dc2626;">Failed to initialize RE Taxes tab: ' + err.message + '</div>';
+  }
 }
 
-// RE Taxes input focus/blur helpers — show raw on focus, formatted on blur
-function reTaxFocus(el) {
-  el.value = el.dataset.raw || '';
-  el.select();
-}
-function reTaxBlurDollar(el) {
-  const v = parseFloat(el.value) || 0;
-  el.dataset.raw = v;
-  el.value = '$' + Math.round(v).toLocaleString();
-  reCalcTaxes();
-}
-function reTaxBlurRate(el) {
-  let v = parseFloat(el.value) || 0;
-  if (v > 1) v = v / 100;  // user typed 9.6 meaning 9.6%
-  el.dataset.raw = v;
-  el.value = (v * 100).toFixed(4) + '%';
-  reCalcTaxes();
-}
-function reTaxBlurPct(el) {
-  let v = parseFloat(el.value) || 0;
-  if (v > 1) v = v / 100;  // user typed 3 meaning 3%
-  el.dataset.raw = v;
-  el.value = (v * 100).toFixed(2) + '%';
-  reCalcTaxes();
-}
+const RE_TAXES_TAB_HTML = `<style>
 
-// ── RE Taxes formula bar interaction (matches FA grid behavior) ────────
-let _activeReTaxFxCell = null;
-let _reTaxFormulaOriginal = '';
-
-function _showReTaxButtons(show, hasOverride) {
-  ['reTaxFormulaPreview','reTaxFormulaAccept','reTaxFormulaCancel'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = show ? 'inline-block' : 'none';
-  });
-  const clearBtn = document.getElementById('reTaxFormulaClear');
-  if (clearBtn) clearBtn.style.display = (show && hasOverride) ? 'inline-block' : 'none';
-}
-
-// ── Build live formula with actual cell values (real math, no words) ──
-function _buildReTaxFormula(id) {
-  const av1 = reRaw('re_av');
-  const rate = reRaw('re_rate');
-  const av2 = reRaw('re_av2');
-  const estRate = reRaw('re_est_rate');
-  const h1 = av1 * rate / 2;
-  const h2 = av2 * estRate / 2;
-  const gross = h1 + h2;
-
-  if (id === 're_h1_tax') return '= ' + av1 + ' * ' + rate + ' / 2';
-  if (id === 're_h2_tax') return '= ' + av2 + ' * ' + estRate + ' / 2';
-  if (id === 're_trans_pct') return av1 > 0 ? '= ' + av2 + ' / ' + av1 + ' - 1' : '= 0';
-  if (id === 're_gross') return '= ' + Math.round(h1) + ' + ' + Math.round(h2);
-
-  // Exemption budget formulas: = current * (1 + growth)
-  const exKeys = ['veteran','sche','star','coop_abatement'];
-  for (const k of exKeys) {
-    if (id === 're_ex_' + k + '_budget') {
-      const cur = reRaw('re_ex_' + k + '_current');
-      const g = reRaw('re_ex_' + k + '_growth');
-      return '= ' + cur + ' * (1 + ' + g + ')';
-    }
+:root {
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --text: #0f172a;
+    --muted: #64748b;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --good: #16a34a;
+    --bad: #dc2626;
+    --warn: #f59e0b;
+    --computed-bg: #f1f5f9;
+    --input-bg: #fffbeb;
+  }
+.re-taxes-wrap * { box-sizing: border-box; }
+.re-taxes-wrap {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 20px;
+    font-size: 13px;
+  }
+.re-taxes-wrap .wrap { max-width: 1400px; margin: 0 auto; }
+.re-taxes-wrap .header {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+.re-taxes-wrap .header h1 { font-size: 18px; margin: 0; flex: 1; }
+.re-taxes-wrap .header .subtitle { color: var(--muted); font-size: 13px; }
+.re-taxes-wrap .header select, .re-taxes-wrap .header button {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    font-size: 13px;
+    cursor: pointer;
+  }
+.re-taxes-wrap .header button:hover { background: var(--accent-light); }
+.re-taxes-wrap .layout {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 16px;
+  }
+.re-taxes-wrap .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+.re-taxes-wrap .card h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+.re-taxes-wrap .section-label {
+    font-weight: 600;
+    color: var(--text);
+    margin: 14px 0 6px 0;
+    font-size: 13px;
+  }
+.re-taxes-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.re-taxes-wrap th, .re-taxes-wrap td { padding: 6px 8px; text-align: left; vertical-align: middle; }
+.re-taxes-wrap th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+  }
+.re-taxes-wrap td.num, .re-taxes-wrap th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.re-taxes-wrap tr.total td {
+    border-top: 2px solid var(--text);
+    font-weight: 700;
+    background: #f8fafc;
+  }
+.re-taxes-wrap input[type="text"], .re-taxes-wrap input[type="number"] {
+    width: 100%;
+    padding: 5px 7px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    background: var(--input-bg);
+    font-family: inherit;
+  }
+.re-taxes-wrap input[type="text"]:focus, .re-taxes-wrap input[type="number"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-light);
+  }
+.re-taxes-wrap .computed {
+    padding: 5px 7px;
+    text-align: right;
+    background: var(--computed-bg);
+    border-radius: 4px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    border: 1px solid transparent;
+  }
+.re-taxes-wrap .computed.formula-clickable { cursor: pointer; transition: all 0.1s; }
+.re-taxes-wrap .computed.formula-clickable:hover { background: #e0e7ff; border-color: var(--accent); }
+.re-taxes-wrap #formulaPopover {
+    position: fixed;
+    z-index: 1000;
+    background: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px;
+    max-width: 460px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    display: none;
+    pointer-events: auto;
+  }
+.re-taxes-wrap #formulaPopover .title {
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    margin-bottom: 6px;
+  }
+.re-taxes-wrap #formulaPopover .formula-row {
+    padding: 3px 0;
+    line-height: 1.6;
+  }
+.re-taxes-wrap #formulaPopover .formula-row .ref { color: #93c5fd; }
+.re-taxes-wrap #formulaPopover .formula-row .val { color: #fde68a; }
+.re-taxes-wrap #formulaPopover .formula-row .res { color: #86efac; font-weight: 600; }
+.re-taxes-wrap #formulaPopover .close-x {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    cursor: pointer;
+    color: #64748b;
+    font-size: 14px;
+  }
+.re-taxes-wrap #formulaPopover .close-x:hover { color: #f1f5f9; }
+.re-taxes-wrap #formulaPopover .note-text {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #334155;
+    color: #94a3b8;
+    font-family: -apple-system, sans-serif;
+    font-size: 11px;
+    font-style: italic;
+  }
+.re-taxes-wrap .pct-input { max-width: 90px; }
+.re-taxes-wrap .av-input { max-width: 140px; }
+.re-taxes-wrap .rate-input { max-width: 90px; }
+.re-taxes-wrap .dollar-input { max-width: 120px; }
+.re-taxes-wrap .gl-code { font-family: "SF Mono", Consolas, monospace; font-size: 12px; color: var(--muted); }
+.re-taxes-wrap .gross-banner {
+    background: linear-gradient(135deg, #1e40af, #2563eb);
+    color: white;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+.re-taxes-wrap .gross-banner .label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.85;
+  }
+.re-taxes-wrap .gross-banner .value {
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+.re-taxes-wrap .sidebar .diff-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+.re-taxes-wrap .sidebar .diff-row:last-child { border-bottom: none; }
+.re-taxes-wrap .diff-row .label { color: var(--muted); }
+.re-taxes-wrap .diff-row .excel { color: var(--text); }
+.re-taxes-wrap .diff-row .status { margin-left: 6px; }
+.re-taxes-wrap .diff-row .status.ok { color: var(--good); }
+.re-taxes-wrap .diff-row .status.bad { color: var(--bad); }
+.re-taxes-wrap .output-panel {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px;
+    border-radius: 6px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+.re-taxes-wrap .output-panel .key { color: #93c5fd; }
+.re-taxes-wrap .output-panel .num { color: #86efac; }
+.re-taxes-wrap button.copy-btn {
+    margin-top: 8px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+.re-taxes-wrap button.copy-btn:hover { background: #1e40af; }
+.re-taxes-wrap .note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+.re-taxes-wrap .flag-cell { background: var(--input-bg) !important; }
+.re-taxes-wrap .right-col-layout td:first-child { width: 55%; }
+.re-taxes-wrap .ysl-badge, .re-taxes-wrap .upload-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 9px;
+    border-radius: 3px;
+    vertical-align: middle;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+.re-taxes-wrap .ysl-badge { background: #dcfce7; color: #166534; margin-left: 4px; }
+.re-taxes-wrap .upload-badge { background: #fef3c7; color: #92400e; margin-left: 4px; }
+.re-taxes-wrap /* ── Excel-style Formula Bar ───────────────────────────────────── */
+  .formula-bar {
+    position: sticky;
+    top: 0;
+    z-index: 900;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 2px 8px rgba(15,23,42,0.04);
+  }
+.re-taxes-wrap .formula-bar .cell-ref {
+    min-width: 110px;
+    padding: 5px 8px;
+    background: #f1f5f9;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: center;
+  }
+.re-taxes-wrap .formula-bar .cell-label {
+    color: var(--muted);
+    font-size: 12px;
+    min-width: 170px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+.re-taxes-wrap .formula-bar .fx-icon {
+    font-style: italic;
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 14px;
+    padding: 0 4px;
+  }
+.re-taxes-wrap .formula-bar input.fx-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    background: white;
+    text-align: left;
+    min-width: 200px;
+  }
+.re-taxes-wrap .formula-bar input.fx-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-light);
+  }
+.re-taxes-wrap .formula-bar input.fx-input:disabled {
+    background: #f8fafc;
+    color: var(--muted);
+  }
+.re-taxes-wrap .formula-bar .fx-result {
+    min-width: 130px;
+    padding: 5px 8px;
+    background: #0f172a;
+    color: #86efac;
+    border-radius: 4px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    text-align: right;
+    font-weight: 600;
+  }
+.re-taxes-wrap .formula-bar button.fx-btn {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: white;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+.re-taxes-wrap .formula-bar button.fx-btn:hover { background: var(--accent-light); }
+.re-taxes-wrap .formula-bar button.fx-btn.revert {
+    border-color: var(--warn);
+    color: #92400e;
+  }
+.re-taxes-wrap .formula-bar button.fx-btn.revert:hover { background: #fef3c7; }
+.re-taxes-wrap .formula-bar .override-badge {
+    padding: 3px 7px;
+    background: var(--warn);
+    color: white;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+.re-taxes-wrap /* ── Selected / Overridden cell states ────────────────────────── */
+  .cell-selected, .re-taxes-wrap input.cell-selected {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: -1px;
+  }
+.re-taxes-wrap .cell-overridden {
+    border-left: 3px solid var(--warn) !important;
+    padding-left: 5px !important;
+  }
+.re-taxes-wrap input.cell-overridden {
+    background: #fef3c7 !important;
+  }
+.re-taxes-wrap .computed.cell-overridden::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: var(--warn);
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+.re-taxes-wrap /* All cells are now selectable */
+  .computed, .re-taxes-wrap input[type="text"] { cursor: cell; }
+.re-taxes-wrap input[type="text"] { cursor: text; }
+.re-taxes-wrap /* ── Property card (BBL / DOF) ─────────────────────────────────── */
+  .prop-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+  }
+.re-taxes-wrap .prop-card .prop-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+.re-taxes-wrap .prop-card .prop-addr {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+  }
+.re-taxes-wrap .prop-card .prop-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+.re-taxes-wrap .prop-card label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+.re-taxes-wrap .prop-card .prop-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+.re-taxes-wrap .prop-card select.prop-input, .re-taxes-wrap .prop-card input.prop-input {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    background: #f8fafc;
+    color: var(--text);
+    font-family: inherit;
+  }
+.re-taxes-wrap .prop-card .prop-input[disabled] {
+    background: #f1f5f9;
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+.re-taxes-wrap .prop-card .prop-input:not([disabled]) { background: var(--input-bg); }
+.re-taxes-wrap .prop-card .lock-btn {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: white;
+    cursor: pointer;
+    font-size: 12px;
+  }
+.re-taxes-wrap .prop-card .lock-btn:hover { background: var(--accent-light); }
+.re-taxes-wrap .prop-card .dof-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-block;
+  }
+.re-taxes-wrap .prop-card .dof-btn:hover { background: #1e40af; }
+.re-taxes-wrap .prop-card .config-note {
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+    margin-left: 6px;
   }
 
-  // Total exemptions
-  if (id === 're_ex_total_current') {
-    const vals = exKeys.map(k => reRaw('re_ex_' + k + '_current'));
-    return '= ' + vals.join(' + ');
+.re-taxes-wrap .layout.re-single-col { grid-template-columns: 1fr !important; }
+
+.re-taxes-wrap .re-save-status { font-size: 12px; margin-left: 12px; }
+
+</style>
+<div class="re-taxes-wrap">
+
+  <!-- Excel-style Formula Bar (sticky) -->
+  <div class="formula-bar" id="formulaBar">
+    <div class="cell-ref" id="fxCellRef">—</div>
+    <div class="cell-label" id="fxCellLabel">Click any cell</div>
+    <span class="fx-icon">ƒx</span>
+    <input type="text" class="fx-input" id="fxInput" placeholder="Select a cell to see or edit its formula" disabled>
+    <div class="fx-result" id="fxResult">—</div>
+    <span class="override-badge" id="fxOverrideBadge" style="display:none;">OVERRIDDEN</span>
+    <span class="re-save-status" id="reTaxSaveStatus"></span><button class="fx-btn revert" id="fxRevertBtn" onclick="revertActiveCell()" style="display:none;">⟲ Revert</button>
+  </div>
+
+  <!-- Property / BBL card -->
+  <div class="prop-card" id="propCard">
+    <div class="prop-title" id="propBuildingName">—</div>
+    <div class="prop-addr" id="propAddress">—</div>
+    <div class="prop-row">
+      <div class="prop-field">
+        <label>Borough</label>
+        <select class="prop-input" id="propBorough" disabled onchange="onPropFieldChange()">
+          <option value="1">Manhattan</option>
+          <option value="2">Bronx</option>
+          <option value="3">Brooklyn</option>
+          <option value="4">Queens</option>
+          <option value="5">Staten Island</option>
+        </select>
+      </div>
+      <div class="prop-field">
+        <label>Block</label>
+        <input type="text" class="prop-input" id="propBlock" disabled style="width:90px;" onchange="onPropFieldChange()">
+      </div>
+      <div class="prop-field">
+        <label>Lot</label>
+        <input type="text" class="prop-input" id="propLot" disabled style="width:70px;" onchange="onPropFieldChange()">
+      </div>
+      <div class="prop-field">
+        <label>BBL</label>
+        <div class="prop-input" id="propBbl" style="min-width:120px; background:#f1f5f9; color:var(--muted); cursor:default;">—</div>
+      </div>
+      <button class="lock-btn" id="propLockBtn" onclick="togglePropLock()" title="Unlock to edit BBL fields">🔒 Locked</button>
+      <a class="dof-btn" id="propDofLink" href="#" target="_blank" rel="noopener noreferrer">🔗 Verify on DOF</a>
+      <span class="config-note" id="propConfigNote"></span>
+    </div>
+  </div>
+
+  <div class="layout re-single-col">
+    <div class="main">
+
+      <!-- SECTION 1: TAX LIABILITY COMPUTATION -->
+      <div class="card">
+        <h2>1. Tax Liability Computation</h2>
+
+        <div class="section-label">Prior Year — 2025/2026 Assessed Valuation (Actual, July 2025)</div>
+        <table class="right-col-layout">
+          <tr>
+            <td>Transitional AV</td>
+            <td class="num"><input type="text" id="g11" class="av-input" value="21,633,840"></td>
+            <td style="color:var(--muted);width:110px;">1st Half Tax</td>
+            <td class="num"><div class="computed" id="i11">—</div></td>
+          </tr>
+          <tr>
+            <td>Tax Rate — Actual</td>
+            <td class="num"><input type="text" id="g12" class="rate-input" value="12.3780%"></td>
+            <td></td>
+            <td></td>
+          </tr>
+          <tr>
+            <td>Tax Rate — Adjustment (1st & 2nd Qtr)</td>
+            <td class="num"><input type="text" id="g13" class="rate-input" value="0.0000%"></td>
+            <td style="color:var(--muted);">Adjustment</td>
+            <td class="num"><div class="computed" id="i13">—</div></td>
+          </tr>
+          <tr>
+            <td>Less: J-51 <span class="note">(enter as negative to reduce)</span></td>
+            <td class="num"><input type="text" id="i15" class="dollar-input" value="0"></td>
+            <td></td>
+            <td></td>
+          </tr>
+        </table>
+
+        <div class="section-label">Current Year — 2026/2027 Assessed Valuation (Estimated)</div>
+        <table class="right-col-layout">
+          <tr>
+            <td>Transitional AV — Estimated Increase %</td>
+            <td class="num"><input type="text" id="d17" class="pct-input" value="6.7332%"></td>
+            <td style="color:var(--muted);">Trans AV (computed)</td>
+            <td class="num"><div class="computed" id="g17">—</div></td>
+          </tr>
+          <tr>
+            <td>Tax Rate — Estimated</td>
+            <td class="num"><input type="text" id="g18" class="rate-input" value="12.4390%"></td>
+            <td style="color:var(--muted);">2nd Half Tax</td>
+            <td class="num"><div class="computed" id="i17">—</div></td>
+          </tr>
+          <tr>
+            <td>Tax Rate — Estimated Increase <span class="note">(auto)</span></td>
+            <td class="num"><div class="computed" id="d18">—</div></td>
+            <td></td>
+            <td></td>
+          </tr>
+        </table>
+
+        <div class="gross-banner">
+          <div>
+            <div class="label">Full Year Tax Liability (Gross)</div>
+            <div class="note" style="color:#bfdbfe;">= 1st Half + Adjustment + Less J-51 + 2nd Half</div>
+          </div>
+          <div class="value" id="i19">—</div>
+        </div>
+      </div>
+
+      <!-- SECTION 2: TAX BENEFITS / EXEMPTIONS -->
+      <div class="card">
+        <h2>2. Tax Benefits (Exemptions)</h2>
+        <div class="note" style="margin-bottom:8px;">
+          Enter the base-year amount. Each forward year = prior × (1 + growth %).
+          Default growth is 2% but each exemption has its own editable field.
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Exemption</th>
+              <th class="num">Base (2024/2025)</th>
+              <th class="num">Growth %</th>
+              <th class="num">2025/2026</th>
+              <th class="num">2026/2027</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Veteran</td>
+              <td class="num"><input type="text" id="f26" class="dollar-input" value="1,155.38"></td>
+              <td class="num"><input type="text" id="gp26" class="pct-input" value="2.00%"></td>
+              <td class="num"><div class="computed" id="g26">—</div></td>
+              <td class="num"><div class="computed" id="h26">—</div></td>
+            </tr>
+            <tr>
+              <td>Senior Citizen (SCHE)</td>
+              <td class="num"><input type="text" id="f27" class="dollar-input" value="16,665.51"></td>
+              <td class="num"><input type="text" id="gp27" class="pct-input" value="2.00%"></td>
+              <td class="num"><div class="computed" id="g27">—</div></td>
+              <td class="num"><div class="computed" id="h27">—</div></td>
+            </tr>
+            <tr>
+              <td>STAR</td>
+              <td class="num"><input type="text" id="f28" class="dollar-input" value="15,547.75"></td>
+              <td class="num"><input type="text" id="gp28" class="pct-input" value="2.00%"></td>
+              <td class="num"><div class="computed" id="g28">—</div></td>
+              <td class="num"><div class="computed" id="h28">—</div></td>
+            </tr>
+            <tr>
+              <td>Co-op Abatement</td>
+              <td class="num"><input type="text" id="f29" class="dollar-input" value="355,307.04"></td>
+              <td class="num"><input type="text" id="gp29" class="pct-input" value="2.00%"></td>
+              <td class="num"><div class="computed" id="g29">—</div></td>
+              <td class="num"><div class="computed" id="h29">—</div></td>
+            </tr>
+            <tr class="total">
+              <td>Total</td>
+              <td class="num"><div class="computed" id="f30">—</div></td>
+              <td></td>
+              <td class="num"><div class="computed" id="g30">—</div></td>
+              <td class="num"><div class="computed" id="h30">—</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- SECTION 3: GL BUDGET LINES -->
+      <div class="card">
+        <h2>3. GL Budget Lines → Gen & Admin Tab</h2>
+        <div class="note" style="margin-bottom:8px;">
+          <span class="ysl-badge">YSL</span> YTD Actual comes from Yardi Select Ledger (manual in this preview).
+          <span class="upload-badge">UPLOAD</span> Prior Year Budget comes from the imported approved budget.
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>GL Code</th>
+              <th>Label</th>
+              <th class="num">Jan–Sep Actual <span class="ysl-badge">YSL</span></th>
+              <th class="num">Oct–Dec Est</th>
+              <th class="num">12 Mo Forecast</th>
+              <th class="num">Prior Year Budget <span class="upload-badge">UPLOAD</span></th>
+              <th class="num">Current Year Budget</th>
+            </tr>
+          </thead>
+          <tbody id="glRows">
+            <!-- injected by JS -->
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+
+    </div>
+  </div>
+
+  
+    <div id="popBody"></div>
+  </div>
+
+</div>`;
+
+
+// ─── PROPERTY CONFIG (mirrors budget_app/dof_taxes.py PROPERTY_TAX_CONFIG) ──
+// `configured` = has canonical BBL & address on file; BBL fields lock by default.
+// Rates here are the Class 2 residential rate placeholders; in production these
+// come from DOF (and remain overrideable via the formula bar).
+const PROPERTY_DEFAULTS = {
+  '212': {
+    building_name: '221 East 36th Owners Corp.',
+    address: '225 East 36th St, New York, NY 10016',
+    borough: '1', block: '00917', lot: '0017', bbl: '1-00917-0017',
+    configured: true,
+    class2_rate: 0.123780
+  },
+  '204': {
+    building_name: '444 East 86th Street Owners Corp.',
+    address: '444 East 86th St, New York, NY 10028',
+    borough: '1', block: '01565', lot: '0029', bbl: '1-01565-0029',
+    configured: true,
+    class2_rate: 0.096324
+  },
+  '148': {
+    building_name: '130 E. 18 Owners Corp.',
+    address: '130 East 18th St, New York, NY 10003',
+    borough: '1', block: '00878', lot: '0048', bbl: '1-00878-0048',
+    configured: true,
+    class2_rate: 0.093128
+  },
+  '206': {
+    building_name: '77 Bleecker Street Corp.',
+    address: '77 Bleecker St, New York, NY 10012',
+    borough: '1', block: '00532', lot: '0020', bbl: '1-00532-0020',
+    configured: true,
+    class2_rate: 0.094396
+  },
+  '106': {
+    building_name: '5 West 14th Owners Corp.',
+    address: '10 West 15th St, New York, NY 10011',
+    borough: '1', block: '00821', lot: '0021', bbl: '1-00821-0021',
+    configured: true,
+    class2_rate: 0.123780
   }
-  if (id === 're_ex_total_budget') {
-    const vals = exKeys.map(k => {
-      const el = document.getElementById('re_ex_' + k + '_budget');
-      if (!el) return 0;
-      const span = el.querySelector('.re-fx-val');
-      return span ? parseFloat(span.textContent.replace(/[$,]/g, '')) || 0 : 0;
+};
+function bblUrl(bbl) {
+  if (!bbl) return '#';
+  // DOF Property Portal uses a borough-block-lot format with no dashes
+  const clean = String(bbl).replace(/[-\s]/g, '');
+  return 'https://propertyinformationportal.nyc.gov/parcels/parcel/' + clean;
+}
+
+// ─── 212 EXCEL CANONICAL VALUES (for diff panel) ─────────────────
+const EXCEL_TRUTH_212 = {
+  i11: 1338918.3576,
+  i17: 1436113.0078,
+  i19: 2775031.3654,
+  g17: 23090489.7149,
+  d18: 0.004928,
+  f26: 1155.38, g26: 1178.4876, h26: 1202.0574,
+  f27: 16665.51, g27: 16998.8202, h27: 17338.7966,
+  f28: 15547.75, g28: 15858.705, h28: 16175.8791,
+  f29: 355307.04, g29: 362413.1808, h29: 369661.4444,
+  f30: 388675.68, g30: 396449.1936, h30: 404378.1775,
+  h40: 2775031.37, h41: -366037.31, h42: -16017.29,
+  h43: -1190.27, h44: 0, h45: -17168.81, h46: 0,
+  h47: 2374617.68,
+  d47: 1705150.56, e47: 570261.89, f47: 2275412.45,
+  g47: 2266274
+};
+
+// ─── 212 YTD / PRIOR-BUDGET DEFAULTS (for eyeballing against Excel) ───
+// In the real integration: YTD comes from YSL, Prior Budget comes from upload
+const DEFAULTS_212 = {
+  ytd: { // D column — Jan-Sep actual from Yardi
+    '6315-0000': 1995197.55,
+    '6315-0010': -263774.17,
+    '6315-0020': -11461.63,
+    '6315-0025': -577.68,
+    '6315-0030': 817.59,
+    '6315-0035': -15051.10,
+    '6315-0040': 0
+  },
+  priorBudget: { // G column — prior year budget from upload
+    '6315-0000': 2674144,
+    '6315-0010': -363824,
+    '6315-0020': -20181,
+    '6315-0025': -1183.5,
+    '6315-0030': 0,
+    '6315-0035': -22681.5,
+    '6315-0040': 0
+  }
+};
+
+const GL_ROWS = [
+  { gl: '6315-0000', label: 'Real Estate Tax' },
+  { gl: '6315-0010', label: 'Real Estate Tax Abatement' },
+  { gl: '6315-0020', label: 'STAR Exemption' },
+  { gl: '6315-0025', label: 'Veteran Exemption' },
+  { gl: '6315-0030', label: 'SCRIE Credit' },
+  { gl: '6315-0035', label: 'SCHE Credit' },
+  { gl: '6315-0040', label: 'J-51 Credit' }
+];
+
+// ─── INPUT PARSING ───────────────────────────────────────────────
+function parseDollar(s) {
+  if (typeof s === 'number') return s;
+  if (!s) return 0;
+  s = String(s).replace(/[$,\s]/g, '');
+  if (/^\(.+\)$/.test(s)) s = '-' + s.slice(1, -1);
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+function parsePct(s) {
+  if (typeof s === 'number') return s;
+  if (!s) return 0;
+  s = String(s).trim();
+  const hasPct = s.endsWith('%');
+  s = s.replace(/%/g, '').replace(/,/g, '');
+  const n = parseFloat(s);
+  if (isNaN(n)) return 0;
+  return hasPct ? n / 100 : n;
+}
+function fmtDollar(n) {
+  if (n == null || isNaN(n)) return '$0';
+  const abs = Math.abs(n);
+  const str = abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? '($' + str + ')' : '$' + str;
+}
+function fmtDollarWhole(n) {
+  if (n == null || isNaN(n)) return '$0';
+  const abs = Math.abs(Math.round(n));
+  const str = abs.toLocaleString();
+  return n < 0 ? '($' + str + ')' : '$' + str;
+}
+function fmtPct(n) {
+  if (n == null || isNaN(n)) return '0.0000%';
+  return (n * 100).toFixed(4) + '%';
+}
+function val(id) {
+  const el = document.getElementById(id);
+  if (!el) return 0;
+  return el.tagName === 'INPUT' ? el.value : el.textContent;
+}
+function setComputed(id, n, mode) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (mode === 'pct') el.textContent = fmtPct(n);
+  else if (mode === 'dollarwhole') el.textContent = fmtDollarWhole(n);
+  else el.textContent = fmtDollar(n);
+}
+
+// ─── CELL METADATA REGISTRY ──────────────────────────────────────
+// Every cell in the tab has an entry here, so the formula bar can
+// introspect it and FAs can override any value. `type: 'input'` =
+// leaf input (user fills in). `type: 'computed'` = derived by a
+// formula; overriding pins it to a hard number.
+const CELL_META = {
+  // Section 1 — Tax Liability
+  g11: { label: 'Transitional AV (prior year)',    type: 'input',    format: 'dollar', excel: null },
+  g12: { label: 'Tax Rate — Actual',               type: 'input',    format: 'pct',    excel: null },
+  g13: { label: 'Tax Rate — Adjustment',           type: 'input',    format: 'pct',    excel: null },
+  i15: { label: 'Less: J-51',                      type: 'input',    format: 'dollar', excel: null },
+  d17: { label: 'Trans AV Increase %',             type: 'input',    format: 'pct',    excel: null },
+  g18: { label: 'Tax Rate — Estimated',            type: 'input',    format: 'pct',    excel: null },
+  i11: { label: '1st Half Tax',                    type: 'computed', format: 'dollar', excel: '=G11*G12/2' },
+  i13: { label: 'Adjustment',                      type: 'computed', format: 'dollar', excel: '=G11*G13/2' },
+  g17: { label: 'Trans AV (current, computed)',    type: 'computed', format: 'dollar', excel: '=G11*D17+G11' },
+  i17: { label: '2nd Half Tax',                    type: 'computed', format: 'dollar', excel: '=G17*G18/2' },
+  d18: { label: 'Tax Rate Est Increase',           type: 'computed', format: 'pct',    excel: '=(G18-G12)/G12' },
+  i19: { label: 'Full Year Tax Liability (Gross)', type: 'computed', format: 'dollar', excel: '=I11+I13+I15+I17' },
+  // Section 2 — Exemptions (4 rows × F/GP/G/H)
+  f26: { label: 'Veteran — Base 24/25',            type: 'input',    format: 'dollar', excel: null },
+  gp26:{ label: 'Veteran — Growth %',              type: 'input',    format: 'pct',    excel: null },
+  g26: { label: 'Veteran — 25/26',                 type: 'computed', format: 'dollar', excel: '=F26*(1+GP26)' },
+  h26: { label: 'Veteran — 26/27',                 type: 'computed', format: 'dollar', excel: '=G26*(1+GP26)' },
+  f27: { label: 'SCHE — Base 24/25',               type: 'input',    format: 'dollar', excel: null },
+  gp27:{ label: 'SCHE — Growth %',                 type: 'input',    format: 'pct',    excel: null },
+  g27: { label: 'SCHE — 25/26',                    type: 'computed', format: 'dollar', excel: '=F27*(1+GP27)' },
+  h27: { label: 'SCHE — 26/27',                    type: 'computed', format: 'dollar', excel: '=G27*(1+GP27)' },
+  f28: { label: 'STAR — Base 24/25',               type: 'input',    format: 'dollar', excel: null },
+  gp28:{ label: 'STAR — Growth %',                 type: 'input',    format: 'pct',    excel: null },
+  g28: { label: 'STAR — 25/26',                    type: 'computed', format: 'dollar', excel: '=F28*(1+GP28)' },
+  h28: { label: 'STAR — 26/27',                    type: 'computed', format: 'dollar', excel: '=G28*(1+GP28)' },
+  f29: { label: 'Co-op Abatement — Base 24/25',    type: 'input',    format: 'dollar', excel: null },
+  gp29:{ label: 'Co-op Abatement — Growth %',      type: 'input',    format: 'pct',    excel: null },
+  g29: { label: 'Co-op Abatement — 25/26',         type: 'computed', format: 'dollar', excel: '=F29*(1+GP29)' },
+  h29: { label: 'Co-op Abatement — 26/27',         type: 'computed', format: 'dollar', excel: '=G29*(1+GP29)' },
+  f30: { label: 'Exemptions Total — 24/25',        type: 'computed', format: 'dollar', excel: '=SUM(F26:F29)' },
+  g30: { label: 'Exemptions Total — 25/26',        type: 'computed', format: 'dollar', excel: '=SUM(G26:G29)' },
+  h30: { label: 'Exemptions Total — 26/27',        type: 'computed', format: 'dollar', excel: '=SUM(H26:H29)' },
+  // Totals row 47
+  d47: { label: 'Total Jan–Sep Actual',            type: 'computed', format: 'dollar', excel: '=SUM(D40:D46)' },
+  e47: { label: 'Total Oct–Dec Estimate',          type: 'computed', format: 'dollar', excel: '=SUM(E40:E46)' },
+  f47: { label: 'Total 12 Month Forecast',         type: 'computed', format: 'dollar', excel: '=SUM(F40:F46)' },
+  g47: { label: 'Total Prior Year Budget',         type: 'computed', format: 'dollar', excel: '=SUM(G40:G46)' },
+  h47: { label: 'Total Current Year Budget',       type: 'computed', format: 'dollar', excel: '=SUM(H40:H46)' }
+};
+// Section 3 per-GL cells — meta registered after GL_ROWS is defined below.
+// Excel formulas for each per-GL computed cell (matches recalc()'s glFormulas)
+const GL_EXCEL_FORMULAS = {
+  '6315-0000': { e: '=I11/2',    h: '=+I19' },
+  '6315-0010': { e: '=-G29/4',   h: '=-G29/2 + -H29/2' },
+  '6315-0020': { e: '=-G28/4',   h: '=-G28/2 + -H28/2' },
+  '6315-0025': { e: '=-G26/4',   h: '=-G26/2 + -H26/2' },
+  '6315-0030': { e: '0',         h: '0' },
+  '6315-0035': { e: '=-H27/4',   h: '=-G27/2 + -H27/2' },
+  '6315-0040': { e: '0',         h: '0' }
+};
+function registerGlCellMeta() {
+  GL_ROWS.forEach(r => {
+    CELL_META['ytd_' + r.gl] = { label: r.label + ' · Jan–Sep Actual (YSL)', type: 'input',    format: 'dollar', excel: null };
+    CELL_META['pb_'  + r.gl] = { label: r.label + ' · Prior Year Budget',    type: 'input',    format: 'dollar', excel: null };
+    CELL_META['e_'   + r.gl] = { label: r.label + ' · Oct–Dec Estimate',     type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].e };
+    CELL_META['f_'   + r.gl] = { label: r.label + ' · 12 Month Forecast',    type: 'computed', format: 'dollar', excel: '=SUM(D:E)' };
+    CELL_META['h_'   + r.gl] = { label: r.label + ' · Current Year Budget',  type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].h };
+    ['ytd_','pb_','e_','f_','h_'].forEach(prefix => {
+      const id = prefix + r.gl;
+      if (!CELL_STATE[id]) CELL_STATE[id] = { value: 0, override: null };
     });
-    return '= ' + vals.map(v => Math.round(v)).join(' + ');
-  }
-
-  // Net tax
-  if (id === 're_net') {
-    const grossVal = Math.round(gross);
-    const totalEx = exKeys.reduce((sum, k) => {
-      const el = document.getElementById('re_ex_' + k + '_budget');
-      if (!el) return sum;
-      const span = el.querySelector('.re-fx-val');
-      return sum + (span ? parseFloat(span.textContent.replace(/[$,]/g, '')) || 0 : 0);
-    }, 0);
-    return '= ' + grossVal + ' - ' + Math.round(totalEx);
-  }
-
-  return '';
+  });
 }
 
-// ── reTaxFxClick: populate formula bar with live math ─────────────────
-function reTaxFxClick(el) {
-  // Deselect previous cell
-  if (_activeReTaxFxCell && _activeReTaxFxCell !== el) {
-    _activeReTaxFxCell.style.border = '';
-    _activeReTaxFxCell.style.borderRadius = '';
-    _activeReTaxFxCell.style.background = '';
-  }
-  _activeReTaxFxCell = el;
-  const bar = document.getElementById('reTaxFormulaBar');
-  const label = document.getElementById('reTaxFormulaLabel');
-  if (!bar || !label) return;
-
-  // Label shows cell name
-  label.textContent = el.dataset.label || el.id;
-  label.style.display = 'inline';
-  bar.style.display = 'block';
-
-  // Bar shows actual math formula with real numbers, or override value
-  if (el.dataset.override === 'true') {
-    bar.value = el.dataset.overrideVal || '';
-  } else {
-    bar.value = _buildReTaxFormula(el.id);
-  }
-  _reTaxFormulaOriginal = bar.value;
-  const hasOverride = (el.dataset.override === 'true');
-  _showReTaxButtons(true, hasOverride);
-  reTaxFormulaPreview();
-
-  // Highlight active cell
-  el.style.border = '2px solid var(--blue)';
-  el.style.borderRadius = '4px';
-  el.style.background = '#ecfdf5';
-
-  // Focus bar
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
-}
-
-// ── Live preview (mirrors FA formulaBarPreview) ──────────────────────
-function reTaxFormulaPreview() {
-  const bar = document.getElementById('reTaxFormulaBar');
-  const preview = document.getElementById('reTaxFormulaPreview');
-  if (!bar || !preview || !_activeReTaxFxCell) return;
-
-  const typed = bar.value.trim();
-  if (!typed) {
-    preview.style.display = 'none';
-    const hasOverride = (_activeReTaxFxCell.dataset.override === 'true');
-    _showReTaxButtons(hasOverride, hasOverride);
-    return;
-  }
-
-  const result = safeEvalFormula(typed);
-  const isChanged = typed !== _reTaxFormulaOriginal;
-  if (result !== null) {
-    preview.textContent = '= $' + Math.round(result).toLocaleString();
-    preview.style.color = isChanged ? '#059669' : 'var(--green)';
-  } else if (/^[\d$,.\-\s]+$/.test(typed)) {
-    const num = parseFloat(typed.replace(/[$,]/g, '')) || 0;
-    preview.textContent = '= $' + Math.round(num).toLocaleString();
-    preview.style.color = isChanged ? '#2563eb' : 'var(--blue)';
-  } else {
-    // Non-evaluable formula — show current cell value
-    const valSpan = _activeReTaxFxCell.querySelector('.re-fx-val');
-    preview.textContent = valSpan ? valSpan.textContent : '';
-    preview.style.color = 'var(--green)';
-  }
-  preview.style.display = 'inline-block';
-  const hasOverride = (_activeReTaxFxCell.dataset.override === 'true');
-  _showReTaxButtons(true, hasOverride || isChanged);
-}
-
-// ── Accept (mirrors FA formulaBarAccept) ─────────────────────────────
-function reTaxFormulaAccept() {
-  const bar = document.getElementById('reTaxFormulaBar');
-  if (!bar || !_activeReTaxFxCell) return;
-  const el = _activeReTaxFxCell;
-  const typed = bar.value.trim();
-  if (typed === _reTaxFormulaOriginal) { reTaxFormulaCancel(); return; }
-
-  const formulaResult = safeEvalFormula(typed);
-  const numericVal = parseFloat(typed.replace(/[$,]/g, '')) || null;
-
-  if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
-    // User typed a formula — evaluate it, store as override
-    const rounded = Math.round(formulaResult);
-    const valSpan = el.querySelector('.re-fx-val');
-    if (valSpan) valSpan.textContent = '$' + rounded.toLocaleString();
-    el.dataset.override = 'true';
-    el.dataset.overrideVal = typed;
-    // Badge → blue fx (formula override)
-    const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; badge.style.display = 'inline-block'; }
-  } else if (typed !== '' && numericVal !== null && /^[\d$,.\-\s]+$/.test(typed)) {
-    // User typed a plain number — store as override
-    const rounded = Math.round(numericVal);
-    const valSpan = el.querySelector('.re-fx-val');
-    if (valSpan) valSpan.textContent = '$' + rounded.toLocaleString();
-    el.dataset.override = 'true';
-    el.dataset.overrideVal = typed;
-    // Badge → pencil (manual override)
-    const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = '\u270e'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; badge.style.display = 'inline-block'; }
-  } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
-    // Revert to auto formula
-    el.dataset.override = 'false';
-    el.dataset.overrideVal = '';
-    const badge = el.querySelector('.re-fx-badge');
-    if (badge) { badge.textContent = ''; badge.style.display = 'none'; }
-    reCalcTaxes();
-  }
-
-  // Green flash feedback (same as FA)
-  el.style.border = '2px solid var(--green)';
-  el.style.background = '#ecfdf5';
-  const preview = document.getElementById('reTaxFormulaPreview');
-  if (preview) {
-    preview.textContent = '\u2713 Accepted';
-    preview.style.color = 'var(--green)';
-    preview.style.display = 'inline-block';
-  }
-  _showReTaxButtons(false, false);
-  _reTaxFormulaOriginal = bar.value.trim();
-  setTimeout(() => {
-    el.style.border = '';
-    el.style.borderRadius = '';
-    el.style.background = '';
-    if (preview) preview.style.display = 'none';
-  }, 1200);
-
-  // Auto-save after override
-  saveRETaxes();
-}
-
-// ── Cancel (mirrors FA formulaBarCancel) ─────────────────────────────
-function reTaxFormulaCancel() {
-  const bar = document.getElementById('reTaxFormulaBar');
-  if (bar) bar.value = _reTaxFormulaOriginal;
-  _showReTaxButtons(false, false);
-  const preview = document.getElementById('reTaxFormulaPreview');
-  if (preview) preview.style.display = 'none';
-  if (_activeReTaxFxCell) {
-    _activeReTaxFxCell.style.border = '';
-    _activeReTaxFxCell.style.borderRadius = '';
-    _activeReTaxFxCell.style.background = '';
-  }
-}
-
-// ── Clear: remove override, revert to auto-calc (mirrors FA formulaBarClear) ─
-function reTaxFormulaClear() {
-  if (!_activeReTaxFxCell) return;
-  const el = _activeReTaxFxCell;
-  el.dataset.override = 'false';
-  el.dataset.overrideVal = '';
-  const badge = el.querySelector('.re-fx-badge');
-  if (badge) { badge.textContent = ''; badge.style.display = 'none'; }
-  reCalcTaxes();
-  const bar = document.getElementById('reTaxFormulaBar');
-  if (bar) bar.value = el.dataset.formula || '';
-  _reTaxFormulaOriginal = bar ? bar.value : '';
-  _showReTaxButtons(false, false);
-  el.style.border = '';
-  el.style.borderRadius = '';
-  el.style.background = '';
-  saveRETaxes();
-}
-
-// ── Keyboard: Enter = Accept, Escape = Cancel (same as FA) ──────────
-function reTaxFormulaKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    reTaxFormulaAccept();
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    reTaxFormulaCancel();
-  }
-}
-
-// ── Deselect when clicking outside (same as FA fxCellBlur pattern) ───
-document.addEventListener('click', function(e) {
-  if (!_activeReTaxFxCell) return;
-  const wrap = document.getElementById('reTaxFormulaBarWrap');
-  if (_activeReTaxFxCell.contains(e.target)) return;
-  if (wrap && wrap.contains(e.target)) return;
-  // Clicked outside — deselect
-  _activeReTaxFxCell.style.border = '';
-  _activeReTaxFxCell.style.borderRadius = '';
-  _activeReTaxFxCell.style.background = '';
-  _activeReTaxFxCell = null;
-  const bar = document.getElementById('reTaxFormulaBar');
-  const label = document.getElementById('reTaxFormulaLabel');
-  const preview = document.getElementById('reTaxFormulaPreview');
-  if (bar) { bar.value = ''; bar.placeholder = 'Click a green formula cell to view its formula...'; }
-  if (label) label.style.display = 'none';
-  if (preview) preview.style.display = 'none';
-  _showReTaxButtons(false, false);
+// ─── CELL STATE (override tracking) ──────────────────────────────
+// For inputs: `value` tracks the current value (for formula bar display).
+// For computed: `override` null = use formula; number = pinned override.
+const CELL_STATE = {};
+Object.keys(CELL_META).forEach(id => {
+  CELL_STATE[id] = { value: 0, override: null };
 });
 
-// Helper: read raw numeric value from data-raw attribute (inputs show formatted text)
-function reRaw(id) {
+let activeCellId = null;
+
+// Format a number based on a cell's format
+function fmtForCell(id, n) {
+  const meta = CELL_META[id];
+  if (!meta) return String(n);
+  if (meta.format === 'pct') return fmtPct(n);
+  if (meta.format === 'dollar') return fmtDollar(n);
+  return String(n);
+}
+function parseForCell(id, s) {
+  const meta = CELL_META[id];
+  if (!meta) return 0;
+  if (meta.format === 'pct') return parsePct(s);
+  return parseDollar(s);
+}
+// Return the "raw" current value of a cell (number) — used during recalc
+function cellRaw(id) {
+  const st = CELL_STATE[id];
+  if (st && st.override != null) return st.override;
+  // Inputs read from the DOM; computed get their value set during recalc
+  const meta = CELL_META[id];
+  if (!meta) return 0;
+  if (meta.type === 'input') {
+    const el = document.getElementById(id);
+    if (!el) return 0;
+    return parseForCell(id, el.value);
+  }
+  return (st && st.value) || 0;
+}
+
+// ─── BUILD GL ROWS ───────────────────────────────────────────────
+function buildGlRows() {
+  const tbody = document.getElementById('glRows');
+  let html = '';
+  GL_ROWS.forEach((r, i) => {
+    const glKey = r.gl;
+    const ytdId = 'ytd_' + glKey;
+    const pbId  = 'pb_'  + glKey;
+    const eId   = 'e_'   + glKey;
+    const fId   = 'f_'   + glKey;
+    const hId   = 'h_'   + glKey;
+    const ytdDefault = DEFAULTS_212.ytd[glKey] ?? 0;
+    const pbDefault = DEFAULTS_212.priorBudget[glKey] ?? 0;
+    html += `<tr>
+      <td class="gl-code">${glKey}</td>
+      <td>${r.label}</td>
+      <td class="num"><input type="text" id="${ytdId}" class="dollar-input" value="${ytdDefault.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}"></td>
+      <td class="num"><div class="computed formula-clickable" id="${eId}" >—</div></td>
+      <td class="num"><div class="computed formula-clickable" id="${fId}" >—</div></td>
+      <td class="num"><input type="text" id="${pbId}" class="dollar-input" value="${pbDefault.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}"></td>
+      <td class="num"><div class="computed formula-clickable" id="${hId}" >—</div></td>
+    </tr>`;
+  });
+  html += `<tr class="total">
+    <td colspan="2">Total</td>
+    <td class="num"><div class="computed formula-clickable" id="d47" >—</div></td>
+    <td class="num"><div class="computed formula-clickable" id="e47" >—</div></td>
+    <td class="num"><div class="computed formula-clickable" id="f47" >—</div></td>
+    <td class="num"><div class="computed formula-clickable" id="g47" >—</div></td>
+    <td class="num"><div class="computed formula-clickable" id="h47" >—</div></td>
+  </tr>`;
+  tbody.innerHTML = html;
+}
+
+// Global state captured each recalc so the formula popover can read substituted values
+const STATE = {};
+
+// Helper used by recalc — if a computed cell has an override, return it;
+// otherwise use the freshly-computed formula value. Also stores result on
+// CELL_STATE so the formula bar can read it back.
+function computedOrOverride(id, formulaVal) {
+  const st = CELL_STATE[id] || (CELL_STATE[id] = { value: 0, override: null });
+  const final = (st.override != null) ? st.override : formulaVal;
+  st.value = final;
+  return final;
+}
+
+// ─── CORE RECALC (mirrors 212 RE Taxes tab formulas exactly) ──────
+function recalc() {
+  // Inputs — read via cellRaw which respects overrides on input cells too
+  const G11 = cellRaw('g11');
+  const G12 = cellRaw('g12');
+  const G13 = cellRaw('g13');
+  const I15 = cellRaw('i15');
+  const D17 = cellRaw('d17');
+  const G18 = cellRaw('g18');
+
+  // Keep input value in state so formula bar reflects typed values
+  CELL_STATE.g11.value = G11;
+  CELL_STATE.g12.value = G12;
+  CELL_STATE.g13.value = G13;
+  CELL_STATE.i15.value = I15;
+  CELL_STATE.d17.value = D17;
+  CELL_STATE.g18.value = G18;
+
+  // Section 1 formulas
+  const I11 = computedOrOverride('i11', (G11 * G12) / 2);           // =G11*G12/2
+  const I13 = computedOrOverride('i13', (G11 * G13) / 2);           // =G11*G13/2
+  const G17 = computedOrOverride('g17', G11 * D17 + G11);           // =G11*D17+G11
+  const D18 = computedOrOverride('d18', G12 !== 0 ? (G18 - G12) / G12 : 0); // =(G18-G12)/G12
+  const I17 = computedOrOverride('i17', (G17 * G18) / 2);           // =G17*G18/2
+  const I19 = computedOrOverride('i19', I11 + I13 + I15 + I17);     // =SUM(I11:I18)
+
+  setComputed('i11', I11);
+  setComputed('i13', I13);
+  setComputed('g17', G17, 'dollarwhole');
+  setComputed('i17', I17);
+  setComputed('d18', D18, 'pct');
+  document.getElementById('i19').textContent = fmtDollar(I19);
+
+  // Section 2 — exemptions (overrides honored on F, GP, G, H)
+  const exemptions = [
+    { base: 'f26', gp: 'gp26', g: 'g26', h: 'h26' },
+    { base: 'f27', gp: 'gp27', g: 'g27', h: 'h27' },
+    { base: 'f28', gp: 'gp28', g: 'g28', h: 'h28' },
+    { base: 'f29', gp: 'gp29', g: 'g29', h: 'h29' }
+  ];
+  let F30 = 0, G30 = 0, H30 = 0;
+  const ex = {};
+  exemptions.forEach(e => {
+    const F = cellRaw(e.base);          // input — override returns override
+    const gp = cellRaw(e.gp);
+    CELL_STATE[e.base].value = F;
+    CELL_STATE[e.gp].value = gp;
+    const G = computedOrOverride(e.g, F * (1 + gp));
+    const H = computedOrOverride(e.h, G * (1 + gp));
+    setComputed(e.g, G);
+    setComputed(e.h, H);
+    ex[e.base] = F; ex[e.g] = G; ex[e.h] = H;
+    F30 += F; G30 += G; H30 += H;
+  });
+  F30 = computedOrOverride('f30', F30);
+  G30 = computedOrOverride('g30', G30);
+  H30 = computedOrOverride('h30', H30);
+  setComputed('f30', F30);
+  setComputed('g30', G30);
+  setComputed('h30', H30);
+
+  // Section 3 — GL lines
+  // E column (Oct-Dec Est) — mirrors Excel exactly, including SCHE using H27 not G27
+  const glFormulas = {
+    '6315-0000': { e: I11 / 2,       h: I19 },                           // E=I11/2, H=I19
+    '6315-0010': { e: -ex.g29 / 4,   h: -ex.g29 / 2 - ex.h29 / 2 },      // E=-G29/4, H=-(G29+H29)/2
+    '6315-0020': { e: -ex.g28 / 4,   h: -ex.g28 / 2 - ex.h28 / 2 },      // E=-G28/4, H=-(G28+H28)/2  (Excel: G28*-0.5 + H28/2*-1, same result)
+    '6315-0025': { e: -ex.g26 / 4,   h: -ex.g26 / 2 - ex.h26 / 2 },      // E=-G26/4, H=-(G26+H26)/2
+    '6315-0030': { e: 0,             h: 0 },                              // SCRIE — always 0 in 212
+    '6315-0035': { e: -ex.h27 / 4,   h: -ex.g27 / 2 - ex.h27 / 2 },      // E=-H27/4 (Excel quirk!), H=-(G27+H27)/2
+    '6315-0040': { e: 0,             h: 0 }                               // J-51 — always 0
+  };
+
+  let D47 = 0, E47 = 0, F47 = 0, G47 = 0, H47 = 0;
+  STATE.rows = {};
+  GL_ROWS.forEach(r => {
+    const glKey = r.gl;
+    const D = cellRaw('ytd_' + glKey);            // input (Jan-Sep Actual from YSL)
+    const G = cellRaw('pb_'  + glKey);            // input (Prior Year Budget)
+    CELL_STATE['ytd_' + glKey].value = D;
+    CELL_STATE['pb_'  + glKey].value = G;
+    const E = computedOrOverride('e_' + glKey, glFormulas[glKey].e);  // computed
+    const F = computedOrOverride('f_' + glKey, D + E);                 // computed
+    const H = computedOrOverride('h_' + glKey, glFormulas[glKey].h);   // computed
+    setComputed('e_' + glKey, E);
+    setComputed('f_' + glKey, F);
+    setComputed('h_' + glKey, H);
+    D47 += D; E47 += E; F47 += F; G47 += G; H47 += H;
+    STATE.rows[glKey] = { D, E, F, G, H, label: r.label };
+  });
+  D47 = computedOrOverride('d47', D47);
+  E47 = computedOrOverride('e47', E47);
+  F47 = computedOrOverride('f47', F47);
+  G47 = computedOrOverride('g47', G47);
+  H47 = computedOrOverride('h47', H47);
+  STATE.I11 = I11; STATE.I17 = I17; STATE.I19 = I19;
+  STATE.G26 = ex.g26; STATE.H26 = ex.h26;
+  STATE.G27 = ex.g27; STATE.H27 = ex.h27;
+  STATE.G28 = ex.g28; STATE.H28 = ex.h28;
+  STATE.G29 = ex.g29; STATE.H29 = ex.h29;
+  STATE.D47 = D47; STATE.E47 = E47; STATE.F47 = F47; STATE.G47 = G47; STATE.H47 = H47;
+  setComputed('d47', D47);
+  setComputed('e47', E47);
+  setComputed('f47', F47);
+  setComputed('g47', G47);
+  setComputed('h47', H47);
+
+  // GL output panel (what pushes to Gen & Admin Col 6)
+  const payload = {};
+  GL_ROWS.forEach(r => {
+    payload[r.gl] = Math.round(glFormulas[r.gl].h * 100) / 100;
+  });
+  const jsonEl = document.getElementById('jsonOutput');
+  let jsonHtml = '{\n';
+  Object.entries(payload).forEach(([k, v], i, arr) => {
+    jsonHtml += `  <span class="key">"${k}"</span>: <span class="num">${v.toFixed(2)}</span>${i < arr.length-1 ? ',' : ''}\n`;
+  });
+  jsonHtml += '}';
+  jsonEl.innerHTML = jsonHtml;
+  jsonEl.dataset.plain = JSON.stringify(payload, null, 2);
+
+  // Paint override indicators + refresh formula bar for the active cell
+  paintOverrideIndicators();
+  syncFormulaBar();
+
+  // Diff panel
+  renderDiff({
+    i11: I11, i13: I13, i17: I17, i19: I19, g17: G17, d18: D18,
+    f26: ex.f26, g26: ex.g26, h26: ex.h26,
+    f27: ex.f27, g27: ex.g27, h27: ex.h27,
+    f28: ex.f28, g28: ex.g28, h28: ex.h28,
+    f29: ex.f29, g29: ex.g29, h29: ex.h29,
+    f30: F30, g30: G30, h30: H30,
+    h40: glFormulas['6315-0000'].h,
+    h41: glFormulas['6315-0010'].h,
+    h42: glFormulas['6315-0020'].h,
+    h43: glFormulas['6315-0025'].h,
+    h44: glFormulas['6315-0030'].h,
+    h45: glFormulas['6315-0035'].h,
+    h46: glFormulas['6315-0040'].h,
+    h47: H47, d47: D47, e47: E47, f47: F47, g47: G47
+  });
+}
+
+// ─── FORMULA POPOVER (click on a Section 3 computed cell) ─────────
+const FORMULA_DEFS = {
+  // Each entry returns { excel, expanded, result, note }
+  // E column — Oct-Dec Estimate
+  'e_6315-0000': () => ({
+    title: '6315-0000 Real Estate Tax · Oct–Dec Est',
+    excel: '=I11/2',
+    expanded: `= ${fmtDollar(STATE.I11)} / 2`,
+    result: STATE.rows['6315-0000'].E,
+    note: '1st Half Tax (I11) ÷ 2 = quarterly portion (Oct–Dec)'
+  }),
+  'e_6315-0010': () => ({
+    title: '6315-0010 Real Estate Tax Abatement · Oct–Dec Est',
+    excel: '=-G29/4',
+    expanded: `= -${fmtDollar(STATE.G29)} / 4`,
+    result: STATE.rows['6315-0010'].E,
+    note: 'Negative ¼ of current-year (25/26) Co-op Abatement = one quarter of annual benefit'
+  }),
+  'e_6315-0020': () => ({
+    title: '6315-0020 STAR Exemption · Oct–Dec Est',
+    excel: '=-G28/4',
+    expanded: `= -${fmtDollar(STATE.G28)} / 4`,
+    result: STATE.rows['6315-0020'].E,
+    note: 'Negative ¼ of current-year (25/26) STAR'
+  }),
+  'e_6315-0025': () => ({
+    title: '6315-0025 Veteran Exemption · Oct–Dec Est',
+    excel: '=-G26/4',
+    expanded: `= -${fmtDollar(STATE.G26)} / 4`,
+    result: STATE.rows['6315-0025'].E,
+    note: 'Negative ¼ of current-year (25/26) Veteran'
+  }),
+  'e_6315-0030': () => ({
+    title: '6315-0030 SCRIE Credit · Oct–Dec Est',
+    excel: '0',
+    expanded: '0',
+    result: 0,
+    note: 'Always 0 in 212 Excel; manually edit YTD if SCRIE applies'
+  }),
+  'e_6315-0035': () => ({
+    title: '6315-0035 SCHE Credit · Oct–Dec Est',
+    excel: '=-H27/4',
+    expanded: `= -${fmtDollar(STATE.H27)} / 4`,
+    result: STATE.rows['6315-0035'].E,
+    note: 'Excel quirk: uses next-year (26/27) value H27, not G27 like the others'
+  }),
+  'e_6315-0040': () => ({
+    title: '6315-0040 J-51 Credit · Oct–Dec Est',
+    excel: '0',
+    expanded: '0',
+    result: 0,
+    note: 'Always 0 in 212 Excel'
+  }),
+  // F column — 12 Month Forecast
+  'f_6315-0000': () => fcastFormula('6315-0000'),
+  'f_6315-0010': () => fcastFormula('6315-0010'),
+  'f_6315-0020': () => fcastFormula('6315-0020'),
+  'f_6315-0025': () => fcastFormula('6315-0025'),
+  'f_6315-0030': () => fcastFormula('6315-0030'),
+  'f_6315-0035': () => fcastFormula('6315-0035'),
+  'f_6315-0040': () => fcastFormula('6315-0040'),
+  // H column — Current Year Budget
+  'h_6315-0000': () => ({
+    title: '6315-0000 Real Estate Tax · Current Year Budget',
+    excel: '=+I19',
+    expanded: `= ${fmtDollar(STATE.I19)}`,
+    result: STATE.rows['6315-0000'].H,
+    note: 'Pulls Full Year Tax Liability (Gross) from Section 1'
+  }),
+  'h_6315-0010': () => ({
+    title: '6315-0010 Real Estate Tax Abatement · Current Year Budget',
+    excel: '=+G29/2*-1 + H29/2*-1',
+    expanded: `= -(${fmtDollar(STATE.G29)} / 2) − (${fmtDollar(STATE.H29)} / 2)`,
+    result: STATE.rows['6315-0010'].H,
+    note: 'Half of 25/26 abatement + half of 26/27 abatement, negated. Calendar year overlaps two tax years.'
+  }),
+  'h_6315-0020': () => ({
+    title: '6315-0020 STAR Exemption · Current Year Budget',
+    excel: '=+G28*-0.5 + H28/2*-1',
+    expanded: `= -(${fmtDollar(STATE.G28)} × 0.5) − (${fmtDollar(STATE.H28)} / 2)`,
+    result: STATE.rows['6315-0020'].H,
+    note: 'Excel uses G28*-0.5 (same as -G28/2). Half 25/26 + half 26/27, negated.'
+  }),
+  'h_6315-0025': () => ({
+    title: '6315-0025 Veteran Exemption · Current Year Budget',
+    excel: '=+G26/2*-1 + H26/2*-1',
+    expanded: `= -(${fmtDollar(STATE.G26)} / 2) − (${fmtDollar(STATE.H26)} / 2)`,
+    result: STATE.rows['6315-0025'].H,
+    note: 'Half 25/26 + half 26/27, negated'
+  }),
+  'h_6315-0030': () => ({
+    title: '6315-0030 SCRIE Credit · Current Year Budget',
+    excel: '0',
+    expanded: '0',
+    result: 0,
+    note: 'Always 0 in 212 Excel'
+  }),
+  'h_6315-0035': () => ({
+    title: '6315-0035 SCHE Credit · Current Year Budget',
+    excel: '=+G27/2*-1 + H27/2*-1',
+    expanded: `= -(${fmtDollar(STATE.G27)} / 2) − (${fmtDollar(STATE.H27)} / 2)`,
+    result: STATE.rows['6315-0035'].H,
+    note: 'Half 25/26 SCHE + half 26/27 SCHE, negated'
+  }),
+  'h_6315-0040': () => ({
+    title: '6315-0040 J-51 Credit · Current Year Budget',
+    excel: '0',
+    expanded: '0',
+    result: 0,
+    note: 'Always 0 in 212 Excel'
+  }),
+  // Totals row
+  'd47': () => totalFormula('D', 'Jan–Sep Actual', STATE.D47),
+  'e47': () => totalFormula('E', 'Oct–Dec Estimate', STATE.E47),
+  'f47': () => totalFormula('F', '12 Month Forecast', STATE.F47),
+  'g47': () => totalFormula('G', 'Prior Year Budget', STATE.G47),
+  'h47': () => totalFormula('H', 'Current Year Budget', STATE.H47)
+};
+
+function fcastFormula(glKey) {
+  const r = STATE.rows[glKey];
+  return {
+    title: `${glKey} ${r.label} · 12 Month Forecast`,
+    excel: '=SUM(D:E)',
+    expanded: `= ${fmtDollar(r.D)} + ${fmtDollar(r.E)}`,
+    result: r.F,
+    note: 'YTD Actual (from YSL) + Oct–Dec Estimate'
+  };
+}
+
+function totalFormula(col, label, val) {
+  let parts = [];
+  GL_ROWS.forEach(r => {
+    const v = STATE.rows[r.gl][col];
+    parts.push(fmtDollar(v));
+  });
+  return {
+    title: `Row 47 Total · ${label}`,
+    excel: `=SUM(${col}40:${col}46)`,
+    expanded: '= ' + parts.join(' + '),
+    result: val,
+    note: 'Sum of all 7 GL rows in this column'
+  };
+}
+
+function showFormula(ev, el, glKey, col) { /* popover removed — formula bar shows it */ }
+
+function hideFormulaPopover() { /* removed */ }
+
+// popover outside-click handler removed
+
+function renderDiff(computed) { /* diff panel removed in production port */ }
+
+function copyJson() { /* removed in production port */ }
+
+function toggleDiff() { /* removed in production port */ }
+
+function resetDefaults() { refreshDOFData(); }
+
+// ─── PROPERTY / BBL CARD ─────────────────────────────────────────
+let propLocked = true;   // BBL fields start locked when property is configured
+
+function loadProperty() {
+  const p = window._reActiveEntity || '204';
+  const d = PROPERTY_DEFAULTS[p];
+  const card = document.getElementById('propCard');
+  document.getElementById('propBuildingName').textContent = d ? d.building_name : 'Unknown entity';
+  document.getElementById('propAddress').textContent     = d ? d.address       : '—';
+  const boroEl  = document.getElementById('propBorough');
+  const blockEl = document.getElementById('propBlock');
+  const lotEl   = document.getElementById('propLot');
+  if (d) {
+    boroEl.value  = d.borough;
+    blockEl.value = d.block;
+    lotEl.value   = d.lot;
+  } else {
+    boroEl.value = '1'; blockEl.value = ''; lotEl.value = '';
+  }
+  propLocked = !!(d && d.configured);
+  applyPropLock();
+  // Populate the estimated tax rate (Class 2 residential) into G18 if not yet overridden
+  if (d && d.class2_rate && CELL_STATE.g18 && CELL_STATE.g18.override == null) {
+    const g18el = document.getElementById('g18');
+    if (g18el) {
+      g18el.value = (d.class2_rate * 100).toFixed(4) + '%';
+    }
+  }
+  onPropFieldChange();
+  recalc();
+}
+
+function applyPropLock() {
+  const locked = propLocked;
+  ['propBorough','propBlock','propLot'].forEach(id => {
+    document.getElementById(id).disabled = locked;
+  });
+  const btn = document.getElementById('propLockBtn');
+  btn.textContent = locked ? '🔒 Locked' : '✏️ Editing';
+  btn.title = locked ? 'Unlock to edit BBL fields' : 'Click to lock fields';
+  document.getElementById('propConfigNote').textContent =
+    locked ? 'from config — click the lock to edit' : 'unlocked — edits are local to this preview';
+}
+
+function togglePropLock() {
+  propLocked = !propLocked;
+  applyPropLock();
+}
+
+function onPropFieldChange() {
+  const boro  = document.getElementById('propBorough').value;
+  const block = document.getElementById('propBlock').value.trim();
+  const lot   = document.getElementById('propLot').value.trim();
+  // Build canonical BBL string (B-BBBBB-LLLL) when all parts present
+  let bbl = '';
+  if (boro && block && lot) {
+    bbl = boro + '-' + block.padStart(5, '0') + '-' + lot.padStart(4, '0');
+  }
+  document.getElementById('propBbl').textContent = bbl || '—';
+  const link = document.getElementById('propDofLink');
+  if (bbl) {
+    link.href = bblUrl(bbl);
+    link.style.opacity = '1';
+    link.style.pointerEvents = 'auto';
+  } else {
+    link.href = '#';
+    link.style.opacity = '0.5';
+    link.style.pointerEvents = 'none';
+  }
+}
+
+// ─── EXCEL-STYLE FORMULA BAR ─────────────────────────────────────
+function selectCell(id) {
+  if (!CELL_META[id]) return;
+  // Clear previous selection highlight
+  if (activeCellId) {
+    const prev = document.getElementById(activeCellId);
+    if (prev) prev.classList.remove('cell-selected');
+  }
+  activeCellId = id;
   const el = document.getElementById(id);
-  return el ? (parseFloat(el.dataset.raw) || 0) : 0;
-}
-// Helper: set value in a calculated cell — targets the .re-fx-val span to preserve the fx badge
-function reSetCalc(id, text) {
-  const cell = document.getElementById(id);
-  if (!cell) return;
-  const span = cell.querySelector('.re-fx-val');
-  if (span) { span.textContent = text; } else { cell.textContent = text; }
-  // Update formula bar result if this cell is currently selected
-  if (_activeReTaxFxCell === cell) {
-    const result = document.getElementById('reTaxFormulaResult');
-    if (result) result.textContent = text;
-  }
+  if (el) el.classList.add('cell-selected');
+  syncFormulaBar();
 }
 
-// Live recalculation of RE Taxes when inputs change
-function reCalcTaxes() {
-  const av1 = reRaw('re_av');
-  const rate = reRaw('re_rate');
-  const av2 = reRaw('re_av2');
-  const estRate = reRaw('re_est_rate');
-
-  const h1 = av1 * rate / 2;
-  const h2 = av2 * estRate / 2;
-  const gross = h1 + h2;
-
-  // Show trans AV change %
-  if (av1 > 0) {
-    reSetCalc('re_trans_pct', ((av2 / av1 - 1) * 100).toFixed(2) + '%');
+function syncFormulaBar() {
+  const barRef    = document.getElementById('fxCellRef');
+  const barLabel  = document.getElementById('fxCellLabel');
+  const barInput  = document.getElementById('fxInput');
+  const barResult = document.getElementById('fxResult');
+  const badge     = document.getElementById('fxOverrideBadge');
+  const revertBtn = document.getElementById('fxRevertBtn');
+  if (!activeCellId) {
+    barRef.textContent = '—';
+    barLabel.textContent = 'Click any cell';
+    barInput.value = '';
+    barInput.disabled = true;
+    barResult.textContent = '—';
+    badge.style.display = 'none';
+    revertBtn.style.display = 'none';
+    return;
   }
+  const meta = CELL_META[activeCellId];
+  const st   = CELL_STATE[activeCellId];
+  barRef.textContent = activeCellId.toUpperCase();
+  barLabel.textContent = meta.label;
+  barInput.disabled = false;
+  const overridden = (st && st.override != null);
+  if (meta.type === 'input') {
+    // For input cells, the bar shows the current literal value
+    barInput.value = fmtForCell(activeCellId, cellRaw(activeCellId));
+  } else {
+    // Computed cell — show the Excel formula if not overridden; show the numeric override value if overridden
+    if (overridden) {
+      barInput.value = fmtForCell(activeCellId, st.override);
+    } else {
+      barInput.value = meta.excel || '';
+    }
+  }
+  barResult.textContent = fmtForCell(activeCellId, (st && st.value) || 0);
+  badge.style.display = overridden ? 'inline-block' : 'none';
+  revertBtn.style.display = overridden ? 'inline-block' : 'none';
+}
 
-  reSetCalc('re_h1_tax', '$' + Math.round(h1).toLocaleString());
-  reSetCalc('re_h2_tax', '$' + Math.round(h2).toLocaleString());
-  reSetCalc('re_gross', '$' + Math.round(gross).toLocaleString());
+function commitFormulaBar() {
+  if (!activeCellId) return;
+  const meta = CELL_META[activeCellId];
+  const st   = CELL_STATE[activeCellId];
+  const raw  = document.getElementById('fxInput').value.trim();
+  if (meta.type === 'input') {
+    // If the user started with `=`, treat it as a literal number (no formula eval in MVP)
+    const cleaned = raw.replace(/^=/, '');
+    const el = document.getElementById(activeCellId);
+    if (el) el.value = cleaned;
+    recalc();
+    return;
+  }
+  // Computed cell
+  if (raw === '' || raw === meta.excel) {
+    // Empty or reverted to formula — clear override
+    st.override = null;
+  } else if (raw.startsWith('=')) {
+    // Custom formula expression — MVP: only honored if it equals the default; future: parse expression
+    st.override = null;
+    // (Could expand: allow simple `=G11*0.5` etc. — parked for later.)
+  } else {
+    // Numeric override
+    st.override = parseForCell(activeCellId, raw);
+  }
+  recalc();
+}
 
-  let totalCurrent = 0, totalBudget = 0;
-  ['veteran','sche','star','coop_abatement'].forEach(key => {
-    const growth = reRaw('re_ex_' + key + '_growth');
-    const current = reRaw('re_ex_' + key + '_current');
-    const budget = current * (1 + growth);
-    reSetCalc('re_ex_' + key + '_budget', '$' + Math.round(budget).toLocaleString());
-    totalCurrent += current;
-    totalBudget += budget;
+function revertActiveCell() {
+  if (!activeCellId) return;
+  const meta = CELL_META[activeCellId];
+  const st   = CELL_STATE[activeCellId];
+  if (meta.type === 'computed') {
+    st.override = null;
+  } else {
+    // Revert an input: clear value to 0 — user can retype
+    const el = document.getElementById(activeCellId);
+    if (el) el.value = '0';
+  }
+  recalc();
+}
+
+// Attach click-to-select to every registered cell
+function wireCellSelection() {
+  Object.keys(CELL_META).forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.dataset.fxWired === '1') return;
+    el.dataset.fxWired = '1';
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectCell(id);
+    });
+    // Remove the stale formula-popover handler so we only select
+    if (el.hasAttribute('onclick')) el.removeAttribute('onclick');
+  });
+}
+
+// Update each cell's visual override indicator after recalc
+function paintOverrideIndicators() {
+  Object.keys(CELL_META).forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const overridden = CELL_STATE[id] && CELL_STATE[id].override != null;
+    el.classList.toggle('cell-overridden', !!overridden);
+  });
+}
+
+// ─── INIT (called by renderRETaxesTab) ──
+function initReTaxesTab() {
+  buildGlRows();
+  registerGlCellMeta();        // add Section 3 cells to CELL_META/CELL_STATE
+  wireCellSelection();         // click any cell → formula bar
+
+  // Input cells: recalc on edit + trigger debounced autosave
+  document.querySelectorAll('.re-taxes-wrap input[type="text"]').forEach(el => {
+    if (el.closest('.prop-card') || el.closest('.formula-bar')) return;
+    el.addEventListener('input', () => { recalc(); autosaveReTaxes(); });
+    el.addEventListener('blur', () => { recalc(); autosaveReTaxes(); });
   });
 
-  reSetCalc('re_ex_total_current', '$' + Math.round(totalCurrent).toLocaleString());
-  reSetCalc('re_ex_total_budget', '$' + Math.round(totalBudget).toLocaleString());
-  reSetCalc('re_net', '$' + Math.round(gross - totalBudget).toLocaleString());
-}
-
-// Save RE Taxes overrides to server
-async function saveRETaxes() {
-  const overrides = {
-    first_half_av: reRaw('re_av'),
-    tax_rate: reRaw('re_rate'),
-    second_half_av: reRaw('re_av2'),
-    est_tax_rate: reRaw('re_est_rate'),
-    veteran_growth: reRaw('re_ex_veteran_growth'),
-    veteran_current: reRaw('re_ex_veteran_current'),
-    sche_growth: reRaw('re_ex_sche_growth'),
-    sche_current: reRaw('re_ex_sche_current'),
-    star_growth: reRaw('re_ex_star_growth'),
-    star_current: reRaw('re_ex_star_current'),
-    abatement_growth: reRaw('re_ex_coop_abatement_growth'),
-    abatement_current: reRaw('re_ex_coop_abatement_current'),
-  };
-  const statusEl = document.getElementById('reTaxSaveStatus');
-  statusEl.textContent = 'Saving...';
-  statusEl.style.color = 'var(--gray-500)';
-  try {
-    const resp = await fetch('/api/re-taxes/' + entityCode, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(overrides)
+  // Formula bar: Enter commits; Escape cancels. Autosave on commit.
+  const fxInputEl = document.getElementById('fxInput');
+  if (fxInputEl) {
+    fxInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitFormulaBar(); autosaveReTaxes(); }
+      else if (e.key === 'Escape') { e.preventDefault(); syncFormulaBar(); fxInputEl.blur(); }
     });
-    const result = await resp.json();
-    if (result.status === 'saved') {
-      statusEl.textContent = '✓ Saved — Gen & Admin tax lines updated';
-      statusEl.style.color = 'var(--green, #22c55e)';
-      window._reTaxesData = result.re_taxes;
-    } else {
-      statusEl.textContent = 'Error: ' + (result.error || 'Unknown');
-      statusEl.style.color = 'var(--red, #ef4444)';
-    }
-  } catch (e) {
-    statusEl.textContent = 'Error: ' + e.message;
-    statusEl.style.color = 'var(--red, #ef4444)';
+    fxInputEl.addEventListener('blur', () => {
+      if (activeCellId) { commitFormulaBar(); autosaveReTaxes(); }
+    });
   }
 }
 
-// Refresh DOF data from NYC
-async function refreshDOFData() {
-  const statusEl = document.getElementById('reTaxSaveStatus');
-  if (statusEl) { statusEl.textContent = 'Fetching from NYC DOF...'; statusEl.style.color = 'var(--gray-500)'; }
+// ─── BACKEND BRIDGE ──────────────────────────────────────────────
+// Back-solve exemption base from current + growth, handling growth=-1 edge case.
+function _reBaseFromCurrent(current, growth) {
+  const g = parseFloat(growth) || 0;
+  const c = parseFloat(current) || 0;
+  if (g <= -0.999999) return c;
+  return c / (1 + g);
+}
+
+// Populate all cells from the backend /api/re-taxes response.
+function reTaxLoadFromBackend(re) {
+  if (!re) return;
+  _reSuppressAutosave = true;  // don't trigger autosave during initial load
   try {
-    const resp = await fetch('/api/re-taxes/' + entityCode);
-    const result = await resp.json();
-    if (result.re_taxes) {
-      window._reTaxesData = result.re_taxes;
-      renderRETaxesTab(document.getElementById('sheetContent'));
-      if (statusEl) { statusEl.textContent = '✓ DOF data refreshed'; statusEl.style.color = 'var(--green, #22c55e)'; }
+    // Property card — populated from PROPERTY_DEFAULTS via the active entity
+    _rePopulatePropertyCard(re.entity_code, re);
+
+    // Section 1 — tax liability
+    _reSetInput('g11', re.assessed_value || 0, 'dollar');
+    _reSetInput('g12', re.tax_rate || 0, 'pct');
+    _reSetInput('d17', re.transitional_av_increase || 0, 'pct');
+    _reSetInput('g18', re.est_tax_rate || 0, 'pct');
+    // g13 (rate adjustment) and i15 (J-51) — UI-only, default to 0 unless overrides exist
+    _reSetInput('g13', re.rate_adjustment || 0, 'pct');
+    _reSetInput('i15', re.j51_amount || 0, 'dollar');
+
+    // Section 2 — exemptions (back-solve F column from backend's "current" = 25/26)
+    const ex = re.exemptions || {};
+    const pairs = [
+      ['f26', 'gp26', ex.veteran],
+      ['f27', 'gp27', ex.sche],
+      ['f28', 'gp28', ex.star],
+      ['f29', 'gp29', ex.coop_abatement],
+    ];
+    pairs.forEach(([fid, gpid, e]) => {
+      if (!e) return;
+      const g = e.growth_pct || 0;
+      const c = e.current_year || 0;
+      _reSetInput(fid, _reBaseFromCurrent(c, g), 'dollar');
+      _reSetInput(gpid, g, 'pct');
+    });
+
+    // Restore any saved per-cell overrides from assumptions_json (future-proofing)
+    if (re.cell_overrides) {
+      Object.entries(re.cell_overrides).forEach(([id, val]) => {
+        if (CELL_STATE[id]) CELL_STATE[id].override = val;
+      });
     }
-  } catch (e) {
-    if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red, #ef4444)'; }
+
+    recalc();
+  } finally {
+    _reSuppressAutosave = false;
   }
 }
+
+// Helper to set an input element's value, respecting format
+function _reSetInput(id, val, format) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (format === 'pct') {
+    el.value = (val * 100).toFixed(4) + '%';
+  } else if (format === 'dollar') {
+    el.value = Number(val).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  } else {
+    el.value = String(val);
+  }
+  if (CELL_STATE[id]) CELL_STATE[id].value = val;
+}
+
+// Populate the property card from PROPERTY_DEFAULTS + backend response
+function _rePopulatePropertyCard(entityCode, re) {
+  const d = PROPERTY_DEFAULTS[entityCode];
+  const nameEl = document.getElementById('propBuildingName');
+  const addrEl = document.getElementById('propAddress');
+  if (nameEl) nameEl.textContent = d ? d.building_name : (re.address || 'Unknown entity');
+  if (addrEl) addrEl.textContent = d ? d.address : (re.address || '—');
+  const boroEl = document.getElementById('propBorough');
+  const blockEl = document.getElementById('propBlock');
+  const lotEl = document.getElementById('propLot');
+  if (d) {
+    if (boroEl) boroEl.value = d.borough;
+    if (blockEl) blockEl.value = d.block;
+    if (lotEl) lotEl.value = d.lot;
+    propLocked = !!d.configured;
+  } else {
+    if (boroEl) boroEl.value = '1';
+    if (blockEl) blockEl.value = '';
+    if (lotEl) lotEl.value = '';
+    propLocked = false;
+  }
+  applyPropLock();
+  onPropFieldChange();
+}
+
+// Build the 12-key payload the backend expects.
+// Sends DERIVED current-year values (G column) for exemptions, not base (F).
+function reTaxBuildPayload() {
+  return {
+    first_half_av:     cellRaw('g11'),
+    tax_rate:          cellRaw('g12'),
+    second_half_av:    cellRaw('g17'),   // computed current transitional AV
+    est_tax_rate:      cellRaw('g18'),
+    transitional_av_increase: cellRaw('d17'),
+    veteran_growth:    cellRaw('gp26'),
+    veteran_current:   cellRaw('g26'),
+    sche_growth:       cellRaw('gp27'),
+    sche_current:      cellRaw('g27'),
+    star_growth:       cellRaw('gp28'),
+    star_current:      cellRaw('g28'),
+    abatement_growth:  cellRaw('gp29'),
+    abatement_current: cellRaw('g29'),
+    // Extra fields — backend currently ignores these, persisted for UI round-trip
+    rate_adjustment:   cellRaw('g13'),
+    j51_amount:        cellRaw('i15'),
+  };
+}
+
+// ─── AUTOSAVE ────────────────────────────────────────────────────
+let _reSaveTimer = null;
+let _reSuppressAutosave = false;
+
+function autosaveReTaxes() {
+  if (_reSuppressAutosave) return;
+  if (_reSaveTimer) clearTimeout(_reSaveTimer);
+  _reSaveTimer = setTimeout(saveRETaxes, 500);
+}
+
+async function saveRETaxes() {
+  const entity = window._reActiveEntity;
+  if (!entity) return;
+  const status = document.getElementById('reTaxSaveStatus');
+  if (status) { status.textContent = 'Saving…'; status.style.color = '#64748b'; }
+  try {
+    const payload = reTaxBuildPayload();
+    const resp = await fetch('/api/re-taxes/' + entity, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
+    window._reTaxesData = data.re_taxes || window._reTaxesData;
+    if (status) {
+      status.textContent = 'Saved ✓';
+      status.style.color = '#16a34a';
+      setTimeout(() => { if (status) status.textContent = ''; }, 2000);
+    }
+  } catch (err) {
+    console.error('saveRETaxes failed:', err);
+    if (status) {
+      status.textContent = 'Save failed: ' + err.message;
+      status.style.color = '#dc2626';
+    }
+  }
+}
+
+// Refetch DOF data from backend and repopulate cells (no full re-render)
+async function refreshDOFData() {
+  const entity = window._reActiveEntity;
+  if (!entity) return;
+  const status = document.getElementById('reTaxSaveStatus');
+  if (status) { status.textContent = 'Refreshing DOF…'; status.style.color = '#64748b'; }
+  try {
+    const resp = await fetch('/api/re-taxes/' + entity);
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
+    window._reTaxesData = data.re_taxes;
+    reTaxLoadFromBackend(data.re_taxes);
+    if (status) {
+      status.textContent = 'DOF refreshed ✓';
+      status.style.color = '#16a34a';
+      setTimeout(() => { if (status) status.textContent = ''; }, 2000);
+    }
+  } catch (err) {
+    console.error('refreshDOFData failed:', err);
+    if (status) {
+      status.textContent = 'Refresh failed: ' + err.message;
+      status.style.color = '#dc2626';
+    }
+  }
+}
+
+
 
 
 async function renderBudgetSummary(contentDiv) {
