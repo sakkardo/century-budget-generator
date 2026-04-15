@@ -8164,8 +8164,25 @@ function prAutoSizeAll() {
 
 // Payroll-only compute helpers — no accrual/unpaid in the math.
 // Kept local so renderFASheet (other tabs) keeps using faComputeEstimate/Forecast.
+// Hardcoded Payroll-tab forecast rules (manual overrides still win):
+//   5105-0035 (Bonus) → forecast pinned to current budget
+//   5150-0000 / 5155-0000 / 5160-0000 → forecast zeroed out (Option A: est=0, fcst=0)
+function prFaGetForcedOverride(l) {
+  const gl = (l.gl_code || '').trim();
+  if (gl === '5105-0035') {
+    const cb = l.current_budget || 0;
+    const ytd = l.ytd_actual || 0;
+    return { estimate: cb - ytd, forecast: cb };
+  }
+  if (gl === '5150-0000' || gl === '5155-0000' || gl === '5160-0000') {
+    return { estimate: 0, forecast: 0 };
+  }
+  return null;
+}
 function prFaComputeEstimate(l) {
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
+  const forced = prFaGetForcedOverride(l);
+  if (forced) return forced.estimate;
   if (typeof faIsFixedToBudget === 'function' && faIsFixedToBudget(l)) {
     return (l.current_budget || 0) - (l.ytd_actual || 0);
   }
@@ -8177,6 +8194,8 @@ function prFaComputeEstimate(l) {
 }
 function prFaComputeForecast(l) {
   if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
+  const forced = prFaGetForcedOverride(l);
+  if (forced) return forced.forecast;
   if (typeof faIsFixedToBudget === 'function' && faIsFixedToBudget(l)) {
     return l.current_budget || 0;
   }
