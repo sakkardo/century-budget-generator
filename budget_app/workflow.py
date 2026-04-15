@@ -148,6 +148,17 @@ CAPITAL_GL_PREFIX = {
     "7900": "Cap - Contra",
 }
 
+# One-time annual fee GLs — billed once per year, so once YTD > 0 the Mar-Dec
+# estimate must be zeroed out (otherwise the forecast gets annualized as if
+# it recurred monthly). Forecast then collapses to YTD + Accrual + Unpaid.
+# FA can still override via estimate_override if a weird case ever comes up.
+ONE_TIME_FEE_GLS = {
+    "6722-0000",  # Annual filing fee
+    "6762-0000",  # Annual inspection/permit
+    "6763-0000",  # Annual inspection/permit
+    "6764-0000",  # Annual inspection/permit
+}
+
 # Load GL_Mapping.csv (412+ entries) for routing and naming unmapped GLs.
 # Indexed by 4-digit prefix so entity-specific sub-accounts (e.g. 4010-1409) match the
 # base mapping entry (e.g. 4010-0000). Returns dict: prefix -> (description, sheet_name, category).
@@ -1833,7 +1844,11 @@ def create_workflow_blueprint(db):
                 accrual = float(line.accrual_adj or 0)
                 unpaid = float(line.unpaid_bills or 0)
                 base = ytd + accrual + unpaid
-                estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
+                # One-time fee rule: once YTD posted, no projection. Forecast = billed amount.
+                if (line.gl_code or "") in ONE_TIME_FEE_GLS and abs(base) > 0.01:
+                    estimate = 0
+                else:
+                    estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
                 forecast = base + estimate
                 line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
 
@@ -2466,7 +2481,10 @@ def create_workflow_blueprint(db):
             prior = float(line.get("prior_year", 0) or 0)
             ytd_total = ytd + accrual + unpaid
             remaining = 12 - ytd_months
-            if ytd_months > 0:
+            # One-time fee rule: once YTD posted, no more projection
+            if gl in ONE_TIME_FEE_GLS and abs(ytd_total) > 0.01:
+                est = 0
+            elif ytd_months > 0:
                 est = (ytd_total / ytd_months) * remaining
             else:
                 est = 0
@@ -6397,6 +6415,17 @@ function faIsFixedToBudget(l) {
   return gl.indexOf('6315') === 0;
 }
 
+// One-time annual fees: once YTD is posted, there is no additional billing
+// for the rest of the year, so the Mar-Dec estimate must be zero.
+// Kept in sync with Python ONE_TIME_FEE_GLS constant in workflow.py.
+const ONE_TIME_FEE_GLS = new Set(['6722-0000','6762-0000','6763-0000','6764-0000']);
+function faIsOneTimeFeeBilled(l) {
+  if (!l || !l.gl_code) return false;
+  if (!ONE_TIME_FEE_GLS.has(l.gl_code)) return false;
+  const billed = (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+  return Math.abs(billed) > 0.01;
+}
+
 function faComputeEstimate(l) {
   // Use override if FA set one
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
@@ -6405,6 +6434,8 @@ function faComputeEstimate(l) {
     const ytd = l.ytd_actual || 0;
     return cb - ytd;
   }
+  // One-time fees with a YTD posted: no more projection
+  if (faIsOneTimeFeeBilled(l)) return 0;
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
@@ -6436,6 +6467,9 @@ function faGetFormulaTooltip(l, field) {
       const cb = l.current_budget || 0;
       return '=' + cb + ' − ' + ytd + '  (current budget − YTD, GL 6315 pinned)';
     }
+    if (faIsOneTimeFeeBilled(l)) {
+      return '= 0  (one-time fee rule, GL ' + (l.gl_code || '') + ' — already billed YTD)';
+    }
     if (YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
     return '=0';
   }
@@ -6443,6 +6477,9 @@ function faGetFormulaTooltip(l, field) {
     if (faIsFixedToBudget(l)) {
       const cb = l.current_budget || 0;
       return '=' + cb + '  (pinned to current budget, GL 6315)';
+    }
+    if (faIsOneTimeFeeBilled(l)) {
+      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no add\\'l projection)';
     }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
@@ -9491,6 +9528,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
+    const oneTimeBadge = faIsOneTimeFeeBilled(l) ? ' <span title="One-time annual fee — forecast = YTD only" style="background:#ffedd5; color:#ea580c; font-size:10px; font-weight:700; padding:2px 6px; border-radius:8px; border:1px solid #fdba74; letter-spacing:0.5px; cursor:help;">1×</span>' : '';
 
     const estFormula = faGetFormulaTooltip(l, 'estimate');
     const fcstFormula = faGetFormulaTooltip(l, 'forecast');
@@ -9532,7 +9570,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
     return '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
       '<td class="frozen frozen-gl"><span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
-      '<td class="frozen frozen-desc"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a></td>' +
+      '<td class="frozen frozen-desc"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a>' + oneTimeBadge + '</td>' +
       '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
@@ -10661,11 +10699,22 @@ function isFixedToBudgetLine(line) {
     return gl.indexOf('6315') === 0;
 }
 
+// One-time annual fees — once YTD is posted the Mar-Dec estimate is zero.
+// Kept in sync with Python ONE_TIME_FEE_GLS constant in workflow.py.
+const PM_ONE_TIME_FEE_GLS = new Set(['6722-0000','6762-0000','6763-0000','6764-0000']);
+function isOneTimeFeeBilled(line) {
+    if (!line || !line.gl_code) return false;
+    if (!PM_ONE_TIME_FEE_GLS.has(line.gl_code)) return false;
+    const billed = (line.ytd_actual || 0) + (line.accrual_adj || 0) + (line.unpaid_bills || 0);
+    return Math.abs(billed) > 0.01;
+}
+
 function computeEstimate(line) {
     if (line.estimate_override !== null && line.estimate_override !== undefined) return line.estimate_override;
     if (isFixedToBudgetLine(line)) {
         return (line.current_budget || 0) - (line.ytd_actual || 0);
     }
+    if (isOneTimeFeeBilled(line)) return 0;
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
@@ -12021,9 +12070,19 @@ function isFixedToBudgetLine(l) {
   return gl.indexOf('6315') === 0;
 }
 
+const BP_ONE_TIME_FEE_GLS = new Set(['6722-0000','6762-0000','6763-0000','6764-0000']);
+function isOneTimeFeeBilled(l) {
+  if (!l || !l.gl_code) return false;
+  if (!BP_ONE_TIME_FEE_GLS.has(l.gl_code)) return false;
+  const billed = (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+  return Math.abs(billed) > 0.01;
+}
+
 function computeEstimate(l) {
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
   if (isFixedToBudgetLine(l)) return (l.current_budget || 0) - (l.ytd_actual || 0);
+  // One-time annual fees: once YTD posts, no more projection (forecast = billed amount)
+  if (isOneTimeFeeBilled(l)) return 0;
   // Payroll tab uses a simplified base (no accrual/unpaid). Other tabs unchanged.
   const isPayroll = l.sheet_name === 'Payroll';
   const ytd = l.ytd_actual || 0;
