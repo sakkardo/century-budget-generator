@@ -8195,7 +8195,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     // cells, transparent bg with green left bar for fx (formula) cells. Keeps
     // every numeric cell visually distinct and easy to scan. font:inherit avoids
     // browser-default font on form controls.
-    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font:inherit; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
+    '#prGLContent .cell { min-width:50px; width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font:inherit; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; box-sizing:border-box; line-height:inherit; }' +
     '#prGLContent .cell:hover { border-color:#a8a29e; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     // Formula cells: transparent bg, subtle border, green inset left bar as
