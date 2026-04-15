@@ -7169,12 +7169,21 @@ async function renderBudgetSummary(contentDiv) {
     // Cols c2-c5 are computed from sources (audit / GL lines). Mark them as inspectable
     // with a green left-stripe + data-fx flag so sumCellFocus can show the "Inspect" button.
     const isFx = (col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5');
+    // Only Col 7 (proposed budget) persists. c1-c6 are read-only:
+    //   c1, c6 = imported from Excel; c2 = audit; c3-c5 = GL aggregation.
+    const isReadOnly = (col !== 'c7');
+    const roAttr = isReadOnly ? ' readonly' : '';
     const stripe = isFx ? 'box-shadow:inset 3px 0 0 #16a34a;color:#15803d;font-weight:600;' : '';
     const fxAttr = isFx ? ' data-fx="1"' : '';
+    // Read-only cells: no border, default cursor, transparent bg (cell bg shows through)
+    // Editable c7: keeps gray border + text cursor so it reads as an input
+    const inputStyle = isReadOnly
+      ? 'width:100px;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:13px;text-align:right;background:transparent;font-variant-numeric:tabular-nums;font-family:inherit;cursor:default;color:var(--gray-700);'+stripe
+      : 'width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fffbeb')+';font-variant-numeric:tabular-nums;font-family:inherit;cursor:text;';
     return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;">' +
-      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+' ' +
+      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+roAttr+' ' +
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
-      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;'+stripe+'"></td>';
+      'style="'+inputStyle+'"></td>';
   }
   const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
@@ -7379,16 +7388,37 @@ function sumCellFocus(el) {
     c4:'Col 4 \u00b7 '+BY1+' Est.',c5:'Col 5 \u00b7 '+BY1+' Forecast',c6:'Col 6 \u00b7 '+BY1+' Budget',c7:'Col 7 \u00b7 '+BY+' Budget'};
   const cl = COL_NAMES[el.dataset.col] || el.dataset.col;
   const lbl = document.getElementById('sumFBLabel');
-  if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl;
+  // Read-only cells (c1-c6): display source label, disable formula bar input + action buttons
+  const isReadOnly = (el.dataset.col !== 'c7');
+  const SOURCE_HINT = {c1:' (imported from Excel)',c2:' (from Audited Financials)',c3:' (from GL aggregation)',
+    c4:' (from GL aggregation)',c5:' (from GL aggregation)',c6:' (imported from Excel)'};
+  const suffix = isReadOnly ? (SOURCE_HINT[el.dataset.col] || ' (read-only)') : '';
+  if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl + suffix;
   const inp = document.getElementById('sumFBInput');
-  if (inp) { inp.disabled = false; inp.style.opacity = '1'; inp.value = el.dataset.raw || el.value || ''; inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)'; }
-  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display=''; });
+  if (inp) {
+    inp.value = el.dataset.raw || el.value || '';
+    if (isReadOnly) {
+      inp.disabled = true;
+      inp.style.opacity = '0.6';
+      inp.placeholder = 'Read-only';
+    } else {
+      inp.disabled = false;
+      inp.style.opacity = '1';
+      inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)';
+    }
+  }
+  // Hide Accept/Cancel/Clear for read-only cells
+  ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = isReadOnly ? 'none' : '';
+  });
   // Show Inspect button only for computed cols (c2-c5) when lineage exists for this row
   const isFx = el.dataset.fx === '1';
   const lineage = (window._sumLineage || {})[el.dataset.label];
   const inspBtn = document.getElementById('sumFBInspect');
   if (inspBtn) inspBtn.style.display = (isFx && lineage) ? '' : 'none';
-  el.value = el.dataset.raw || '';
+  // Don't strip formatting on read-only cells (no editing happens there)
+  if (!isReadOnly) el.value = el.dataset.raw || '';
 }
 
 // ── Summary inspector: render lineage drill-down for a c2-c5 cell ──
