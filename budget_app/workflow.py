@@ -8191,21 +8191,17 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
     '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 8px; }' +
     '#prGLContent .total-row td.frozen { background:#1e3a5f; color:white; }' +
-    // CRITICAL: `font:inherit` (not just font-family) overrides browser-default
-    // font on form controls — without it, disabled/some inputs render in a
-    // different font than plain text, causing visual mismatch.
-    // Border is TRANSPARENT by default so body cells read as plain right-aligned
-    // text (same visual footprint as header/subtotal/total num-boxes). This makes
-    // every row in a column share an identical "rightmost visible pixel" — the
-    // text itself — so columns align brick-to-brick regardless of editability.
-    // Hover/focus reveal the border to signal interactivity without breaking layout.
-    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid transparent; border-radius:4px; font:inherit; font-size:13px; text-align:right; background:transparent; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
-    '#prGLContent .cell:hover { border-color:var(--gray-300); }' +
+    // Match R&S/Gen&Admin/.fa-grid cell visual: bordered cream box for editable
+    // cells, transparent bg with green left bar for fx (formula) cells. Keeps
+    // every numeric cell visually distinct and easy to scan. font:inherit avoids
+    // browser-default font on form controls.
+    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font:inherit; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
+    '#prGLContent .cell:hover { border-color:#a8a29e; }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
-    // Formula cells: transparent border (matches .cell), inset left bar remains
-    // as the "this is a formula" indicator. Keeps column right-edges clean.
-    '#prGLContent .cell-fx { background:transparent; border-color:transparent; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:9px; }' +
-    '#prGLContent .cell-fx:hover { border-color:#e5e1d8; }' +
+    // Formula cells: transparent bg, subtle border, green inset left bar as
+    // the "formula" indicator (matches .fa-grid .cell-fx).
+    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:9px; }' +
+    '#prGLContent .cell-fx:hover { border-color:#a8a29e; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff !important; border-color:transparent !important; box-shadow:inset 3px 0 0 #2563eb !important; color:#1e40af !important; font-weight:700; }' +
     '#prGLContent .cell-fx-linked:hover { border-color:#93c5fd !important; }' +
