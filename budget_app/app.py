@@ -210,6 +210,8 @@ with app.app_context():
             ("budget_lines", "fa_override_value", "FLOAT"),
             ("payroll_positions", "bonus_per_employee", "FLOAT DEFAULT 0"),
             ("payroll_positions", "effective_week_override", "FLOAT"),
+            ("payroll_positions", "wage_increase_mode", "VARCHAR(10)"),
+            ("payroll_positions", "wage_increase_value", "FLOAT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [

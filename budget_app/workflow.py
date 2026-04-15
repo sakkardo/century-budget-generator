@@ -733,6 +733,11 @@ def create_workflow_blueprint(db):
         hourly_rate = db.Column(db.Float, default=0.0)
         bonus_per_employee = db.Column(db.Float, default=0.0)
         effective_week_override = db.Column(db.Float, nullable=True)
+        # Per-position wage-increase override. Both null => inherit global from PayrollAssumption.
+        # wage_increase_mode: 'pct' | 'dollar' | NULL
+        # wage_increase_value: if mode='pct', decimal (0.03 = 3%); if mode='dollar', $/hr
+        wage_increase_mode = db.Column(db.String(10), nullable=True)
+        wage_increase_value = db.Column(db.Float, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -746,6 +751,8 @@ def create_workflow_blueprint(db):
                 "hourly_rate": float(self.hourly_rate or 0),
                 "bonus_per_employee": float(self.bonus_per_employee or 0),
                 "effective_week_override": float(self.effective_week_override) if self.effective_week_override is not None else None,
+                "wage_increase_mode": self.wage_increase_mode,
+                "wage_increase_value": float(self.wage_increase_value) if self.wage_increase_value is not None else None,
                 "sort_order": self.sort_order
             }
 
@@ -2275,6 +2282,13 @@ def create_workflow_blueprint(db):
         # Delete existing and re-insert
         PayrollPosition.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).delete()
         for i, p in enumerate(positions_data):
+            wi_mode_raw = p.get("wage_increase_mode")
+            wi_mode = wi_mode_raw if wi_mode_raw in ("pct", "dollar") else None
+            wi_val_raw = p.get("wage_increase_value")
+            try:
+                wi_val = float(wi_val_raw) if wi_val_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                wi_val = None
             pos = PayrollPosition(
                 entity_code=entity_code,
                 budget_year=BUDGET_YEAR,
@@ -2283,6 +2297,8 @@ def create_workflow_blueprint(db):
                 hourly_rate=float(p.get("hourly_rate", 0) or 0),
                 bonus_per_employee=float(p.get("bonus_per_employee", 0) or 0),
                 effective_week_override=(float(p["effective_week_override"]) if p.get("effective_week_override") not in (None, "", 0) else None),
+                wage_increase_mode=wi_mode,
+                wage_increase_value=wi_val,
                 sort_order=i
             )
             db.session.add(pos)
@@ -2309,8 +2325,11 @@ def create_workflow_blueprint(db):
         ub = main_a.get("union_benefits", {})
         wc = main_a.get("workers_comp", {})
         wi = main_a.get("wage_increase", {})
+        _seed_pct = float(wi.get("percent", 0) or 0)
         seeded = {
-            "wage_increase_pct": float(wi.get("percent", 0) or 0),
+            "wage_increase_pct": _seed_pct,
+            "wage_increase_mode": "pct",
+            "wage_increase_value": _seed_pct,
             "effective_week": wi.get("effective_week", "16"),
             "pre_increase_weeks": int(wi.get("pre_increase_weeks", 15) or 15),
             "post_increase_weeks": int(wi.get("post_increase_weeks", 37) or 37),
@@ -8252,7 +8271,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
         <!-- Column 1: Wage & Schedule -->
         <div style="padding:14px 20px; border-right:1px solid var(--gray-200);">
           <div style="font-size:10px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5efe7;">Wage & Schedule</div>
-          ${prAssumpRow('Wage Increase %', 'wage_increase_pct', fmtPctInput(a.wage_increase_pct || 0), '%')}
+          ${prAssumpWageIncreaseRow(a)}
           ${prAssumpRow('Effective Week', 'effective_week', a.effective_week || '16', '')}
           ${prAssumpRow('Pre-Incr Weeks', 'pre_increase_weeks', a.pre_increase_weeks || 15, '')}
           ${prAssumpRow('Post-Incr Weeks', 'post_increase_weeks', a.post_increase_weeks || 37, '')}
@@ -8314,6 +8333,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Hourly Rate</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Bonus $/Emp</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Override the global Effective Week for this position only. Leave blank to use global.">Eff Wk Override</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Per-position wage increase % override. Leave blank to inherit the global rate.">Incr %</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Per-position wage increase $/hr override. Leave blank to inherit the global rate.">Incr $/hr</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Weekly Pay</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Pre-Incr Wages</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Rate</th>
@@ -8395,6 +8416,79 @@ function prAssumpRow(label, key, val, suffix) {
     '</div></div>';
 }
 
+// Dual-cell wage increase row (global): % and $/hr linked. Edit either,
+// the other auto-updates using the roster's weighted-avg hourly rate as basis.
+// Mode flag tracks which cell is the driver so downstream math stays stable.
+function prAssumpWageIncreaseRow(a) {
+  const mode = a.wage_increase_mode || 'pct';
+  const val  = (a.wage_increase_value != null) ? a.wage_increase_value : (a.wage_increase_pct || 0);
+  const avgRate = prBlendedHourlyRate();
+  // Compute derived value for the non-driver cell
+  let pctDisplay, dollarDisplay;
+  if (mode === 'dollar') {
+    dollarDisplay = (val || 0).toFixed(2);
+    pctDisplay = avgRate > 0 ? ((val / avgRate) * 100).toFixed(2) : '0.00';
+  } else {
+    pctDisplay = ((val || 0) * 100).toFixed(2);
+    dollarDisplay = (avgRate * (val || 0)).toFixed(2);
+  }
+  const activeBorder = '#16a34a';
+  const inactiveBorder = 'var(--gray-300)';
+  const pctBorder = (mode === 'pct') ? activeBorder : inactiveBorder;
+  const dollarBorder = (mode === 'dollar') ? activeBorder : inactiveBorder;
+  return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;" title="Enter either a % or a $/hr amount. The other cell updates automatically using the weighted-avg hourly rate. The cell you edit becomes the driver for downstream math.">' +
+    '<span style="color:var(--gray-600);">Wage Increase</span>' +
+    '<div style="display:flex; align-items:center; gap:4px;">' +
+    '<input class="pr-assump-wage-pct" data-mode="pct" value="' + pctDisplay + '" onchange="wageIncreaseChanged(this,\'pct\')" style="width:54px; padding:3px 6px; border:1.5px solid ' + pctBorder + '; border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; font-variant-numeric:tabular-nums; font-family:inherit;">' +
+    '<span style="font-size:11px; color:var(--gray-400); width:8px;">%</span>' +
+    '<span style="font-size:10px; color:var(--gray-400);">or</span>' +
+    '<span style="font-size:11px; color:var(--gray-400); width:6px;">$</span>' +
+    '<input class="pr-assump-wage-dollar" data-mode="dollar" value="' + dollarDisplay + '" onchange="wageIncreaseChanged(this,\'dollar\')" style="width:54px; padding:3px 6px; border:1.5px solid ' + dollarBorder + '; border-radius:4px; font-size:12px; text-align:right; background:#fbfaf4; font-variant-numeric:tabular-nums; font-family:inherit;">' +
+    '<span style="font-size:10px; color:var(--gray-400);">/hr</span>' +
+    '</div></div>';
+}
+
+// Weighted-average hourly rate across roster, used as basis for global %↔$ conversion.
+// Weighted by employee_count. Returns 0 if roster is empty.
+function prBlendedHourlyRate() {
+  if (!Array.isArray(_payrollPositions) || _payrollPositions.length === 0) return 0;
+  let totalCount = 0, totalPay = 0;
+  for (const p of _payrollPositions) {
+    const c = p.employee_count || 0;
+    const r = p.hourly_rate || 0;
+    totalCount += c;
+    totalPay += c * r;
+  }
+  return totalCount > 0 ? (totalPay / totalCount) : 0;
+}
+
+// Handler for the global dual-cell wage increase. Updates mode + value in state,
+// refreshes the other cell in place, triggers recalc, and debounces save.
+function wageIncreaseChanged(el, editedMode) {
+  const raw = parseFloat((el.value || '').replace(/[^0-9.\-]/g, '')) || 0;
+  _payrollAssumptions.wage_increase_mode = editedMode;
+  _payrollAssumptions.wage_increase_value = (editedMode === 'pct') ? (raw / 100) : raw;
+  // Keep legacy field in sync when mode=pct so old consumers keep working.
+  if (editedMode === 'pct') {
+    _payrollAssumptions.wage_increase_pct = raw / 100;
+  }
+  // Update the other cell's display in place
+  const pctInput = document.querySelector('.pr-assump-wage-pct');
+  const dollarInput = document.querySelector('.pr-assump-wage-dollar');
+  const avgRate = prBlendedHourlyRate();
+  if (editedMode === 'pct' && dollarInput) {
+    dollarInput.value = (avgRate * (raw / 100)).toFixed(2);
+  } else if (editedMode === 'dollar' && pctInput) {
+    pctInput.value = avgRate > 0 ? ((raw / avgRate) * 100).toFixed(2) : '0.00';
+  }
+  // Highlight the driver border
+  if (pctInput) pctInput.style.borderColor = (editedMode === 'pct') ? '#16a34a' : 'var(--gray-300)';
+  if (dollarInput) dollarInput.style.borderColor = (editedMode === 'dollar') ? '#16a34a' : 'var(--gray-300)';
+  recalcPayroll();
+  clearTimeout(_prAssumpSaveTimer);
+  _prAssumpSaveTimer = setTimeout(savePayrollAssumptions, 800);
+}
+
 function prAssumpRowCalc(label, val) {
   return '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px;">' +
     '<span style="color:var(--gray-600);">' + label + '</span>' +
@@ -8429,7 +8523,7 @@ function payrollAssumptionChanged(el) {
     const wk = parseInt(val) || 16;
     _payrollAssumptions.pre_increase_weeks = Math.max(wk - 1, 0);
     _payrollAssumptions.post_increase_weeks = 52 - _payrollAssumptions.pre_increase_weeks;
-  } else if (['wage_increase_pct','fica','sui','fui','mta','nys_disability','pfl','workers_comp','ot_factor','vac_sick_hol_factor'].includes(key)) {
+  } else if (['fica','sui','fui','mta','nys_disability','pfl','workers_comp','ot_factor','vac_sick_hol_factor'].includes(key)) {
     _payrollAssumptions[key] = parseFloat(val) / 100 || 0;
   } else if (key === 'pre_increase_weeks' || key === 'post_increase_weeks') {
     _payrollAssumptions[key] = parseInt(val) || 0;
@@ -8460,6 +8554,10 @@ async function savePayrollAssumptions() {
 // ── Roster change & save ──────────────────────────────────────────────────
 
 function prRosterChanged() {
+  // Snapshot the prior _payrollPositions so we can preserve per-row overrides
+  // (wage_increase_mode / wage_increase_value) which live in state but not in
+  // easily-readable form on the main roster inputs.
+  const prior = Array.isArray(_payrollPositions) ? _payrollPositions.slice() : [];
   // Read all rows from DOM
   const rows = document.querySelectorAll('#prRosterBody tr');
   _payrollPositions = [];
@@ -8471,17 +8569,45 @@ function prRosterChanged() {
     const effWkInput = tr.querySelector('.pr-pos-effwk');
     if (!nameInput) return;
     const effWkRaw = effWkInput ? effWkInput.value.trim() : '';
+    const priorRow = prior[i] || {};
     _payrollPositions.push({
       position_name: nameInput.value.trim(),
       employee_count: parseInt(countInput.value) || 0,
       hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
       bonus_per_employee: bonusInput ? (parseFloat(bonusInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
       effective_week_override: effWkRaw === '' ? null : (parseFloat(effWkRaw) || null),
+      wage_increase_mode: priorRow.wage_increase_mode || null,
+      wage_increase_value: (priorRow.wage_increase_value != null) ? priorRow.wage_increase_value : null,
       sort_order: i
     });
   });
   recalcPayroll();
 
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
+}
+
+// Handler for per-position wage-increase override cells.
+// Editing either cell sets the mode and value; clearing both reverts to global.
+function prRosterWageIncrChanged(el, idx, mode) {
+  if (!_payrollPositions[idx]) return;
+  const raw = (el.value || '').trim();
+  if (raw === '') {
+    // Check the sibling cell — if it's also empty, clear the override entirely.
+    const tr = el.closest('tr');
+    const sibling = tr ? tr.querySelector(mode === 'pct' ? '.pr-pos-wage-incr-dollar' : '.pr-pos-wage-incr-pct') : null;
+    const siblingVal = sibling ? (sibling.value || '').trim() : '';
+    if (siblingVal === '') {
+      _payrollPositions[idx].wage_increase_mode = null;
+      _payrollPositions[idx].wage_increase_value = null;
+    }
+    // If sibling still has a value, leave current override state alone.
+  } else {
+    const num = parseFloat(raw.replace(/[^0-9.\-]/g, '')) || 0;
+    _payrollPositions[idx].wage_increase_mode = mode;
+    _payrollPositions[idx].wage_increase_value = (mode === 'pct') ? (num / 100) : num;
+  }
+  recalcPayroll();
   clearTimeout(_prRosterSaveTimer);
   _prRosterSaveTimer = setTimeout(savePayrollPositions, 800);
 }
@@ -8499,7 +8625,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, wage_increase_mode: null, wage_increase_value: null, sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -8514,9 +8640,20 @@ function removePayrollPosition(idx) {
 
 // ── Core Recalculation ────────────────────────────────────────────────────
 
+// Apply a wage increase to an hourly rate based on mode + value.
+// mode='pct' → rate * (1 + value);  mode='dollar' → rate + value
+function applyWageIncrease(rate, mode, value) {
+  const m = (mode === 'dollar') ? 'dollar' : 'pct';
+  const v = value || 0;
+  return (m === 'dollar') ? (rate + v) : (rate * (1 + v));
+}
+
 function recalcPayroll() {
   const a = _payrollAssumptions;
-  const wageInc = a.wage_increase_pct || 0;
+  // Resolve global wage increase: prefer new fields, fall back to legacy wage_increase_pct
+  const globalMode  = a.wage_increase_mode || 'pct';
+  const globalValue = (a.wage_increase_value != null) ? a.wage_increase_value : (a.wage_increase_pct || 0);
+  const wageInc = globalValue; // legacy name kept for formula display when mode=pct
   const preWks = a.pre_increase_weeks || 15;
   const postWks = a.post_increase_weeks || 37;
   const otFactor = a.ot_factor || 0.002;
@@ -8540,9 +8677,12 @@ function recalcPayroll() {
       posPreWks = Math.max(p.effective_week_override - 1, 0);
       posPostWks = 52 - posPreWks;
     }
+    // Per-position wage increase override: falls back to global when null
+    const posWiMode  = p.wage_increase_mode || globalMode;
+    const posWiValue = (p.wage_increase_value != null) ? p.wage_increase_value : globalValue;
     const weeklyPay = rate * 40;
     const preIncrWages = weeklyPay * posPreWks * count;
-    const postIncrRate = rate * (1 + wageInc);
+    const postIncrRate = applyWageIncrease(rate, posWiMode, posWiValue);
     const postIncrWages = (postIncrRate * 40) * posPostWks * count;
     const annualBase = preIncrWages + postIncrWages;
     const ot = annualBase * otFactor;
@@ -8557,7 +8697,7 @@ function recalcPayroll() {
     totalComp += comp;
     totalBonus += bonus;
 
-    return { count, rate, bonusPerEmp, posPreWks, posPostWks, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
+    return { count, rate, bonusPerEmp, posPreWks, posPostWks, posWiMode, posWiValue, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
   });
 
   // Calculate taxes & benefits
@@ -8623,7 +8763,7 @@ function recalcPayroll() {
   const infoDiv = document.getElementById('prRosterInfo');
   if (infoDiv) {
     infoDiv.innerHTML =
-      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Wage Increase:</span> <strong style="color:#5a4a3f;">' + ((wageInc)*100).toFixed(1) + '%</strong> <span style="font-size:8px; font-weight:800; color:#5a4a3f; background:#f5efe7; border:1px solid #5a4a3f; border-radius:3px; padding:0 3px; vertical-align:super;">from assumptions</span></div>' +
+      '<div style="font-size:11px;"><span style="color:var(--gray-500);">Wage Increase:</span> <strong style="color:#5a4a3f;">' + ((globalMode === 'dollar') ? ('+$' + (globalValue || 0).toFixed(2) + '/hr') : (((globalValue || 0) * 100).toFixed(1) + '%')) + '</strong> <span style="font-size:8px; font-weight:800; color:#5a4a3f; background:#f5efe7; border:1px solid #5a4a3f; border-radius:3px; padding:0 3px; vertical-align:super;">from assumptions</span></div>' +
       '<div style="font-size:11px;"><span style="color:var(--gray-500);">Effective:</span> <strong>Wk ' + (a.effective_week || '16') + '</strong></div>' +
       '<div style="font-size:11px;"><span style="color:var(--gray-500);">Pre-Incr Weeks:</span> <strong>' + preWks + '</strong></div>' +
       '<div style="font-size:11px;"><span style="color:var(--gray-500);">Post-Incr Weeks:</span> <strong>' + postWks + '</strong></div>';
@@ -8677,12 +8817,34 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     const usedPostWks = c.posPostWks !== undefined ? c.posPostWks : ctx.postWks;
     const fWeekly = '=' + rate + '*40';
     const fPreWages = '=' + (c.weeklyPay||0) + '*' + usedPreWks + '*' + count;
-    const fPostRate = '=' + rate + '*(1+' + ctx.wageInc.toFixed(4) + ')';
+    // Formula reflects whichever mode is actually in effect for THIS position
+    // (per-position override or global fallback — already resolved in posCalcs).
+    const posWiMode = (c.posWiMode === 'dollar') ? 'dollar' : 'pct';
+    const posWiValue = c.posWiValue || 0;
+    const fPostRate = (posWiMode === 'dollar')
+      ? ('=' + rate + '+' + posWiValue.toFixed(2))
+      : ('=' + rate + '*(1+' + posWiValue.toFixed(4) + ')');
     const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + usedPostWks + '*' + count;
     const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0);
     const fOT = '=' + (c.annualBase||0) + '*' + ctx.otFactor.toFixed(4);
     const fVSH = '=' + (c.annualBase||0) + '*' + ctx.vshFactor.toFixed(4);
     const fComp = '=' + (c.annualBase||0) + '+' + (c.ot||0) + '+' + (c.vsh||0);
+
+    // Per-position wage-increase override display (empty = inheriting global)
+    const posHasOverride = (p.wage_increase_mode != null);
+    let incrPctDisplay = '', incrDollarDisplay = '';
+    if (posHasOverride) {
+      const mv = p.wage_increase_value || 0;
+      if (p.wage_increase_mode === 'dollar') {
+        incrDollarDisplay = mv.toFixed(2);
+        incrPctDisplay = (rate > 0) ? ((mv / rate) * 100).toFixed(2) : '';
+      } else {
+        incrPctDisplay = (mv * 100).toFixed(2);
+        incrDollarDisplay = (rate * mv).toFixed(2);
+      }
+    }
+    // Light blue tint when row is overriding global; otherwise same cream as other inputs
+    const overrideIs = 'padding:4px 8px; border:1px solid ' + (posHasOverride ? '#60a5fa' : '#d1d5db') + '; border-radius:4px; font-size:12px; text-align:right; background:' + (posHasOverride ? '#eff6ff' : '#fbfaf4') + '; box-sizing:content-box;';
 
     rows += '<tr>' +
       '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; box-sizing:content-box;"></td>' +
@@ -8690,6 +8852,8 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-bonus" type="text" value="' + (p.bonus_per_employee || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged()" title="Override global Effective Week for this position only" style="' + is + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-wage-incr-pct" type="text" placeholder="—" value="' + incrPctDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'pct\')" title="Override wage increase % for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-wage-incr-dollar" type="text" placeholder="—" value="' + incrDollarDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'dollar\')" title="Override wage increase $/hr for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
       rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
       rosterFx('pr_rost_pre_'+i, 'preIncrWages', c.preIncrWages||0, fPreWages, i) +
       rosterFx('pr_rost_pr_'+i, 'postIncrRate', c.postIncrRate||0, fPostRate, i) +
@@ -8711,6 +8875,8 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p)=> s+((p.bonus_per_employee||0)*(p.employee_count||0)),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
@@ -8721,7 +8887,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
     '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
     '</tr>' +
-    '<tr><td colspan="14" style="padding:8px 10px;">' +
+    '<tr><td colspan="16" style="padding:8px 10px;">' +
     '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
     '<span style="margin-left:12px; font-size:10px; color:var(--gray-400); font-style:italic;">Flexible positions — each building can have different roles</span>' +
     '</td></tr>';
