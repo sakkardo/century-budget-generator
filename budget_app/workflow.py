@@ -7378,6 +7378,60 @@ document.addEventListener('click', function(e) {
 // ── Summary tab: cell editing ──
 let _sumActiveCell = null;
 
+// Build a human-readable "formula" string for a read-only summary cell, based on lineage
+function sumBuildFormulaText(label, col, lineage) {
+  const fmt = (n) => {
+    if (n === null || n === undefined || isNaN(n)) return '\u2014';
+    const r = Math.round(Number(n));
+    return r < 0 ? '(' + Math.abs(r).toLocaleString('en-US') + ')' : r.toLocaleString('en-US');
+  };
+  if (col === 'c1') {
+    return '(imported from ' + (typeof BY3!=='undefined'?BY3:'prior') + ' Actuals Excel)';
+  }
+  if (col === 'c6') {
+    return '(imported from ' + (typeof BY1!=='undefined'?BY1:'current') + ' Approved Budget Excel)';
+  }
+  if (!lineage) return '(no lineage data)';
+  if (col === 'c2') {
+    const c2 = lineage.c2 || {};
+    if (!c2.has_audit) return '(no confirmed audit for FY ' + (c2.audit_year||'?') + ')';
+    if (!c2.matched_category) return '(audit FY ' + (c2.audit_year||'?') + ': no category matched "' + label + '")';
+    return '= Audit[FY ' + (c2.audit_year||'?') + '].\"' + c2.matched_category + '\" = ' + fmt(c2.value);
+  }
+  // Cols 3-5: GL aggregation
+  const gl = lineage.gl || {};
+  const ff = lineage.fixed_forecast || {};
+  const rowData = (window._sumRowMap || {})[label] || {};
+  // Fixed-forecast override (Maintenance / Common Charges / Commercial Rent rule)
+  if (ff.applied && col === 'c5') {
+    return '= Col 6 (Approved Budget) = ' + fmt(rowData.col6);
+  }
+  if (ff.applied && col === 'c4') {
+    return '= Col 5 \u2212 Col 3 = ' + fmt(rowData.col5) + ' \u2212 ' + fmt(rowData.col3) + ' = ' + fmt(rowData.col4);
+  }
+  const allLines = gl.lines || [];
+  const prefixes = gl.prefixes || [];
+  if (!allLines.length && !prefixes.length) return '(no GL prefixes mapped for this row)';
+  const ytdM = gl.ytd_months || 0;
+  const remM = gl.remaining_months || 0;
+  // Compact GL list: prefer prefixes if available, else collapse line GL codes
+  const glList = prefixes.length ? prefixes.join('+') :
+    Array.from(new Set(allLines.map(l => (l.gl||'').split('-')[0]))).filter(Boolean).join('+');
+  const totalYtd = allLines.reduce((s,l) => s + (Number(l.ytd)||0), 0);
+  const totalEst = allLines.reduce((s,l) => s + (Number(l.estimate)||0), 0);
+  const totalFc  = allLines.reduce((s,l) => s + (Number(l.forecast)||0), 0);
+  if (col === 'c3') {
+    return '= \u03a3 YTD(GL ' + glList + ') over ' + ytdM + ' mo = ' + fmt(totalYtd);
+  }
+  if (col === 'c4') {
+    return '= (\u03a3 YTD \u00f7 ' + ytdM + ' mo) \u00d7 ' + remM + ' mo remaining = ' + fmt(totalEst);
+  }
+  if (col === 'c5') {
+    return '= YTD + Accrual + Unpaid + Estimate (GL ' + glList + ') = ' + fmt(totalFc);
+  }
+  return '';
+}
+
 function sumCellFocus(el) {
   // Clear any subtotal highlight
   if (_activeSumSubtotal) { _activeSumSubtotal.style.outline = ''; _activeSumSubtotal = null; }
@@ -7396,12 +7450,14 @@ function sumCellFocus(el) {
   if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl + suffix;
   const inp = document.getElementById('sumFBInput');
   if (inp) {
-    inp.value = el.dataset.raw || el.value || '';
     if (isReadOnly) {
+      const lineage = (window._sumLineage || {})[el.dataset.label];
+      inp.value = sumBuildFormulaText(el.dataset.label, el.dataset.col, lineage);
       inp.disabled = true;
-      inp.style.opacity = '0.6';
+      inp.style.opacity = '0.85';
       inp.placeholder = 'Read-only';
     } else {
+      inp.value = el.dataset.raw || el.value || '';
       inp.disabled = false;
       inp.style.opacity = '1';
       inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)';
