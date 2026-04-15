@@ -6479,7 +6479,7 @@ function faGetFormulaTooltip(l, field) {
       return '=' + cb + '  (pinned to current budget, GL 6315)';
     }
     if (faIsOneTimeFeeBilled(l)) {
-      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no add\\'l projection)';
+      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no additional projection)';
     }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
