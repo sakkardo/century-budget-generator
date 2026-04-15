@@ -8200,7 +8200,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     // Formula cells: transparent bg, subtle border, green inset left bar as
     // the "formula" indicator (matches .fa-grid .cell-fx).
-    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; font-weight:600; padding-left:9px; }' +
+    '#prGLContent .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; }' +
     '#prGLContent .cell-fx:hover { border-color:#a8a29e; }' +
     '#prGLContent .cell-fx:focus { background:#ecfdf5; }' +
     '#prGLContent .cell-fx-linked { background:#eff6ff !important; border-color:transparent !important; box-shadow:inset 3px 0 0 #2563eb !important; color:#1e40af !important; font-weight:700; }' +
