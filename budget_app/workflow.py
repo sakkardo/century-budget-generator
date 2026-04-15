@@ -7632,19 +7632,7 @@ function recalc() {
   setComputed('g47', G47);
   setComputed('h47', H47);
 
-  // GL output panel (what pushes to Gen & Admin Col 6)
-  const payload = {};
-  GL_ROWS.forEach(r => {
-    payload[r.gl] = Math.round(glFormulas[r.gl].h * 100) / 100;
-  });
-  const jsonEl = document.getElementById('jsonOutput');
-  let jsonHtml = '{\n';
-  Object.entries(payload).forEach(([k, v], i, arr) => {
-    jsonHtml += `  <span class="key">"${k}"</span>: <span class="num">${v.toFixed(2)}</span>${i < arr.length-1 ? ',' : ''}\n`;
-  });
-  jsonHtml += '}';
-  jsonEl.innerHTML = jsonHtml;
-  jsonEl.dataset.plain = JSON.stringify(payload, null, 2);
+  // GL output panel (preview-only debug panel, stripped in production port)
 
   // Paint override indicators + refresh formula bar for the active cell
   paintOverrideIndicators();
