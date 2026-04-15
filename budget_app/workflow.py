@@ -8087,7 +8087,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     // num-box: wrap class that mirrors .cell input outer dimensions exactly.
     // Wrapping plain text in <span class="num-box"> aligns its right edge with
     // input.cell text inside body rows, regardless of browser quirks.
-    '#prGLContent .num-box { display:inline-block; padding:4px 6px; border:1px solid transparent; box-sizing:content-box; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit; font-size:inherit; line-height:inherit; min-width:9ch; }' +
+    '#prGLContent .num-box { display:inline-block; padding:4px 6px; border:1px solid transparent; box-sizing:content-box; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit; font-size:inherit; line-height:inherit; min-width:50px; }' +
     '#prGLContent tbody tr:hover td { background:#eef2ff; }' +
     '#prGLContent tbody tr:hover td.frozen { background:#ede5d8; }' +
     '#prGLContent th.frozen, #prGLContent td.frozen { position:sticky; z-index:15; background:white; }' +
@@ -8097,12 +8097,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .cat-hdr td { background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:14px; padding:10px 12px; border-bottom:2px solid #5a4a3f; cursor:pointer; user-select:none; }' +
     '#prGLContent .sub-row td { background:var(--gray-100); font-weight:700; border-top:2px solid var(--gray-300); }' +
     '#prGLContent .sub-row td.frozen { background:var(--gray-100); }' +
-    '#prGLContent .sub-row td.num { background:transparent; }' +
-    '#prGLContent .sub-row td.num .num-box { background:var(--gray-100); border-radius:4px; }' +
     '#prGLContent .total-row td { background:#1e3a5f; color:white; font-weight:700; font-size:14px; padding:10px 8px; }' +
     '#prGLContent .total-row td.frozen { background:#1e3a5f; color:white; }' +
-    '#prGLContent .total-row td.num { background:transparent; padding:6px 8px; }' +
-    '#prGLContent .total-row td.num .num-box { background:#1e3a5f; color:white; padding:10px 6px; border-radius:4px; }' +
     // CRITICAL: `font:inherit` (not just font-family) overrides browser-default
     // font on form controls — without it, disabled/some inputs render in a
     // different font than plain text, causing visual mismatch.
@@ -8111,7 +8107,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     // every row in a column share an identical "rightmost visible pixel" — the
     // text itself — so columns align brick-to-brick regardless of editability.
     // Hover/focus reveal the border to signal interactivity without breaking layout.
-    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid transparent; border-radius:4px; font:inherit; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
+    '#prGLContent .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid transparent; border-radius:4px; font:inherit; font-size:13px; text-align:right; background:transparent; cursor:text; font-variant-numeric:tabular-nums; box-sizing:content-box; line-height:inherit; }' +
     '#prGLContent .cell:hover { border-color:var(--gray-300); }' +
     '#prGLContent .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px #e1effe; }' +
     // Formula cells: transparent border (matches .cell), inset left bar remains
