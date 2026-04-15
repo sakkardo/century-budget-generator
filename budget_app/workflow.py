@@ -8373,7 +8373,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Rate</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Wages</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Annual Base</th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">OT</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); min-width:75px;">OT</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Vac/Sick/Hol</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200); font-weight:800;">Total Comp</th>
               <th class="filler"></th>
