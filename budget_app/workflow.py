@@ -5384,28 +5384,6 @@ function assumAutoSave(section, field, value) {
 
 function renderAssumptionsTab(assumptions, contentDiv) {
   const a = assumptions || {};
-  const inputStyle = 'padding:6px 10px; border:1px solid var(--gray-200); border-radius:6px; font-size:13px; width:120px;';
-  const pctStyle = inputStyle + ' text-align:right; width:80px;';
-  const dollarStyle = inputStyle + ' text-align:right; width:100px;';
-
-  function pctVal(v) { return v ? (v * 100).toFixed(2) : '0'; }
-  function numVal(v) { return v || 0; }
-
-  function field(section, key, val, style, suffix) {
-    const s = suffix || '';
-    return '<input type="number" step="any" value="' + val + '" style="' + style + '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', ' + (suffix === '%' ? 'this.value/100' : 'parseFloat(this.value)||0') + ')">' + s;
-  }
-
-  function section(title, content) {
-    return '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:20px 24px; margin-bottom:16px;">' +
-      '<h3 style="font-size:16px; color:var(--blue); margin-bottom:16px; font-weight:600;">' + title + '</h3>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">' + content + '</div></div>';
-  }
-
-  function item(label, input) {
-    return '<div><label style="font-size:12px; color:var(--gray-500); display:block; margin-bottom:4px;">' + label + '</label>' + input + '</div>';
-  }
-
   const pt = a.payroll_tax || {};
   const ub = a.union_benefits || {};
   const wc = a.workers_comp || {};
@@ -5413,70 +5391,148 @@ function renderAssumptionsTab(assumptions, contentDiv) {
   const ir = a.insurance_renewal || {};
   const en = a.energy || {};
   const ws = a.water_sewer || {};
-
-  let html = '<div style="padding:16px 0;">';
-
-  // Payroll Tax Rates
-  html += section('Payroll Tax Rates',
-    item('FICA', field('payroll_tax','FICA', pctVal(pt.FICA), pctStyle, '%')) +
-    item('SUI', field('payroll_tax','SUI', pctVal(pt.SUI), pctStyle, '%')) +
-    item('FUI', field('payroll_tax','FUI', pctVal(pt.FUI), pctStyle, '%')) +
-    item('MTA', field('payroll_tax','MTA', pctVal(pt.MTA), pctStyle, '%')) +
-    item('NYS Disability', field('payroll_tax','NYS_Disability', pctVal(pt.NYS_Disability), pctStyle, '%')) +
-    item('PFL', field('payroll_tax','PFL', pctVal(pt.PFL), pctStyle, '%'))
-  );
-
-  // Union Benefits
-  html += section('Union Benefits (32BJ)',
-    item('Welfare ($/mo/man)', field('union_benefits','welfare_monthly', numVal(ub.welfare_monthly), dollarStyle, '')) +
-    item('Pension ($/wk/man)', field('union_benefits','pension_weekly', numVal(ub.pension_weekly), dollarStyle, '')) +
-    item('Supp Retirement ($/wk)', field('union_benefits','supp_retirement_weekly', numVal(ub.supp_retirement_weekly), dollarStyle, '')) +
-    item('Legal ($/mo)', field('union_benefits','legal_monthly', numVal(ub.legal_monthly), dollarStyle, '')) +
-    item('Training ($/mo)', field('union_benefits','training_monthly', numVal(ub.training_monthly), dollarStyle, '')) +
-    item('Profit Sharing ($/qtr)', field('union_benefits','profit_sharing_quarterly', numVal(ub.profit_sharing_quarterly), dollarStyle, ''))
-  );
-
-  // Workers Comp + Wage Increase
-  html += section('Workers Comp & Wage Increase',
-    item('Workers Comp %', field('workers_comp','percent', pctVal(wc.percent), pctStyle, '%')) +
-    item('Wage Increase %', field('wage_increase','percent', pctVal(wi.percent), pctStyle, '%')) +
-    item('Effective Week', '<input type="text" value="' + (wi.effective_week || 'Wk 16') + '" style="' + inputStyle + '" onchange="assumAutoSave(\'wage_increase\',\'effective_week\', this.value)">') +
-    item('Pre-Increase Weeks', field('wage_increase','pre_increase_weeks', numVal(wi.pre_increase_weeks), inputStyle, '')) +
-    item('Post-Increase Weeks', field('wage_increase','post_increase_weeks', numVal(wi.post_increase_weeks), inputStyle, ''))
-  );
-
-  // Insurance
-  html += section('Insurance Renewal',
-    item('Renewal Increase %', field('insurance_renewal','increase_percent', pctVal(ir.increase_percent), pctStyle, '%')) +
-    item('Effective Date', '<input type="text" value="' + (ir.effective_date || 'Mar '+BY) + '" style="' + inputStyle + '" onchange="assumAutoSave(\'insurance_renewal\',\'effective_date\', this.value)">') +
-    item('Pre-Renewal Months', field('insurance_renewal','pre_renewal_months', numVal(ir.pre_renewal_months), inputStyle, '')) +
-    item('Post-Renewal Months', field('insurance_renewal','post_renewal_months', numVal(ir.post_renewal_months), inputStyle, ''))
-  );
-
-  // Energy
-  html += section('Energy Rates',
-    item('Gas ESCO Rate ($/Therm)', field('energy','gas_esco_rate', numVal(en.gas_esco_rate), dollarStyle, '')) +
-    item('Electric ESCO Rate ($/KWH)', field('energy','electric_esco_rate', numVal(en.electric_esco_rate), dollarStyle, '')) +
-    item('Gas Rate Increase %', field('energy','gas_rate_increase', pctVal(en.gas_rate_increase), pctStyle, '%')) +
-    item('Electric Rate Increase %', field('energy','electric_rate_increase', pctVal(en.electric_rate_increase), pctStyle, '%')) +
-    item('Oil Price/Gallon', field('energy','oil_price_per_gallon', numVal(en.oil_price_per_gallon), dollarStyle, '')) +
-    item('Oil Rate Increase %', field('energy','oil_rate_increase', pctVal(en.oil_rate_increase), pctStyle, '%'))
-  );
-
-  // Water & Sewer
-  html += section('Water & Sewer',
-    item('Rate Increase %', field('water_sewer','rate_increase', pctVal(ws.rate_increase), pctStyle, '%'))
-  );
-
-  // Real Estate Taxes — rates flow into the RE Taxes tab
   const rt = a.re_taxes_overrides || {};
-  html += section('Real Estate Taxes',
-    item('Tax Rate %', field('re_taxes_overrides','tax_rate', rt.tax_rate ? (rt.tax_rate * 100).toFixed(4) : '0', pctStyle, '%')) +
-    item('Est. Tax Rate %', field('re_taxes_overrides','est_tax_rate', rt.est_tax_rate ? (rt.est_tax_rate * 100).toFixed(4) : '0', pctStyle, '%'))
-  );
 
-  html += '</div>';
-  contentDiv.innerHTML = html;
+  function pctVal(v) { return v ? (v * 100).toFixed(2) : '0'; }
+  function numVal(v) { return v || 0; }
+
+  // Inject scoped styles once
+  if (!document.getElementById('asm-portal-style')) {
+    const st = document.createElement('style');
+    st.id = 'asm-portal-style';
+    st.textContent =
+      '.asm-portal { padding: 8px 0 40px; font-variant-numeric: tabular-nums; }' +
+      '.asm-portal .asm-section { margin-bottom: 32px; }' +
+      '.asm-portal .asm-section:last-child { margin-bottom: 0; }' +
+      '.asm-portal .asm-section-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }' +
+      '.asm-portal .asm-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--blue); display: inline-block; }' +
+      '.asm-portal .asm-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gray-700); flex: 0 0 auto; }' +
+      '.asm-portal .asm-hint { font-size: 12px; color: var(--gray-500); font-weight: 400; flex: 0 0 auto; }' +
+      '.asm-portal .asm-rule { flex: 1 1 auto; height: 1px; background: var(--gray-200); margin-left: 4px; }' +
+      '.asm-portal .asm-section.payroll { --accent: var(--blue); }' +
+      '.asm-portal .asm-section.operating { --accent: var(--green); }' +
+      '.asm-portal .asm-section.taxes { --accent: var(--gray-700); }' +
+      '.asm-portal .asm-section.operating .asm-dot { background: var(--green); }' +
+      '.asm-portal .asm-section.taxes .asm-dot { background: var(--gray-700); }' +
+      '.asm-portal .asm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }' +
+      '.asm-portal .asm-grid.single { grid-template-columns: minmax(340px, 600px); }' +
+      '@media (max-width: 780px) { .asm-portal .asm-grid { grid-template-columns: 1fr; } }' +
+      '.asm-portal .asm-card { background: #fff; border-radius: 10px; border: 1px solid var(--gray-200); border-left: 3px solid var(--accent, var(--blue)); padding: 18px 22px 16px; box-shadow: 0 1px 2px rgba(26, 23, 20, 0.03); }' +
+      '.asm-portal .asm-card-title { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray-700); margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }' +
+      '.asm-portal .asm-card-title::before { content: \'\'; display: inline-block; width: 14px; height: 1.5px; background: var(--accent, var(--blue)); border-radius: 1px; flex: 0 0 auto; }' +
+      '.asm-portal .asm-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 0; }' +
+      '.asm-portal .asm-row label { font-size: 13px; color: var(--gray-500); font-weight: 400; flex: 1 1 auto; min-width: 0; }' +
+      '.asm-portal .asm-input-wrap { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }' +
+      '.asm-portal .asm-unit { font-size: 11px; color: var(--gray-500); font-weight: 500; min-width: 8px; text-align: left; }' +
+      '.asm-portal .asm-input { width: 104px; padding: 6px 10px; border: 1px solid var(--gray-200); border-radius: 6px; font-size: 13px; font-family: inherit; text-align: right; background: #fff; color: var(--gray-900); font-variant-numeric: tabular-nums; transition: border-color 120ms, box-shadow 120ms, background 120ms; -moz-appearance: textfield; }' +
+      '.asm-portal .asm-input::-webkit-outer-spin-button, .asm-portal .asm-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }' +
+      '.asm-portal .asm-input:hover { border-color: var(--gray-300); }' +
+      '.asm-portal .asm-input:focus { outline: none; border-color: var(--accent, var(--blue)); background: var(--gray-50); box-shadow: 0 0 0 3px rgba(90, 74, 63, 0.12); }' +
+      '.asm-portal .asm-sub { font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase; color: var(--gray-500); padding: 10px 0 2px; }' +
+      '.asm-portal .asm-card .asm-sub:first-child { padding-top: 0; }';
+    document.head.appendChild(st);
+  }
+
+  // Input helpers — preserve exact assumAutoSave field names & save semantics
+  function pctF(section, key, val) {
+    return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + pctVal(val) +
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100)"><span class="asm-unit">%</span></div>';
+  }
+  function pctRawF(section, key, valStr) {
+    return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + valStr +
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100)"><span class="asm-unit">%</span></div>';
+  }
+  function numF(section, key, val, unit) {
+    return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + numVal(val) +
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', parseFloat(this.value)||0)"><span class="asm-unit">' + (unit || '') + '</span></div>';
+  }
+  function txtF(section, key, val) {
+    return '<div class="asm-input-wrap"><input class="asm-input" type="text" value="' + (val || '') +
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value)"><span class="asm-unit"></span></div>';
+  }
+
+  function row(label, inputHtml) {
+    return '<div class="asm-row"><label>' + label + '</label>' + inputHtml + '</div>';
+  }
+  function sub(label) {
+    return '<div class="asm-sub">' + label + '</div>';
+  }
+  function card(title, body) {
+    return '<div class="asm-card"><h3 class="asm-card-title">' + title + '</h3><div class="asm-fields">' + body + '</div></div>';
+  }
+  function sectionWrap(cls, tag, hint, gridCls, cards) {
+    return '<div class="asm-section ' + cls + '">' +
+      '<div class="asm-section-header">' +
+        '<span class="asm-dot"></span>' +
+        '<span class="asm-tag">' + tag + '</span>' +
+        '<span class="asm-hint">' + hint + '</span>' +
+        '<span class="asm-rule"></span>' +
+      '</div>' +
+      '<div class="asm-grid' + (gridCls ? ' ' + gridCls : '') + '">' + cards + '</div>' +
+    '</div>';
+  }
+
+  // ── Payroll ─────────────────────────────────────────
+  const payrollTaxCard = card('Payroll Tax Rates',
+    row('FICA', pctF('payroll_tax','FICA', pt.FICA)) +
+    row('SUI', pctF('payroll_tax','SUI', pt.SUI)) +
+    row('FUI', pctF('payroll_tax','FUI', pt.FUI)) +
+    row('MTA', pctF('payroll_tax','MTA', pt.MTA)) +
+    row('NYS Disability', pctF('payroll_tax','NYS_Disability', pt.NYS_Disability)) +
+    row('PFL', pctF('payroll_tax','PFL', pt.PFL))
+  );
+  const unionCard = card('Union Benefits · 32BJ',
+    row('Welfare · $/mo/man', numF('union_benefits','welfare_monthly', ub.welfare_monthly, '$')) +
+    row('Pension · $/wk/man', numF('union_benefits','pension_weekly', ub.pension_weekly, '$')) +
+    row('Supp Retirement · $/wk', numF('union_benefits','supp_retirement_weekly', ub.supp_retirement_weekly, '$')) +
+    row('Legal · $/mo', numF('union_benefits','legal_monthly', ub.legal_monthly, '$')) +
+    row('Training · $/mo', numF('union_benefits','training_monthly', ub.training_monthly, '$')) +
+    row('Profit Sharing · $/qtr', numF('union_benefits','profit_sharing_quarterly', ub.profit_sharing_quarterly, '$'))
+  );
+  const wcWiCard = card('Workers Comp &amp; Wage Increase',
+    sub('Workers Comp') +
+    row('Workers Comp', pctF('workers_comp','percent', wc.percent)) +
+    sub('Wage Increase') +
+    row('Wage Increase', pctF('wage_increase','percent', wi.percent)) +
+    row('Effective Week', txtF('wage_increase','effective_week', wi.effective_week || 'Wk 16')) +
+    row('Pre-Increase Weeks', numF('wage_increase','pre_increase_weeks', wi.pre_increase_weeks, '')) +
+    row('Post-Increase Weeks', numF('wage_increase','post_increase_weeks', wi.post_increase_weeks, ''))
+  );
+  const payrollSection = sectionWrap('payroll', 'Payroll', 'staffing, benefits, wage growth', '',
+    payrollTaxCard + unionCard + wcWiCard);
+
+  // ── Operating ───────────────────────────────────────
+  const insCard = card('Insurance Renewal',
+    row('Renewal Increase', pctF('insurance_renewal','increase_percent', ir.increase_percent)) +
+    row('Effective Date', txtF('insurance_renewal','effective_date', ir.effective_date || ('Mar ' + BY))) +
+    row('Pre-Renewal Months', numF('insurance_renewal','pre_renewal_months', ir.pre_renewal_months, '')) +
+    row('Post-Renewal Months', numF('insurance_renewal','post_renewal_months', ir.post_renewal_months, ''))
+  );
+  const energyCard = card('Energy Rates',
+    sub('Gas') +
+    row('ESCO Rate · $/Therm', numF('energy','gas_esco_rate', en.gas_esco_rate, '$')) +
+    row('Rate Increase', pctF('energy','gas_rate_increase', en.gas_rate_increase)) +
+    sub('Electric') +
+    row('ESCO Rate · $/KWH', numF('energy','electric_esco_rate', en.electric_esco_rate, '$')) +
+    row('Rate Increase', pctF('energy','electric_rate_increase', en.electric_rate_increase)) +
+    sub('Oil') +
+    row('Price · $/gallon', numF('energy','oil_price_per_gallon', en.oil_price_per_gallon, '$')) +
+    row('Rate Increase', pctF('energy','oil_rate_increase', en.oil_rate_increase))
+  );
+  const waterCard = card('Water &amp; Sewer',
+    row('Rate Increase', pctF('water_sewer','rate_increase', ws.rate_increase))
+  );
+  const operatingSection = sectionWrap('operating', 'Operating', 'insurance, utilities, recurring costs', '',
+    insCard + energyCard + waterCard);
+
+  // ── Taxes ───────────────────────────────────────────
+  const taxCard = card('Real Estate Taxes',
+    row('Tax Rate', pctRawF('re_taxes_overrides','tax_rate', rt.tax_rate ? (rt.tax_rate * 100).toFixed(4) : '0')) +
+    row('Est. Tax Rate', pctRawF('re_taxes_overrides','est_tax_rate', rt.est_tax_rate ? (rt.est_tax_rate * 100).toFixed(4) : '0'))
+  );
+  const taxesSection = sectionWrap('taxes', 'Taxes', 'real estate tax rate inputs', 'single', taxCard);
+
+  contentDiv.innerHTML = '<div class="asm-portal">' + payrollSection + operatingSection + taxesSection + '</div>';
 }
 
 // ── History Tab ──
