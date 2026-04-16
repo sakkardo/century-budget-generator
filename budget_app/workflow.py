@@ -1813,7 +1813,10 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        data = request.get_json()
+        try:
+            data = request.get_json(silent=True) or {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON"}), 400
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
@@ -1925,7 +1928,12 @@ def create_workflow_blueprint(db):
                 forecast = base + estimate
                 line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"update_budget_assumptions failed for {entity_code}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to save assumptions"}), 500
         logger.info(f"Assumptions updated for {entity_code}, recalculated {recalc_count} lines")
 
         return jsonify({"status": "saved", "assumptions": current, "recalculated": recalc_count})
@@ -2366,8 +2374,13 @@ def create_workflow_blueprint(db):
     @bp.route("/api/payroll/positions/<entity_code>", methods=["POST"])
     def save_payroll_positions(entity_code):
         """Save/update all payroll positions for an entity (full replace)."""
-        data = request.get_json()
+        try:
+            data = request.get_json(silent=True) or {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON"}), 400
         positions_data = data.get("positions", [])
+        if not isinstance(positions_data, list):
+            return jsonify({"error": "positions must be a list"}), 400
         # Delete existing and re-insert
         PayrollPosition.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).delete()
         for i, p in enumerate(positions_data):
@@ -2412,7 +2425,12 @@ def create_workflow_blueprint(db):
                 sort_order=i
             )
             db.session.add(pos)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"save_payroll_positions failed for {entity_code}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to save positions"}), 500
         positions = PayrollPosition.query.filter_by(
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).order_by(PayrollPosition.sort_order).all()
@@ -2464,7 +2482,10 @@ def create_workflow_blueprint(db):
     @bp.route("/api/payroll/assumptions/<entity_code>", methods=["POST"])
     def save_payroll_assumptions(entity_code):
         """Save payroll-tab-specific assumptions (override main assumptions for this tab)."""
-        data = request.get_json()
+        try:
+            data = request.get_json(silent=True) or {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON"}), 400
         assumptions = data.get("assumptions", {})
         import json as _json
         pa = PayrollAssumption.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).first()
@@ -2472,7 +2493,12 @@ def create_workflow_blueprint(db):
             pa = PayrollAssumption(entity_code=entity_code, budget_year=BUDGET_YEAR)
             db.session.add(pa)
         pa.assumptions_json = _json.dumps(assumptions)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"save_payroll_assumptions failed for {entity_code}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to save assumptions"}), 500
         return jsonify({"status": "ok", "assumptions": assumptions})
 
 
@@ -5862,11 +5888,31 @@ async function renderBuildingInfoTab(contentDiv) {
 function _biRenderAll(container) {
   container.innerHTML =
     '<div class="bi-page">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
+        '<button onclick="_biCloseAndReturn()" style="padding:6px 14px; font-size:12px; font-weight:600; background:var(--blue-light, #f5efe7); color:var(--blue, #5a4a3f); border:1px solid var(--blue, #5a4a3f); border-radius:6px; cursor:pointer;">\u2190 Back to Summary</button>' +
+        '<span id="biSaveIndicator" style="font-size:11px; color:var(--gray-500);"></span>' +
+      '</div>' +
       _biRenderMaint() +
       _biRenderAmort() +
     '</div>';
   _biRecalcAmort();
 }
+
+// Flush any pending save, then re-activate Summary tab
+function _biCloseAndReturn() {
+  if (_biSaveTimer) { clearTimeout(_biSaveTimer); _biSaveTimer = null; _biSaveNow(); }
+  const summaryTab = document.querySelector('.sheet-tab[data-sheet="Summary"]');
+  if (summaryTab) {
+    document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+    summaryTab.classList.add('active');
+    renderSheet('Summary', null, summaryTab);
+  }
+}
+
+// Flush pending Building Info save on page unload or visibility-change
+window.addEventListener('beforeunload', () => {
+  if (_biSaveTimer) { clearTimeout(_biSaveTimer); _biSaveTimer = null; _biSaveNow(); }
+});
 
 function _biRenderMaint() {
   const rows = _biData.maintenance_history;
@@ -7356,6 +7402,11 @@ function faGetFormulaTooltip(l, field) {
 }
 
 function renderSheet(sheetName, sheetLines, tabEl) {
+  // Flush any pending Building Info save before switching sheets
+  if (typeof _biSaveTimer !== 'undefined' && _biSaveTimer) {
+    clearTimeout(_biSaveTimer); _biSaveTimer = null;
+    try { _biSaveNow(); } catch (e) {}
+  }
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   tabEl.classList.add('active');
 
