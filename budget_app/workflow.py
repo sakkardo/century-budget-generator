@@ -1939,6 +1939,90 @@ def create_workflow_blueprint(db):
         return jsonify({"status": "saved", "assumptions": current, "recalculated": recalc_count})
 
 
+    # ─── API Routes: Source Uploads Status ──────────────────────────────────
+
+    @bp.route("/api/entity/<entity_code>/sources", methods=["GET"])
+    def get_entity_sources(entity_code):
+        """Return last-uploaded timestamps + filenames for all 5 budget sources.
+
+        Sources: YSL (Yardi), Expense Distribution (Yardi), AP Aging (Yardi),
+        Maintenance Proof (Yardi), Audited Financials (PDF).
+        """
+        result = {
+            "ysl": {"last_uploaded": None, "filename": None},
+            "expense_distribution": {"last_uploaded": None, "filename": None},
+            "ap_aging": {"last_uploaded": None, "filename": None},
+            "maint_proof": {"last_uploaded": None, "filename": None},
+            "audited_financials": {"last_uploaded": None, "filename": None},
+        }
+
+        # 1) YSL — proxy via earliest budget_lines.updated_at for this entity
+        try:
+            row = db.session.execute(
+                db.text("""
+                    SELECT MIN(bl.updated_at)
+                    FROM budget_lines bl
+                    JOIN budgets b ON b.id = bl.budget_id
+                    WHERE b.entity_code = :ec
+                """),
+                {"ec": entity_code}
+            ).fetchone()
+            if row and row[0]:
+                result["ysl"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+
+        # 2) Expense Distribution
+        try:
+            row = db.session.execute(
+                db.text("SELECT file_name, uploaded_at FROM expense_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if row:
+                result["expense_distribution"]["filename"] = row[0]
+                result["expense_distribution"]["last_uploaded"] = row[1].isoformat() if row[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 3) AP Aging
+        try:
+            row = db.session.execute(
+                db.text("SELECT file_name, uploaded_at FROM open_ap_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if row:
+                result["ap_aging"]["filename"] = row[0]
+                result["ap_aging"]["last_uploaded"] = row[1].isoformat() if row[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 4) Maintenance Proof
+        try:
+            row = db.session.execute(
+                db.text("SELECT file_name, uploaded_at FROM maint_proof_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if row:
+                result["maint_proof"]["filename"] = row[0]
+                result["maint_proof"]["last_uploaded"] = row[1].isoformat() if row[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 5) Audited Financials (confirmed only)
+        try:
+            row = db.session.execute(
+                db.text("SELECT pdf_filename, created_at FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY created_at DESC LIMIT 1"),
+                {"ec": entity_code}
+            ).fetchone()
+            if row:
+                result["audited_financials"]["filename"] = row[0]
+                result["audited_financials"]["last_uploaded"] = row[1].isoformat() if row[1] else None
+        except Exception:
+            db.session.rollback()
+
+        return jsonify(result)
+
+
     # ─── API Routes: RE Taxes (NYC DOF) ─────────────────────────────────────
 
     @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
@@ -4585,6 +4669,33 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
+  <!-- Sources Panel (collapsed by default — shows 5-source upload status) -->
+  <div class="sources-section" style="background:#fff; border:1px solid var(--gray-200); border-radius:10px; margin-bottom:16px; overflow:hidden;">
+    <div onclick="toggleSourcesPanel()" id="sourcesPanelHeader" style="padding:10px 20px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:#fafaf7; border-bottom:1px solid transparent;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="font-size:14px; font-weight:600; color:var(--blue);">📂 Data Sources</span>
+        <span id="sourcesSummary" style="font-size:12px; color:var(--gray-500);">Loading...</span>
+      </div>
+      <span id="sourcesChevron" style="font-size:12px; color:var(--gray-500); transition:transform 0.2s;">▶</span>
+    </div>
+    <div id="sourcesPanelBody" style="display:none; padding:12px 20px 16px;">
+      <div style="font-size:11px; color:var(--gray-500); margin-bottom:8px;">Click <b>Replace</b> to re-upload an individual source. Other sources are unaffected.</div>
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--gray-200); text-align:left;">
+            <th style="padding:8px 6px; font-size:11px; color:var(--gray-500); text-transform:uppercase; font-weight:600;">Source</th>
+            <th style="padding:8px 6px; font-size:11px; color:var(--gray-500); text-transform:uppercase; font-weight:600;">Last Uploaded</th>
+            <th style="padding:8px 6px; font-size:11px; color:var(--gray-500); text-transform:uppercase; font-weight:600;">File</th>
+            <th style="padding:8px 6px; font-size:11px; color:var(--gray-500); text-transform:uppercase; font-weight:600; text-align:right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="sourcesTableBody"></tbody>
+      </table>
+      <input type="file" id="sourcesFilePicker" accept=".xlsx,.xls" style="display:none;" onchange="sourcesOnFilePicked(event)">
+      <div id="sourcesUploadStatus" style="margin-top:10px; font-size:12px;"></div>
+    </div>
+  </div>
+
   <!-- Budget Workbook (PROMOTED — blue border, primary visual element) -->
   <div class="workbook-section">
     <div class="workbook-header">
@@ -4614,6 +4725,114 @@ function togglePanel(header) {
   body.classList.toggle('open');
   chevron.classList.toggle('open');
 }
+
+// ─── Sources Panel ─────────────────────────────────────────────────────────
+let _sourcesData = null;
+let _sourcesPendingKey = null;  // which source the user clicked Replace on
+
+function toggleSourcesPanel() {
+  const body = document.getElementById('sourcesPanelBody');
+  const chev = document.getElementById('sourcesChevron');
+  const open = body.style.display === 'none' || body.style.display === '';
+  body.style.display = open ? 'block' : 'none';
+  if (chev) chev.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+  if (open && !_sourcesData) loadSources();
+}
+
+function _fmtSourceDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    const m = d.getMonth() + 1, day = d.getDate(), y = String(d.getFullYear()).slice(-2);
+    let h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
+    const ap = h >= 12 ? 'p' : 'a';
+    h = h % 12 || 12;
+    return m + '/' + day + '/' + y + ' ' + h + ':' + mm + ap;
+  } catch (e) { return '—'; }
+}
+
+async function loadSources() {
+  const statusEl = document.getElementById('sourcesSummary');
+  const body = document.getElementById('sourcesTableBody');
+  try {
+    const r = await fetch('/api/entity/' + entityCode + '/sources');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    _sourcesData = data;
+    const rows = [
+      { key: 'ysl',                 label: 'YSL Annual Budget',     hint: 'Yardi — creates GL lines' },
+      { key: 'expense_distribution', label: 'Expense Distribution', hint: 'Yardi — accrual adjustments' },
+      { key: 'ap_aging',             label: 'AP Aging',             hint: 'Yardi — unpaid bills' },
+      { key: 'maint_proof',          label: 'Maintenance Proof',    hint: 'Yardi — unit-level maint' },
+      { key: 'audited_financials',   label: 'Audited Financials',   hint: 'PDF — 2024 actual' }
+    ];
+    let loaded = 0;
+    body.innerHTML = rows.map(r => {
+      const s = data[r.key] || {};
+      const date = _fmtSourceDate(s.last_uploaded);
+      const file = s.filename ? (s.filename.length > 32 ? s.filename.slice(0, 29) + '...' : s.filename) : '—';
+      const has = !!s.last_uploaded;
+      if (has) loaded++;
+      const action = (r.key === 'audited_financials')
+        ? '<a href="/audited-financials/bulk-upload" style="font-size:12px; color:var(--blue); text-decoration:none; padding:4px 10px; border:1px solid var(--blue); border-radius:4px;">Manage →</a>'
+        : '<button onclick="sourcesReplace(\'' + r.key + '\')" style="font-size:12px; color:var(--blue); background:#fff; border:1px solid var(--blue); padding:4px 10px; border-radius:4px; cursor:pointer;">Replace</button>';
+      return '<tr style="border-bottom:1px solid var(--gray-100);">' +
+        '<td style="padding:8px 6px;"><div style="font-weight:600;">' + r.label + '</div><div style="font-size:11px; color:var(--gray-500);">' + r.hint + '</div></td>' +
+        '<td style="padding:8px 6px; font-size:12px; color:' + (has ? 'var(--text)' : 'var(--gray-400)') + ';">' + date + '</td>' +
+        '<td style="padding:8px 6px; font-size:12px; color:var(--gray-500); font-family:ui-monospace,Consolas,monospace;" title="' + (s.filename || '') + '">' + file + '</td>' +
+        '<td style="padding:8px 6px; text-align:right;">' + action + '</td>' +
+      '</tr>';
+    }).join('');
+    statusEl.textContent = loaded + ' of 5 uploaded';
+  } catch (e) {
+    statusEl.textContent = 'Failed to load';
+    body.innerHTML = '<tr><td colspan="4" style="padding:8px; color:var(--red); font-size:12px;">Error loading sources: ' + (e.message || e) + '</td></tr>';
+  }
+}
+
+function sourcesReplace(key) {
+  _sourcesPendingKey = key;
+  const picker = document.getElementById('sourcesFilePicker');
+  picker.value = '';
+  picker.click();
+}
+
+async function sourcesOnFilePicked(evt) {
+  const file = evt.target.files && evt.target.files[0];
+  if (!file || !_sourcesPendingKey) return;
+  const key = _sourcesPendingKey;
+  _sourcesPendingKey = null;
+  const statusEl = document.getElementById('sourcesUploadStatus');
+  statusEl.style.color = 'var(--gray-500)';
+  statusEl.textContent = 'Uploading ' + file.name + '...';
+  try {
+    const fd = new FormData();
+    fd.append('files', file);
+    const r = await fetch('/api/process', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
+    }
+    const data = await r.json();
+    if (data.failed && data.failed.length) {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = 'Upload failed: ' + data.failed.join('; ');
+    } else {
+      statusEl.style.color = 'var(--green)';
+      const names = (data.success || []).map(s => typeof s === 'string' ? s : (s.filename || 'file')).join(', ');
+      statusEl.textContent = '✓ Uploaded ' + (names || file.name) + ' — reload to see changes';
+      _sourcesData = null;
+      loadSources();
+    }
+  } catch (e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Upload error: ' + (e.message || e);
+  }
+}
+
+// Populate summary on page load (without opening the panel)
+setTimeout(() => { if (typeof loadSources === 'function' && !_sourcesData) loadSources(); }, 500);
+
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
 let REMAINING_MONTHS = 10;  // updated from API response
