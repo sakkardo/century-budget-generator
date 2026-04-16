@@ -12022,6 +12022,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }
       .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
       .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }
+      /* Income sheet: hide Accrual Adj (col 5) and Unpaid Bills (col 6) — not applicable for income GLs */
+      .fa-grid.fa-grid-hide-adj thead th:nth-child(5),
+      .fa-grid.fa-grid-hide-adj thead th:nth-child(6),
+      .fa-grid.fa-grid-hide-adj tbody tr:not(.cat-hdr):not(.anc-drawer-row) td:nth-child(5),
+      .fa-grid.fa-grid-hide-adj tbody tr:not(.cat-hdr):not(.anc-drawer-row) td:nth-child(6) { display:none !important; }
       .fa-grid thead { position:sticky; top:0; z-index:20; }
       .fa-grid th { padding:8px 6px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
@@ -12137,7 +12142,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
     '</div>';
 
-  html += '<div class="fa-grid"><div class="fa-grid-scroll"><table><thead><tr>' +
+  const _hideAdj = (sheetName === 'Income') ? ' fa-grid-hide-adj' : '';
+  html += '<div class="fa-grid' + _hideAdj + '"><div class="fa-grid-scroll"><table><thead><tr>' +
     '<th class="frozen frozen-gl">GL Code</th><th class="frozen frozen-desc">Description</th>' +
     '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
     '<th class="num">Accrual Adj</th><th class="num">Unpaid Bills</th>' +
