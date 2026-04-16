@@ -2023,6 +2023,459 @@ def create_workflow_blueprint(db):
         return jsonify(result)
 
 
+    # ─── API Routes: YSL Merge Mode (BETA — 204/212 only) ───────────────────
+    #
+    # Partial re-upload of a YSL file that preserves all user edits (FA/PM).
+    # Only refreshes Yardi-sourced columns: prior_year, ytd_actual, ytd_budget,
+    # current_budget, plus the mapping metadata (sheet_name, description,
+    # category, pm_editable). All user-edit columns are left untouched.
+    #
+    # Safety layers:
+    #   1. Hardcoded allowlist — currently {"204", "212"}. All other entities
+    #      return 403.
+    #   2. Pre-merge snapshot — before any writes, serialize all BudgetLines
+    #      for the entity to budget.pre_merge_snapshot (TEXT/JSON). Restore
+    #      endpoint reads this to revert.
+    #   3. Atomic transaction — single commit; any exception rolls back.
+    #   4. Dry-run mode — ?mode=dry_run (or form mode=dry_run) returns the
+    #      diff without writing. UI previews this before committing.
+    #   5. Restore endpoint — /api/ysl/restore/<entity_code> rewinds the
+    #      most recent merge from snapshot.
+    _YSL_MERGE_ALLOWLIST = {"204", "212"}
+    # Beta safety: entities in the allowlist are PREVIEW-ONLY (dry-run only).
+    # When we're ready to enable live commits, flip this to True (or promote
+    # a per-entity set with commit privileges).
+    _YSL_MERGE_COMMIT_ENABLED = False
+    _YSL_MERGE_REFRESH_FIELDS = (
+        "prior_year", "ytd_actual", "ytd_budget", "current_budget",
+    )
+    _YSL_MERGE_META_FIELDS = (
+        "sheet_name", "description", "category", "pm_editable",
+    )
+
+
+    def _ysl_merge_compute_diff(entity_code, gl_data, gl_mapping):
+        """
+        Given parsed YSL gl_data and the template mapping, compute the set of
+        changes that would be applied. Returns a dict:
+          {
+            "updated": [ {gl_code, description, changes: [{field, old, new}]} ],
+            "inserted": [ {gl_code, description} ],
+            "orphaned": [ {gl_code, description} ],  # in DB but not in new YSL
+            "totals": {"updated": n, "inserted": n, "orphaned": n, "total_gls_in_file": n}
+          }
+        Does NOT write anything.
+        """
+        try:
+            from gl_mapper import build_gl_mapping_with_descriptions  # noqa: F401
+        except ImportError:
+            pass  # gl_mapping is already passed in, but import just in case
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return {
+                "updated": [], "inserted": [], "orphaned": [],
+                "totals": {"updated": 0, "inserted": 0, "orphaned": 0, "total_gls_in_file": len(gl_data)},
+                "note": "No existing budget for this entity/year — would create from scratch."
+            }
+
+        # Index existing lines by gl_code
+        existing = {ln.gl_code: ln for ln in BudgetLine.query.filter_by(budget_id=budget.id).all()}
+
+        updated, inserted, orphaned = [], [], []
+        new_gl_codes = set(gl_data.keys())
+
+        for gl_code, gl_values in gl_data.items():
+            prior_year = float(gl_values.get("period_2", 0) or 0)
+            ytd_actual = float(gl_values.get("period_3", 0) or 0)
+            ytd_budget = float(gl_values.get("period_4", 0) or 0)
+            current_budget = float(gl_values.get("period_5", 0) or 0)
+
+            if gl_code in existing:
+                line = existing[gl_code]
+                changes = []
+                if round(float(line.prior_year or 0), 2) != round(prior_year, 2):
+                    changes.append({"field": "prior_year", "old": float(line.prior_year or 0), "new": prior_year})
+                if round(float(line.ytd_actual or 0), 2) != round(ytd_actual, 2):
+                    changes.append({"field": "ytd_actual", "old": float(line.ytd_actual or 0), "new": ytd_actual})
+                if round(float(line.ytd_budget or 0), 2) != round(ytd_budget, 2):
+                    changes.append({"field": "ytd_budget", "old": float(line.ytd_budget or 0), "new": ytd_budget})
+                if round(float(line.current_budget or 0), 2) != round(current_budget, 2):
+                    changes.append({"field": "current_budget", "old": float(line.current_budget or 0), "new": current_budget})
+                if changes:
+                    updated.append({
+                        "gl_code": gl_code,
+                        "description": line.description,
+                        "changes": changes,
+                    })
+            else:
+                # New GL — would be inserted
+                desc = gl_mapping.get(gl_code, (None, None, gl_code))[2] if gl_code in gl_mapping else gl_code
+                inserted.append({"gl_code": gl_code, "description": desc})
+
+        for gl_code, line in existing.items():
+            if gl_code not in new_gl_codes:
+                orphaned.append({"gl_code": gl_code, "description": line.description})
+
+        return {
+            "updated": updated,
+            "inserted": inserted,
+            "orphaned": orphaned,
+            "totals": {
+                "updated": len(updated),
+                "inserted": len(inserted),
+                "orphaned": len(orphaned),
+                "total_gls_in_file": len(gl_data),
+            },
+        }
+
+
+    def _ysl_merge_apply(entity_code, gl_data, gl_mapping):
+        """
+        Apply the merge. Snapshots existing lines to budget.pre_merge_snapshot,
+        then refreshes Yardi fields + metadata, inserts new GLs. User-edit
+        columns are never touched. Orphaned GLs (in DB, not in file) are
+        left alone. Writes BudgetRevision entries for changed fields.
+        Returns (success, summary_dict).
+        """
+        import json as _json_mod
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return False, {"error": "No existing budget. Use the standard upload flow first."}
+
+        # 1) Snapshot every existing line (full to_dict) for restore
+        snapshot = [ln.to_dict() for ln in BudgetLine.query.filter_by(budget_id=budget.id).all()]
+        budget.pre_merge_snapshot = _json_mod.dumps(snapshot)
+        budget.pre_merge_snapshot_at = datetime.utcnow()
+
+        # 2) Index existing by gl_code
+        existing = {ln.gl_code: ln for ln in BudgetLine.query.filter_by(budget_id=budget.id).all()}
+
+        # 3) Resolve mapping helpers (reusing store_all_lines logic shape)
+        try:
+            from gl_mapper import build_gl_mapping_with_descriptions  # noqa: F401
+        except ImportError:
+            pass
+
+        updated_ct, inserted_ct, revisions_ct = 0, 0, 0
+
+        for gl_code, gl_values in gl_data.items():
+            prior_year = float(gl_values.get("period_2", 0) or 0)
+            ytd_actual = float(gl_values.get("period_3", 0) or 0)
+            ytd_budget = float(gl_values.get("period_4", 0) or 0)
+            current_budget = float(gl_values.get("period_5", 0) or 0)
+
+            # Determine sheet/row/description/category/pm_editable using same
+            # rules as store_all_lines (keep it consistent — Yardi metadata)
+            if gl_code in RM_GL_MAP:
+                desc, row_num, category = RM_GL_MAP[gl_code]
+                sheet_name = "Repairs & Supplies"
+                pm_editable = True
+            elif gl_code in gl_mapping:
+                sheet_name, row_num, desc = gl_mapping[gl_code]
+                category = SHEET_TO_CATEGORY.get(sheet_name, "other")
+                if category == "rm":
+                    _csv_hit = GL_MAPPING_CSV.get(gl_code[:4])
+                    category = _csv_hit[2] if _csv_hit else "repairs"
+                pm_editable = False
+            elif gl_code.startswith("7"):
+                prefix = gl_code[:4]
+                desc = CAPITAL_GL_PREFIX.get(prefix, f"Cap - {prefix}")
+                sheet_name = "Capital"
+                row_num = 0
+                category = "capital"
+                pm_editable = True
+            else:
+                _csv_hit = GL_MAPPING_CSV.get(gl_code[:4])
+                if _csv_hit:
+                    desc, sheet_name, category = _csv_hit
+                    row_num = 0
+                    pm_editable = True
+                else:
+                    desc = gl_code
+                    sheet_name = "Unmapped"
+                    row_num = 0
+                    category = "other"
+                    pm_editable = False
+
+            if gl_code in existing:
+                line = existing[gl_code]
+                # Track changes to refresh fields for audit trail
+                for fname, new_val in (
+                    ("prior_year", prior_year),
+                    ("ytd_actual", ytd_actual),
+                    ("ytd_budget", ytd_budget),
+                    ("current_budget", current_budget),
+                ):
+                    old_val = float(getattr(line, fname) or 0)
+                    if round(old_val, 2) != round(new_val, 2):
+                        db.session.add(BudgetRevision(
+                            budget_id=budget.id,
+                            budget_line_id=line.id,
+                            action="update",
+                            field_name=fname,
+                            old_value=str(old_val),
+                            new_value=str(new_val),
+                            source="ysl_merge",
+                            notes="YSL merge (beta)",
+                        ))
+                        revisions_ct += 1
+                # Refresh Yardi-sourced fields only — preserve user edits
+                line.prior_year = prior_year
+                line.ytd_actual = ytd_actual
+                line.ytd_budget = ytd_budget
+                line.current_budget = current_budget
+                # Refresh mapping metadata (Yardi-derived, not a user edit)
+                line.sheet_name = sheet_name
+                line.description = desc
+                line.category = category
+                line.pm_editable = pm_editable
+                updated_ct += 1
+            else:
+                line = BudgetLine(
+                    budget_id=budget.id,
+                    gl_code=gl_code,
+                    description=desc,
+                    category=category,
+                    row_num=row_num,
+                    sheet_name=sheet_name,
+                    pm_editable=pm_editable,
+                    prior_year=prior_year,
+                    ytd_actual=ytd_actual,
+                    ytd_budget=ytd_budget,
+                    current_budget=current_budget,
+                )
+                db.session.add(line)
+                db.session.flush()
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id,
+                    budget_line_id=line.id,
+                    action="create",
+                    field_name="gl_code",
+                    old_value="",
+                    new_value=gl_code,
+                    source="ysl_merge",
+                    notes="YSL merge (beta): new GL inserted",
+                ))
+                inserted_ct += 1
+                revisions_ct += 1
+
+        # Top-level audit row
+        db.session.add(BudgetRevision(
+            budget_id=budget.id,
+            budget_line_id=None,
+            action="ysl_merge",
+            field_name="__merge__",
+            old_value="",
+            new_value=f"updated={updated_ct} inserted={inserted_ct}",
+            source="ysl_merge",
+            notes="YSL merge (beta) applied; snapshot saved",
+        ))
+
+        db.session.commit()
+
+        return True, {
+            "updated": updated_ct,
+            "inserted": inserted_ct,
+            "revisions": revisions_ct,
+            "snapshot_at": budget.pre_merge_snapshot_at.isoformat() if budget.pre_merge_snapshot_at else None,
+        }
+
+
+    @bp.route("/api/ysl/merge/<entity_code>", methods=["POST"])
+    def ysl_merge(entity_code):
+        """
+        Merge a new YSL file into an existing budget, preserving user edits.
+
+        Form fields:
+          file: the YSL .xlsx (required)
+          mode: 'dry_run' (default) | 'commit'
+
+        Dry-run returns the diff only. Commit applies + snapshots + writes
+        BudgetRevision entries.
+        """
+        if str(entity_code) not in _YSL_MERGE_ALLOWLIST:
+            return jsonify({
+                "error": f"YSL merge (beta) is only enabled for entities: {sorted(_YSL_MERGE_ALLOWLIST)}.",
+                "entity_code": entity_code,
+            }), 403
+
+        mode = (request.form.get("mode") or request.args.get("mode") or "dry_run").lower()
+        if mode not in ("dry_run", "commit"):
+            return jsonify({"error": "mode must be 'dry_run' or 'commit'"}), 400
+
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"error": "Upload a .xlsx file in the 'file' field"}), 400
+        if not f.filename.lower().endswith((".xlsx", ".xls")):
+            return jsonify({"error": "File must be .xlsx or .xls"}), 400
+
+        # Parse YSL
+        import tempfile
+        from pathlib import Path as _Path
+        try:
+            from ysl_parser import parse_ysl_file
+        except ImportError:
+            from budget_system.ysl_parser import parse_ysl_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = _Path(tmpdir) / f.filename
+            f.save(str(tmp_path))
+            try:
+                gl_data, property_info = parse_ysl_file(tmp_path)
+            except Exception as e:
+                logger.exception("YSL merge: parse failed")
+                return jsonify({"error": f"Failed to parse YSL file: {e}"}), 400
+
+            # Sanity-check: file's property_code must match target entity
+            file_entity = str(property_info.get("property_code") or "").strip()
+            if file_entity and file_entity != str(entity_code):
+                return jsonify({
+                    "error": f"Entity mismatch: URL=/{entity_code}/ but file header says {file_entity}. Refusing to merge.",
+                }), 400
+
+            # Build gl_mapping for description resolution
+            try:
+                from gl_mapper import build_gl_mapping_with_descriptions
+            except ImportError:
+                from budget_system.gl_mapper import build_gl_mapping_with_descriptions
+            template_path = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
+            try:
+                gl_mapping = build_gl_mapping_with_descriptions(template_path)
+            except Exception:
+                gl_mapping = {}
+
+            if mode == "dry_run":
+                diff = _ysl_merge_compute_diff(entity_code, gl_data, gl_mapping)
+                return jsonify({
+                    "mode": "dry_run",
+                    "entity_code": entity_code,
+                    "filename": f.filename,
+                    "property_info": property_info,
+                    "commit_enabled": bool(_YSL_MERGE_COMMIT_ENABLED),
+                    "diff": diff,
+                })
+
+            # Commit gate — beta preview-only until explicitly flipped on
+            if not _YSL_MERGE_COMMIT_ENABLED:
+                return jsonify({
+                    "error": "YSL merge is in preview-only mode. Commit is disabled. Use mode=dry_run to preview the diff.",
+                    "commit_enabled": False,
+                }), 403
+
+            # Commit path — atomic
+            try:
+                ok, summary = _ysl_merge_apply(entity_code, gl_data, gl_mapping)
+                if not ok:
+                    return jsonify({"error": summary.get("error", "Merge failed")}), 400
+                return jsonify({
+                    "mode": "commit",
+                    "entity_code": entity_code,
+                    "filename": f.filename,
+                    "summary": summary,
+                })
+            except Exception as e:
+                db.session.rollback()
+                logger.exception("YSL merge commit failed")
+                return jsonify({"error": f"Merge failed, rolled back: {e}"}), 500
+
+
+    @bp.route("/api/ysl/restore/<entity_code>", methods=["POST"])
+    def ysl_restore(entity_code):
+        """
+        Restore BudgetLines from the most recent pre_merge_snapshot.
+        Only restores the Yardi-sourced fields (prior_year, ytd_actual,
+        ytd_budget, current_budget) — user edits made after the merge are
+        preserved. To fully rewind, restore all fields: use ?full=1.
+        """
+        if str(entity_code) not in _YSL_MERGE_ALLOWLIST:
+            return jsonify({"error": "Restore only enabled for allowlisted entities."}), 403
+        if not _YSL_MERGE_COMMIT_ENABLED:
+            return jsonify({"error": "Restore is disabled in preview-only mode."}), 403
+
+        import json as _json_mod
+        full = (request.args.get("full") or "").strip() == "1"
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget or not budget.pre_merge_snapshot:
+            return jsonify({"error": "No snapshot available for this entity."}), 404
+
+        try:
+            snapshot = _json_mod.loads(budget.pre_merge_snapshot)
+        except Exception as e:
+            return jsonify({"error": f"Snapshot unreadable: {e}"}), 500
+
+        snap_by_gl = {row["gl_code"]: row for row in snapshot if row.get("gl_code")}
+        existing = {ln.gl_code: ln for ln in BudgetLine.query.filter_by(budget_id=budget.id).all()}
+
+        restored_ct = 0
+        try:
+            for gl_code, snap in snap_by_gl.items():
+                line = existing.get(gl_code)
+                if not line:
+                    continue  # Line was inserted by merge but later deleted; skip
+                # Always restore Yardi fields
+                line.prior_year = float(snap.get("prior_year") or 0)
+                line.ytd_actual = float(snap.get("ytd_actual") or 0)
+                line.ytd_budget = float(snap.get("ytd_budget") or 0)
+                line.current_budget = float(snap.get("current_budget") or 0)
+                if full:
+                    # Restore user-edit fields too (full rewind)
+                    line.accrual_adj = float(snap.get("accrual_adj") or 0)
+                    line.unpaid_bills = float(snap.get("unpaid_bills") or 0)
+                    line.increase_pct = float(snap.get("increase_pct") or 0)
+                    line.notes = snap.get("notes") or ""
+                    line.reclass_to_gl = snap.get("reclass_to_gl")
+                    line.reclass_amount = float(snap.get("reclass_amount") or 0)
+                    line.reclass_notes = snap.get("reclass_notes") or ""
+                    line.estimate_override = snap.get("estimate_override")
+                    line.forecast_override = snap.get("forecast_override")
+                    line.proposed_budget = float(snap.get("proposed_budget") or 0)
+                    line.proposed_formula = snap.get("proposed_formula")
+                    line.fa_proposed_status = snap.get("fa_proposed_status")
+                    line.fa_proposed_note = snap.get("fa_proposed_note") or ""
+                    line.fa_override_value = snap.get("fa_override_value")
+                restored_ct += 1
+
+            db.session.add(BudgetRevision(
+                budget_id=budget.id,
+                budget_line_id=None,
+                action="ysl_restore",
+                field_name="__restore__",
+                old_value="",
+                new_value=f"restored={restored_ct} full={full}",
+                source="ysl_merge",
+                notes="YSL restore from pre_merge_snapshot",
+            ))
+            db.session.commit()
+            return jsonify({
+                "entity_code": entity_code,
+                "restored": restored_ct,
+                "full": full,
+                "snapshot_at": budget.pre_merge_snapshot_at.isoformat() if budget.pre_merge_snapshot_at else None,
+            })
+        except Exception as e:
+            db.session.rollback()
+            logger.exception("YSL restore failed")
+            return jsonify({"error": f"Restore failed, rolled back: {e}"}), 500
+
+
+    @bp.route("/api/ysl/snapshot/<entity_code>", methods=["GET"])
+    def ysl_snapshot_info(entity_code):
+        """Lightweight: does a snapshot exist? when was it taken?"""
+        if str(entity_code) not in _YSL_MERGE_ALLOWLIST:
+            return jsonify({"allowlisted": False})
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"allowlisted": True, "has_snapshot": False})
+        return jsonify({
+            "allowlisted": True,
+            "has_snapshot": bool(budget.pre_merge_snapshot),
+            "snapshot_at": budget.pre_merge_snapshot_at.isoformat() if budget.pre_merge_snapshot_at else None,
+        })
+
+
     # ─── API Routes: RE Taxes (NYC DOF) ─────────────────────────────────────
 
     @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
@@ -4773,9 +5226,16 @@ async function loadSources() {
       const file = s.filename ? (s.filename.length > 32 ? s.filename.slice(0, 29) + '...' : s.filename) : '—';
       const has = !!s.last_uploaded;
       if (has) loaded++;
-      const action = (r.key === 'audited_financials')
-        ? '<a href="/audited-financials/bulk-upload" style="font-size:12px; color:var(--blue); text-decoration:none; padding:4px 10px; border:1px solid var(--blue); border-radius:4px;">Manage →</a>'
-        : '<button onclick="sourcesReplace(\'' + r.key + '\')" style="font-size:12px; color:var(--blue); background:#fff; border:1px solid var(--blue); padding:4px 10px; border-radius:4px; cursor:pointer;">Replace</button>';
+      const isYslMergeAllowed = (r.key === 'ysl' && (entityCode === '204' || entityCode === '212'));
+      let action;
+      if (r.key === 'audited_financials') {
+        action = '<a href="/audited-financials/bulk-upload" style="font-size:12px; color:var(--blue); text-decoration:none; padding:4px 10px; border:1px solid var(--blue); border-radius:4px;">Manage →</a>';
+      } else if (isYslMergeAllowed) {
+        action = '<button onclick="sourcesReplace(\'' + r.key + '\')" style="font-size:12px; color:var(--blue); background:#fff; border:1px solid var(--blue); padding:4px 10px; border-radius:4px; cursor:pointer;" title="Wipes edits, rebuilds from scratch">Replace</button>' +
+                 ' <button onclick="yslMergeOpen()" style="font-size:12px; color:#fff; background:var(--blue); border:1px solid var(--blue); padding:4px 10px; border-radius:4px; cursor:pointer;" title="Refreshes prior-year/YTD only, preserves all user edits">Merge (Beta)</button>';
+      } else {
+        action = '<button onclick="sourcesReplace(\'' + r.key + '\')" style="font-size:12px; color:var(--blue); background:#fff; border:1px solid var(--blue); padding:4px 10px; border-radius:4px; cursor:pointer;">Replace</button>';
+      }
       return '<tr style="border-bottom:1px solid var(--gray-100);">' +
         '<td style="padding:8px 6px;"><div style="font-weight:600;">' + r.label + '</div><div style="font-size:11px; color:var(--gray-500);">' + r.hint + '</div></td>' +
         '<td style="padding:8px 6px; font-size:12px; color:' + (has ? 'var(--text)' : 'var(--gray-400)') + ';">' + date + '</td>' +
@@ -4832,6 +5292,134 @@ async function sourcesOnFilePicked(evt) {
 
 // Populate summary on page load (without opening the panel)
 setTimeout(() => { if (typeof loadSources === 'function' && !_sourcesData) loadSources(); }, 500);
+
+// ─── YSL Merge (Beta) — 204/212 only ───────────────────────────────────
+let _yslMergeFile = null;
+let _yslMergeDiff = null;
+
+function yslMergeOpen() {
+  const modal = document.getElementById('yslMergeModal');
+  if (!modal) { _yslMergeInjectModal(); }
+  document.getElementById('yslMergeModal').style.display = 'flex';
+  document.getElementById('yslMergeStep1').style.display = 'block';
+  document.getElementById('yslMergeStep2').style.display = 'none';
+  document.getElementById('yslMergeResult').style.display = 'none';
+  document.getElementById('yslMergePicker').value = '';
+  _yslMergeFile = null;
+  _yslMergeDiff = null;
+}
+
+function yslMergeClose() {
+  const m = document.getElementById('yslMergeModal');
+  if (m) m.style.display = 'none';
+}
+
+function _yslMergeInjectModal() {
+  const html = `
+<div id="yslMergeModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:10px; max-width:720px; width:92%; max-height:85vh; overflow:hidden; display:flex; flex-direction:column;">
+    <div style="padding:16px 20px; border-bottom:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <div style="font-size:16px; font-weight:700;">Merge YSL (Beta) — Entity ${entityCode}</div>
+        <div style="font-size:12px; color:var(--gray-500); margin-top:2px;">Refreshes prior-year & YTD only · preserves all FA/PM edits</div>
+      </div>
+      <button onclick="yslMergeClose()" style="background:none; border:none; font-size:24px; cursor:pointer; color:var(--gray-500);">×</button>
+    </div>
+
+    <div id="yslMergeStep1" style="padding:20px; overflow:auto;">
+      <div style="background:#fff8e1; border:1px solid #f3d78a; border-radius:6px; padding:12px; margin-bottom:14px; font-size:13px;">
+        <b>What this does:</b> Loads the new YSL file, shows you exactly which GL codes would have their Yardi numbers refreshed, and only commits after you click Apply. A full snapshot of the current state is saved before any writes — you can restore with one click if anything looks wrong.
+      </div>
+      <input type="file" id="yslMergePicker" accept=".xlsx,.xls" onchange="yslMergeOnFilePicked(event)" style="display:block; margin:0 auto;">
+      <div id="yslMergeDryStatus" style="font-size:12px; color:var(--gray-500); margin-top:12px; text-align:center;"></div>
+    </div>
+
+    <div id="yslMergeStep2" style="display:none; padding:16px 20px; overflow:auto; flex:1;">
+      <div id="yslMergeDiffSummary" style="margin-bottom:12px;"></div>
+      <div id="yslMergeDiffDetail" style="font-size:12px; max-height:360px; overflow:auto; border:1px solid var(--gray-200); border-radius:6px; padding:10px; background:#fafafa;"></div>
+    </div>
+
+    <div id="yslMergeResult" style="display:none; padding:20px;"></div>
+
+    <div style="padding:12px 20px; border-top:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center; background:#fafafa;">
+      <div id="yslMergeFooterLeft" style="font-size:12px; color:var(--gray-500);"></div>
+      <div>
+        <button onclick="yslMergeClose()" style="background:#fff; border:1px solid var(--gray-300); padding:6px 14px; border-radius:4px; cursor:pointer;">Close</button>
+        <span id="yslMergeCommitPill" style="display:inline-block; background:#f5f5f5; color:var(--gray-500); border:1px dashed var(--gray-400); padding:6px 14px; border-radius:4px; margin-left:8px; font-size:12px;" title="Commit is disabled during beta — this is a preview-only feature.">Preview only · commit disabled</span>
+      </div>
+    </div>
+  </div>
+</div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function yslMergeOnFilePicked(evt) {
+  const f = evt.target.files && evt.target.files[0];
+  if (!f) return;
+  _yslMergeFile = f;
+  const statusEl = document.getElementById('yslMergeDryStatus');
+  statusEl.style.color = 'var(--gray-500)';
+  statusEl.textContent = 'Parsing ' + f.name + '...';
+  try {
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('mode', 'dry_run');
+    const r = await fetch('/api/ysl/merge/' + entityCode, { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    _yslMergeDiff = data.diff;
+    _yslMergeShowDiff(data);
+  } catch (e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Error: ' + (e.message || e);
+  }
+}
+
+function _yslMergeShowDiff(data) {
+  document.getElementById('yslMergeStep1').style.display = 'none';
+  document.getElementById('yslMergeStep2').style.display = 'block';
+  const diff = data.diff || {};
+  const t = diff.totals || {};
+  const summary = document.getElementById('yslMergeDiffSummary');
+  summary.innerHTML =
+    '<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px;">' +
+      '<div style="background:#fff8e1; border-radius:6px; padding:10px; text-align:center;"><div style="font-size:22px; font-weight:700;">' + (t.updated || 0) + '</div><div style="font-size:11px; text-transform:uppercase; color:var(--gray-500);">Updated</div></div>' +
+      '<div style="background:#e8f5e9; border-radius:6px; padding:10px; text-align:center;"><div style="font-size:22px; font-weight:700;">' + (t.inserted || 0) + '</div><div style="font-size:11px; text-transform:uppercase; color:var(--gray-500);">New GLs</div></div>' +
+      '<div style="background:#fafafa; border:1px solid var(--gray-200); border-radius:6px; padding:10px; text-align:center;"><div style="font-size:22px; font-weight:700; color:var(--gray-500);">' + (t.orphaned || 0) + '</div><div style="font-size:11px; text-transform:uppercase; color:var(--gray-500);">Orphaned</div></div>' +
+      '<div style="background:#f5f5f5; border-radius:6px; padding:10px; text-align:center;"><div style="font-size:22px; font-weight:700;">' + (t.total_gls_in_file || 0) + '</div><div style="font-size:11px; text-transform:uppercase; color:var(--gray-500);">Total in file</div></div>' +
+    '</div>' +
+    '<div style="font-size:11px; color:var(--gray-500); margin-top:8px;">Orphaned = GLs in the current budget but not in the new YSL; these will be left untouched. User-edit columns (notes, overrides, increase %, PM reclasses) are never modified.</div>';
+
+  const detail = document.getElementById('yslMergeDiffDetail');
+  const parts = [];
+  if ((diff.updated || []).length) {
+    parts.push('<div style="font-weight:700; margin-bottom:4px;">Updated (' + diff.updated.length + ')</div>');
+    parts.push('<table style="width:100%; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--gray-300); font-weight:600;"><td style="padding:4px;">GL</td><td style="padding:4px;">Description</td><td style="padding:4px;">Field</td><td style="padding:4px; text-align:right;">Old</td><td style="padding:4px; text-align:right;">New</td></tr></thead><tbody>');
+    diff.updated.slice(0, 200).forEach(u => {
+      (u.changes || []).forEach(c => {
+        parts.push('<tr style="border-bottom:1px solid var(--gray-100);"><td style="padding:4px; font-family:ui-monospace,Consolas,monospace;">' + u.gl_code + '</td><td style="padding:4px;">' + (u.description || '') + '</td><td style="padding:4px; color:var(--gray-500);">' + c.field + '</td><td style="padding:4px; text-align:right; font-family:ui-monospace,Consolas,monospace;">' + Number(c.old).toLocaleString(undefined,{maximumFractionDigits:2}) + '</td><td style="padding:4px; text-align:right; font-family:ui-monospace,Consolas,monospace; font-weight:600;">' + Number(c.new).toLocaleString(undefined,{maximumFractionDigits:2}) + '</td></tr>');
+      });
+    });
+    parts.push('</tbody></table>');
+    if (diff.updated.length > 200) parts.push('<div style="font-size:11px; color:var(--gray-500); margin-top:4px;">(showing first 200)</div>');
+  }
+  if ((diff.inserted || []).length) {
+    parts.push('<div style="font-weight:700; margin-top:12px; margin-bottom:4px;">New GLs (' + diff.inserted.length + ')</div>');
+    parts.push('<div style="font-family:ui-monospace,Consolas,monospace; font-size:11px;">' + diff.inserted.map(i => i.gl_code + ' — ' + (i.description || '')).join('<br>') + '</div>');
+  }
+  if (!(diff.updated || []).length && !(diff.inserted || []).length) {
+    parts.push('<div style="color:var(--gray-500); padding:12px; text-align:center;">No changes detected. The new YSL matches the current budget\'s Yardi columns.</div>');
+  }
+  detail.innerHTML = parts.join('');
+
+  document.getElementById('yslMergeFooterLeft').textContent = data.filename + ' · dry-run preview (commit disabled)';
+}
+
+// yslMergeCommit / yslMergeRestore are intentionally omitted while the
+// feature is in preview-only mode. Backend endpoints exist but return 403
+// unless _YSL_MERGE_COMMIT_ENABLED is flipped on in workflow.py. When it is,
+// restore the two functions and swap the footer "Preview only" pill for the
+// Apply Merge button.
 
 let allSheets = {};  // populated in loadDetail, used by Budget Summary
 let YTD_MONTHS = 2;  // updated from API response
