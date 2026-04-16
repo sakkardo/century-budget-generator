@@ -1177,6 +1177,45 @@ def create_workflow_blueprint(db):
             }
 
 
+    class BuildingInfo(db.Model):
+        """
+        Building Info — reference/illustrative data per entity.
+
+        Purely a home for manually-maintained reference data that doesn't
+        tie into budget calculations: maintenance-history trend, underlying
+        mortgage amortization parameters, and room for future sections
+        (lease rolls, shareholder counts, etc.). All sections are optional;
+        empty entities are allowed. Never affects budget math.
+        """
+        __tablename__ = "building_info"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False, unique=True, index=True)
+
+        # Section blobs — JSON strings. Add new sections as new columns later.
+        maintenance_history_json = db.Column(db.Text, nullable=True)
+        amort_config_json = db.Column(db.Text, nullable=True)
+
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+        updated_by = db.Column(db.String(120), nullable=True)
+
+        def to_dict(self):
+            def _load(raw):
+                if not raw:
+                    return None
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return None
+            return {
+                "entity_code": self.entity_code,
+                "maintenance_history": _load(self.maintenance_history_json),
+                "amort_config": _load(self.amort_config_json),
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+                "updated_by": self.updated_by,
+            }
+
+
     # ─── Blueprint Creation ──────────────────────────────────────────────────
 
     bp = Blueprint("workflow", __name__)
@@ -2459,6 +2498,58 @@ def create_workflow_blueprint(db):
             result.append(entry)
 
         return jsonify({"revisions": result})
+
+
+    @bp.route("/api/building-info/<entity_code>", methods=["GET"])
+    def get_building_info(entity_code):
+        """Fetch reference/illustrative building data (maint history, amort schedule params)."""
+        info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+        if not info:
+            return jsonify({
+                "entity_code": entity_code,
+                "maintenance_history": None,
+                "amort_config": None,
+                "updated_at": None,
+                "updated_by": None,
+            })
+        return jsonify(info.to_dict())
+
+
+    @bp.route("/api/building-info/<entity_code>", methods=["PUT"])
+    def update_building_info(entity_code):
+        """Upsert reference/illustrative building data. Body: {section: value}."""
+        try:
+            body = request.get_json(force=True) or {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON"}), 400
+
+        info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+        if not info:
+            info = BuildingInfo(entity_code=entity_code)
+            db.session.add(info)
+
+        # Known section fields — silently ignore unknown keys so future sections
+        # can be added without breaking existing clients.
+        if "maintenance_history" in body:
+            mh = body.get("maintenance_history")
+            info.maintenance_history_json = json.dumps(mh) if mh is not None else None
+        if "amort_config" in body:
+            ac = body.get("amort_config")
+            info.amort_config_json = json.dumps(ac) if ac is not None else None
+
+        try:
+            user = current_user if hasattr(current_user, "is_authenticated") and current_user.is_authenticated else None
+            info.updated_by = (user.username if user else None)
+        except Exception:
+            pass
+
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
+        return jsonify({"ok": True, **info.to_dict()})
 
 
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
@@ -4966,11 +5057,24 @@ function renderDetail(data) {
       tabsDiv.appendChild(tab);
     });
 
+    // Add Building Info tab (reference/illustrative data — not tied to budget math)
+    const biTab = document.createElement('button');
+    biTab.textContent = '\ud83c\udfe2 Building Info';
+    biTab.className = 'sheet-tab';
+    biTab.style.marginLeft = 'auto';
+    biTab.style.background = '#fef9ef';
+    biTab.style.color = 'var(--blue)';
+    biTab.onclick = () => {
+      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      biTab.classList.add('active');
+      renderBuildingInfoTab(contentDiv);
+    };
+    tabsDiv.appendChild(biTab);
+
     // Add Assumptions tab
     const assumTab = document.createElement('button');
     assumTab.textContent = '\u2699 Assumptions';
     assumTab.className = 'sheet-tab';
-    assumTab.style.marginLeft = 'auto';
     assumTab.style.background = 'var(--blue-light)';
     assumTab.style.color = 'var(--blue)';
     assumTab.onclick = () => {
@@ -5630,6 +5734,360 @@ async function renderHistoryTab(contentDiv) {
   } catch (err) {
     contentDiv.innerHTML = '<p style="padding:24px; color:var(--red);">Error loading history: ' + err.message + '</p>';
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  BUILDING INFO TAB — reference/illustrative data per entity.
+//  Sections: Maintenance History, Amortization Schedule.
+//  Zero impact on budget math. Designed to be extensible — add new
+//  sections by extending _biData + adding a new _biRender* helper.
+// ──────────────────────────────────────────────────────────────────────
+let _biData = null;
+let _biSaveTimer = null;
+
+function _biEnsureStyles() {
+  if (document.getElementById('biStyles')) return;
+  const s = document.createElement('style');
+  s.id = 'biStyles';
+  s.textContent = ''
+    + '.bi-page { max-width:1240px; margin:0 auto; }'
+    + '.bi-card { background:white; border:1px solid var(--gray-200); border-radius:12px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.04); overflow:hidden; }'
+    + '.bi-card-header { padding:14px 20px; background:var(--blue-light); border-bottom:1px solid var(--gray-200); display:flex; align-items:center; justify-content:space-between; }'
+    + '.bi-card-header h2 { margin:0; font-size:13px; font-weight:700; color:var(--blue); text-transform:uppercase; letter-spacing:0.8px; }'
+    + '.bi-illus-chip { font-size:10px; font-weight:700; color:#d97706; background:#fffbeb; border:1px solid #fde68a; padding:3px 8px; border-radius:4px; text-transform:uppercase; letter-spacing:0.5px; }'
+    + '.bi-card-body { padding:20px; }'
+    + '.bi-note { margin-top:14px; padding:10px 14px; background:var(--blue-light); border-left:3px solid var(--blue); border-radius:4px; font-size:12px; color:var(--blue); }'
+    + '.bi-toolbar { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }'
+    + '.bi-btn { padding:6px 14px; font-size:12px; font-weight:600; border-radius:6px; border:1px solid var(--gray-300); background:white; color:var(--gray-700); cursor:pointer; font-family:inherit; }'
+    + '.bi-btn:hover { background:var(--gray-100); border-color:var(--gray-400); }'
+    + '.bi-btn.primary { background:var(--blue); color:white; border-color:var(--blue); }'
+    + '.bi-btn.primary:hover { background:#4a3d33; }'
+    + '.bi-btn.ghost { border:1px solid transparent; color:var(--gray-500); }'
+    + '.bi-btn.ghost:hover { background:var(--gray-100); color:var(--gray-700); }'
+    /* Maint History table */
+    + 'table.bi-mh { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }'
+    + 'table.bi-mh thead th { padding:8px 10px; text-align:right; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); border-bottom:2px solid var(--gray-300); background:var(--gray-100); white-space:nowrap; }'
+    + 'table.bi-mh thead th:first-child, table.bi-mh thead th:nth-child(2), table.bi-mh thead th:nth-child(3) { text-align:left; }'
+    + 'table.bi-mh td { padding:6px 10px; border-bottom:1px solid var(--gray-200); font-variant-numeric:tabular-nums; text-align:right; }'
+    + 'table.bi-mh td.gl { font-weight:700; color:var(--blue); font-size:12px; background:var(--gray-50); padding-left:16px; text-align:left; }'
+    + 'table.bi-mh td.year-label { text-align:left; font-weight:600; color:var(--gray-700); }'
+    + 'table.bi-mh td.label { text-align:left; }'
+    + 'table.bi-mh tr.budget-row td { border-top:2px solid var(--blue); font-weight:700; background:#fef9ef; color:var(--blue); }'
+    + 'table.bi-mh tr.budget-row td.year-label { color:var(--blue); }'
+    + 'table.bi-mh input.bi-cell { width:110px; padding:5px 8px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:inherit; font-variant-numeric:tabular-nums; text-align:right; background:#fbfaf4; }'
+    + 'table.bi-mh input.bi-cell.small { width:80px; }'
+    + 'table.bi-mh input.bi-cell.dec8 { width:130px; }'
+    + 'table.bi-mh input.bi-cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px rgba(90,74,63,0.15); }'
+    + 'table.bi-mh td.derived { color:var(--gray-700); background:#f0fdf4; font-weight:600; }'
+    /* Amort params */
+    + '.bi-amort-params { display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; margin-bottom:20px; padding-bottom:20px; border-bottom:1px dashed var(--gray-200); }'
+    + '.bi-amort-params .field label { display:block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); margin-bottom:4px; }'
+    + '.bi-amort-params .field input, .bi-amort-params .field select { width:100%; padding:7px 10px; border:1px solid var(--gray-300); border-radius:6px; font-size:13px; font-family:inherit; background:#fbfaf4; }'
+    + '.bi-amort-params .field input:focus, .bi-amort-params .field select:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px rgba(90,74,63,0.15); }'
+    + '.bi-amort-summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; margin-bottom:20px; }'
+    + '.bi-summary-card { padding:14px 16px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; }'
+    + '.bi-summary-card .label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--green); }'
+    + '.bi-summary-card .value { margin-top:4px; font-size:18px; font-weight:700; color:#14532d; font-variant-numeric:tabular-nums; }'
+    + '.bi-amort-scroll { max-height:480px; overflow-y:auto; border:1px solid var(--gray-200); border-radius:8px; }'
+    + '.bi-amort-scroll::-webkit-scrollbar { width:10px; }'
+    + '.bi-amort-scroll::-webkit-scrollbar-track { background:var(--gray-100); }'
+    + '.bi-amort-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; }'
+    + 'table.bi-amort { border-collapse:separate; border-spacing:0; width:100%; font-size:12px; }'
+    + 'table.bi-amort thead th { position:sticky; top:0; z-index:10; padding:8px 10px; background:var(--gray-100); border-bottom:2px solid var(--gray-300); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); text-align:right; white-space:nowrap; }'
+    + 'table.bi-amort thead th:nth-child(1), table.bi-amort thead th:nth-child(2) { text-align:left; }'
+    + 'table.bi-amort td { padding:5px 10px; border-bottom:1px solid var(--gray-100); font-variant-numeric:tabular-nums; text-align:right; }'
+    + 'table.bi-amort td:nth-child(1), table.bi-amort td:nth-child(2) { text-align:left; }'
+    + 'table.bi-amort tr:hover td { background:#f0f9ff; }'
+    + 'table.bi-amort tr.year-end td { border-bottom:2px solid var(--gray-300); background:#fffbeb; }'
+    + '.bi-empty { padding:32px; text-align:center; color:var(--gray-400); }';
+  document.head.appendChild(s);
+}
+
+function _biNum(v) {
+  if (v == null) return 0;
+  const n = parseFloat(String(v).replace(/[$,\s%]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+function _biFmtInt(n)  { if (n == null || isNaN(n)) return '\u2014'; return Math.round(n).toLocaleString(); }
+function _biFmtD(n)    { if (n == null || isNaN(n)) return '\u2014'; return '$' + Math.round(n).toLocaleString(); }
+function _biFmtD2(n)   { if (n == null || isNaN(n)) return '\u2014'; return '$' + n.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+function _biDefaultMaint() {
+  const rows = [];
+  for (let y = BY - 5; y <= BY; y++) {
+    rows.push({ year: y, shares: 0, perShare: 0, increase: 0 });
+  }
+  return rows;
+}
+function _biDefaultAmort() {
+  return { label: '', principal: 0, rate: 0, term: 0, start: '', freq: 12 };
+}
+
+function _biSaveSoon() {
+  if (_biSaveTimer) clearTimeout(_biSaveTimer);
+  _biSaveTimer = setTimeout(_biSaveNow, 800);
+}
+async function _biSaveNow() {
+  _biSaveTimer = null;
+  if (!_biData) return;
+  try {
+    await fetch('/api/building-info/' + entityCode, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        maintenance_history: _biData.maintenance_history,
+        amort_config: _biData.amort_config,
+      }),
+    });
+  } catch (err) {
+    console.warn('building-info save failed:', err);
+  }
+}
+
+async function renderBuildingInfoTab(contentDiv) {
+  _biEnsureStyles();
+  contentDiv.innerHTML = '<p style="padding:24px; color:var(--gray-500);">Loading building info\u2026</p>';
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode);
+    _biData = await resp.json();
+  } catch (err) {
+    contentDiv.innerHTML = '<p style="padding:24px; color:var(--red);">Error loading building info: ' + err.message + '</p>';
+    return;
+  }
+  if (!_biData.maintenance_history || !Array.isArray(_biData.maintenance_history) || _biData.maintenance_history.length === 0) {
+    _biData.maintenance_history = _biDefaultMaint();
+  }
+  if (!_biData.amort_config || typeof _biData.amort_config !== 'object') {
+    _biData.amort_config = _biDefaultAmort();
+  }
+  _biRenderAll(contentDiv);
+}
+
+function _biRenderAll(container) {
+  container.innerHTML =
+    '<div class="bi-page">' +
+      _biRenderMaint() +
+      _biRenderAmort() +
+    '</div>';
+  _biRecalcAmort();
+}
+
+function _biRenderMaint() {
+  const rows = _biData.maintenance_history;
+  let body = '';
+  rows.forEach((r, i) => {
+    const monthly = (r.shares || 0) * (r.perShare || 0);
+    const annual = monthly * 12;
+    const isBudget = (r.year === BY);
+    const rowCls = isBudget ? 'budget-row' : '';
+    const yearLabel = isBudget ? (r.year + ' Budget') : r.year;
+    body += '<tr class="' + rowCls + '">';
+    body += '<td class="gl">' + (i === 0 ? '4010-0000' : '') + '</td>';
+    body += '<td class="label">' + (i === 0 ? 'Maintenance' : '') + '</td>';
+    body += '<td class="year-label">' + yearLabel + '</td>';
+    body += '<td><input class="bi-cell small" value="' + (r.shares || 0).toLocaleString() + '" onblur="_biMhUpd(' + i + ',\'shares\',this.value)" onfocus="this.select()"></td>';
+    body += '<td><input class="bi-cell dec8" value="' + (r.perShare || 0).toFixed(8) + '" onblur="_biMhUpd(' + i + ',\'perShare\',this.value)" onfocus="this.select()"></td>';
+    body += '<td class="derived">' + _biFmtD2(monthly) + '</td>';
+    body += '<td class="derived">' + _biFmtD(annual) + '</td>';
+    body += '<td><input class="bi-cell small" value="' + (r.increase || 0).toFixed(2) + '%" onblur="_biMhUpd(' + i + ',\'increase\',this.value)" onfocus="this.select()"></td>';
+    body += '</tr>';
+  });
+  return ''
+    + '<div class="bi-card">'
+    +   '<div class="bi-card-header">'
+    +     '<h2>Maintenance History \u2014 4010-0000</h2>'
+    +     '<span class="bi-illus-chip">Illustrative Only</span>'
+    +   '</div>'
+    +   '<div class="bi-card-body">'
+    +     '<table class="bi-mh">'
+    +       '<thead><tr>'
+    +         '<th style="width:120px;">G/L</th>'
+    +         '<th style="width:160px;">Label</th>'
+    +         '<th style="width:110px;">Year</th>'
+    +         '<th>Shares</th>'
+    +         '<th>Mthly $/per sh</th>'
+    +         '<th>Monthly</th>'
+    +         '<th>Annual</th>'
+    +         '<th>Increase</th>'
+    +       '</tr></thead>'
+    +       '<tbody>' + body + '</tbody>'
+    +     '</table>'
+    +     '<div class="bi-toolbar">'
+    +       '<button class="bi-btn ghost" onclick="_biMhReset()">Reset rows</button>'
+    +       '<button class="bi-btn" onclick="_biMhPropagate()">Apply Increase % forward \u2192</button>'
+    +     '</div>'
+    +     '<div class="bi-note">Changes here do <strong>not</strong> affect the budget. This is a reference panel only \u2014 showing the maintenance pattern for context when preparing the new budget. Saved automatically.</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+function _biMhUpd(i, field, val) {
+  const n = _biNum(val);
+  _biData.maintenance_history[i][field] = n;
+  // Re-render just the maintenance card in place
+  const card = document.querySelector('.bi-page .bi-card');
+  if (card) {
+    card.outerHTML = _biRenderMaint();
+  }
+  _biSaveSoon();
+}
+
+function _biMhReset() {
+  _biData.maintenance_history = _biDefaultMaint();
+  const container = document.querySelector('.bi-page');
+  if (container) _biRenderAll(container.parentElement);
+  _biSaveSoon();
+}
+
+function _biMhPropagate() {
+  const rows = _biData.maintenance_history;
+  for (let i = 1; i < rows.length; i++) {
+    const prior = rows[i - 1].perShare || 0;
+    rows[i].perShare = prior * (1 + (rows[i].increase || 0) / 100);
+  }
+  const container = document.querySelector('.bi-page');
+  if (container) _biRenderAll(container.parentElement);
+  _biSaveSoon();
+}
+
+function _biRenderAmort() {
+  const a = _biData.amort_config || _biDefaultAmort();
+  return ''
+    + '<div class="bi-card">'
+    +   '<div class="bi-card-header">'
+    +     '<h2>Underlying Mortgage \u2014 Amortization Schedule</h2>'
+    +     '<span class="bi-illus-chip">Illustrative Only</span>'
+    +   '</div>'
+    +   '<div class="bi-card-body">'
+    +     '<div class="bi-amort-params">'
+    +       '<div class="field"><label>Label</label><input type="text" id="biAmLabel" value="' + (a.label || '').replace(/"/g, '&quot;') + '" onchange="_biAmUpd()"></div>'
+    +       '<div class="field"><label>Original Principal</label><input type="text" id="biAmPrincipal" value="' + (a.principal ? Number(a.principal).toLocaleString() : '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
+    +       '<div class="field"><label>Interest Rate (% annual)</label><input type="text" id="biAmRate" value="' + (a.rate || '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
+    +       '<div class="field"><label>Term (years)</label><input type="text" id="biAmTerm" value="' + (a.term || '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
+    +       '<div class="field"><label>Start Date</label><input type="month" id="biAmStart" value="' + (a.start || '') + '" onchange="_biAmUpd()"></div>'
+    +       '<div class="field"><label>Payment Frequency</label><select id="biAmFreq" onchange="_biAmUpd()">'
+    +         '<option value="12"' + (Number(a.freq) === 12 ? ' selected' : '') + '>Monthly</option>'
+    +         '<option value="4"'  + (Number(a.freq) === 4  ? ' selected' : '') + '>Quarterly</option>'
+    +       '</select></div>'
+    +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn primary" style="width:100%;" onclick="_biRecalcAmort()">Recalculate</button></div>'
+    +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn" style="width:100%;" onclick="_biExportAmort()">Export CSV</button></div>'
+    +     '</div>'
+    +     '<div class="bi-amort-summary">'
+    +       '<div class="bi-summary-card"><div class="label">Periodic Payment</div><div class="value" id="biSumPmt">\u2014</div></div>'
+    +       '<div class="bi-summary-card"><div class="label">Annual Debt Service</div><div class="value" id="biSumAnnual">\u2014</div></div>'
+    +       '<div class="bi-summary-card"><div class="label">Total Interest (life)</div><div class="value" id="biSumInt">\u2014</div></div>'
+    +       '<div class="bi-summary-card"><div class="label">Maturity Date</div><div class="value" id="biSumMat">\u2014</div></div>'
+    +     '</div>'
+    +     '<div class="bi-amort-scroll">'
+    +       '<table class="bi-amort">'
+    +         '<thead><tr>'
+    +           '<th>#</th><th>Date</th><th>Beginning Balance</th><th>Payment</th><th>Interest</th><th>Principal</th><th>Ending Balance</th>'
+    +         '</tr></thead>'
+    +         '<tbody id="biAmBody"></tbody>'
+    +       '</table>'
+    +     '</div>'
+    +     '<div class="bi-note">Schedule auto-generates from the parameters above. Every 12 months is highlighted for easy year reference. All inputs save automatically.</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+function _biAmUpd() {
+  const a = _biData.amort_config || (_biData.amort_config = _biDefaultAmort());
+  a.label     = document.getElementById('biAmLabel').value || '';
+  a.principal = _biNum(document.getElementById('biAmPrincipal').value);
+  a.rate      = _biNum(document.getElementById('biAmRate').value);
+  a.term      = _biNum(document.getElementById('biAmTerm').value);
+  a.start     = document.getElementById('biAmStart').value || '';
+  a.freq      = parseInt(document.getElementById('biAmFreq').value, 10) || 12;
+  _biRecalcAmort();
+  _biSaveSoon();
+}
+
+function _biRecalcAmort() {
+  const a = _biData.amort_config || _biDefaultAmort();
+  const body = document.getElementById('biAmBody');
+  if (!body) return;
+  const principal = _biNum(a.principal);
+  const annualRate = _biNum(a.rate) / 100;
+  const termYears = _biNum(a.term);
+  const freq = parseInt(a.freq, 10) || 12;
+  const startStr = a.start || '';
+  if (!principal || !annualRate || !termYears || !freq || !startStr) {
+    body.innerHTML = '<tr><td colspan="7" class="bi-empty">Enter principal, rate, term, and start date to generate the schedule.</td></tr>';
+    document.getElementById('biSumPmt').textContent    = '\u2014';
+    document.getElementById('biSumAnnual').textContent = '\u2014';
+    document.getElementById('biSumInt').textContent    = '\u2014';
+    document.getElementById('biSumMat').textContent    = '\u2014';
+    return;
+  }
+  const totalPeriods = Math.round(termYears * freq);
+  const periodRate = annualRate / freq;
+  const pmt = principal * periodRate / (1 - Math.pow(1 + periodRate, -totalPeriods));
+  const parts = startStr.split('-');
+  const sy = parseInt(parts[0], 10);
+  const sm = parseInt(parts[1], 10);
+  const startDate = new Date(sy, (sm || 1) - 1, 1);
+  const monthsPerPeriod = 12 / freq;
+  let balance = principal;
+  let totalInterest = 0;
+  let html = '';
+  let lastDate = '';
+  for (let i = 1; i <= totalPeriods; i++) {
+    const beg = balance;
+    const interest = beg * periodRate;
+    let principalPaid = pmt - interest;
+    if (i === totalPeriods) principalPaid = beg;   // kill rounding drift
+    const end = beg - principalPaid;
+    totalInterest += interest;
+    const d = new Date(startDate);
+    d.setMonth(d.getMonth() + (i - 1) * monthsPerPeriod);
+    const dateStr = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    lastDate = dateStr;
+    const isYearEnd = (freq === 12 && i % 12 === 0) || (freq === 4 && i % 4 === 0);
+    const cls = isYearEnd ? 'year-end' : '';
+    html += '<tr class="' + cls + '">';
+    html += '<td>' + i + '</td>';
+    html += '<td>' + dateStr + '</td>';
+    html += '<td>' + _biFmtD(beg) + '</td>';
+    html += '<td>' + _biFmtD2(interest + principalPaid) + '</td>';
+    html += '<td>' + _biFmtD2(interest) + '</td>';
+    html += '<td>' + _biFmtD2(principalPaid) + '</td>';
+    html += '<td>' + _biFmtD(end) + '</td>';
+    html += '</tr>';
+    balance = end;
+    if (balance < 0.01) balance = 0;
+  }
+  body.innerHTML = html;
+  document.getElementById('biSumPmt').textContent    = _biFmtD2(pmt);
+  document.getElementById('biSumAnnual').textContent = _biFmtD(pmt * freq);
+  document.getElementById('biSumInt').textContent    = _biFmtD(totalInterest);
+  document.getElementById('biSumMat').textContent    = lastDate;
+}
+
+function _biExportAmort() {
+  const a = _biData.amort_config || {};
+  const body = document.getElementById('biAmBody');
+  if (!body || body.rows.length === 0) { alert('Generate the schedule first.'); return; }
+  const rows = [['#','Date','Beginning Balance','Payment','Interest','Principal','Ending Balance']];
+  for (let i = 0; i < body.rows.length; i++) {
+    const cells = body.rows[i].cells;
+    if (cells.length !== 7) continue;
+    const out = [];
+    for (let j = 0; j < cells.length; j++) {
+      out.push(cells[j].textContent.replace(/[$,]/g, ''));
+    }
+    rows.push(out);
+  }
+  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'amort_' + entityCode + '_' + (a.label || 'mortgage').replace(/[^a-z0-9]+/gi, '_') + '.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 // Parse a displayed dollar value like "$1,234" or "-$500" back to a number
