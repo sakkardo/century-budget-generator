@@ -4565,6 +4565,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
       <h2>Budget Workbook</h2>
       <div style="display:flex; gap:8px;">
         <button onclick="openBoardPresentation()" id="presLinkBtn" class="btn" style="background:#1e293b; color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px;">📊 Board Presentation</button>
+        <button onclick="openBuildingInfo()" id="buildingInfoBtn" class="btn" style="background:#fef9ef; color:var(--blue); border:1px solid var(--blue); font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px;">🏢 Building Info</button>
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
@@ -5057,24 +5058,11 @@ function renderDetail(data) {
       tabsDiv.appendChild(tab);
     });
 
-    // Add Building Info tab (reference/illustrative data — not tied to budget math)
-    const biTab = document.createElement('button');
-    biTab.textContent = '\ud83c\udfe2 Building Info';
-    biTab.className = 'sheet-tab';
-    biTab.style.marginLeft = 'auto';
-    biTab.style.background = '#fef9ef';
-    biTab.style.color = 'var(--blue)';
-    biTab.onclick = () => {
-      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
-      biTab.classList.add('active');
-      renderBuildingInfoTab(contentDiv);
-    };
-    tabsDiv.appendChild(biTab);
-
     // Add Assumptions tab
     const assumTab = document.createElement('button');
     assumTab.textContent = '\u2699 Assumptions';
     assumTab.className = 'sheet-tab';
+    assumTab.style.marginLeft = 'auto';
     assumTab.style.background = 'var(--blue-light)';
     assumTab.style.color = 'var(--blue)';
     assumTab.onclick = () => {
@@ -5842,6 +5830,14 @@ async function _biSaveNow() {
   } catch (err) {
     console.warn('building-info save failed:', err);
   }
+}
+
+function openBuildingInfo() {
+  // Deactivate all sheet tabs so none appear selected while viewing Building Info
+  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+  const contentDiv = document.getElementById('sheetContent');
+  if (!contentDiv) return;
+  renderBuildingInfoTab(contentDiv);
 }
 
 async function renderBuildingInfoTab(contentDiv) {
@@ -10477,7 +10473,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }' +
     '#prGLContent .prgl-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }' +
     '#prGLContent table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }' +
-    '#prGLContent thead { position:sticky; top:60px; z-index:20; }' +
+    '#prGLContent thead { position:sticky; top:0; z-index:20; }' +
     '#prGLContent th { padding:8px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }' +
     '#prGLContent th.num { text-align:right; }' +
     '#prGLContent td, #prGLContent th { white-space:nowrap; width:1px; }' +
@@ -10533,7 +10529,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
 
   // Formula bar — Excel-style with live preview + Accept/Cancel (same as other tabs)
   // Sticky positioning so it stays visible as user scrolls through GL detail
-  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
     '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
     '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
     '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
@@ -12026,7 +12022,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid-scroll::-webkit-scrollbar-thumb:hover { background:#6b5740; }
       .fa-grid-scroll::-webkit-scrollbar-corner { background:var(--gray-100); }
       .fa-grid table { border-collapse:separate; border-spacing:0; font-size:13px; width:100%; }
-      .fa-grid thead { position:sticky; top:60px; z-index:20; }
+      .fa-grid thead { position:sticky; top:0; z-index:20; }
       .fa-grid th { padding:8px 6px; text-align:left; font-weight:600; border-bottom:2px solid var(--gray-300); white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gray-500); background:var(--gray-100); }
       .fa-grid th.num { text-align:right; }
       .fa-grid td, .fa-grid th { white-space:nowrap; width:1px; }
@@ -12131,7 +12127,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '</div><div style="display:flex; gap:8px;"><button id="faZeroToggle" onclick="faToggleZeroRows()" style="font-size:11px; padding:4px 12px; background:var(--blue-light, #dbeafe); color:var(--blue); border:1px solid var(--blue); border-radius:4px; cursor:pointer;"></button></div></div>';
 
   // Formula bar — Excel-style with live preview + Accept/Cancel
-  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">' +
+  html += '<div id="faFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">' +
     '<span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
     '<span id="faFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>' +
     '<input id="faFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="formulaBarPreview()" onkeydown="formulaBarKeydown(event)">' +
@@ -12970,7 +12966,7 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
-  .grid-container > table > thead { position: sticky; top: 60px; z-index: 20; }
+  .grid-container > table > thead { position: sticky; top: 48px; z-index: 20; }
   /* Inner drill-down tables (invoice details) must NOT inherit sticky thead */
   .invoice-detail-row table thead,
   .invoice-detail-row table thead tr,
