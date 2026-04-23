@@ -7007,6 +7007,7 @@ document.addEventListener('keydown', _gridTabNavigate, true);
 // Track the currently selected formula cell
 let _activeFxCell = null;
 let _formulaBarOriginal = '';  // track original value to detect changes
+let _formulaBarUndo = null;    // one-level undo: {gl, field, formula, raw, override, proposedFormula, value, badgeText, badgeBg, badgeColor, badgeBorder}
 
 // ── Safe math evaluator (no eval) ──────────────────────────────────────
 function safeEvalFormula(expr) {
@@ -7027,10 +7028,19 @@ function _showFormulaButtons(show, hasFormula) {
   ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = show ? 'inline-block' : 'none'; });
   const clearBtn = document.getElementById('faFormulaClear');
   if (clearBtn) clearBtn.style.display = (show && hasFormula) ? 'inline-block' : 'none';
+  // Show undo only when NOT in active edit mode and an undo is available
+  const undoBtn = document.getElementById('faFormulaUndo');
+  if (undoBtn) undoBtn.style.display = (!show && _formulaBarUndo) ? 'inline-block' : 'none';
 }
 
 // ── fxCellFocus: populate the formula bar when clicking a formula cell ─
 function fxCellFocus(el) {
+  // Clear undo if switching to a different cell
+  if (_activeFxCell && _activeFxCell !== el && _formulaBarUndo) {
+    _formulaBarUndo = null;
+    const undoBtn = document.getElementById('faFormulaUndo');
+    if (undoBtn) undoBtn.style.display = 'none';
+  }
   _activeFxCell = el;
   const bar = document.getElementById('faFormulaBar');
   const label = document.getElementById('faFormulaLabel');
@@ -7194,6 +7204,21 @@ function formulaBarAccept() {
   const typed = bar.value.trim();
   const gl = el.dataset.gl, field = el.dataset.field;
 
+  // Stash undo state before changing anything
+  const badge = el.parentElement.querySelector('.fa-fx');
+  _formulaBarUndo = {
+    gl: gl, field: field, cellId: el.id,
+    formula: _formulaBarOriginal,
+    raw: el.dataset.raw || '',
+    override: el.dataset.override || 'false',
+    proposedFormula: el.dataset.proposedFormula || '',
+    value: el.value,
+    badgeText: badge ? badge.textContent : '',
+    badgeBg: badge ? badge.style.background : '',
+    badgeColor: badge ? badge.style.color : '',
+    badgeBorder: badge ? badge.style.borderColor : '',
+  };
+
   if (field === 'proposed_budget') {
     const formulaResult = safeEvalFormula(typed);
     if (formulaResult !== null && (typed.startsWith('=') || /[+\-*\/()]/.test(typed))) {
@@ -7262,6 +7287,9 @@ function formulaBarAccept() {
   }
   _showFormulaButtons(false, false);
   _formulaBarOriginal = bar.value.trim();
+  // Show undo button
+  const undoBtn = document.getElementById('faFormulaUndo');
+  if (undoBtn && _formulaBarUndo) undoBtn.style.display = 'inline-block';
 
   // Payroll-specific hook: if cell is in prGLContent, sync _payrollGLLines + re-render
   if (el && typeof el.closest === 'function' && el.closest('#prGLContent') && typeof payrollCellEdited === 'function') {
@@ -7318,6 +7346,57 @@ function formulaBarClear() {
   el.style.border = '';
   el.style.borderRadius = '';
   el.style.background = '';
+}
+
+// ── Undo: revert the last accepted formula change ────────────────────
+function formulaBarUndo() {
+  if (!_formulaBarUndo) return;
+  const u = _formulaBarUndo;
+  const el = document.getElementById(u.cellId);
+  if (!el) { _formulaBarUndo = null; return; }
+
+  // Restore cell dataset + display value
+  el.value = u.value;
+  el.dataset.raw = u.raw;
+  el.dataset.override = u.override;
+  if (u.field === 'proposed_budget') {
+    el.dataset.proposedFormula = u.proposedFormula;
+  }
+
+  // Restore badge
+  const badge = el.parentElement.querySelector('.fa-fx');
+  if (badge) {
+    badge.textContent = u.badgeText;
+    badge.style.background = u.badgeBg;
+    badge.style.color = u.badgeColor;
+    badge.style.borderColor = u.badgeBorder;
+  }
+
+  // Restore formula bar display
+  const bar = document.getElementById('faFormulaBar');
+  if (bar) bar.value = u.formula;
+  _formulaBarOriginal = u.formula;
+
+  // Save the reverted value to the server
+  if (u.field === 'proposed_budget') {
+    const val = u.override === 'true' ? parseFloat(u.raw) : null;
+    faAutoSave(u.gl, 'proposed_budget', val !== null ? Math.round(val) : 0);
+    faAutoSave(u.gl, 'proposed_formula', u.proposedFormula || null);
+    faUpdateSheetTotals();
+  } else {
+    const val = u.override === 'true' ? parseFloat(u.raw) : null;
+    faLineChanged(u.gl, u.field, val);
+    faAutoSave(u.gl, u.field, val !== null ? Math.round(val) : null);
+  }
+
+  // Flash amber to confirm undo
+  el.style.border = '2px solid #c2410c';
+  el.style.background = '#fff7ed';
+  setTimeout(() => { el.style.border = ''; el.style.borderRadius = ''; el.style.background = ''; }, 1200);
+
+  _formulaBarUndo = null;
+  const undoBtn = document.getElementById('faFormulaUndo');
+  if (undoBtn) undoBtn.style.display = 'none';
 }
 
 // formulaBarKeydown: Enter = Accept, Escape = Cancel
@@ -11395,6 +11474,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
     '</div>';
 
   // ── Section 0: Payroll Assumptions (Editable) ──────────────────────────
@@ -12998,6 +13078,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
     '</div>';
 
   const _hideAdj = (sheetName === 'Income') ? ' fa-grid-hide-adj' : '';
@@ -14035,6 +14116,7 @@ PM_EDIT_TEMPLATE = r"""
         <button id="pmFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarAccept()">Accept</button>
         <button id="pmFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarCancel()">Cancel</button>
         <button id="pmFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>
+        <button id="pmFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>
       </div>
       <table id="linesTable">
         <thead>
@@ -14266,6 +14348,7 @@ function computeProposed(line) {
 let _pmCurrentCell = null;
 let _pmEditMode = false;
 let _pmOriginalFormula = '';
+let _pmFormulaBarUndo = null;
 
 // Editable $cell: formats value on blur, triggers cascade on change
 function pmCellBlur(el) {
@@ -14297,6 +14380,13 @@ function pmFxCellFocus(el) {
     const formula = el.dataset.formula || '';
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
+
+    // Clear undo if switching to a different cell
+    if (_pmCurrentCell && _pmCurrentCell !== el && _pmFormulaBarUndo) {
+        _pmFormulaBarUndo = null;
+        const undoBtn = document.getElementById('pmFormulaUndo');
+        if (undoBtn) undoBtn.style.display = 'none';
+    }
 
     // Highlight cell
     if (_pmCurrentCell) _pmCurrentCell.style.outline = '';
@@ -14403,6 +14493,25 @@ function pmFormulaBarAccept() {
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
 
+    // Stash undo state before changing anything
+    const badge = _pmCurrentCell.parentElement.querySelector('.pm-fx');
+    _pmFormulaBarUndo = {
+        gl: gl, field: field, cellId: _pmCurrentCell.id,
+        formula: _pmOriginalFormula,
+        raw: _pmCurrentCell.dataset.raw || '',
+        value: _pmCurrentCell.value,
+        lineSnapshot: {
+            estimate_override: line.estimate_override,
+            forecast_override: line.forecast_override,
+            proposed_budget: line.proposed_budget,
+            proposed_formula: line.proposed_formula,
+        },
+        badgeText: badge ? badge.textContent : '',
+        badgeBg: badge ? badge.style.background : '',
+        badgeColor: badge ? badge.style.color : '',
+        badgeBorder: badge ? badge.style.borderColor : '',
+    };
+
     const typed = bar.value.trim();
     const isFormula = typed.startsWith('=') || /[+\-*\/()]/.test(typed);
     const formulaResult = safeEvalFormula(typed);
@@ -14458,6 +14567,9 @@ function pmFormulaBarAccept() {
 
     pmLineChanged(gl, field, null);
     pmFormulaBarCancel();
+    // Show undo after cancel clears the editing UI
+    const undoBtn = document.getElementById('pmFormulaUndo');
+    if (undoBtn && _pmFormulaBarUndo) undoBtn.style.display = 'inline-block';
 }
 
 // Cancel formula bar edits
@@ -14517,6 +14629,43 @@ function pmFormulaBarClear() {
 
     pmLineChanged(gl, field, newVal);
     pmFormulaBarCancel();
+}
+
+// Undo: revert the last accepted PM formula change
+function pmFormulaBarUndo() {
+    if (!_pmFormulaBarUndo) return;
+    const u = _pmFormulaBarUndo;
+    const el = document.getElementById(u.cellId);
+    if (!el) { _pmFormulaBarUndo = null; return; }
+
+    const line = LINES.find(l => l.gl_code === u.gl);
+    if (line) {
+        line.estimate_override = u.lineSnapshot.estimate_override;
+        line.forecast_override = u.lineSnapshot.forecast_override;
+        line.proposed_budget = u.lineSnapshot.proposed_budget;
+        line.proposed_formula = u.lineSnapshot.proposed_formula;
+    }
+
+    el.value = u.value;
+    el.dataset.raw = u.raw;
+    el.dataset.formula = u.formula;
+
+    const badge = el.parentElement.querySelector('.pm-fx');
+    if (badge) {
+        badge.textContent = u.badgeText;
+        badge.style.background = u.badgeBg;
+        badge.style.color = u.badgeColor;
+        badge.style.borderColor = u.badgeBorder;
+    }
+
+    // Flash amber and save reverted state
+    el.style.outline = '2px solid #c2410c';
+    setTimeout(() => { el.style.outline = ''; }, 1200);
+
+    pmLineChanged(u.gl, u.field, null);
+    _pmFormulaBarUndo = null;
+    const undoBtn = document.getElementById('pmFormulaUndo');
+    if (undoBtn) undoBtn.style.display = 'none';
 }
 
 // Keyboard navigation in formula bar
