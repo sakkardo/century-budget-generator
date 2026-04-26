@@ -2600,11 +2600,14 @@ def create_workflow_blueprint(db):
             db.session.rollback()
         try:
             row = db.session.execute(db.text(
-                "SELECT COALESCE(confirmed_at, created_at) FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY confirmed_at DESC NULLS LAST LIMIT 1"
+                "SELECT status, created_at, COALESCE(confirmed_at, created_at) FROM audit_uploads WHERE entity_code = :ec ORDER BY created_at DESC LIMIT 1"
             ), {"ec": entity_code}).fetchone()
             if row and row[0]:
                 result["audited_financials"]["uploaded"] = True
-                result["audited_financials"]["last_uploaded"] = row[0].isoformat()
+                result["audited_financials"]["audit_status"] = row[0]
+                result["audited_financials"]["last_uploaded"] = row[1].isoformat() if row[1] else None
+                if row[0] == "confirmed" and row[2]:
+                    result["audited_financials"]["confirmed_at"] = row[2].isoformat()
         except Exception:
             db.session.rollback()
         return result

@@ -456,17 +456,39 @@ header {
   text-transform: uppercase;
   margin-left: 6px;
 }
-.checklist-confirmed {
+.checklist-badge {
   font-size: 11px;
-  color: var(--green);
   font-weight: 600;
   text-transform: uppercase;
-  margin-left: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.03em;
 }
+.badge-uploaded { background: #e0f2fe; color: #0369a1; }
+.badge-extracted { background: #fef3c7; color: #92400e; }
+.badge-mapped { background: #ede9fe; color: #6d28d9; }
+.badge-confirmed { background: var(--green-light); color: var(--green); }
+
 .checklist-item.confirmed .checklist-icon {
   background: var(--green);
   color: white;
   border-color: var(--green);
+}
+.checklist-item.audit-uploaded .checklist-icon {
+  background: #0ea5e9;
+  color: white;
+  border-color: #0ea5e9;
+}
+.checklist-item.audit-extracted .checklist-icon {
+  background: #f59e0b;
+  color: white;
+  border-color: #f59e0b;
+}
+.checklist-item.audit-mapped .checklist-icon {
+  background: #8b5cf6;
+  color: white;
+  border-color: #8b5cf6;
 }
 
 .checklist-description {
@@ -1233,25 +1255,46 @@ function renderUploadChecklist() {
     const info = sources[source.key] || {};
     const isUploaded = info.uploaded || false;
     const lastDate = info.last_uploaded ? new Date(info.last_uploaded).toLocaleDateString() : null;
-    const isConfirmed = source.key === 'audited_financials' && isUploaded;
 
-    const li = document.createElement('li');
-    li.className = 'checklist-item' + (isUploaded ? (isConfirmed ? ' confirmed' : '') : ' pending');
+    // Audited financials have a richer status progression
+    const auditStatus = info.audit_status || null;
+    const confirmedDate = info.confirmed_at ? new Date(info.confirmed_at).toLocaleDateString() : null;
+    const isAudit = source.key === 'audited_financials';
 
+    // Determine visual state
+    let itemClass = 'pending';
+    let icon = '';
     let statusText = 'Waiting for upload';
-    if (isConfirmed) {
-      statusText = 'Confirmed' + (lastDate ? ' on ' + lastDate : '');
+    let badge = '';
+
+    if (isAudit && auditStatus) {
+      const statusMap = {
+        uploaded:  { cls: 'audit-uploaded',  icon: '↑', text: 'Uploaded' + (lastDate ? ' on ' + lastDate : ''), badge: 'Uploaded', badgeCls: 'badge-uploaded' },
+        extracted: { cls: 'audit-extracted', icon: '⟳', text: 'Data extracted — awaiting mapping', badge: 'Extracted', badgeCls: 'badge-extracted' },
+        mapped:    { cls: 'audit-mapped',    icon: '≡', text: 'Mapped to GL accounts — awaiting review', badge: 'Mapped', badgeCls: 'badge-mapped' },
+        confirmed: { cls: 'confirmed',       icon: '✓', text: 'Confirmed' + (confirmedDate ? ' on ' + confirmedDate : ''), badge: 'Reviewed', badgeCls: 'badge-confirmed' }
+      };
+      const s = statusMap[auditStatus] || statusMap.uploaded;
+      itemClass = s.cls;
+      icon = s.icon;
+      statusText = s.text;
+      badge = '<span class="checklist-badge ' + s.badgeCls + '">' + s.badge + '</span>';
     } else if (isUploaded) {
+      itemClass = '';
+      icon = '✓';
       statusText = 'Uploaded' + (lastDate ? ' on ' + lastDate : '');
     }
 
+    const li = document.createElement('li');
+    li.className = 'checklist-item ' + itemClass;
+
     li.innerHTML = `
-      <div class="checklist-icon">${isConfirmed ? '✓' : (isUploaded ? '✓' : '')}</div>
+      <div class="checklist-icon">${icon}</div>
       <div class="checklist-content">
         <div class="checklist-name">
           ${source.name}
           ${source.required ? '<span class="checklist-required">Required</span>' : ''}
-          ${isConfirmed ? '<span class="checklist-confirmed">Reviewed</span>' : ''}
+          ${badge}
         </div>
         <div class="checklist-description">${statusText}</div>
       </div>
