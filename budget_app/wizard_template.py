@@ -762,10 +762,11 @@ header {
 <!-- Header -->
 <header>
   <div class="header-left">
-    <div class="header-logo">Century Budget</div>
+    <a href="/dashboard" class="header-logo" style="text-decoration:none;color:white;">← Century Budget</a>
     <nav class="header-nav">
+      <a href="/dashboard" class="nav-item">Home</a>
       <a class="nav-item active" onclick="showStep(1)">Wizard</a>
-      <a class="nav-item locked" onclick="alert(\'Wizard must be completed first\')">Dashboard</a>
+      <a class="nav-item locked" onclick="alert(\'Complete the wizard first\')">Dashboard</a>
     </nav>
   </div>
   <div class="header-right">

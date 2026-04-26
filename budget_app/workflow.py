@@ -2498,25 +2498,21 @@ def create_workflow_blueprint(db):
         """Render the Budget Wizard gate page."""
         import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
-        from app import load_portfolio_defaults, load_building_assumptions, load_buildings
+        from app import load_portfolio_defaults, load_building_assumptions
 
         budgets = Budget.query.filter_by(year=BUDGET_YEAR).all()
-        buildings = load_buildings()
 
-        # Build entity list with wizard status
-        budget_map = {b.entity_code: b for b in budgets}
+        # Build entity list from existing budgets in DB (not CSV)
         entity_list = []
-        for bldg in buildings:
-            ec = bldg.get("entity_code", "")
-            b = budget_map.get(ec)
+        for b in budgets:
             entity_list.append({
-                "entity_code": ec,
-                "building_name": bldg.get("building_name", ""),
-                "address": bldg.get("address", ""),
-                "wizard_step": b.wizard_step if b else 0,
-                "wizard_completed_at": b.wizard_completed_at.isoformat() if b and b.wizard_completed_at else None,
-                "status": b.status if b else "not_started",
-                "has_lines": bool(b and b.lines) if b else False,
+                "entity_code": b.entity_code,
+                "building_name": b.building_name or b.entity_code,
+                "address": "",
+                "wizard_step": b.wizard_step or 0,
+                "wizard_completed_at": b.wizard_completed_at.isoformat() if b.wizard_completed_at else None,
+                "status": b.status or "not_started",
+                "has_lines": bool(b.lines),
             })
 
         # Load assumptions for the selected entity
