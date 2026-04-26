@@ -967,13 +967,14 @@ let sources = {};
 // Parse JSON from template variables
 function initializeData() {
   try {
-    budgets = JSON.parse('{{ budgets_json | tojson }}');
-    portfolio = JSON.parse('{{ portfolio_json | tojson }}');
-    building = JSON.parse('{{ building_json | tojson }}');
-    sources = JSON.parse('{{ sources_json | tojson }}');
+    budgets = JSON.parse({{ budgets_json | tojson }});
+    portfolio = JSON.parse({{ portfolio_json | tojson }});
+    building = JSON.parse({{ building_json | tojson }});
+    sources = JSON.parse({{ sources_json | tojson }});
     selectedEntity = '{{ entity_code }}';
   } catch (e) {
     console.error('Error parsing template data:', e);
+    budgets = [];
   }
 }
 
