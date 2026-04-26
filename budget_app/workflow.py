@@ -474,6 +474,11 @@ def create_workflow_blueprint(db):
         # Versioning
         version = db.Column(db.Integer, default=1)
 
+        # Budget Wizard state
+        assumptions_history_json = db.Column(db.Text, nullable=True)
+        wizard_completed_at = db.Column(db.DateTime, nullable=True)
+        wizard_step = db.Column(db.Integer, default=0)
+
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
@@ -498,7 +503,9 @@ def create_workflow_blueprint(db):
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
                 "ar_notes": self.ar_notes or "",
                 "version": self.version or 1,
-                "building_type": self.building_type or ""
+                "building_type": self.building_type or "",
+                "wizard_step": self.wizard_step or 0,
+                "wizard_completed_at": self.wizard_completed_at.isoformat() if self.wizard_completed_at else None
             }
 
 
@@ -2476,6 +2483,416 @@ def create_workflow_blueprint(db):
         })
 
 
+    # ─── API Routes: Budget Wizard ────────────────────────────────────────────
+    #
+    # Guided 6-step budget creation flow:
+    #   1. Select entity   2. Upload sources   3. Review portfolio assumptions
+    #   4. Set building assumptions   5. Preview & generate   6. Open dashboard
+    #
+    # Gate mode: /wizard/<entity_code> (full page, first-time)
+    # Sidebar mode: embedded in dashboard (re-entry after wizard_completed_at is set)
+
+    @bp.route("/wizard", methods=["GET"])
+    @bp.route("/wizard/<entity_code>", methods=["GET"])
+    def wizard_page(entity_code=None):
+        """Render the Budget Wizard gate page."""
+        import json as json_mod
+        from wizard_template import WIZARD_TEMPLATE
+        from app import load_portfolio_defaults, load_building_assumptions, load_buildings
+
+        budgets = Budget.query.filter_by(year=BUDGET_YEAR).all()
+        buildings = load_buildings()
+
+        # Build entity list with wizard status
+        budget_map = {b.entity_code: b for b in budgets}
+        entity_list = []
+        for bldg in buildings:
+            ec = bldg.get("entity_code", "")
+            b = budget_map.get(ec)
+            entity_list.append({
+                "entity_code": ec,
+                "building_name": bldg.get("building_name", ""),
+                "address": bldg.get("address", ""),
+                "wizard_step": b.wizard_step if b else 0,
+                "wizard_completed_at": b.wizard_completed_at.isoformat() if b and b.wizard_completed_at else None,
+                "status": b.status if b else "not_started",
+                "has_lines": bool(b and b.lines) if b else False,
+            })
+
+        # Load assumptions for the selected entity
+        portfolio = load_portfolio_defaults()
+        building_overrides = {}
+        sources = {}
+        if entity_code:
+            all_bldg = load_building_assumptions()
+            building_overrides = all_bldg.get(entity_code, {})
+            # Fetch source status inline
+            try:
+                sources = _get_sources_dict(entity_code)
+            except Exception:
+                sources = {}
+
+        return render_template_string(
+            WIZARD_TEMPLATE,
+            entity_code=entity_code or "",
+            budget_year=BUDGET_YEAR,
+            budgets_json=json_mod.dumps(entity_list),
+            portfolio_json=json_mod.dumps(portfolio),
+            building_json=json_mod.dumps(building_overrides),
+            sources_json=json_mod.dumps(sources),
+        )
+
+
+    def _get_sources_dict(entity_code):
+        """Internal helper — returns source upload status dict for an entity."""
+        result = {
+            "ysl": {"uploaded": False, "last_uploaded": None},
+            "expense_distribution": {"uploaded": False, "last_uploaded": None},
+            "ap_aging": {"uploaded": False, "last_uploaded": None},
+            "maint_proof": {"uploaded": False, "last_uploaded": None},
+            "audited_financials": {"uploaded": False, "last_uploaded": None},
+        }
+        try:
+            row = db.session.execute(db.text("""
+                SELECT MIN(bl.updated_at) FROM budget_lines bl
+                JOIN budgets b ON b.id = bl.budget_id
+                WHERE b.entity_code = :ec
+            """), {"ec": entity_code}).fetchone()
+            if row and row[0]:
+                result["ysl"]["uploaded"] = True
+                result["ysl"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+        try:
+            row = db.session.execute(db.text(
+                "SELECT uploaded_at FROM expense_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row and row[0]:
+                result["expense_distribution"]["uploaded"] = True
+                result["expense_distribution"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+        try:
+            row = db.session.execute(db.text(
+                "SELECT uploaded_at FROM open_ap_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row and row[0]:
+                result["ap_aging"]["uploaded"] = True
+                result["ap_aging"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+        try:
+            row = db.session.execute(db.text(
+                "SELECT uploaded_at FROM maint_proof_reports WHERE entity_code = :ec ORDER BY uploaded_at DESC LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row and row[0]:
+                result["maint_proof"]["uploaded"] = True
+                result["maint_proof"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+        try:
+            row = db.session.execute(db.text(
+                "SELECT created_at FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY created_at DESC LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row and row[0]:
+                result["audited_financials"]["uploaded"] = True
+                result["audited_financials"]["last_uploaded"] = row[0].isoformat()
+        except Exception:
+            db.session.rollback()
+        return result
+
+
+    @bp.route("/api/wizard/<entity_code>/status", methods=["GET"])
+    def wizard_status(entity_code):
+        """Return current wizard state for an entity."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        sources = _get_sources_dict(entity_code)
+
+        # Parse assumption history
+        history = []
+        if budget and budget.assumptions_history_json:
+            try:
+                history = json.loads(budget.assumptions_history_json)
+            except Exception:
+                history = []
+
+        return jsonify({
+            "entity_code": entity_code,
+            "wizard_step": budget.wizard_step if budget else 0,
+            "wizard_completed_at": budget.wizard_completed_at.isoformat() if budget and budget.wizard_completed_at else None,
+            "status": budget.status if budget else "not_started",
+            "has_lines": bool(budget and budget.lines) if budget else False,
+            "sources": sources,
+            "assumptions_version": len(history),
+            "assumptions_history": history,
+        })
+
+
+    @bp.route("/api/wizard/<entity_code>/step", methods=["POST"])
+    def wizard_update_step(entity_code):
+        """Update the wizard step for an entity."""
+        data = request.get_json(force=True)
+        step = data.get("step", 0)
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"success": False, "error": "No budget found for this entity"}), 404
+
+        budget.wizard_step = step
+        if step >= 6 and not budget.wizard_completed_at:
+            budget.wizard_completed_at = datetime.utcnow()
+        db.session.commit()
+
+        return jsonify({"success": True, "wizard_step": step})
+
+
+    @bp.route("/api/wizard/<entity_code>/assumptions", methods=["POST"])
+    def wizard_save_assumptions(entity_code):
+        """Save building assumption overrides and bump version history."""
+        from app import load_portfolio_defaults, load_building_assumptions, save_building_assumptions, merge_assumptions
+
+        data = request.get_json(force=True)
+        overrides = data.get("overrides", {})
+
+        # Save to building_assumptions.json
+        all_bldg = load_building_assumptions()
+        if entity_code not in all_bldg:
+            all_bldg[entity_code] = {}
+
+        # Merge incoming overrides into existing building assumptions
+        for key, val in overrides.items():
+            if isinstance(val, dict):
+                if key not in all_bldg[entity_code]:
+                    all_bldg[entity_code][key] = {}
+                all_bldg[entity_code][key].update(val)
+            else:
+                all_bldg[entity_code][key] = val
+
+        save_building_assumptions(all_bldg)
+
+        # Build merged assumptions and update version history
+        merged = merge_assumptions(entity_code)
+        portfolio = load_portfolio_defaults()
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if budget:
+            # Load existing history
+            history = []
+            if budget.assumptions_history_json:
+                try:
+                    history = json.loads(budget.assumptions_history_json)
+                except Exception:
+                    history = []
+
+            # Determine changed fields
+            changed = list(overrides.keys()) if overrides else []
+
+            # Append new version
+            history.append({
+                "version": len(history) + 1,
+                "timestamp": datetime.utcnow().isoformat(),
+                "portfolio": portfolio,
+                "building_overrides": all_bldg.get(entity_code, {}),
+                "merged": merged,
+                "changed_fields": changed,
+            })
+
+            budget.assumptions_history_json = json.dumps(history)
+            budget.assumptions_json = json.dumps(merged)
+            if budget.wizard_step < 4:
+                budget.wizard_step = 4
+            db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "version": len(history) if budget else 1,
+            "merged": merged,
+        })
+
+
+    @bp.route("/api/wizard/<entity_code>/flag", methods=["POST"])
+    def wizard_flag_assumption(entity_code):
+        """Add a flag/note about portfolio assumptions to the budget record."""
+        data = request.get_json(force=True)
+        note = data.get("note", "")
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"success": False, "error": "No budget found"}), 404
+
+        # Append flag to fa_notes
+        flag_entry = f"[ASSUMPTION FLAG {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}] {note}"
+        if budget.fa_notes:
+            budget.fa_notes = budget.fa_notes + "\n" + flag_entry
+        else:
+            budget.fa_notes = flag_entry
+
+        db.session.commit()
+        return jsonify({"success": True})
+
+
+    @bp.route("/api/wizard/<entity_code>/preview", methods=["GET"])
+    def wizard_preview(entity_code):
+        """Return category-level preview showing Yardi raw vs assumptions-applied."""
+        from app import merge_assumptions
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"success": False, "error": "No budget found"}), 404
+
+        merged = merge_assumptions(entity_code)
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+
+        # Group lines by category and sum current_budget (Yardi raw)
+        categories = {}
+        for line in lines:
+            cat = _wizard_categorize_gl(line.gl_code, line.sheet_name or line.category)
+            if cat not in categories:
+                categories[cat] = {"raw": 0.0, "adjusted": 0.0}
+            raw_val = line.current_budget or 0.0
+            categories[cat]["raw"] += raw_val
+
+            # Apply assumptions to compute adjusted value
+            adjusted = _wizard_apply_assumption_to_line(line, merged)
+            categories[cat]["adjusted"] += adjusted
+
+        # Build preview rows
+        preview = []
+        for cat_name in ["Payroll", "Insurance", "Energy", "Water / Sewer", "R&M / Other"]:
+            data = categories.get(cat_name, {"raw": 0.0, "adjusted": 0.0})
+            delta = data["adjusted"] - data["raw"]
+            pct = (delta / data["raw"] * 100) if data["raw"] != 0 else 0
+            preview.append({
+                "category": cat_name,
+                "raw": round(data["raw"], 2),
+                "adjusted": round(data["adjusted"], 2),
+                "delta": round(delta, 2),
+                "delta_pct": round(pct, 1),
+            })
+
+        return jsonify({"success": True, "preview": preview, "assumptions": merged})
+
+
+    def _wizard_categorize_gl(gl_code, sheet_or_category):
+        """Map a GL code/sheet to a wizard preview category."""
+        sheet = (sheet_or_category or "").lower()
+        gl_prefix = (gl_code or "")[:2]
+
+        if "payroll" in sheet or gl_prefix in ("50", "51"):
+            return "Payroll"
+        if "insurance" in sheet or gl_prefix == "62":
+            return "Insurance"
+        if "energy" in sheet or gl_prefix == "64":
+            return "Energy"
+        if "water" in sheet or "sewer" in sheet or gl_prefix == "65":
+            return "Water / Sewer"
+        return "R&M / Other"
+
+
+    def _wizard_apply_assumption_to_line(line, merged):
+        """Apply the relevant assumption to a single budget line, returning adjusted value.
+
+        If the line has an FA override (estimate_override or forecast_override),
+        the override is preserved — we return the override value, not the
+        assumption-adjusted value.
+        """
+        # If FA already overrode this line, preserve that
+        if line.estimate_override is not None:
+            return line.estimate_override
+        if line.forecast_override is not None:
+            return line.forecast_override
+
+        raw = line.current_budget or 0.0
+        gl_prefix = (line.gl_code or "")[:2]
+        sheet = (line.sheet_name or "").lower()
+
+        # Payroll — apply wage_increase from assumptions
+        if "payroll" in sheet or gl_prefix in ("50", "51"):
+            wage_inc = merged.get("wage_increase", {})
+            # Use average of available wage increase rates
+            rates = [v for k, v in wage_inc.items() if isinstance(v, (int, float)) and v > 0]
+            if rates:
+                avg_rate = sum(rates) / len(rates)
+                return raw * (1 + avg_rate / 100)
+            return raw
+
+        # Insurance — apply insurance_renewal increase_percent
+        if "insurance" in sheet or gl_prefix == "62":
+            ins = merged.get("insurance_renewal", {})
+            pct = ins.get("increase_percent", 0)
+            if pct:
+                return raw * (1 + pct / 100)
+            return raw
+
+        # Energy — apply energy escalation
+        if "energy" in sheet or gl_prefix == "64":
+            energy = merged.get("energy", {})
+            pct = energy.get("escalation_pct", energy.get("increase_pct", 0))
+            if pct:
+                return raw * (1 + pct / 100)
+            return raw
+
+        # Water/Sewer — apply water_sewer escalation
+        if "water" in sheet or "sewer" in sheet or gl_prefix == "65":
+            ws = merged.get("water_sewer", {})
+            pct = ws.get("escalation_pct", ws.get("increase_pct", 0))
+            if pct:
+                return raw * (1 + pct / 100)
+            return raw
+
+        # R&M and other — no assumption, pass through
+        return raw
+
+
+    @bp.route("/api/wizard/<entity_code>/generate", methods=["POST"])
+    def wizard_generate(entity_code):
+        """Apply assumptions to budget lines and mark wizard complete.
+
+        This is an ADDITIVE operation:
+        - Only recalculates lines in assumption-affected categories
+        - Preserves per-line FA overrides (estimate_override, forecast_override)
+        - Snapshots assumptions to history
+        """
+        from app import merge_assumptions
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"success": False, "error": "No budget found"}), 404
+
+        merged = merge_assumptions(entity_code)
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+
+        updated_count = 0
+        for line in lines:
+            # Skip lines with FA overrides — those are preserved
+            if line.estimate_override is not None or line.forecast_override is not None:
+                continue
+
+            adjusted = _wizard_apply_assumption_to_line(line, merged)
+            raw = line.current_budget or 0.0
+
+            # Only update if assumption actually changed the value
+            if abs(adjusted - raw) > 0.005:
+                line.proposed_budget = adjusted
+                updated_count += 1
+
+        # Save assumptions snapshot
+        budget.assumptions_json = json.dumps(merged)
+
+        # Mark wizard complete
+        budget.wizard_step = 6
+        budget.wizard_completed_at = datetime.utcnow()
+
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "lines_updated": updated_count,
+            "total_lines": len(lines),
+            "assumptions_version": len(json.loads(budget.assumptions_history_json or "[]")),
+        })
+
+
     # ─── API Routes: RE Taxes (NYC DOF) ─────────────────────────────────────
 
     @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
@@ -4368,6 +4785,7 @@ DASHBOARD_TEMPLATE = r"""
   <a href="/" class="nav-brand">Century Management</a>
   <div class="nav-links">
     <a href="/" class="nav-link">Home</a>
+    <a href="/wizard" class="nav-link" style="color:#f59e0b;font-weight:600;">⚡ Wizard</a>
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
@@ -4987,6 +5405,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <a href="/" class="nav-brand">Century Management</a>
   <div class="nav-links">
     <a href="/" class="nav-link">Home</a>
+    <a href="/wizard" class="nav-link" style="color:#f59e0b;font-weight:600;">⚡ Wizard</a>
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/generate" class="nav-link">Generator</a>
@@ -5171,6 +5590,53 @@ BUILDING_DETAIL_TEMPLATE = r"""
 const entityCode = '{{ entity_code }}';
 const BY = {{ budget_year }};  // Budget year from server config
 const BY1 = BY - 1, BY2 = BY - 2, BY3 = BY - 3;
+
+// ─── Wizard Sidebar (re-entry mode) ─────────────────────────────────────────
+(function initWizardSidebar() {
+  fetch(`/api/wizard/${entityCode}/status`)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.wizard_completed_at) return;  // Gate mode — no sidebar
+      const steps = [
+        {n: 1, label: 'Entity', done: true},
+        {n: 2, label: 'Sources', done: data.wizard_step >= 2},
+        {n: 3, label: 'Portfolio', done: data.wizard_step >= 3},
+        {n: 4, label: 'Building', done: data.wizard_step >= 4},
+        {n: 5, label: 'Generated', done: data.wizard_step >= 5},
+        {n: 6, label: 'Dashboard', done: data.wizard_step >= 6},
+      ];
+      const ver = data.assumptions_version || 0;
+      const doneCount = steps.filter(s => s.done).length;
+
+      const sidebar = document.createElement('div');
+      sidebar.id = 'wizardSidebar';
+      sidebar.style.cssText = 'position:fixed;right:0;top:48px;width:180px;height:calc(100vh - 48px);background:white;border-left:1px solid var(--gray-200);padding:14px 12px;z-index:90;font-size:11px;transition:transform 0.3s;overflow-y:auto;';
+
+      let html = '<div style="font-size:9px;font-weight:700;color:var(--gray-500);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Wizard</div>';
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;background:var(--gray-50);border:1px solid var(--gray-200);margin-bottom:10px;"><span style="font-size:16px;font-weight:700;color:var(--green);">${doneCount}/6</span><span style="font-size:9px;color:var(--gray-500);line-height:1.2;">Steps<br>complete</span></div>`;
+
+      steps.forEach(s => {
+        const color = s.done ? 'var(--green)' : 'var(--gray-300)';
+        const icon = s.done ? '&#10003;' : '&#9675;';
+        const link = s.n <= 4 ? `/wizard/${entityCode}` : '#';
+        html += `<a href="${link}" style="display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:4px;text-decoration:none;color:${s.done ? 'var(--green)' : 'var(--gray-500)'};font-size:10px;margin-bottom:2px;">${icon} ${s.label}</a>`;
+      });
+
+      if (ver > 0) {
+        html += `<div style="margin-top:10px;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;font-size:9px;background:#f3e8ff;color:#7c3aed;font-weight:600;">Assumptions v${ver}</div>`;
+      }
+
+      html += `<div style="margin-top:12px;"><button onclick="document.getElementById(\'wizardSidebar\').style.transform=\'translateX(180px)\'" style="font-size:9px;border:none;background:var(--gray-100);color:var(--gray-500);padding:4px 8px;border-radius:4px;cursor:pointer;width:100%;">Collapse</button></div>`;
+
+      sidebar.innerHTML = html;
+      document.body.appendChild(sidebar);
+
+      // Adjust main content to make room
+      const container = document.querySelector('.container');
+      if (container) container.style.marginRight = '180px';
+    })
+    .catch(() => {});  // Silently skip if wizard API fails
+})();
 
 function togglePanel(header) {
   const body = header.nextElementSibling;
