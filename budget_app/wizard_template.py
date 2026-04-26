@@ -1427,7 +1427,20 @@ function showStep(stepNum) {
   updateRail();
 
   // Render step-specific content
-  if (stepNum === 2) renderUploadChecklist();
+  if (stepNum === 2) {
+    // Fetch fresh source status for selected entity
+    if (selectedEntity) {
+      fetch('/api/wizard/' + selectedEntity + '/status')
+        .then(r => r.json())
+        .then(data => {
+          if (data.sources) sources = data.sources;
+          renderUploadChecklist();
+        })
+        .catch(() => renderUploadChecklist());
+    } else {
+      renderUploadChecklist();
+    }
+  }
   if (stepNum === 3) renderPortfolioAssumptions();
   if (stepNum === 4) renderBuildingAssumptionsForm();
   if (stepNum === 5) renderPreviewTable();
