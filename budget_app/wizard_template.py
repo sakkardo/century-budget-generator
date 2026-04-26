@@ -299,6 +299,38 @@ header {
   white-space: nowrap;
 }
 
+/* Entity Search */
+.entity-search-bar {
+  position: relative;
+  margin-bottom: 20px;
+}
+.search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--gray-500);
+  pointer-events: none;
+}
+.entity-search-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 11px 14px 11px 40px;
+  border: 2px solid var(--gray-200);
+  border-radius: 8px;
+  background: white;
+  color: var(--gray-900);
+  transition: border-color 0.15s;
+}
+.entity-search-input:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+.entity-search-input::placeholder {
+  color: var(--gray-300);
+}
+
 /* Step 1: Entity Grid */
 .entity-grid {
   display: grid;
@@ -902,6 +934,10 @@ header {
       <div class="prompt-banner" id="entityPrompt">
         Each entity has its own budget timeline. Select one to get started.
       </div>
+      <div class="entity-search-bar">
+        <svg class="search-icon" viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
+        <input type="text" id="entitySearch" class="entity-search-input" placeholder="Search by name or entity code..." oninput="renderEntityGrid()">
+      </div>
       <div class="entity-grid" id="entityGrid">
         <!-- Populated by JavaScript from budgets_json -->
       </div>
@@ -1090,13 +1126,30 @@ function renderEntityGrid() {
     filteredBudgets = budgets.filter(b => assignedEntities.has(b.entity_code));
   }
 
+  // Filter by search term
+  const searchInput = document.getElementById('entitySearch');
+  const searchTerm = (searchInput ? searchInput.value : '').toLowerCase().trim();
+  if (searchTerm) {
+    filteredBudgets = filteredBudgets.filter(b => {
+      const name = (b.building_name || '').toLowerCase();
+      const code = (b.entity_code || '').toLowerCase();
+      return name.includes(searchTerm) || code.includes(searchTerm);
+    });
+  }
+
   // Update entity count
   const countEl = document.getElementById('faEntityCount');
   if (countEl) {
-    if (selectedFA) {
-      countEl.textContent = filteredBudgets.length + ' building' + (filteredBudgets.length !== 1 ? 's' : '') + ' assigned';
+    const total = selectedFA
+      ? faAssignments.filter(a => String(a.user_id) === selectedFA).length
+      : budgets.length;
+    const showing = filteredBudgets.length;
+    if (searchTerm) {
+      countEl.textContent = showing + ' of ' + total + ' shown';
+    } else if (selectedFA) {
+      countEl.textContent = showing + ' building' + (showing !== 1 ? 's' : '') + ' assigned';
     } else {
-      countEl.textContent = budgets.length + ' total buildings';
+      countEl.textContent = total + ' total buildings';
     }
   }
 
@@ -1113,8 +1166,11 @@ function renderEntityGrid() {
     }
   }
 
-  if (filteredBudgets.length === 0 && !selectedFA) {
-    grid.innerHTML = '<p style="color:var(--gray-500);padding:20px;">No entities found.</p>';
+  if (filteredBudgets.length === 0) {
+    const msg = searchTerm
+      ? 'No entities match "' + searchTerm + '"'
+      : (selectedFA ? 'No buildings assigned to this analyst.' : 'No entities found.');
+    grid.innerHTML = '<p style="color:var(--gray-500);padding:20px;">' + msg + '</p>';
     return;
   }
 

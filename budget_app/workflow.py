@@ -2600,7 +2600,7 @@ def create_workflow_blueprint(db):
             db.session.rollback()
         try:
             row = db.session.execute(db.text(
-                "SELECT created_at FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY created_at DESC LIMIT 1"
+                "SELECT COALESCE(confirmed_at, created_at) FROM audit_uploads WHERE entity_code = :ec AND status = 'confirmed' ORDER BY confirmed_at DESC NULLS LAST LIMIT 1"
             ), {"ec": entity_code}).fetchone()
             if row and row[0]:
                 result["audited_financials"]["uploaded"] = True
