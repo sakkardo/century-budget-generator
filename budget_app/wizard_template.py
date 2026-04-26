@@ -248,6 +248,57 @@ header {
   display: block;
 }
 
+/* FA Selector */
+.fa-selector-wrapper {
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  padding: 18px 22px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.fa-selector-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gray-500);
+  margin-bottom: 8px;
+}
+.fa-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.fa-select {
+  flex: 1;
+  max-width: 360px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-900);
+  padding: 10px 14px;
+  border: 2px solid var(--gray-200);
+  border-radius: 8px;
+  background: var(--gray-50);
+  cursor: pointer;
+  transition: border-color 0.15s;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'8\' viewBox=\'0 0 12 8\'%3E%3Cpath d=\'M1 1l5 5 5-5\' stroke=\'%238a7e72\' stroke-width=\'2\' fill=\'none\'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+.fa-select:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+.fa-entity-count {
+  font-size: 13px;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+
 /* Step 1: Entity Grid */
 .entity-grid {
   display: grid;
@@ -372,6 +423,18 @@ header {
   font-weight: 600;
   text-transform: uppercase;
   margin-left: 6px;
+}
+.checklist-confirmed {
+  font-size: 11px;
+  color: var(--green);
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+.checklist-item.confirmed .checklist-icon {
+  background: var(--green);
+  color: white;
+  border-color: var(--green);
 }
 
 .checklist-description {
@@ -824,7 +887,19 @@ header {
         <h1 class="step-title">Select Entity</h1>
         <p class="step-description">Choose which building to create a budget for</p>
       </div>
-      <div class="prompt-banner">
+
+      <!-- FA Selector -->
+      <div class="fa-selector-wrapper" id="faSelectorWrapper" style="display:none;">
+        <div class="fa-selector-label">Financial Analyst</div>
+        <div class="fa-selector-row">
+          <select id="faSelector" class="fa-select" onchange="filterByFA()">
+            <option value="">All Entities</option>
+          </select>
+          <span class="fa-entity-count" id="faEntityCount"></span>
+        </div>
+      </div>
+
+      <div class="prompt-banner" id="entityPrompt">
         Each entity has its own budget timeline. Select one to get started.
       </div>
       <div class="entity-grid" id="entityGrid">
@@ -963,6 +1038,9 @@ let budgets = [];
 let portfolio = {};
 let building = {};
 let sources = {};
+let faUsers = [];
+let faAssignments = [];
+let selectedFA = '';
 
 // Parse JSON from template variables
 function initializeData() {
@@ -971,11 +1049,31 @@ function initializeData() {
     portfolio = JSON.parse({{ portfolio_json | tojson }});
     building = JSON.parse({{ building_json | tojson }});
     sources = JSON.parse({{ sources_json | tojson }});
+    faUsers = JSON.parse({{ fa_users_json | tojson }});
+    faAssignments = JSON.parse({{ assignments_json | tojson }});
     selectedEntity = '{{ entity_code }}';
   } catch (e) {
     console.error('Error parsing template data:', e);
     budgets = [];
   }
+  // Initialize FA selector if we have FA users
+  if (faUsers.length > 0) {
+    const wrapper = document.getElementById('faSelectorWrapper');
+    wrapper.style.display = 'block';
+    const sel = document.getElementById('faSelector');
+    faUsers.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.id;
+      opt.textContent = u.name;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+// Filter entities by selected FA
+function filterByFA() {
+  selectedFA = document.getElementById('faSelector').value;
+  renderEntityGrid();
 }
 
 // Render entity grid
@@ -983,7 +1081,44 @@ function renderEntityGrid() {
   const grid = document.getElementById('entityGrid');
   grid.innerHTML = '';
 
-  budgets.forEach(budget => {
+  // Filter by FA if one is selected
+  let filteredBudgets = budgets;
+  if (selectedFA) {
+    const assignedEntities = new Set(
+      faAssignments.filter(a => String(a.user_id) === selectedFA).map(a => a.entity_code)
+    );
+    filteredBudgets = budgets.filter(b => assignedEntities.has(b.entity_code));
+  }
+
+  // Update entity count
+  const countEl = document.getElementById('faEntityCount');
+  if (countEl) {
+    if (selectedFA) {
+      countEl.textContent = filteredBudgets.length + ' building' + (filteredBudgets.length !== 1 ? 's' : '') + ' assigned';
+    } else {
+      countEl.textContent = budgets.length + ' total buildings';
+    }
+  }
+
+  // Update prompt
+  const prompt = document.getElementById('entityPrompt');
+  if (prompt) {
+    if (selectedFA && filteredBudgets.length === 0) {
+      prompt.textContent = 'No buildings assigned to this analyst yet. Assignments are managed in Monday.com.';
+    } else if (selectedFA) {
+      const faName = faUsers.find(u => String(u.id) === selectedFA);
+      prompt.textContent = 'Showing buildings assigned to ' + (faName ? faName.name : 'this analyst') + '. Select one to get started.';
+    } else {
+      prompt.textContent = 'Each entity has its own budget timeline. Select one to get started.';
+    }
+  }
+
+  if (filteredBudgets.length === 0 && !selectedFA) {
+    grid.innerHTML = '<p style="color:var(--gray-500);padding:20px;">No entities found.</p>';
+    return;
+  }
+
+  filteredBudgets.forEach(budget => {
     // Map DB status to display status
     let displayStatus;
     const ws = budget.wizard_step || 0;
@@ -1032,27 +1167,37 @@ function renderUploadChecklist() {
 
   const sourceTypes = [
     { key: 'ysl', name: 'YSL (Year Statement Ledger)', required: true },
-    { key: 'expense_dist', name: 'Expense Distribution', required: false },
+    { key: 'expense_distribution', name: 'Expense Distribution', required: false },
     { key: 'ap_aging', name: 'AP Aging', required: false },
     { key: 'maint_proof', name: 'Maintenance Proof', required: false },
-    { key: 'audited_fin', name: 'Audited Financials', required: false }
+    { key: 'audited_financials', name: 'Audited Financials', required: false }
   ];
 
   sourceTypes.forEach(source => {
-    const isUploaded = sources[source.key] || false;
+    const info = sources[source.key] || {};
+    const isUploaded = info.uploaded || false;
+    const lastDate = info.last_uploaded ? new Date(info.last_uploaded).toLocaleDateString() : null;
+    const isConfirmed = source.key === 'audited_financials' && isUploaded;
+
     const li = document.createElement('li');
-    li.className = 'checklist-item' + (isUploaded ? '' : ' pending');
+    li.className = 'checklist-item' + (isUploaded ? (isConfirmed ? ' confirmed' : '') : ' pending');
+
+    let statusText = 'Waiting for upload';
+    if (isConfirmed) {
+      statusText = 'Confirmed' + (lastDate ? ' on ' + lastDate : '');
+    } else if (isUploaded) {
+      statusText = 'Uploaded' + (lastDate ? ' on ' + lastDate : '');
+    }
 
     li.innerHTML = `
-      <div class="checklist-icon">${isUploaded ? '✓' : ''}</div>
+      <div class="checklist-icon">${isConfirmed ? '✓' : (isUploaded ? '✓' : '')}</div>
       <div class="checklist-content">
         <div class="checklist-name">
           ${source.name}
           ${source.required ? '<span class="checklist-required">Required</span>' : ''}
+          ${isConfirmed ? '<span class="checklist-confirmed">Reviewed</span>' : ''}
         </div>
-        <div class="checklist-description">
-          ${isUploaded ? 'Uploaded' : 'Waiting for upload'}
-        </div>
+        <div class="checklist-description">${statusText}</div>
       </div>
     `;
 

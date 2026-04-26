@@ -2500,11 +2500,11 @@ def create_workflow_blueprint(db):
         from wizard_template import WIZARD_TEMPLATE
         from app import load_portfolio_defaults, load_building_assumptions
 
-        budgets = Budget.query.filter_by(year=BUDGET_YEAR).all()
+        budgets_db = Budget.query.filter_by(year=BUDGET_YEAR).all()
 
         # Build entity list from existing budgets in DB (not CSV)
         entity_list = []
-        for b in budgets:
+        for b in budgets_db:
             entity_list.append({
                 "entity_code": b.entity_code,
                 "building_name": b.building_name or b.entity_code,
@@ -2515,6 +2515,17 @@ def create_workflow_blueprint(db):
                 "has_lines": bool(b.lines),
             })
 
+        # Load FA users and building assignments for FA selector
+        fa_users = []
+        assignments = []
+        try:
+            fa_rows = User.query.filter_by(role="fa").order_by(User.name).all()
+            fa_users = [u.to_dict() for u in fa_rows]
+            assign_rows = BuildingAssignment.query.filter_by(role="fa").all()
+            assignments = [a.to_dict() for a in assign_rows]
+        except Exception:
+            db.session.rollback()
+
         # Load assumptions for the selected entity
         portfolio = load_portfolio_defaults()
         building_overrides = {}
@@ -2522,7 +2533,6 @@ def create_workflow_blueprint(db):
         if entity_code:
             all_bldg = load_building_assumptions()
             building_overrides = all_bldg.get(entity_code, {})
-            # Fetch source status inline
             try:
                 sources = _get_sources_dict(entity_code)
             except Exception:
@@ -2536,6 +2546,8 @@ def create_workflow_blueprint(db):
             portfolio_json=json_mod.dumps(portfolio),
             building_json=json_mod.dumps(building_overrides),
             sources_json=json_mod.dumps(sources),
+            fa_users_json=json_mod.dumps(fa_users),
+            assignments_json=json_mod.dumps(assignments),
         )
 
 
