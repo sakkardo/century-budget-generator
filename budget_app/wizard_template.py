@@ -409,14 +409,28 @@ header {
 
 .checklist-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  padding: 16px 0;
+  padding: 16px 12px;
   border-bottom: 1px solid var(--gray-100);
+  border-radius: 6px;
+  transition: background 0.15s;
 }
-
+.checklist-item:hover {
+  background: var(--gray-50);
+}
 .checklist-item:last-child {
   border-bottom: none;
+}
+.checklist-link {
+  margin-left: auto;
+  color: var(--gray-300);
+  font-size: 18px;
+  font-weight: 600;
+  transition: color 0.15s;
+}
+.checklist-item:hover .checklist-link {
+  color: var(--amber);
 }
 
 .checklist-icon {
@@ -1243,12 +1257,13 @@ function renderUploadChecklist() {
   const checklist = document.getElementById('uploadChecklist');
   checklist.innerHTML = '';
 
+  const ent = selectedEntity || '';
   const sourceTypes = [
-    { key: 'ysl', name: 'YSL (Year Statement Ledger)', required: true },
-    { key: 'expense_distribution', name: 'Expense Distribution', required: false },
-    { key: 'ap_aging', name: 'AP Aging', required: false },
-    { key: 'maint_proof', name: 'Maintenance Proof', required: false },
-    { key: 'audited_financials', name: 'Audited Financials', required: false }
+    { key: 'ysl', name: 'YSL (Year Statement Ledger)', required: true, href: '/building/' + ent },
+    { key: 'expense_distribution', name: 'Expense Distribution', required: false, href: '/building/' + ent },
+    { key: 'ap_aging', name: 'AP Aging', required: false, href: '/building/' + ent },
+    { key: 'maint_proof', name: 'Maintenance Proof', required: false, href: '/building/' + ent },
+    { key: 'audited_financials', name: 'Audited Financials', required: false, href: '/audited-financials' }
   ];
 
   sourceTypes.forEach(source => {
@@ -1287,6 +1302,8 @@ function renderUploadChecklist() {
 
     const li = document.createElement('li');
     li.className = 'checklist-item ' + itemClass;
+    li.style.cursor = 'pointer';
+    li.onclick = () => { window.open(source.href, '_blank'); };
 
     li.innerHTML = `
       <div class="checklist-icon">${icon}</div>
@@ -1298,6 +1315,7 @@ function renderUploadChecklist() {
         </div>
         <div class="checklist-description">${statusText}</div>
       </div>
+      <div class="checklist-link">→</div>
     `;
 
     checklist.appendChild(li);
