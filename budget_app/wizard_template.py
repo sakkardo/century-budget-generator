@@ -983,26 +983,33 @@ function renderEntityGrid() {
   grid.innerHTML = '';
 
   budgets.forEach(budget => {
-    const statusMap = {
-      'Fresh': { class: 'status-fresh', label: 'Fresh' },
-      'In Progress': { class: 'status-in-progress', label: 'In Progress' },
-      'Has Edits': { class: 'status-has-edits', label: 'Has Edits' },
-      'Complete': { class: 'status-complete', label: 'Complete' }
-    };
+    // Map DB status to display status
+    let displayStatus;
+    const ws = budget.wizard_step || 0;
+    if (budget.wizard_completed_at) {
+      displayStatus = { class: 'status-complete', label: 'Complete' };
+    } else if (budget.has_lines && ws >= 2) {
+      displayStatus = { class: 'status-has-edits', label: 'Step ' + ws + ' of 6' };
+    } else if (budget.has_lines) {
+      displayStatus = { class: 'status-in-progress', label: 'Has Data' };
+    } else {
+      displayStatus = { class: 'status-fresh', label: 'Fresh' };
+    }
 
-    const status = statusMap[budget.status] || statusMap['Fresh'];
+    const code = budget.entity_code;
+    const name = budget.building_name || code;
 
     const card = document.createElement('div');
-    card.className = 'entity-card' + (selectedEntity === budget.code ? ' selected' : '');
-    card.onclick = () => selectEntity(budget.code, budget.name);
+    card.className = 'entity-card' + (selectedEntity === code ? ' selected' : '');
+    card.onclick = () => selectEntity(code, name);
 
     card.innerHTML = `
       <div class="entity-status">
-        <span class="status-dot ${status.class}"></span>
-        ${status.label}
+        <span class="status-dot ${displayStatus.class}"></span>
+        ${displayStatus.label}
       </div>
-      <div class="entity-name">${budget.name}</div>
-      <div class="entity-address">${budget.address || 'No address'}</div>
+      <div class="entity-name">${name}</div>
+      <div class="entity-address">Entity ${code}</div>
     `;
 
     grid.appendChild(card);
@@ -1149,8 +1156,9 @@ function showStep(stepNum) {
   // Hide all steps
   document.querySelectorAll('.step-content').forEach(el => el.classList.remove('active'));
 
-  // Show current step
-  document.querySelector(`[data-step="${stepNum}"]`).classList.add('active');
+  // Show current step (target .step-content specifically, not rail items)
+  const content = document.querySelector(`.step-content[data-step="${stepNum}"]`);
+  if (content) content.classList.add('active');
 
   // Update rail
   updateRail();
