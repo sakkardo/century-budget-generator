@@ -5082,7 +5082,7 @@ function renderBudgets(budgets) {
     const ts = b.timestamps || {};
     function fmtDt(iso) { if (!iso) return '—'; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
     const dataItems = [
-      { label: 'Bud', ok: true, dt: ts.budget_summary, tip: 'Budget summary imported' },
+      { label: 'Bud', ok: !!ts.budget_summary, dt: ts.budget_summary, tip: 'Budget summary imported' },
       { label: 'Exp', ok: b.has_expenses, dt: ts.expense_dist, tip: 'Expense distribution' },
       { label: 'YSL', ok: !!ts.ysl, dt: ts.ysl, tip: 'YSL data from Yardi' },
       { label: 'AP', ok: !!ts.open_ap, dt: ts.open_ap, tip: 'AP Aging imported' }
