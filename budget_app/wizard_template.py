@@ -1439,11 +1439,17 @@ function renderApprovedBudgetFiles() {
     if (isSelected) {
       html += "<span style=\"font-size:12px; padding:5px 10px; background:#dbeafe; color:#1d4ed8; border-radius:4px; font-weight:600;\">&#10003; Selected</span>";
     } else {
-      html += "<button type=\"button\" onclick=\"useApprovedBudget(\\'" + f.item_id + "\\',\\'" + escapeHtmlAttr(f.name) + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
+      html += "<button type=\"button\" data-action=\"select-approved\" data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\" data-filename=\"" + escapeHtmlAttr(f.name) + "\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
     }
     html += "</div>";
   });
   body.innerHTML = html;
+  // Attach handlers via data-attribute event delegation (avoids onclick apostrophe escape issues)
+  body.querySelectorAll('button[data-action="select-approved"]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      useApprovedBudget(btn.getAttribute('data-item-id'), btn.getAttribute('data-filename'));
+    });
+  });
 }
 
 function escapeHtmlAttr(s) {
@@ -1540,7 +1546,7 @@ function renderSharepointSources() {
         if (f.web_url) {
           html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP ↗</a>";
         }
-        html += "<button type=\"button\" onclick=\"useSharepointFile(\\'" + slot.key + "\\',\\'" + f.item_id + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:var(--blue); color:white; border-radius:4px; cursor:pointer;\">Use this file</button>";
+        html += "<button type=\"button\" data-action=\"select-yardi\" data-source-type=\"" + escapeHtmlAttr(slot.key) + "\" data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\" data-filename=\"" + escapeHtmlAttr(f.name) + "\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
         html += "</div>";
       });
     }
@@ -1554,6 +1560,15 @@ function renderSharepointSources() {
     html += "</div>";
   }
   body.innerHTML = html;
+  body.querySelectorAll('button[data-action="select-yardi"]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      useSharepointFile(
+        btn.getAttribute('data-source-type'),
+        btn.getAttribute('data-item-id'),
+        btn.getAttribute('data-filename')
+      );
+    });
+  });
 }
 
 function escapeHtml(s) {
