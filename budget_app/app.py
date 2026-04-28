@@ -6001,6 +6001,172 @@ def admin_move_approved_budgets():
     })
 
 
+
+@app.route("/api/wizard/<entity_code>/build-budget", methods=["POST"])
+def wizard_build_budget(entity_code):
+    """All-or-nothing build trigger.
+
+    Reads Budget.wizard_selections_json, downloads every selected file from
+    SharePoint, runs each through its parser, and writes the results to the DB.
+    On ANY parser/import error, rolls back the entire transaction — DB stays
+    exactly as it was before the click.
+
+    On success: stamps Budget.wizard_completed_at = NOW.
+    """
+    from datetime import datetime as _dt
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY, apply_summary_prefix_override
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+
+    if budget.wizard_completed_at is not None:
+        return jsonify({"error": "Budget already built. Discard via /selections DELETE if you want to re-run."}), 400
+
+    try:
+        selections = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        selections = {}
+
+    if not selections:
+        return jsonify({"error": "No file selections staged. Pick at least one file in Step 2."}), 400
+
+    # Result containers — populated as each selection processes.
+    summary = {
+        "entity_code": entity_code,
+        "selections_processed": [],
+        "lines_written": 0,
+        "summary_rows_written": 0,
+        "errors": [],
+    }
+
+    # Snapshot for rollback awareness — Flask-SQLAlchemy will rollback on raise.
+    try:
+        # Process 2026 Approved Budget first (it sets up the row framework).
+        if "approved_2026" in selections:
+            sel = selections["approved_2026"]
+            try:
+                rows_count = _build_apply_approved_2026(
+                    entity_code, sel, BudgetSummaryRow, _BY, apply_summary_prefix_override
+                )
+                summary["selections_processed"].append({"source_type": "approved_2026", "filename": sel.get("filename"), "rows": rows_count})
+                summary["summary_rows_written"] += rows_count
+            except Exception as e:
+                logger.exception("approved_2026 parse failed")
+                raise RuntimeError(f"2026 Approved Budget parse failed: {e}")
+
+        # YSL / ExpDist / AP Aging / Maint Proof — TODO Phase B.2 wiring.
+        # For now: acknowledge selection but flag as not yet wired so FA knows
+        # they still need to handle these via the legacy upload flow.
+        for st in ("ysl", "expense_distribution", "ap_aging", "maint_proof"):
+            if st in selections:
+                sel = selections[st]
+                summary["selections_processed"].append({
+                    "source_type": st,
+                    "filename": sel.get("filename"),
+                    "status": "selection_recorded_only",
+                    "note": "Parser pipeline for this source type pending — file selection saved but not yet auto-imported.",
+                })
+
+        # Stamp wizard_completed_at on success
+        budget.wizard_completed_at = _dt.utcnow()
+        # Clear selections — they\'ve been consumed
+        budget.wizard_selections_json = None
+
+        db.session.commit()
+        summary["ok"] = True
+        summary["wizard_completed_at"] = budget.wizard_completed_at.isoformat()
+        return jsonify(summary)
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"build-budget failed for entity {entity_code}")
+        summary["ok"] = False
+        summary["errors"].append(str(e))
+        summary["fatal_error"] = str(e)
+        return jsonify(summary), 500
+
+
+def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_YEAR, apply_summary_prefix_override):
+    """Download + parse + upsert the 2026 Approved Budget.
+
+    Raises on any failure. Returns count of rows written.
+    """
+    import sys
+    import tempfile
+    from pathlib import Path
+    from datetime import datetime as _dt
+    import json as _json
+
+    item_id = (selection.get("item_id") or "").strip()
+    if not item_id:
+        raise RuntimeError("approved_2026 selection missing item_id")
+
+    filename, file_bytes = _sharepoint_download_item(item_id)
+
+    # Add budget_summary parsers to path
+    bs_path = str(Path(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in sys.path:
+        sys.path.insert(0, bs_path)
+    from budget_summary_parser import parse_yrlycomp
+    from batch_import import extract_importable_data, enrich_with_gl_map
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    parsed = parse_yrlycomp(tmp_path)
+    if "error" in parsed:
+        raise RuntimeError(f"yrlycomp parse error: {parsed['error']}")
+    imported = extract_importable_data(parsed)
+    if "error" in imported:
+        raise RuntimeError(f"extract_importable_data error: {imported['error']}")
+    enriched = enrich_with_gl_map(imported)
+
+    # Upsert budget_summary_rows
+    written = 0
+    for i, row in enumerate(enriched.get("rows", [])):
+        display_order = row.get("display_order") or (i + 1)
+        existing = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code,
+            budget_year=BUDGET_YEAR,
+            display_order=display_order,
+        ).first()
+        incoming_prefixes = row.get("gl_prefixes") or []
+        corrected_prefixes = apply_summary_prefix_override(row.get("label"), incoming_prefixes)
+        gl_pj = _json.dumps(corrected_prefixes) if corrected_prefixes else None
+        if existing:
+            existing.label = row["label"]
+            existing.section = row.get("section")
+            existing.row_type = row.get("row_type", "data")
+            existing.footnote_marker = row.get("footnote_marker")
+            existing.col1_prior_actual = row.get("col1_prior_actual")
+            existing.col6_approved_budget = row.get("col6_approved_budget")
+            existing.source_tab = row.get("source_tab") or existing.source_tab
+            existing.gl_prefixes_json = gl_pj or existing.gl_prefixes_json
+            existing.source_file = filename or existing.source_file
+            existing.updated_at = _dt.utcnow()
+        else:
+            db.session.add(BudgetSummaryRow(
+                entity_code=entity_code,
+                budget_year=BUDGET_YEAR,
+                display_order=display_order,
+                label=row["label"],
+                section=row.get("section"),
+                row_type=row.get("row_type", "data"),
+                footnote_marker=row.get("footnote_marker"),
+                col1_prior_actual=row.get("col1_prior_actual"),
+                col6_approved_budget=row.get("col6_approved_budget"),
+                col7_proposed_budget=None,
+                source_tab=row.get("source_tab"),
+                gl_prefixes_json=gl_pj,
+                source_file=filename,
+            ))
+        written += 1
+    return written
+
+
 @app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
 def wizard_sharepoint_sources(entity_code):
     """Read-only: return what's in this entity\'s SharePoint Supporting
