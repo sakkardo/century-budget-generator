@@ -963,7 +963,7 @@ header {
       <div class="fa-selector-wrapper" id="faSelectorWrapper" style="display:none;">
         <div class="fa-selector-label">Financial Analyst</div>
         <div class="fa-selector-row" style="display:flex; align-items:center; gap:12px;">
-          <select id="faSelector" class="fa-select" onchange="filterByFA()">
+          <select id="faSelector" class="fa-select" onchange="filterByFA()" style="flex:1; max-width:none;">
             <option value="">All Entities</option>
           </select>
           <span class="fa-entity-count" id="faEntityCount"></span>

@@ -2218,6 +2218,34 @@ def _apply_monday_sync(data):
         save_buildings(csv_buildings)
         stats["buildings_csv_updated"] = len(csv_buildings)
 
+    # Ensure a Budget row exists for every Monday-active building for the
+    # current budget cycle. Existing rows are left untouched (no overwrite).
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    existing_codes = {
+        row[0]
+        for row in db.session.query(Budget.entity_code).filter_by(year=_BY).all()
+    }
+    stats["budgets_created"] = 0
+    for bldg in data:
+        entity_code = str(bldg.get("entity_code", "")).strip()
+        if not entity_code or entity_code in existing_codes:
+            continue
+        bname = (bldg.get("building_name") or entity_code).strip()
+        btype = (bldg.get("type") or "").strip().lower()
+        db.session.add(Budget(
+            entity_code=entity_code,
+            building_name=bname,
+            year=_BY,
+            status="not_started",
+            wizard_step=0,
+            building_type=btype,
+        ))
+        existing_codes.add(entity_code)
+        stats["budgets_created"] += 1
+    if stats["budgets_created"]:
+        db.session.commit()
+
     return stats
 
 
