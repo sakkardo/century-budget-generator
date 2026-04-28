@@ -5617,6 +5617,102 @@ def sharepoint_create_folders():
     return jsonify(summary)
 
 
+
+# Source-type filename patterns for SharePoint Supporting Documents.
+# Case-insensitive substring match. First match wins (in order).
+SHAREPOINT_SOURCE_PATTERNS = [
+    # (source_type, [substrings to match — any one matches])
+    ("ysl",           ["ysl"]),
+    ("expense_dist",  ["expensedistribution"]),
+    ("ap_aging",      ["apaging"]),
+    ("maint_proof",   ["adhoc_amp", "amp_"]),
+]
+
+
+def _classify_sharepoint_filename(name):
+    """Return source_type ('ysl', 'expense_dist', etc.) or None."""
+    if not name:
+        return None
+    low = name.lower()
+    for source_type, needles in SHAREPOINT_SOURCE_PATTERNS:
+        for n in needles:
+            if n in low:
+                return source_type
+    return None
+
+
+def _sharepoint_list_entity_sources(entity_code):
+    """Read-only: list files in <entity>/Supporting Documents/ and classify
+    each by source type using SHAREPOINT_SOURCE_PATTERNS.
+
+    Returns dict:
+      {
+        "entity_code": str,
+        "folder_exists": bool,
+        "folder_url": str|None,
+        "by_source_type": {
+            "ysl": [{name, web_url, size, last_modified, item_id}, ...],
+            "expense_dist": [...],
+            "ap_aging": [...],
+            "maint_proof": [...],
+            "unmatched": [...]   # files in folder that don\'t match any pattern
+        }
+      }
+    Never raises — returns folder_exists=False on any error.
+    """
+    import urllib.parse
+    result = {
+        "entity_code": str(entity_code),
+        "folder_exists": False,
+        "folder_url": None,
+        "by_source_type": {
+            "ysl": [], "expense_dist": [], "ap_aging": [],
+            "maint_proof": [], "unmatched": [],
+        },
+    }
+    try:
+        drive_id = _graph_get_drive_id()
+        sub_path = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code) + "/Supporting Documents"
+        encoded = urllib.parse.quote(sub_path, safe="/")
+        listing = _graph_get(f"drives/{drive_id}/root:/{encoded}:/children")
+    except RuntimeError as e:
+        if "404" in str(e):
+            return result
+        result["error"] = str(e)
+        return result
+
+    result["folder_exists"] = True
+    for it in listing.get("value", []):
+        if "folder" in it:
+            continue  # skip subfolders (e.g., Con Edison/, Water & Sewer/)
+        entry = {
+            "name": it.get("name"),
+            "web_url": it.get("webUrl"),
+            "size": it.get("size"),
+            "last_modified": it.get("lastModifiedDateTime"),
+            "item_id": it.get("id"),
+        }
+        st = _classify_sharepoint_filename(it.get("name", ""))
+        if st:
+            result["by_source_type"][st].append(entry)
+        else:
+            result["by_source_type"]["unmatched"].append(entry)
+    return result
+
+
+@app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
+def wizard_sharepoint_sources(entity_code):
+    """Read-only: return what's in this entity\'s SharePoint Supporting
+    Documents folder, classified by source type. Used by Step 2 to show
+    the FA which sources are pre-staged in SharePoint.
+    """
+    try:
+        return jsonify(_sharepoint_list_entity_sources(entity_code))
+    except Exception as e:
+        logger.error(f"wizard_sharepoint_sources({entity_code}) failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/sharepoint/_token-info", methods=["GET"])
 def sharepoint_token_info():
     """DEBUG: decode the Graph access token and show its key claims (no secrets)."""
