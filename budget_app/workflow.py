@@ -5492,8 +5492,10 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
-  <div class="breadcrumb">
-    <a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span>
+  <div class="breadcrumb" style="display:flex; align-items:center; gap:14px;">
+    <span><a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span></span>
+    <span style="flex:1"></span>
+    <a href="/wizard/{{ entity_code }}" style="font-size:12px; padding:5px 12px; border:1px solid var(--blue); background:#eff6ff; color:var(--blue); border-radius:4px; text-decoration:none; font-weight:600;" title="Open this building in the Budget Wizard">Open in Wizard &rarr;</a>
   </div>
 </nav>
 
