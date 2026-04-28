@@ -993,8 +993,21 @@ header {
         <p class="step-description">Upload the required YSL and optional enrichment files</p>
       </div>
       <div class="prompt-banner">
-        Upload YSL first — this creates your budget line items. Other sources enrich these lines with detail.
+        Step 2 collects the source files. Nothing is committed to your budget until you click "Build Budget" in Step 5. Files staged in SharePoint will be detected here — you confirm each one explicitly.
       </div>
+
+      <!-- SharePoint Sources Panel -->
+      <div class="sp-sources-panel" id="spSourcesPanel" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.04); display:none;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--gray-500); flex:1;">From SharePoint</div>
+          <span id="spFolderInfo" style="font-size:12px; color:var(--gray-500);"></span>
+          <button type="button" id="spRefreshBtn" onclick="loadSharepointSources()" style="font-size:12px; padding:5px 12px; border:1px solid #ddd; background:#fff; border-radius:4px; cursor:pointer;" title="Re-list files in this entity Supporting Documents folder">↻ Refresh from SP</button>
+        </div>
+        <div id="spSourcesBody" style="display:flex; flex-direction:column; gap:10px;">
+          <div style="color:var(--gray-500); font-size:13px;">Loading...</div>
+        </div>
+      </div>
+
       <div class="upload-section">
         <ul class="checklist" id="uploadChecklist">
           <!-- Populated by JavaScript -->
@@ -1336,6 +1349,119 @@ function selectEntity(code, name) {
   document.getElementById('railEntityName').textContent = name;
   renderEntityGrid();
   completeStep(1);
+}
+
+// Render upload checklist
+// SharePoint sources state for current entity (Step 2)
+let _spSources = null;
+
+function loadSharepointSources() {
+  const ent = selectedEntity;
+  if (!ent) return;
+  const panel = document.getElementById("spSourcesPanel");
+  const body = document.getElementById("spSourcesBody");
+  const info = document.getElementById("spFolderInfo");
+  const btn = document.getElementById("spRefreshBtn");
+  if (!panel || !body) return;
+  panel.style.display = "block";
+  body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">Checking SharePoint...</div>";
+  if (btn) { btn.disabled = true; btn.textContent = "Checking..."; }
+  fetch("/api/wizard/" + ent + "/sharepoint-sources")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      _spSources = data;
+      renderSharepointSources();
+      if (info) {
+        if (data.folder_exists) {
+          const total = (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
+          info.textContent = total + " matched · " + (data.by_source_type.unmatched||[]).length + " other";
+        } else {
+          info.textContent = "Folder not yet created";
+        }
+      }
+    })
+    .catch(function (err) {
+      body.innerHTML = "<div style=\"color:#b45309; font-size:13px;\">SharePoint lookup failed: " + err + "</div>";
+    })
+    .finally(function () {
+      if (btn) { btn.disabled = false; btn.textContent = "↻ Refresh from SP"; }
+    });
+}
+
+function renderSharepointSources() {
+  const body = document.getElementById("spSourcesBody");
+  if (!body || !_spSources) return;
+  if (!_spSources.folder_exists) {
+    body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">No SharePoint folder yet for this entity. Files you upload below will be saved to a new folder.</div>";
+    return;
+  }
+  const slots = [
+    { key: "ysl",                  label: "YSL" },
+    { key: "expense_distribution", label: "Expense Distribution" },
+    { key: "ap_aging",             label: "AP Aging" },
+    { key: "maint_proof",          label: "Maintenance Proof" }
+  ];
+  let html = "";
+  slots.forEach(function (slot) {
+    const files = (_spSources.by_source_type[slot.key] || []);
+    const hasAny = files.length > 0;
+    const headerColor = hasAny ? "#15803d" : "#b45309";
+    const headerIcon = hasAny ? "✓" : "↑";
+    const headerNote = hasAny ? "found in SharePoint" : "not in folder — use upload below";
+    html += "<div style=\"border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px;\">";
+    html += "<div style=\"display:flex; align-items:center; gap:10px; margin-bottom:" + (hasAny ? "8px" : "0") + ";\">";
+    html += "<span style=\"color:" + headerColor + "; font-weight:700;\">" + headerIcon + "</span>";
+    html += "<span style=\"font-weight:600;\">" + slot.label + "</span>";
+    html += "<span style=\"flex:1\"></span>";
+    html += "<span style=\"font-size:12px; color:" + headerColor + ";\">" + headerNote + "</span>";
+    html += "</div>";
+    if (hasAny) {
+      files.forEach(function (f) {
+        html += "<div style=\"display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--gray-100);\">";
+        html += "<span style=\"font-family:ui-monospace,monospace; font-size:12px; flex:1; color:var(--text-200,#374151); overflow-wrap:anywhere;\">" + escapeHtml(f.name) + "</span>";
+        html += "<span style=\"font-size:11px; color:var(--gray-500); white-space:nowrap;\">" + (f.size ? Math.round(f.size/1024) + " KB" : "") + "</span>";
+        if (f.web_url) {
+          html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP ↗</a>";
+        }
+        html += "<button type=\"button\" onclick=\"useSharepointFile(\\'" + slot.key + "\\',\\'" + f.item_id + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:var(--blue); color:white; border-radius:4px; cursor:pointer;\">Use this file</button>";
+        html += "</div>";
+      });
+    }
+    html += "</div>";
+  });
+  // Unmatched files (informational)
+  const unmatched = _spSources.by_source_type.unmatched || [];
+  if (unmatched.length > 0) {
+    html += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:6px;\">Other files in folder (not auto-classified): ";
+    html += unmatched.map(function (f) { return escapeHtml(f.name); }).join(", ");
+    html += "</div>";
+  }
+  body.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
+}
+
+function useSharepointFile(sourceType, itemId) {
+  const ent = selectedEntity;
+  if (!ent) return;
+  if (!confirm("Confirm: use this SharePoint file as the " + sourceType + " source for entity " + ent + "?\n\nNothing will be committed to the budget until you click Build Budget in Step 5.")) return;
+  fetch("/api/wizard/" + ent + "/use-sp-source", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_type: sourceType, item_id: itemId })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.success) {
+        alert("File staged: " + data.filename + " (" + Math.round((data.size_bytes||0)/1024) + " KB)\n\nBackend pipeline wiring still pending — next step.");
+      } else {
+        alert("Failed: " + (data.error || "unknown"));
+      }
+    })
+    .catch(function (err) { alert("Request failed: " + err); });
 }
 
 // Render upload checklist

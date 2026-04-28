@@ -5623,7 +5623,7 @@ def sharepoint_create_folders():
 SHAREPOINT_SOURCE_PATTERNS = [
     # (source_type, [substrings to match — any one matches])
     ("ysl",           ["ysl"]),
-    ("expense_dist",  ["expensedistribution"]),
+    ("expense_distribution",  ["expensedistribution"]),
     ("ap_aging",      ["apaging"]),
     ("maint_proof",   ["adhoc_amp", "amp_"]),
 ]
@@ -5652,7 +5652,7 @@ def _sharepoint_list_entity_sources(entity_code):
         "folder_url": str|None,
         "by_source_type": {
             "ysl": [{name, web_url, size, last_modified, item_id}, ...],
-            "expense_dist": [...],
+            "expense_distribution": [...],
             "ap_aging": [...],
             "maint_proof": [...],
             "unmatched": [...]   # files in folder that don\'t match any pattern
@@ -5666,7 +5666,7 @@ def _sharepoint_list_entity_sources(entity_code):
         "folder_exists": False,
         "folder_url": None,
         "by_source_type": {
-            "ysl": [], "expense_dist": [], "ap_aging": [],
+            "ysl": [], "expense_distribution": [], "ap_aging": [],
             "maint_proof": [], "unmatched": [],
         },
     }
@@ -5698,6 +5698,58 @@ def _sharepoint_list_entity_sources(entity_code):
         else:
             result["by_source_type"]["unmatched"].append(entry)
     return result
+
+
+
+def _sharepoint_download_item(item_id):
+    """Download a SharePoint file by drive item id. Returns (filename, bytes)."""
+    import urllib.request
+    drive_id = _graph_get_drive_id()
+    meta = _graph_get(f"drives/{drive_id}/items/{item_id}")
+    filename = meta.get("name", f"sp_item_{item_id}")
+    download_url = meta.get("@microsoft.graph.downloadUrl")
+    if download_url:
+        with urllib.request.urlopen(download_url, timeout=60) as resp:
+            return filename, resp.read()
+    # Fallback via authenticated /content endpoint
+    token = _get_graph_token()
+    req = urllib.request.Request(
+        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return filename, resp.read()
+
+
+@app.route("/api/wizard/<entity_code>/use-sp-source", methods=["POST"])
+def wizard_use_sp_source(entity_code):
+    """STAGED — read-only at this stage.
+
+    Confirms FA picked a SharePoint file as their source for a slot, downloads
+    it (to verify retrieval works) and returns metadata. Does NOT yet feed the
+    file into the budget pipeline — that wiring is the next chunk of work.
+    """
+    data = request.get_json() or {}
+    source_type = (data.get("source_type") or "").strip()
+    item_id = (data.get("item_id") or "").strip()
+    if not source_type or not item_id:
+        return jsonify({"error": "source_type and item_id required"}), 400
+    try:
+        filename, file_bytes = _sharepoint_download_item(item_id)
+    except Exception as e:
+        logger.error(f"SP download failed for item {item_id}: {e}")
+        return jsonify({"error": f"Download from SharePoint failed: {e}"}), 500
+    return jsonify({
+        "success": True,
+        "stage": "downloaded_only",
+        "entity_code": entity_code,
+        "source_type": source_type,
+        "filename": filename,
+        "size_bytes": len(file_bytes),
+        "next_step": "Backend pipeline wiring is pending — file bytes were fetched but not parsed. Add to the wizard build step.",
+    })
+
+
 
 
 @app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
