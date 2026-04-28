@@ -1363,9 +1363,27 @@ function selectEntity(code, name) {
   // Kick off SharePoint detection for Step 2 as soon as entity is picked.
   try { loadSharepointSources(); } catch (e) {}
   try { loadApprovedBudgetFiles(); } catch (e) {}
+  try { loadWizardSelections(); } catch (e) {}
 }
 
 // Render upload checklist
+// FA file selections (staged but not yet built) for current entity
+let _wizardSelections = {};
+
+function loadWizardSelections() {
+  const ent = selectedEntity;
+  if (!ent) return;
+  fetch("/api/wizard/" + ent + "/selections")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      _wizardSelections = data.selections || {};
+      // Re-render any panels that show selection state
+      try { renderApprovedBudgetFiles(); } catch (e) {}
+      try { renderSharepointSources(); } catch (e) {}
+    })
+    .catch(function () { _wizardSelections = {}; });
+}
+
 // 2026 Approved Budget files state for current entity (Step 2)
 let _approvedBudgetMatches = null;
 
@@ -1398,20 +1416,31 @@ function renderApprovedBudgetFiles() {
   const body = document.getElementById("approvedBudgetBody");
   if (!body || !_approvedBudgetMatches) return;
   const matches = _approvedBudgetMatches.matches || [];
+  const selectedItemId = (_wizardSelections && _wizardSelections.approved_2026 && _wizardSelections.approved_2026.item_id) || null;
   if (matches.length === 0) {
     body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">No 2026 Approved Budget Excel found in SharePoint for entity " + selectedEntity + ". Upload via the Excel admin tools or skip — Cols 1 &amp; 6 will remain blank.</div>";
     return;
   }
   let html = "";
   matches.forEach(function (f) {
-    html += "<div style=\"display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--gray-100);\">";
-    html += "<span style=\"color:#15803d; font-weight:700; font-size:14px;\">&#10003;</span>";
+    const isSelected = (f.item_id === selectedItemId);
+    const bg = isSelected ? "#eff6ff" : "transparent";
+    html += "<div style=\"display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid var(--gray-100); background:" + bg + ";\">";
+    if (isSelected) {
+      html += "<span style=\"color:#1d4ed8; font-weight:700; font-size:14px;\" title=\"Selected for build\">&#9679;</span>";
+    } else {
+      html += "<span style=\"color:var(--gray-300); font-weight:700; font-size:14px;\">&#9675;</span>";
+    }
     html += "<span style=\"font-family:ui-monospace,monospace; font-size:12px; flex:1; color:var(--text-200,#374151); overflow-wrap:anywhere;\">" + escapeHtml(f.name) + "</span>";
     html += "<span style=\"font-size:11px; color:var(--gray-500); white-space:nowrap;\">" + (f.size ? Math.round(f.size/1024) + " KB" : "") + "</span>";
     if (f.web_url) {
       html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP &#8599;</a>";
     }
-    html += "<button type=\"button\" onclick=\"useApprovedBudget(\\'" + f.item_id + "\\',\\'" + escapeHtmlAttr(f.name) + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:var(--blue); color:white; border-radius:4px; cursor:pointer;\">Use this file</button>";
+    if (isSelected) {
+      html += "<span style=\"font-size:12px; padding:5px 10px; background:#dbeafe; color:#1d4ed8; border-radius:4px; font-weight:600;\">&#10003; Selected</span>";
+    } else {
+      html += "<button type=\"button\" onclick=\"useApprovedBudget(\\'" + f.item_id + "\\',\\'" + escapeHtmlAttr(f.name) + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
+    }
     html += "</div>";
   });
   body.innerHTML = html;
@@ -1424,20 +1453,17 @@ function escapeHtmlAttr(s) {
 function useApprovedBudget(itemId, filename) {
   const ent = selectedEntity;
   if (!ent) return;
-  if (!confirm("Confirm: import this 2026 Approved Budget file as Cols 1 & 6 for entity " + ent + "?\n\n" + filename + "\n\nThis populates the budget_summary_rows table.")) return;
   fetch("/api/wizard/" + ent + "/use-approved-budget", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_id: itemId })
+    body: JSON.stringify({ item_id: itemId, filename: filename || "" })
   })
-    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
-    .then(function (res) {
-      if (res.ok && res.data && res.data.ok) {
-        const stats = res.data.stats || {};
-        alert("Imported " + (res.data.rows_imported||0) + " new rows, updated " + (res.data.rows_updated||0) + ".\n\n" + (stats.rows_with_col1||0) + " rows have Col 1 (2024 Actual)\n" + (stats.rows_with_col6||0) + " rows have Col 6 (2026 Approved Budget)");
-        loadApprovedBudgetFiles();  // refresh the panel
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.ok) {
+        loadApprovedBudgetFiles();  // refresh to show selected state
       } else {
-        alert("Import failed: " + ((res.data && res.data.error) || "unknown error"));
+        alert("Selection failed: " + (data.error || "unknown error"));
       }
     })
     .catch(function (err) { alert("Request failed: " + err); });
@@ -1535,21 +1561,21 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
 }
 
-function useSharepointFile(sourceType, itemId) {
+function useSharepointFile(sourceType, itemId, filename) {
   const ent = selectedEntity;
   if (!ent) return;
-  if (!confirm("Confirm: use this SharePoint file as the " + sourceType + " source for entity " + ent + "?\n\nNothing will be committed to the budget until you click Build Budget in Step 5.")) return;
   fetch("/api/wizard/" + ent + "/use-sp-source", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source_type: sourceType, item_id: itemId })
+    body: JSON.stringify({ source_type: sourceType, item_id: itemId, filename: filename || "" })
   })
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data.success) {
-        alert("File staged: " + data.filename + " (" + Math.round((data.size_bytes||0)/1024) + " KB)\n\nBackend pipeline wiring still pending — next step.");
+      if (data.ok) {
+        loadSharepointSources();   // refresh to show selected state
+        loadApprovedBudgetFiles(); // also refresh approved budget panel (in case)
       } else {
-        alert("Failed: " + (data.error || "unknown"));
+        alert("Selection failed: " + (data.error || "unknown"));
       }
     })
     .catch(function (err) { alert("Request failed: " + err); });
