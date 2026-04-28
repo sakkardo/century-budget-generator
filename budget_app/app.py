@@ -5426,8 +5426,10 @@ def _get_graph_token():
     return _GRAPH_TOKEN_CACHE["token"]
 
 
-def _graph_get(path, params=None):
-    """GET https://graph.microsoft.com/v1.0/<path>. Returns parsed JSON or raises."""
+def _graph_get(path, params=None, _retry=True):
+    """GET https://graph.microsoft.com/v1.0/<path>. Returns parsed JSON or raises.
+    On 401, invalidates the token cache and retries once (handles consent-flip cases).
+    """
     import urllib.request
     import urllib.parse
     token = _get_graph_token()
@@ -5442,6 +5444,10 @@ def _graph_get(path, params=None):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.request.HTTPError as e:
+        if e.code == 401 and _retry:
+            _GRAPH_TOKEN_CACHE["token"] = None
+            _GRAPH_TOKEN_CACHE["expires_at"] = 0
+            return _graph_get(path, params=params, _retry=False)
         body = ""
         try:
             body = e.read().decode("utf-8")[:600]
