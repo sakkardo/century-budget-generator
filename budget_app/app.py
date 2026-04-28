@@ -5756,35 +5756,38 @@ SHAREPOINT_APPROVED_BUDGETS_PATH = SHAREPOINT_2027_FOLDER_PATH + "/2026 budget a
 
 
 def _sharepoint_list_approved_budgets(entity_code):
-    """List 2026 Approved Budget Excel files matching the given entity_code.
-
-    Files live in a flat folder; filename pattern: <entity_code> ... Approved.xlsx
-    Match: filename starts with the entity_code followed by a non-digit character.
+    """List 2026 Approved Budget Excel files for an entity. After the bulk
+    move on 2026-04-28, files live at the top level of the entity folder
+    (2027 Budget/<entity>/). Match: filename contains "approved" (case-
+    insensitive) AND is .xlsx/.xls (not other doc types).
 
     Returns list of dicts with name, web_url, size, last_modified, item_id.
     Empty list if folder missing or no matches.
     """
     import urllib.parse
-    import re
+    ec = str(entity_code)
+    entity_path = SHAREPOINT_2027_FOLDER_PATH + "/" + ec
     try:
         drive_id = _graph_get_drive_id()
-        encoded = urllib.parse.quote(SHAREPOINT_APPROVED_BUDGETS_PATH, safe="/")
+        encoded = urllib.parse.quote(entity_path, safe="/")
         listing = _graph_get(f"drives/{drive_id}/root:/{encoded}:/children")
     except RuntimeError as e:
         if "404" in str(e):
             return []
         raise
 
-    ec = str(entity_code)
-    pattern = re.compile(r"^" + re.escape(ec) + r"(?:\D|$)")
     matches = []
     for it in listing.get("value", []):
         name = it.get("name", "")
         if "folder" in it:
             continue
-        if not pattern.match(name):
+        low = name.lower()
+        if "approved" not in low:
             continue
-        if "approved" not in name.lower():
+        if not (low.endswith(".xlsx") or low.endswith(".xls") or low.endswith(".xlsm")):
+            continue
+        # Skip files that look like 2027 drafts (only want 2026 approved)
+        if "2027" in low and "draft" in low:
             continue
         matches.append({
             "name": name,
