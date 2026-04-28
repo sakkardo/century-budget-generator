@@ -2018,7 +2018,7 @@ def _fetch_monday_buildings():
 
     query = """{
       boards(ids: %s) {
-        items_page(limit: 500, query_params: {rules: [{column_id: "color", compare_value: [0], operator: any_of}]}) {
+        items_page(limit: 500) {
           items {
             name
             column_values(ids: ["numeric", "numbers9", "pm8", "people", "text8", "text7", "text03", "status1"]) {
@@ -2064,6 +2064,7 @@ def _fetch_monday_buildings():
         buildings.append({
             "entity_code": entity,
             "building_name": item["name"],
+            "client": item["name"],
             "address": cols.get("text8") or "",
             "city": cols.get("text7") or "",
             "zip": cols.get("text03") or "",
