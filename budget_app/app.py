@@ -5389,6 +5389,111 @@ renderDefaultsPanel();
 """
 
 
+
+# ─── SharePoint / Microsoft Graph integration ────────────────────────────
+# App-only auth (client credentials flow). Permissions: Sites.ReadWrite.All.
+SHAREPOINT_SITE_ID = "centurynyc.sharepoint.com,beafa175-6707-4aa1-a349-85d1cf02eb39,f6ca63b2-9cdc-4a28-b23d-047ab7e715f4"
+SHAREPOINT_2027_FOLDER_PATH = "01 - Accounting General/Budgets/Budgets - FAs only/2027 Budget"
+
+_GRAPH_TOKEN_CACHE = {"token": None, "expires_at": 0}
+
+
+def _get_graph_token():
+    """Acquire (and cache) an app-only Graph access token via MSAL."""
+    import time
+    now = time.time()
+    if _GRAPH_TOKEN_CACHE["token"] and _GRAPH_TOKEN_CACHE["expires_at"] - now > 60:
+        return _GRAPH_TOKEN_CACHE["token"]
+
+    tenant = os.environ.get("AZURE_TENANT_ID", "")
+    client_id = os.environ.get("AZURE_CLIENT_ID", "")
+    client_secret = os.environ.get("AZURE_CLIENT_SECRET", "")
+    if not (tenant and client_id and client_secret):
+        raise RuntimeError("Azure env vars missing (AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET)")
+
+    import msal
+    authority = f"https://login.microsoftonline.com/{tenant}"
+    app_msal = msal.ConfidentialClientApplication(
+        client_id=client_id,
+        client_credential=client_secret,
+        authority=authority,
+    )
+    result = app_msal.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" not in result:
+        raise RuntimeError(f"Graph token acquisition failed: {result.get('error_description') or result}")
+    _GRAPH_TOKEN_CACHE["token"] = result["access_token"]
+    _GRAPH_TOKEN_CACHE["expires_at"] = now + int(result.get("expires_in", 3600))
+    return _GRAPH_TOKEN_CACHE["token"]
+
+
+def _graph_get(path, params=None):
+    """GET https://graph.microsoft.com/v1.0/<path>. Returns parsed JSON or raises."""
+    import urllib.request
+    import urllib.parse
+    token = _get_graph_token()
+    url = "https://graph.microsoft.com/v1.0/" + path.lstrip("/")
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _graph_get_drive_id():
+    """Return the default document library drive id for the SharePoint site."""
+    data = _graph_get(f"sites/{SHAREPOINT_SITE_ID}/drive")
+    return data.get("id")
+
+
+@app.route("/api/sharepoint/explore", methods=["GET"])
+def sharepoint_explore():
+    """Walk the 2027 Budget folder and return one level of structure.
+
+    Query params:
+      depth=1 (default) — top-level only
+      depth=2           — also list each entity-folder's contents
+      sub=<sub>         — explore a sub-path inside 2027 Budget instead of root
+    """
+    try:
+        drive_id = _graph_get_drive_id()
+        sub = (request.args.get("sub") or "").strip("/")
+        base = SHAREPOINT_2027_FOLDER_PATH + ("/" + sub if sub else "")
+        depth = int(request.args.get("depth", "1"))
+        # URL-encode the path segment (Graph wants the full path after :/)
+        import urllib.parse
+        encoded = urllib.parse.quote(base, safe="/")
+        listing = _graph_get(f"drives/{drive_id}/root:/{encoded}:/children")
+        items = listing.get("value", [])
+        out = {"path": base, "drive_id": drive_id, "count": len(items), "items": []}
+        for it in items:
+            entry = {
+                "name": it.get("name"),
+                "is_folder": "folder" in it,
+                "size": it.get("size"),
+                "last_modified": it.get("lastModifiedDateTime"),
+                "web_url": it.get("webUrl"),
+            }
+            if depth >= 2 and "folder" in it:
+                try:
+                    sub_path = base + "/" + it["name"]
+                    sub_encoded = urllib.parse.quote(sub_path, safe="/")
+                    sub_listing = _graph_get(f"drives/{drive_id}/root:/{sub_encoded}:/children")
+                    entry["children"] = [
+                        {"name": c.get("name"), "is_folder": "folder" in c, "size": c.get("size")}
+                        for c in sub_listing.get("value", [])
+                    ]
+                except Exception as e:
+                    entry["children_error"] = str(e)
+            out["items"].append(entry)
+        return jsonify(out)
+    except Exception as e:
+        logger.error(f"sharepoint_explore failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     if IS_CLOUD:
