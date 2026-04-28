@@ -5895,13 +5895,16 @@ def admin_wipe_entity_data():
                 summary["entities"].append(entity_record)
                 continue
 
-            # Count + delete budget_lines
-            line_count = BudgetLine.query.filter_by(budget_id=budget.id).count()
-            BudgetLine.query.filter_by(budget_id=budget.id).delete()
-
-            # Count + delete budget_revisions
+            # Delete budget_revisions FIRST — they reference budget_lines via FK,
+            # so removing lines before revisions would violate the constraint.
             rev_count = BudgetRevision.query.filter_by(budget_id=budget.id).count()
             BudgetRevision.query.filter_by(budget_id=budget.id).delete()
+            db.session.flush()
+
+            # Now safe to delete budget_lines
+            line_count = BudgetLine.query.filter_by(budget_id=budget.id).count()
+            BudgetLine.query.filter_by(budget_id=budget.id).delete()
+            db.session.flush()
 
             # Count + delete budget_summary_rows (these can be re-imported from SharePoint)
             sum_count = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).count()
