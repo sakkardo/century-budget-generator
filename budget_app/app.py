@@ -5788,18 +5788,20 @@ def admin_upload_audit():
     BudgetRevision = workflow_models["BudgetRevision"]
     Budget = workflow_models["Budget"]
 
-    # Lines created in window
+    # BudgetLine has no created_at, only updated_at — using that as a proxy.
+    # Initial inserts and later edits both update this; for the 4/7 audit window,
+    # any line touched in that window indicates upload-or-edit activity.
     line_rows = db.session.execute(db.text("""
         SELECT b.entity_code,
                b.year,
                COUNT(bl.id) as line_count,
-               MIN(bl.created_at) as first_created,
-               MAX(bl.created_at) as last_created
+               MIN(bl.updated_at) as first_touched,
+               MAX(bl.updated_at) as last_touched
           FROM budget_lines bl
           JOIN budgets b ON b.id = bl.budget_id
-         WHERE bl.created_at >= :since AND bl.created_at < :until
+         WHERE bl.updated_at >= :since AND bl.updated_at < :until
          GROUP BY b.entity_code, b.year
-         ORDER BY MIN(bl.created_at) ASC
+         ORDER BY MIN(bl.updated_at) ASC
     """), {"since": since, "until": until}).fetchall()
 
     # Revisions in window
@@ -5817,11 +5819,11 @@ def admin_upload_audit():
 
     return jsonify({
         "window": {"since": since_str, "until": until_str},
-        "lines_created_per_entity": [
+        "lines_touched_per_entity": [
             {
                 "entity_code": r[0], "year": r[1], "line_count": r[2],
-                "first_created": r[3].isoformat() if r[3] else None,
-                "last_created": r[4].isoformat() if r[4] else None,
+                "first_touched": r[3].isoformat() if r[3] else None,
+                "last_touched": r[4].isoformat() if r[4] else None,
             }
             for r in line_rows
         ],
