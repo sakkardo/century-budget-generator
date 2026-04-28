@@ -1349,6 +1349,8 @@ function selectEntity(code, name) {
   document.getElementById('railEntityName').textContent = name;
   renderEntityGrid();
   completeStep(1);
+  // Kick off SharePoint detection for Step 2 as soon as entity is picked.
+  try { loadSharepointSources(); } catch (e) {}
 }
 
 // Render upload checklist
