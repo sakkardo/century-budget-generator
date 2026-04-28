@@ -15048,7 +15048,7 @@ function pmFormulaBarAccept() {
     _pmCurrentCell.dataset.raw = Math.round(finalVal);
 
     // Update badge: fx for formula, ✎ for manual override
-    const badge = _pmCurrentCell.parentElement.querySelector('.pm-fx');
+    // (badge already queried at top of function)
     if (badge) {
         if (isFormula && formulaResult !== null) {
             badge.textContent = 'fx';
