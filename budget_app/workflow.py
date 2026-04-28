@@ -6138,7 +6138,7 @@ function renderDetail(data) {
     { group: 'Data Collection', label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
     { group: 'Data Collection', label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
     { group: 'Configuration', label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },
-    { group: 'Review', label: 'Review All Sheets', done: linesWithProposed >= lines.length * 0.5, detail: linesWithProposed + ' of ' + lines.length + ' lines have proposed values (' + reviewPct + '%)', progress: reviewPct },
+    { group: 'Review', label: 'Review All Sheets', done: lines.length > 0 && linesWithProposed >= lines.length * 0.5, detail: lines.length === 0 ? 'No lines yet' : (linesWithProposed + ' of ' + lines.length + ' lines have proposed values (' + reviewPct + '%)'), progress: reviewPct },
     { group: 'Review', label: 'PM Review', done: pmDone, detail: pmDone ? 'PM review complete' : (pmSent ? 'Awaiting PM response' : 'Not yet sent'), action: !pmSent ? 'sendToPM' : null },
     { group: 'Approval', label: 'Final Approval', done: b.status === 'approved', detail: '', blocked: true }
   ];
