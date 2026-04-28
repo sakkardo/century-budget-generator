@@ -5765,6 +5765,79 @@ def wizard_sharepoint_sources(entity_code):
         return jsonify({"error": str(e)}), 500
 
 
+
+@app.route("/api/admin/upload-audit", methods=["GET"])
+def admin_upload_audit():
+    """Read-only audit summary for the 4/7-ish window: counts revisions and
+    budget lines created by date so we can see when budgets were last touched.
+
+    Query params:
+      since=YYYY-MM-DD (default 2026-04-01)
+      until=YYYY-MM-DD (default 2026-04-15)
+    """
+    from datetime import datetime as _dt
+    since_str = request.args.get("since", "2026-04-01")
+    until_str = request.args.get("until", "2026-04-15")
+    try:
+        since = _dt.strptime(since_str, "%Y-%m-%d")
+        until = _dt.strptime(until_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "since/until must be YYYY-MM-DD"}), 400
+
+    BudgetLine = workflow_models["BudgetLine"]
+    BudgetRevision = workflow_models["BudgetRevision"]
+    Budget = workflow_models["Budget"]
+
+    # Lines created in window
+    line_rows = db.session.execute(db.text("""
+        SELECT b.entity_code,
+               b.year,
+               COUNT(bl.id) as line_count,
+               MIN(bl.created_at) as first_created,
+               MAX(bl.created_at) as last_created
+          FROM budget_lines bl
+          JOIN budgets b ON b.id = bl.budget_id
+         WHERE bl.created_at >= :since AND bl.created_at < :until
+         GROUP BY b.entity_code, b.year
+         ORDER BY MIN(bl.created_at) ASC
+    """), {"since": since, "until": until}).fetchall()
+
+    # Revisions in window
+    rev_rows = db.session.execute(db.text("""
+        SELECT br.action,
+               br.source,
+               COUNT(*) as cnt,
+               MIN(br.created_at) as first_at,
+               MAX(br.created_at) as last_at
+          FROM budget_revisions br
+         WHERE br.created_at >= :since AND br.created_at < :until
+         GROUP BY br.action, br.source
+         ORDER BY cnt DESC
+    """), {"since": since, "until": until}).fetchall()
+
+    return jsonify({
+        "window": {"since": since_str, "until": until_str},
+        "lines_created_per_entity": [
+            {
+                "entity_code": r[0], "year": r[1], "line_count": r[2],
+                "first_created": r[3].isoformat() if r[3] else None,
+                "last_created": r[4].isoformat() if r[4] else None,
+            }
+            for r in line_rows
+        ],
+        "revisions_grouped": [
+            {
+                "action": r[0], "source": r[1], "count": r[2],
+                "first_at": r[3].isoformat() if r[3] else None,
+                "last_at": r[4].isoformat() if r[4] else None,
+            }
+            for r in rev_rows
+        ],
+        "total_lines_in_window": sum(r[2] for r in line_rows) if line_rows else 0,
+        "total_revisions_in_window": sum(r[2] for r in rev_rows) if rev_rows else 0,
+    })
+
+
 @app.route("/api/sharepoint/_token-info", methods=["GET"])
 def sharepoint_token_info():
     """DEBUG: decode the Graph access token and show its key claims (no secrets)."""
