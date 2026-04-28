@@ -5766,6 +5766,96 @@ def wizard_sharepoint_sources(entity_code):
 
 
 
+
+@app.route("/api/admin/entity-trace/<entity_code>", methods=["GET"])
+def admin_entity_trace(entity_code):
+    """Trace upload provenance for a single entity. Shows which columns of
+    budget_lines have non-default values, distinct sources of revisions, and
+    a sample line so we can infer how the source file was processed.
+    """
+    Budget = workflow_models["Budget"]
+    BudgetLine = workflow_models["BudgetLine"]
+    BudgetRevision = workflow_models["BudgetRevision"]
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=2027).first()
+    if not budget:
+        return jsonify({"error": f"No 2027 budget for entity {entity_code}"}), 404
+
+    # Column population: how many lines have non-zero/non-null in each numeric column.
+    cols = ["prior_year", "ytd_actual", "ytd_budget", "current_budget",
+            "accrual_adj", "unpaid_bills", "increase_pct", "proposed_budget",
+            "estimate_override", "forecast_override", "fa_override_value"]
+    col_filled = {}
+    for c in cols:
+        # count rows where col is non-null and non-zero (or just non-null for nullable cols)
+        if c in ("estimate_override", "forecast_override", "fa_override_value"):
+            res = db.session.execute(
+                db.text(f"SELECT COUNT(*) FROM budget_lines WHERE budget_id = :bid AND {c} IS NOT NULL"),
+                {"bid": budget.id},
+            ).scalar()
+        else:
+            res = db.session.execute(
+                db.text(f"SELECT COUNT(*) FROM budget_lines WHERE budget_id = :bid AND ABS(COALESCE({c}, 0)) > 0.005"),
+                {"bid": budget.id},
+            ).scalar()
+        col_filled[c] = int(res or 0)
+
+    # Distinct revision sources + actions for this budget
+    rev_summary = db.session.execute(db.text("""
+        SELECT action, source, COUNT(*) as cnt,
+               MIN(created_at) as first_at, MAX(created_at) as last_at
+          FROM budget_revisions
+         WHERE budget_id = :bid
+         GROUP BY action, source
+         ORDER BY cnt DESC
+    """), {"bid": budget.id}).fetchall()
+
+    # 3 sample lines: pick income, expense, payroll
+    sample_lines = db.session.execute(db.text("""
+        SELECT gl_code, description, sheet_name, category,
+               prior_year, ytd_actual, ytd_budget, current_budget,
+               accrual_adj, unpaid_bills, increase_pct, proposed_budget,
+               estimate_override, forecast_override, notes
+          FROM budget_lines
+         WHERE budget_id = :bid
+         ORDER BY sheet_name, row_num
+         LIMIT 5
+    """), {"bid": budget.id}).fetchall()
+
+    # Total line count + counts by sheet
+    sheet_counts = db.session.execute(db.text("""
+        SELECT sheet_name, COUNT(*) as cnt
+          FROM budget_lines WHERE budget_id = :bid
+         GROUP BY sheet_name ORDER BY cnt DESC
+    """), {"bid": budget.id}).fetchall()
+
+    return jsonify({
+        "entity_code": entity_code,
+        "budget_id": budget.id,
+        "year": budget.year,
+        "wizard_step": budget.wizard_step,
+        "wizard_completed_at": budget.wizard_completed_at.isoformat() if budget.wizard_completed_at else None,
+        "status": budget.status,
+        "total_lines": sum(s[1] for s in sheet_counts),
+        "lines_by_sheet": [{"sheet_name": s[0], "count": s[1]} for s in sheet_counts],
+        "column_population": col_filled,
+        "revisions_grouped": [
+            {"action": r[0], "source": r[1], "count": r[2],
+             "first_at": r[3].isoformat() if r[3] else None,
+             "last_at": r[4].isoformat() if r[4] else None}
+            for r in rev_summary
+        ],
+        "sample_lines": [
+            {"gl_code": l[0], "description": l[1], "sheet_name": l[2], "category": l[3],
+             "prior_year": l[4], "ytd_actual": l[5], "ytd_budget": l[6], "current_budget": l[7],
+             "accrual_adj": l[8], "unpaid_bills": l[9], "increase_pct": l[10],
+             "proposed_budget": l[11], "estimate_override": l[12], "forecast_override": l[13],
+             "notes": l[14]}
+            for l in sample_lines
+        ],
+    })
+
+
 @app.route("/api/admin/upload-audit", methods=["GET"])
 def admin_upload_audit():
     """Read-only audit summary for the 4/7-ish window: counts revisions and
