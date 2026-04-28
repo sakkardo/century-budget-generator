@@ -5999,19 +5999,15 @@ def admin_move_approved_budgets():
     listing = _graph_get(f"drives/{drive_id}/root:/{flat_encoded}:/children")
     files = [it for it in listing.get("value", []) if "folder" not in it]
 
-    # 2. Cache entity folders -> item_id (one query per unique entity).
+    # 2. Bulk-list all entity subfolders under 2027 Budget/ in one Graph call.
+    parent_listing = _graph_get(f"drives/{drive_id}/root:/{urllib.parse.quote(SHAREPOINT_2027_FOLDER_PATH, safe='/')}:/children")
     entity_folder_cache = {}
+    for it in parent_listing.get("value", []):
+        if "folder" in it:
+            entity_folder_cache[it.get("name")] = it.get("id")
 
     def get_entity_folder_id(ec):
-        if ec in entity_folder_cache:
-            return entity_folder_cache[ec]
-        path = SHAREPOINT_2027_FOLDER_PATH + "/" + ec
-        try:
-            fid = _sharepoint_get_item_id_for_path(path)
-        except Exception:
-            fid = None
-        entity_folder_cache[ec] = fid
-        return fid
+        return entity_folder_cache.get(ec)
 
     # 3. For each file, find its target entity folder.
     plan = {"would_move": [], "no_match": [], "errors": []}
