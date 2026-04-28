@@ -5855,6 +5855,96 @@ def admin_entity_trace(entity_code):
     })
 
 
+
+@app.route("/api/admin/wipe-entity-data", methods=["POST"])
+def admin_wipe_entity_data():
+    """ADMIN: Wipe budget_lines + budget_revisions + budget_summary_rows for the
+    given entities (year=BUDGET_YEAR), and reset their Budget row state to Setup.
+
+    Body: {"entity_codes": ["123","204","212","733"], "confirm": "WIPE"}
+
+    Does NOT touch SharePoint files or Monday.com state. Idempotent — re-running
+    on a clean entity is a no-op.
+    """
+    Budget = workflow_models["Budget"]
+    BudgetLine = workflow_models["BudgetLine"]
+    BudgetRevision = workflow_models["BudgetRevision"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+
+    data = request.get_json() or {}
+    entity_codes = data.get("entity_codes") or []
+    confirm = data.get("confirm")
+
+    if not isinstance(entity_codes, list) or not entity_codes:
+        return jsonify({"error": "entity_codes (non-empty list) required"}), 400
+    if confirm != "WIPE":
+        return jsonify({"error": "confirm must equal \"WIPE\""}), 400
+
+    from workflow import BUDGET_YEAR as _BY
+    summary = {"entities": [], "lines_deleted": 0, "revisions_deleted": 0,
+               "summary_rows_deleted": 0, "budgets_reset": 0}
+
+    try:
+        for ec in entity_codes:
+            ec = str(ec).strip()
+            if not ec:
+                continue
+            budget = Budget.query.filter_by(entity_code=ec, year=_BY).first()
+            entity_record = {"entity_code": ec, "found": bool(budget)}
+            if not budget:
+                summary["entities"].append(entity_record)
+                continue
+
+            # Count + delete budget_lines
+            line_count = BudgetLine.query.filter_by(budget_id=budget.id).count()
+            BudgetLine.query.filter_by(budget_id=budget.id).delete()
+
+            # Count + delete budget_revisions
+            rev_count = BudgetRevision.query.filter_by(budget_id=budget.id).count()
+            BudgetRevision.query.filter_by(budget_id=budget.id).delete()
+
+            # Count + delete budget_summary_rows (these can be re-imported from SharePoint)
+            sum_count = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).count()
+            BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).delete()
+
+            # Reset Budget row state
+            budget.status = "not_started"
+            budget.wizard_step = 0
+            budget.wizard_completed_at = None
+            budget.assumptions_json = "{}"
+            budget.assumptions_history_json = None
+            budget.approved_by = None
+            budget.approved_at = None
+            budget.fa_notes = ""
+            budget.ar_notes = ""
+            budget.increase_pct = None
+            budget.effective_date = None
+            budget.initiated_by = None
+            budget.initiated_at = None
+            budget.return_to_status = None
+            budget.pre_merge_snapshot_at = None if hasattr(budget, "pre_merge_snapshot_at") else None
+
+            entity_record.update({
+                "lines_deleted": line_count,
+                "revisions_deleted": rev_count,
+                "summary_rows_deleted": sum_count,
+                "budget_id": budget.id,
+                "reset_to": "Setup",
+            })
+            summary["entities"].append(entity_record)
+            summary["lines_deleted"] += line_count
+            summary["revisions_deleted"] += rev_count
+            summary["summary_rows_deleted"] += sum_count
+            summary["budgets_reset"] += 1
+
+        db.session.commit()
+        return jsonify({"ok": True, **summary})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("wipe-entity-data failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/admin/upload-audit", methods=["GET"])
 def admin_upload_audit():
     """Read-only audit summary for the 4/7-ish window: counts revisions and
