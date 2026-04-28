@@ -2520,14 +2520,33 @@ def create_workflow_blueprint(db):
                 "has_lines": bool(b.lines),
             })
 
-        # Load FA users and building assignments for FA selector
+        # Load FA users and building assignments for the selector.
+        # Only include FAs who have at least one assignment in an entity that
+        # has a Budget row for the current year (i.e., currently in the active
+        # Monday list, post-auto-create). Stale FAs from pre-filter syncs are
+        # excluded from the dropdown without deleting their data.
         fa_users = []
         assignments = []
         try:
-            fa_rows = User.query.filter_by(role="fa").order_by(User.name).all()
-            fa_users = [u.to_dict() for u in fa_rows]
-            assign_rows = BuildingAssignment.query.filter_by(role="fa").all()
+            active_entities = {b["entity_code"] for b in entity_list}
+            assign_rows = (
+                BuildingAssignment.query
+                .filter_by(role="fa")
+                .filter(BuildingAssignment.entity_code.in_(active_entities))
+                .all()
+                if active_entities else []
+            )
             assignments = [a.to_dict() for a in assign_rows]
+            active_user_ids = {a["user_id"] for a in assignments}
+            if active_user_ids:
+                fa_rows = (
+                    User.query
+                    .filter_by(role="fa")
+                    .filter(User.id.in_(active_user_ids))
+                    .order_by(User.name)
+                    .all()
+                )
+                fa_users = [u.to_dict() for u in fa_rows]
         except Exception:
             db.session.rollback()
 
