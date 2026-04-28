@@ -5463,6 +5463,154 @@ def _graph_get_drive_id():
 
 
 
+
+def _graph_post(path, body):
+    """POST JSON to Graph. Returns parsed JSON or raises RuntimeError with body."""
+    import urllib.request
+    token = _get_graph_token()
+    url = "https://graph.microsoft.com/v1.0/" + path.lstrip("/")
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.request.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8")[:600]
+        except Exception:
+            pass
+        raise RuntimeError(f"Graph {e.code} {e.reason} on POST {path}: {body_text}")
+
+
+def _sharepoint_create_folder(parent_path, name):
+    """Create a folder inside parent_path (relative to SP root). Fails on conflict.
+    Returns the created item dict, or raises RuntimeError if it already exists.
+    """
+    import urllib.parse
+    drive_id = _graph_get_drive_id()
+    encoded = urllib.parse.quote(parent_path, safe="/")
+    return _graph_post(
+        f"drives/{drive_id}/root:/{encoded}:/children",
+        {"name": name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
+    )
+
+
+def _sharepoint_entity_folder_exists(entity_code):
+    """True if 2027 Budget/<entity>/ already exists."""
+    import urllib.parse
+    drive_id = _graph_get_drive_id()
+    base = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code)
+    encoded = urllib.parse.quote(base, safe="/")
+    try:
+        _graph_get(f"drives/{drive_id}/root:/{encoded}:")
+        return True
+    except RuntimeError as e:
+        if "404" in str(e):
+            return False
+        raise
+
+
+def _sharepoint_ensure_entity_folder(entity_code):
+    """Ensure 2027 Budget/<entity>/Supporting Documents/ exists. Idempotent.
+    Returns dict describing what was created (or what already existed).
+    """
+    result = {"entity_code": str(entity_code), "created": [], "existed": []}
+    # 1. Entity folder
+    if _sharepoint_entity_folder_exists(entity_code):
+        result["existed"].append(str(entity_code))
+    else:
+        _sharepoint_create_folder(SHAREPOINT_2027_FOLDER_PATH, str(entity_code))
+        result["created"].append(str(entity_code))
+    # 2. Supporting Documents subfolder
+    sub_parent = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code)
+    try:
+        _sharepoint_create_folder(sub_parent, "Supporting Documents")
+        result["created"].append(f"{entity_code}/Supporting Documents")
+    except RuntimeError as e:
+        if "409" in str(e) or "nameAlreadyExists" in str(e):
+            result["existed"].append(f"{entity_code}/Supporting Documents")
+        else:
+            raise
+    return result
+
+
+@app.route("/api/sharepoint/_create-folders", methods=["POST", "GET"])
+def sharepoint_create_folders():
+    """ADMIN: ensure entity folders + Supporting Documents subfolders exist on
+    SharePoint for entities that have a Budget row for the current year.
+
+    Query params:
+      limit=N    — only create up to N new entity folders this run (default 10)
+      dry_run=1  — list what would be created without touching SharePoint
+    Skips entities whose top-level folder already exists.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    try:
+        limit = int(request.args.get("limit", "10"))
+    except ValueError:
+        limit = 10
+    dry_run = request.args.get("dry_run") in ("1", "true", "yes")
+
+    rows = (db.session.query(Budget.entity_code)
+            .filter_by(year=_BY)
+            .order_by(Budget.entity_code)
+            .all())
+    all_entities = [r[0] for r in rows]
+
+    summary = {
+        "limit": limit,
+        "dry_run": dry_run,
+        "year": _BY,
+        "total_budget_entities": len(all_entities),
+        "skipped_existing": [],
+        "created": [],
+        "errors": [],
+        "remaining_after_run": 0,
+    }
+
+    created_count = 0
+    missing_entities = []
+    try:
+        # First pass: figure out which entities are missing a folder.
+        for ec in all_entities:
+            if _sharepoint_entity_folder_exists(ec):
+                summary["skipped_existing"].append(ec)
+            else:
+                missing_entities.append(ec)
+        summary["total_missing"] = len(missing_entities)
+
+        if dry_run:
+            summary["would_create"] = missing_entities[:limit]
+            return jsonify(summary)
+
+        # Second pass: create up to `limit` of the missing ones.
+        for ec in missing_entities:
+            if created_count >= limit:
+                break
+            try:
+                r = _sharepoint_ensure_entity_folder(ec)
+                summary["created"].append(r)
+                created_count += 1
+            except Exception as e:
+                summary["errors"].append({"entity_code": ec, "error": str(e)})
+        summary["remaining_after_run"] = max(0, len(missing_entities) - created_count)
+    except Exception as e:
+        summary["fatal_error"] = str(e)
+        return jsonify(summary), 500
+
+    return jsonify(summary)
+
+
 @app.route("/api/sharepoint/_token-info", methods=["GET"])
 def sharepoint_token_info():
     """DEBUG: decode the Graph access token and show its key claims (no secrets)."""
