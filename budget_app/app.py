@@ -5937,6 +5937,136 @@ def wizard_use_approved_budget(entity_code):
     })
 
 
+
+def _sharepoint_get_item_id_for_path(path):
+    """Resolve a folder path (relative to drive root) to its drive-item id."""
+    import urllib.parse
+    drive_id = _graph_get_drive_id()
+    encoded = urllib.parse.quote(path, safe="/")
+    meta = _graph_get(f"drives/{drive_id}/root:/{encoded}:")
+    return meta.get("id")
+
+
+def _graph_patch(path, body):
+    """PATCH JSON to Graph. Used here for moving items via parentReference."""
+    import urllib.request
+    token = _get_graph_token()
+    url = "https://graph.microsoft.com/v1.0/" + path.lstrip("/")
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="PATCH",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.request.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8")[:600]
+        except Exception:
+            pass
+        raise RuntimeError(f"Graph {e.code} {e.reason} on PATCH {path}: {body_text}")
+
+
+@app.route("/api/admin/move-approved-budgets", methods=["POST", "GET"])
+def admin_move_approved_budgets():
+    """Move every file in the flat \"2026 budget approved budgets only/\" folder
+    into its matching <entity>/ folder, based on the entity_code prefix in the
+    filename.
+
+    Query params:
+      dry_run=1  — list what would move without touching anything (default 1)
+      confirm=MOVE — required to actually move
+    """
+    import re
+    import urllib.parse
+    dry_run = request.args.get("dry_run") not in ("0", "false", "no")
+    confirm = request.args.get("confirm")
+    if not dry_run and confirm != "MOVE":
+        return jsonify({"error": "confirm=MOVE required to actually move (or omit dry_run for default dry_run=1)"}), 400
+
+    drive_id = _graph_get_drive_id()
+    flat_folder = SHAREPOINT_APPROVED_BUDGETS_PATH
+    flat_encoded = urllib.parse.quote(flat_folder, safe="/")
+
+    # 1. List files in the flat folder.
+    listing = _graph_get(f"drives/{drive_id}/root:/{flat_encoded}:/children")
+    files = [it for it in listing.get("value", []) if "folder" not in it]
+
+    # 2. Cache entity folders -> item_id (one query per unique entity).
+    entity_folder_cache = {}
+
+    def get_entity_folder_id(ec):
+        if ec in entity_folder_cache:
+            return entity_folder_cache[ec]
+        path = SHAREPOINT_2027_FOLDER_PATH + "/" + ec
+        try:
+            fid = _sharepoint_get_item_id_for_path(path)
+        except Exception:
+            fid = None
+        entity_folder_cache[ec] = fid
+        return fid
+
+    # 3. For each file, find its target entity folder.
+    plan = {"would_move": [], "no_match": [], "errors": []}
+    entity_pattern = re.compile(r"^(\d{2,4})(?:\D|$)")
+    for f in files:
+        name = f.get("name", "")
+        m = entity_pattern.match(name)
+        if not m:
+            plan["no_match"].append({"name": name, "reason": "filename does not start with 2-4 digit entity code"})
+            continue
+        ec = m.group(1)
+        target_folder_id = get_entity_folder_id(ec)
+        if not target_folder_id:
+            plan["no_match"].append({"name": name, "entity_code": ec, "reason": f"entity folder {ec}/ does not exist"})
+            continue
+        plan["would_move"].append({
+            "name": name,
+            "entity_code": ec,
+            "from": flat_folder,
+            "to": SHAREPOINT_2027_FOLDER_PATH + "/" + ec,
+            "item_id": f.get("id"),
+            "target_folder_id": target_folder_id,
+        })
+
+    plan["count_would_move"] = len(plan["would_move"])
+    plan["count_no_match"] = len(plan["no_match"])
+    plan["dry_run"] = dry_run
+
+    if dry_run:
+        return jsonify(plan)
+
+    # 4. Execute moves.
+    moved = []
+    failed = []
+    for entry in plan["would_move"]:
+        try:
+            _graph_patch(
+                f"drives/{drive_id}/items/{entry['item_id']}",
+                {"parentReference": {"id": entry["target_folder_id"]}},
+            )
+            moved.append(entry)
+        except Exception as e:
+            entry["error"] = str(e)
+            failed.append(entry)
+    return jsonify({
+        "dry_run": False,
+        "moved_count": len(moved),
+        "failed_count": len(failed),
+        "no_match_count": len(plan["no_match"]),
+        "moved_sample": moved[:5],
+        "failed": failed,
+        "no_match": plan["no_match"],
+    })
+
+
 @app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
 def wizard_sharepoint_sources(entity_code):
     """Read-only: return what's in this entity\'s SharePoint Supporting
