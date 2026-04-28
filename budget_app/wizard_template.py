@@ -1467,7 +1467,8 @@ function useApprovedBudget(itemId, filename) {
     .then(function (r) { return r.json(); })
     .then(function (data) {
       if (data.ok) {
-        loadApprovedBudgetFiles();  // refresh to show selected state
+        if (data.selections) { _wizardSelections = data.selections; }
+        loadApprovedBudgetFiles();
       } else {
         alert("Selection failed: " + (data.error || "unknown error"));
       }
@@ -1587,8 +1588,10 @@ function useSharepointFile(sourceType, itemId, filename) {
     .then(function (r) { return r.json(); })
     .then(function (data) {
       if (data.ok) {
-        loadSharepointSources();   // refresh to show selected state
-        loadApprovedBudgetFiles(); // also refresh approved budget panel (in case)
+        // Refresh selections cache first, then re-render panels to reflect new state.
+        if (data.selections) { _wizardSelections = data.selections; }
+        loadSharepointSources();
+        loadApprovedBudgetFiles();
       } else {
         alert("Selection failed: " + (data.error || "unknown"));
       }
