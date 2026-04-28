@@ -5089,7 +5089,9 @@ function renderBudgets(budgets) {
 
   budgets.forEach(b => {
     const tr = document.createElement('tr');
-    const statusLabel = formatStatus(b.status);
+    // Display lifecycle stage if present (new vocabulary), fall back to legacy status label.
+    // Pill color still keyed off status so existing CSS classes apply unchanged.
+    const statusLabel = b.lifecycle_stage || formatStatus(b.status);
     const statusClass = `pill-${b.status}`;
 
     // Data completeness - compact inline format
