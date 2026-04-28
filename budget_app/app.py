@@ -5456,6 +5456,33 @@ def _graph_get_drive_id():
     return data.get("id")
 
 
+
+@app.route("/api/sharepoint/_token-info", methods=["GET"])
+def sharepoint_token_info():
+    """DEBUG: decode the Graph access token and show its key claims (no secrets)."""
+    try:
+        import base64
+        token = _get_graph_token()
+        # JWT: header.payload.signature — decode payload (middle segment)
+        parts = token.split(".")
+        if len(parts) < 2:
+            return jsonify({"error": "token is not a JWT"}), 500
+        pad = "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + pad).decode("utf-8"))
+        return jsonify({
+            "aud": payload.get("aud"),
+            "iss": payload.get("iss"),
+            "appid": payload.get("appid"),
+            "tid": payload.get("tid"),
+            "roles": payload.get("roles", []),
+            "scp": payload.get("scp"),
+            "idtyp": payload.get("idtyp"),
+            "exp": payload.get("exp"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/sharepoint/explore", methods=["GET"])
 def sharepoint_explore():
     """Walk the 2027 Budget folder and return one level of structure.
