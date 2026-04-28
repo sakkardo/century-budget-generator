@@ -5438,8 +5438,16 @@ def _graph_get(path, params=None):
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.request.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")[:600]
+        except Exception:
+            pass
+        raise RuntimeError(f"Graph {e.code} {e.reason} on {path}: {body}")
 
 
 def _graph_get_drive_id():
