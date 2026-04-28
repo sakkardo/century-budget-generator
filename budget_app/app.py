@@ -54,6 +54,30 @@ try:
 except ImportError:
     from budget_app.workflow import create_workflow_blueprint
 workflow_bp, workflow_models, workflow_helpers = create_workflow_blueprint(db)
+
+# ─── One-time idempotent migrations ──────────────────────────────────────
+# PostgreSQL supports ADD COLUMN IF NOT EXISTS — safe to run on every boot.
+# Add new columns here when the model gains a field; remove the migration
+# once the column is verified across all environments.
+def _run_idempotent_migrations():
+    """Run additive schema migrations that are safe to retry."""
+    statements = [
+        "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS wizard_selections_json TEXT",
+    ]
+    with app.app_context():
+        for stmt in statements:
+            try:
+                db.session.execute(db.text(stmt))
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Migration skipped or failed (non-fatal): {stmt} :: {e}")
+
+try:
+    _run_idempotent_migrations()
+except Exception as e:
+    logger.warning(f"Idempotent migration runner errored (non-fatal): {e}")
+
 app.register_blueprint(workflow_bp)
 
 # Register audited financials blueprint
@@ -5722,31 +5746,84 @@ def _sharepoint_download_item(item_id):
 
 @app.route("/api/wizard/<entity_code>/use-sp-source", methods=["POST"])
 def wizard_use_sp_source(entity_code):
-    """STAGED — read-only at this stage.
-
-    Confirms FA picked a SharePoint file as their source for a slot, downloads
-    it (to verify retrieval works) and returns metadata. Does NOT yet feed the
-    file into the budget pipeline — that wiring is the next chunk of work.
+    """Stage a SharePoint file as the FA-selected source for a slot.
+    Does NOT download or parse — just records the selection in
+    Budget.wizard_selections_json. Build Budget at Step 5 is what actually
+    downloads and parses.
     """
+    return _wizard_record_selection(entity_code, source_label_default=None)
+
+
+def _wizard_record_selection(entity_code, source_label_default=None):
+    """Record an FA file-selection into Budget.wizard_selections_json.
+
+    Body: {
+        source_type: "ysl"|"expense_distribution"|"ap_aging"|"maint_proof"|"approved_2026",
+        item_id: "<sharepoint drive item id>",
+        filename: "<optional, for display only>"
+    }
+    Returns the updated selections dict.
+    """
+    from datetime import datetime as _dt
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
     data = request.get_json() or {}
-    source_type = (data.get("source_type") or "").strip()
+    source_type = (data.get("source_type") or source_label_default or "").strip()
     item_id = (data.get("item_id") or "").strip()
+    filename = (data.get("filename") or "").strip()
     if not source_type or not item_id:
         return jsonify({"error": "source_type and item_id required"}), 400
+
+    valid_sources = {"ysl", "expense_distribution", "ap_aging", "maint_proof", "approved_2026"}
+    if source_type not in valid_sources:
+        return jsonify({"error": f"source_type must be one of {sorted(valid_sources)}"}), 400
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code} year {_BY}"}), 404
+
     try:
-        filename, file_bytes = _sharepoint_download_item(item_id)
-    except Exception as e:
-        logger.error(f"SP download failed for item {item_id}: {e}")
-        return jsonify({"error": f"Download from SharePoint failed: {e}"}), 500
-    return jsonify({
-        "success": True,
-        "stage": "downloaded_only",
-        "entity_code": entity_code,
-        "source_type": source_type,
+        current = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        current = {}
+    current[source_type] = {
+        "item_id": item_id,
         "filename": filename,
-        "size_bytes": len(file_bytes),
-        "next_step": "Backend pipeline wiring is pending — file bytes were fetched but not parsed. Add to the wizard build step.",
-    })
+        "selected_at": _dt.utcnow().isoformat(),
+        "source": "sharepoint",
+    }
+    budget.wizard_selections_json = json.dumps(current)
+    db.session.commit()
+    return jsonify({"ok": True, "entity_code": entity_code, "selections": current})
+
+
+@app.route("/api/wizard/<entity_code>/selections", methods=["GET"])
+def wizard_get_selections(entity_code):
+    """Return the current FA selections for this entity."""
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+    try:
+        sels = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        sels = {}
+    return jsonify({"entity_code": entity_code, "selections": sels})
+
+
+@app.route("/api/wizard/<entity_code>/selections", methods=["DELETE"])
+def wizard_clear_selections(entity_code):
+    """Clear all FA selections for this entity (Discard build, before Build Budget click)."""
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+    budget.wizard_selections_json = None
+    db.session.commit()
+    return jsonify({"ok": True, "entity_code": entity_code, "selections": {}})
 
 
 
@@ -5820,162 +5897,20 @@ def wizard_approved_budget_files(entity_code):
 
 @app.route("/api/wizard/<entity_code>/use-approved-budget", methods=["POST"])
 def wizard_use_approved_budget(entity_code):
-    """FA confirms a 2026 Approved Budget Excel file from SharePoint.
-    Downloads → parses with budget_summary_parser → extracts Col 1 + Col 6
-    → enriches with GL prefix map → upserts into budget_summary_rows.
-
-    Body: {"item_id": "<sharepoint drive item id>"}
+    """Stage a 2026 Approved Budget file from SharePoint. Same staging-only
+    semantics as use-sp-source — actual import happens at Build Budget time.
     """
+    # Force source_type = approved_2026 regardless of body (this endpoint is dedicated)
     data = request.get_json() or {}
-    item_id = (data.get("item_id") or "").strip()
-    if not item_id:
-        return jsonify({"error": "item_id required"}), 400
-
-    # Download the file from SharePoint
-    try:
-        filename, file_bytes = _sharepoint_download_item(item_id)
-    except Exception as e:
-        logger.error(f"SP download failed for item {item_id}: {e}")
-        return jsonify({"error": f"Download from SharePoint failed: {e}"}), 500
-
-    # Parse + extract + enrich. Imports are deferred so the route still loads
-    # if budget_summary parsers fail to import for any reason.
-    import tempfile
-    from pathlib import Path
-    import sys
-    bs_path = str(Path(__file__).resolve().parent.parent / "budget_summary")
-    if bs_path not in sys.path:
-        sys.path.insert(0, bs_path)
-    try:
-        from budget_summary_parser import parse_yrlycomp
-        from batch_import import extract_importable_data, enrich_with_gl_map
-    except Exception as e:
-        logger.exception("Failed to import budget_summary parsers")
-        return jsonify({"error": f"Parser import failed: {e}"}), 500
-
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-        parsed = parse_yrlycomp(tmp_path)
-        if "error" in parsed:
-            return jsonify({"error": f"Parse failed: {parsed['error']}", "filename": filename}), 500
-        imported = extract_importable_data(parsed)
-        if "error" in imported:
-            return jsonify({"error": f"Extract failed: {imported['error']}", "filename": filename}), 500
-        enriched = enrich_with_gl_map(imported)
-    except Exception as e:
-        logger.exception("Approved budget parse pipeline failed")
-        return jsonify({"error": f"Parse pipeline failed: {e}", "filename": filename}), 500
-
-    # Upsert into budget_summary_rows using the same logic as /api/summary/import.
-    Budget = workflow_models["Budget"]
-    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
-    from workflow import BUDGET_YEAR as _BY, apply_summary_prefix_override
-    import json as _json
-    from datetime import datetime as _dt
-
-    # Ensure Budget row exists (it should, from Monday sync, but belt + suspenders)
-    if not Budget.query.filter_by(entity_code=entity_code, year=_BY).first():
-        db.session.add(Budget(
-            entity_code=entity_code,
-            building_name=enriched.get("building_name", "Unknown"),
-            year=_BY,
-            status="not_started",
-        ))
-        db.session.flush()
-
-    imported_count = 0
-    updated_count = 0
-    for i, row in enumerate(enriched.get("rows", [])):
-        display_order = row.get("display_order") or (i + 1)
-        existing = BudgetSummaryRow.query.filter_by(
-            entity_code=entity_code,
-            budget_year=_BY,
-            display_order=display_order,
-        ).first()
-        incoming_prefixes = row.get("gl_prefixes") or []
-        corrected_prefixes = apply_summary_prefix_override(row.get("label"), incoming_prefixes)
-        gl_pj = _json.dumps(corrected_prefixes) if corrected_prefixes else None
-        if existing:
-            existing.label = row["label"]
-            existing.section = row.get("section")
-            existing.row_type = row.get("row_type", "data")
-            existing.footnote_marker = row.get("footnote_marker")
-            existing.col1_prior_actual = row.get("col1_prior_actual")
-            existing.col6_approved_budget = row.get("col6_approved_budget")
-            existing.source_tab = row.get("source_tab") or existing.source_tab
-            existing.gl_prefixes_json = gl_pj or existing.gl_prefixes_json
-            existing.source_file = filename or existing.source_file
-            existing.updated_at = _dt.utcnow()
-            updated_count += 1
-        else:
-            db.session.add(BudgetSummaryRow(
-                entity_code=entity_code,
-                budget_year=_BY,
-                display_order=display_order,
-                label=row["label"],
-                section=row.get("section"),
-                row_type=row.get("row_type", "data"),
-                footnote_marker=row.get("footnote_marker"),
-                col1_prior_actual=row.get("col1_prior_actual"),
-                col6_approved_budget=row.get("col6_approved_budget"),
-                col7_proposed_budget=None,
-                source_tab=row.get("source_tab"),
-                gl_prefixes_json=gl_pj,
-                source_file=filename,
-            ))
-            imported_count += 1
-    db.session.commit()
-
-    return jsonify({
-        "ok": True,
-        "entity_code": entity_code,
-        "filename": filename,
-        "size_bytes": len(file_bytes),
-        "rows_imported": imported_count,
-        "rows_updated": updated_count,
-        "total_rows": imported_count + updated_count,
-        "stats": enriched.get("stats", {}),
-    })
-
-
-
-def _sharepoint_get_item_id_for_path(path):
-    """Resolve a folder path (relative to drive root) to its drive-item id."""
-    import urllib.parse
-    drive_id = _graph_get_drive_id()
-    encoded = urllib.parse.quote(path, safe="/")
-    meta = _graph_get(f"drives/{drive_id}/root:/{encoded}:")
-    return meta.get("id")
-
-
-def _graph_patch(path, body):
-    """PATCH JSON to Graph. Used here for moving items via parentReference."""
-    import urllib.request
-    token = _get_graph_token()
-    url = "https://graph.microsoft.com/v1.0/" + path.lstrip("/")
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        method="PATCH",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.request.HTTPError as e:
-        body_text = ""
-        try:
-            body_text = e.read().decode("utf-8")[:600]
-        except Exception:
-            pass
-        raise RuntimeError(f"Graph {e.code} {e.reason} on PATCH {path}: {body_text}")
-
+    data["source_type"] = "approved_2026"
+    # Patch request to ensure source_type is set before _wizard_record_selection reads it
+    from flask import g as _g
+    _g.__forced_payload = data
+    # Inject via a small monkey-patch: re-build the request body.
+    # Simpler: just call _wizard_record_selection directly — it reads request.get_json().
+    # We need to re-set the request payload — but Flask doesn\'t let us mutate it.
+    # Workaround: pass via closure. _wizard_record_selection accepts a default.
+    return _wizard_record_selection(entity_code, source_label_default="approved_2026")
 
 @app.route("/api/admin/move-approved-budgets", methods=["POST", "GET"])
 def admin_move_approved_budgets():

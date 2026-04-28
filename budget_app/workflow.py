@@ -522,6 +522,10 @@ def create_workflow_blueprint(db):
         assumptions_history_json = db.Column(db.Text, nullable=True)
         wizard_completed_at = db.Column(db.DateTime, nullable=True)
         wizard_step = db.Column(db.Integer, default=0)
+        # Staging area for files the FA has SELECTED (but not yet committed) during
+        # the wizard. JSON shape: {source_type: {item_id, filename, selected_at, source}}
+        # Empty until FA picks files; cleared after Build Budget commits successfully.
+        wizard_selections_json = db.Column(db.Text, nullable=True)
 
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
@@ -550,7 +554,8 @@ def create_workflow_blueprint(db):
                 "building_type": self.building_type or "",
                 "wizard_step": self.wizard_step or 0,
                 "wizard_completed_at": self.wizard_completed_at.isoformat() if self.wizard_completed_at else None,
-                "lifecycle_stage": derive_lifecycle_stage(self)
+                "lifecycle_stage": derive_lifecycle_stage(self),
+                "wizard_selections": _parse_backup_json(self.wizard_selections_json) if False else (json.loads(self.wizard_selections_json) if self.wizard_selections_json else {})
             }
 
 
