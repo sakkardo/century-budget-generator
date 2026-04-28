@@ -2498,11 +2498,12 @@ def create_workflow_blueprint(db):
         """Render the Budget Wizard gate page."""
         import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
-        from app import load_portfolio_defaults, load_building_assumptions, _ensure_monday_fresh
+        from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
 
-        # Auto-refresh FA/building assignments from Monday.com if stale (10-min TTL).
-        # Never raises — falls back to existing data with a banner if Monday is down.
-        monday_status = _ensure_monday_fresh()
+        # Read-only snapshot of last Monday sync. Auto-sync (if stale) is
+        # triggered by the client after the page renders — keeps the wizard
+        # fast and avoids cross-blueprint app-context issues.
+        monday_status = _get_monday_status()
 
         budgets_db = Budget.query.filter_by(year=BUDGET_YEAR).all()
 

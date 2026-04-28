@@ -1149,6 +1149,37 @@ function initializeData() {
     });
   }
   renderMondaySyncStatus();
+  maybeAutoSyncMonday();
+}
+
+// If the cached Monday sync is missing or older than the TTL, kick off a
+// silent refresh in the background and reload on success. Failures fall
+// through quietly — the banner already explains the state.
+function maybeAutoSyncMonday() {
+  if (!mondayStatus) return;
+  const ttlMin = mondayStatus.stale_minutes || 10;
+  let isStale = true;
+  if (mondayStatus.last_synced_at) {
+    const iso = mondayStatus.last_synced_at;
+    const dt = new Date(iso.endsWith('Z') ? iso : (iso + 'Z'));
+    const minsAgo = Math.max(0, (Date.now() - dt.getTime()) / 60000);
+    isStale = minsAgo > ttlMin;
+  }
+  if (!isStale) return;
+  // Avoid re-firing on rapid back-to-back loads
+  try {
+    const last = parseInt(sessionStorage.getItem('mondayAutoSyncFiredAt') || '0', 10);
+    if (last && (Date.now() - last) < 60000) return;
+    sessionStorage.setItem('mondayAutoSyncFiredAt', String(Date.now()));
+  } catch (e) {}
+  fetch('/api/sync-monday-now', { method: 'POST' })
+    .then(r => r.json().then(data => ({ ok: r.ok, data: data })))
+    .then(res => {
+      if (res.ok && res.data && res.data.ok) {
+        location.reload();
+      }
+    })
+    .catch(() => { /* silent — user can still use the page */ });
 }
 
 // Render Monday.com sync timestamp + error banner

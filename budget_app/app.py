@@ -2202,6 +2202,17 @@ def _apply_monday_sync(data):
     return stats
 
 
+def _get_monday_status():
+    """Read-only snapshot of last sync state. Does not touch the DB or network.
+    Safe to call from any request handler regardless of blueprint/app context.
+    """
+    return {
+        "last_synced_at": _LAST_MONDAY_SYNC_AT.isoformat() if _LAST_MONDAY_SYNC_AT else None,
+        "error": _LAST_MONDAY_SYNC_ERROR,
+        "stale_minutes": MONDAY_STALE_MINUTES,
+    }
+
+
 def _ensure_monday_fresh(stale_minutes=MONDAY_STALE_MINUTES, force=False):
     """Auto-sync from Monday.com if cached data is older than stale_minutes.
 
