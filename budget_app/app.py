@@ -2018,9 +2018,11 @@ def _fetch_monday_buildings():
 
     query = """{
       boards(ids: %s) {
+        groups { id title }
         items_page(limit: 500) {
           items {
             name
+            group { id title }
             column_values(ids: ["numeric", "numbers9", "pm8", "people", "text8", "text7", "text03", "status1"]) {
               id
               text
@@ -2052,7 +2054,23 @@ def _fetch_monday_buildings():
         logger.error(f"Monday.com API error: {e}")
         raise RuntimeError(f"Monday.com API error: {str(e)}")
 
-    items = result.get("data", {}).get("boards", [{}])[0].get("items_page", {}).get("items", [])
+    board0 = result.get("data", {}).get("boards", [{}])[0]
+    items = board0.get("items_page", {}).get("items", [])
+
+    # Only include items in the "Active Buildings (non-Lemle)" group.
+    # Match is case-insensitive on the trimmed title for resilience to capitalization changes.
+    ACTIVE_GROUP = "active buildings (non-lemle)"
+    all_titles = [g.get("title") for g in (board0.get("groups") or [])]
+    matched = [g for g in (board0.get("groups") or [])
+               if (g.get("title") or "").strip().lower() == ACTIVE_GROUP]
+    if not matched:
+        logger.warning(
+            f"Monday group '{ACTIVE_GROUP}' not found on board {MONDAY_BOARD_ID}. "
+            f"Available groups: {all_titles}. Returning ALL items as fallback."
+        )
+    else:
+        active_id = matched[0].get("id")
+        items = [it for it in items if (it.get("group") or {}).get("id") == active_id]
 
     buildings = []
     for item in items:
