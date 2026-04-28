@@ -2498,7 +2498,11 @@ def create_workflow_blueprint(db):
         """Render the Budget Wizard gate page."""
         import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
-        from app import load_portfolio_defaults, load_building_assumptions
+        from app import load_portfolio_defaults, load_building_assumptions, _ensure_monday_fresh
+
+        # Auto-refresh FA/building assignments from Monday.com if stale (10-min TTL).
+        # Never raises — falls back to existing data with a banner if Monday is down.
+        monday_status = _ensure_monday_fresh()
 
         budgets_db = Budget.query.filter_by(year=BUDGET_YEAR).all()
 
@@ -2548,6 +2552,7 @@ def create_workflow_blueprint(db):
             sources_json=json_mod.dumps(sources),
             fa_users_json=json_mod.dumps(fa_users),
             assignments_json=json_mod.dumps(assignments),
+            monday_status_json=json_mod.dumps(monday_status),
         )
 
 

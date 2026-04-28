@@ -956,14 +956,20 @@ header {
         <p class="step-description">Choose which building to create a budget for</p>
       </div>
 
+      <!-- Monday.com sync error banner (hidden unless sync failed) -->
+      <div id="mondaySyncBanner" style="display:none; padding:10px 14px; margin-bottom:12px; background:#fffbe6; border:1px solid #ffe58f; border-radius:6px; color:#874d00; font-size:13px;"></div>
+
       <!-- FA Selector -->
       <div class="fa-selector-wrapper" id="faSelectorWrapper" style="display:none;">
         <div class="fa-selector-label">Financial Analyst</div>
-        <div class="fa-selector-row">
+        <div class="fa-selector-row" style="display:flex; align-items:center; gap:12px;">
           <select id="faSelector" class="fa-select" onchange="filterByFA()">
             <option value="">All Entities</option>
           </select>
           <span class="fa-entity-count" id="faEntityCount"></span>
+          <span style="flex:1"></span>
+          <span class="monday-sync-status" id="mondaySyncStatus" style="font-size:12px; color:#666;">Last synced: —</span>
+          <button type="button" id="mondayRefreshBtn" onclick="refreshFromMonday()" style="font-size:12px; padding:5px 12px; border:1px solid #ddd; background:#fff; border-radius:4px; cursor:pointer;" title="Force a fresh pull from Monday.com Building Master List">↻ Refresh from Monday</button>
         </div>
       </div>
 
@@ -1113,6 +1119,7 @@ let sources = {};
 let faUsers = [];
 let faAssignments = [];
 let selectedFA = '';
+let mondayStatus = null;
 
 // Parse JSON from template variables
 function initializeData() {
@@ -1123,6 +1130,7 @@ function initializeData() {
     sources = JSON.parse({{ sources_json | tojson }});
     faUsers = JSON.parse({{ fa_users_json | tojson }});
     faAssignments = JSON.parse({{ assignments_json | tojson }});
+    mondayStatus = JSON.parse({{ monday_status_json | tojson }});
     selectedEntity = '{{ entity_code }}';
   } catch (e) {
     console.error('Error parsing template data:', e);
@@ -1140,6 +1148,53 @@ function initializeData() {
       sel.appendChild(opt);
     });
   }
+  renderMondaySyncStatus();
+}
+
+// Render Monday.com sync timestamp + error banner
+function renderMondaySyncStatus() {
+  const statusEl = document.getElementById('mondaySyncStatus');
+  if (statusEl) {
+    if (mondayStatus && mondayStatus.last_synced_at) {
+      const iso = mondayStatus.last_synced_at;
+      const dt = new Date(iso.endsWith('Z') ? iso : (iso + 'Z'));
+      const minsAgo = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 60000));
+      statusEl.textContent = minsAgo < 1
+        ? 'Just synced from Monday'
+        : ('Last synced: ' + minsAgo + ' min ago');
+    } else {
+      statusEl.textContent = 'Never synced from Monday';
+    }
+  }
+  const banner = document.getElementById('mondaySyncBanner');
+  if (banner) {
+    if (mondayStatus && mondayStatus.error) {
+      banner.textContent = 'Monday.com sync failed — showing the most recent cached assignments. ' + mondayStatus.error;
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+}
+
+function refreshFromMonday() {
+  const btn = document.getElementById('mondayRefreshBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refreshing...'; }
+  fetch('/api/sync-monday-now', { method: 'POST' })
+    .then(r => r.json().then(data => ({ ok: r.ok, data: data })))
+    .then(res => {
+      if (res.ok && res.data && res.data.ok) {
+        location.reload();
+      } else {
+        const msg = (res.data && res.data.error) ? res.data.error : 'Sync failed';
+        alert('Refresh failed: ' + msg);
+        if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh from Monday'; }
+      }
+    })
+    .catch(err => {
+      alert('Refresh failed: ' + err);
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh from Monday'; }
+    });
 }
 
 // Filter entities by selected FA

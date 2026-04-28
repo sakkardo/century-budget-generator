@@ -1995,16 +1995,27 @@ MONDAY_API_TOKEN = os.environ.get("MONDAY_API_TOKEN", "")
 MONDAY_BOARD_ID = "3473581362"  # Building Master List
 
 
-@app.route("/api/sync-monday-fetch", methods=["GET"])
-def sync_monday_fetch():
-    """Fetch buildings, PM/FA assignments from Monday.com Building Master List."""
+# ─── Monday.com sync helpers ─────────────────────────────────────────────
+# In-memory staleness signal. Resets on every Railway redeploy — by design,
+# so a deploy auto-refreshes Monday data on the first wizard hit.
+_LAST_MONDAY_SYNC_AT = None     # datetime of last successful sync
+_LAST_MONDAY_SYNC_ERROR = None  # str of last sync error, if any
+MONDAY_STALE_MINUTES = 10       # auto-resync threshold
+
+
+def _fetch_monday_buildings():
+    """Fetch buildings + PM/FA assignments from Monday.com Building Master List.
+
+    Returns: list[dict] with keys entity_code, building_name, address, city,
+             zip, type, units, pm, fa.
+    Raises: RuntimeError on missing token or API failure.
+    """
     if not MONDAY_API_TOKEN:
-        return jsonify({"error": "MONDAY_API_TOKEN not configured"}), 500
+        raise RuntimeError("MONDAY_API_TOKEN not configured")
 
     import urllib.request
     import ssl
 
-    # Pull entity#, address, city, zip, type, units, PM, FA for all active buildings
     query = """{
       boards(ids: %s) {
         items_page(limit: 500, query_params: {rules: [{column_id: "color", compare_value: [0], operator: any_of}]}) {
@@ -2029,12 +2040,7 @@ def sync_monday_fetch():
         },
     )
 
-    # Use default SSL context, fallback to unverified for local dev (macOS)
-    ctx = None
-    try:
-        ctx = ssl.create_default_context()
-    except Exception:
-        ctx = ssl.create_default_context()
+    ctx = ssl.create_default_context()
     if not IS_CLOUD:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -2044,7 +2050,7 @@ def sync_monday_fetch():
             result = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         logger.error(f"Monday.com API error: {e}")
-        return jsonify({"error": f"Monday.com API error: {str(e)}"}), 500
+        raise RuntimeError(f"Monday.com API error: {str(e)}")
 
     items = result.get("data", {}).get("boards", [{}])[0].get("items_page", {}).get("items", [])
 
@@ -2067,25 +2073,23 @@ def sync_monday_fetch():
             "fa": cols.get("people") or None,
         })
 
-    return jsonify({"buildings": buildings, "count": len(buildings)})
+    return buildings
 
 
-@app.route("/api/sync-monday", methods=["POST"])
-def sync_monday():
-    """
-    Sync users and building assignments from Monday.com Building Master List.
+def _apply_monday_sync(data):
+    """Apply a buildings list to the DB — upsert Users + BuildingAssignments,
+    and refresh buildings.csv. Commits the session.
 
-    Expects JSON array of buildings:
-    [{"entity_code": "204", "building_name": "...", "pm": "Name", "fa": "Name"}, ...]
-
-    Creates/updates User records and BuildingAssignment records.
+    Args:
+        data: list[dict] (same shape returned by _fetch_monday_buildings)
+    Returns:
+        dict of sync stats.
     """
     User = workflow_models["User"]
     BuildingAssignment = workflow_models["BuildingAssignment"]
 
-    data = request.get_json()
-    if not data or not isinstance(data, list):
-        return jsonify({"error": "Expected JSON array of buildings"}), 400
+    if not isinstance(data, list):
+        raise ValueError("_apply_monday_sync expects a list of building dicts")
 
     stats = {"users_created": 0, "users_updated": 0, "assignments_created": 0,
              "assignments_removed": 0, "buildings_synced": 0}
@@ -2102,20 +2106,16 @@ def sync_monday():
 
     # Ensure all people exist as users
     for name, roles in people.items():
-        # A person can be both PM and FA — use their primary role
         primary_role = "pm" if "pm" in roles else "fa"
 
         user = User.query.filter_by(name=name).first()
         if not user:
-            # Generate email from name: "Jacob Sirotkin" → "jsirotkin@centuryny.com"
             parts = name.lower().split()
             email_slug = parts[0][0] + parts[-1] if len(parts) > 1 else parts[0]
             email = f"{email_slug}@centuryny.com"
 
-            # Handle duplicates
             existing = User.query.filter_by(email=email).first()
             if existing:
-                # If same name, reuse; otherwise make unique
                 if existing.name == name:
                     user = existing
                 else:
@@ -2139,7 +2139,6 @@ def sync_monday():
         pm_name = (bldg.get("pm") or "").strip()
         fa_name = (bldg.get("fa") or "").strip()
 
-        # Remove stale assignments for this entity
         existing_assignments = BuildingAssignment.query.filter_by(entity_code=entity_code).all()
         for a in existing_assignments:
             should_keep = False
@@ -2153,7 +2152,6 @@ def sync_monday():
 
         db.session.flush()
 
-        # Create PM assignment
         if pm_name:
             pm_user = User.query.filter_by(name=pm_name).first()
             if pm_user:
@@ -2166,7 +2164,6 @@ def sync_monday():
                     ))
                     stats["assignments_created"] += 1
 
-        # Create FA assignment
         if fa_name:
             fa_user = User.query.filter_by(name=fa_name).first()
             if fa_user:
@@ -2202,8 +2199,116 @@ def sync_monday():
         save_buildings(csv_buildings)
         stats["buildings_csv_updated"] = len(csv_buildings)
 
+    return stats
+
+
+def _ensure_monday_fresh(stale_minutes=MONDAY_STALE_MINUTES, force=False):
+    """Auto-sync from Monday.com if cached data is older than stale_minutes.
+
+    Never raises — on failure, returns prior sync state with `error` set.
+    Safe to call from page-load handlers.
+
+    Args:
+        stale_minutes: TTL threshold; if last sync was within this window, skip.
+        force: if True, always sync regardless of TTL.
+    Returns:
+        dict: {synced, last_synced_at (ISO|None), error (str|None), stats|None}
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    global _LAST_MONDAY_SYNC_AT, _LAST_MONDAY_SYNC_ERROR
+    now = _dt.utcnow()
+    is_stale = (
+        force
+        or _LAST_MONDAY_SYNC_AT is None
+        or (now - _LAST_MONDAY_SYNC_AT) > _td(minutes=stale_minutes)
+    )
+    if not is_stale:
+        return {
+            "synced": False,
+            "last_synced_at": _LAST_MONDAY_SYNC_AT.isoformat() if _LAST_MONDAY_SYNC_AT else None,
+            "error": _LAST_MONDAY_SYNC_ERROR,
+            "stats": None,
+        }
+    try:
+        buildings = _fetch_monday_buildings()
+        stats = _apply_monday_sync(buildings)
+        _LAST_MONDAY_SYNC_AT = _dt.utcnow()
+        _LAST_MONDAY_SYNC_ERROR = None
+        logger.info(f"Monday.com auto-sync complete: {stats}")
+        return {
+            "synced": True,
+            "last_synced_at": _LAST_MONDAY_SYNC_AT.isoformat(),
+            "error": None,
+            "stats": stats,
+        }
+    except Exception as e:
+        _LAST_MONDAY_SYNC_ERROR = str(e)
+        logger.warning(f"Monday.com auto-sync failed (using stale data): {e}")
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return {
+            "synced": False,
+            "last_synced_at": _LAST_MONDAY_SYNC_AT.isoformat() if _LAST_MONDAY_SYNC_AT else None,
+            "error": _LAST_MONDAY_SYNC_ERROR,
+            "stats": None,
+        }
+
+
+# ─── Monday.com sync routes ──────────────────────────────────────────────
+
+@app.route("/api/sync-monday-fetch", methods=["GET"])
+def sync_monday_fetch():
+    """Fetch buildings + PM/FA assignments from Monday.com (read-only)."""
+    try:
+        buildings = _fetch_monday_buildings()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"buildings": buildings, "count": len(buildings)})
+
+
+@app.route("/api/sync-monday", methods=["POST"])
+def sync_monday():
+    """Apply a client-supplied buildings list to the DB.
+
+    Expects JSON array of buildings (same shape as /api/sync-monday-fetch returns).
+    """
+    from datetime import datetime as _dt
+    global _LAST_MONDAY_SYNC_AT, _LAST_MONDAY_SYNC_ERROR
+    data = request.get_json()
+    if not data or not isinstance(data, list):
+        return jsonify({"error": "Expected JSON array of buildings"}), 400
+    try:
+        stats = _apply_monday_sync(data)
+        _LAST_MONDAY_SYNC_AT = _dt.utcnow()
+        _LAST_MONDAY_SYNC_ERROR = None
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        _LAST_MONDAY_SYNC_ERROR = str(e)
+        logger.error(f"Monday.com sync failed: {e}")
+        return jsonify({"error": str(e)}), 500
     logger.info(f"Monday.com sync complete: {stats}")
-    return jsonify({"status": "ok", "stats": stats})
+    return jsonify({
+        "status": "ok",
+        "stats": stats,
+        "last_synced_at": _LAST_MONDAY_SYNC_AT.isoformat(),
+    })
+
+
+@app.route("/api/sync-monday-now", methods=["POST"])
+def sync_monday_now():
+    """One-call fetch + apply. Used by wizard's Refresh button.
+
+    Always forces a sync regardless of staleness.
+    """
+    result = _ensure_monday_fresh(force=True)
+    if result.get("error") and not result.get("synced"):
+        return jsonify({"ok": False, **result}), 500
+    return jsonify({"ok": True, **result})
 
 
 # Cache the template GL list
