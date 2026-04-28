@@ -5581,9 +5581,15 @@ def sharepoint_create_folders():
     created_count = 0
     missing_entities = []
     try:
-        # First pass: figure out which entities are missing a folder.
+        # Single Graph call to list ALL existing folders under 2027 Budget,
+        # then check membership in-memory. Avoids 143 sequential checks.
+        import urllib.parse
+        drive_id = _graph_get_drive_id()
+        encoded = urllib.parse.quote(SHAREPOINT_2027_FOLDER_PATH, safe="/")
+        listing = _graph_get(f"drives/{drive_id}/root:/{encoded}:/children")
+        existing_names = {it.get("name") for it in listing.get("value", []) if "folder" in it}
         for ec in all_entities:
-            if _sharepoint_entity_folder_exists(ec):
+            if str(ec) in existing_names:
                 summary["skipped_existing"].append(ec)
             else:
                 missing_entities.append(ec)
