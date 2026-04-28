@@ -2489,7 +2489,6 @@ HOME_TEMPLATE = r"""
     <a href="/" class="active">Home</a>
     <a href="/dashboard">FA Dashboard</a>
     <a href="/pm">PM Portal</a>
-    <a href="/generate">Generator</a>
     <a href="/audited-financials">Audited Financials</a>
     <a href="/files">Files</a>
   </div>

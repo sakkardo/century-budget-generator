@@ -4869,7 +4869,6 @@ DASHBOARD_TEMPLATE = r"""
     <a href="/wizard" class="nav-link" style="color:#f59e0b;font-weight:600;">⚡ Wizard</a>
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
 </nav>
@@ -5491,7 +5490,6 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/wizard" class="nav-link" style="color:#f59e0b;font-weight:600;">⚡ Wizard</a>
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
   <div class="breadcrumb">
@@ -14063,7 +14061,6 @@ PM_PORTAL_TEMPLATE = r"""
     <a href="/" class="nav-link">Home</a>
     <a href="/dashboard" class="nav-link">FA Dashboard</a>
     <a href="/pm" class="nav-link active">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
 </nav>
@@ -14570,7 +14567,6 @@ PM_EDIT_TEMPLATE = r"""
     <a href="/" class="nav-link">Home</a>
     <a href="/dashboard" class="nav-link">FA Dashboard</a>
     <a href="/pm" class="nav-link active">PM Portal</a>
-    <a href="/generate" class="nav-link">Generator</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
   </div>
 </nav>
