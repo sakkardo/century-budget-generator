@@ -5751,6 +5751,192 @@ def wizard_use_sp_source(entity_code):
 
 
 
+
+SHAREPOINT_APPROVED_BUDGETS_PATH = SHAREPOINT_2027_FOLDER_PATH + "/2026 budget approved budgets only"
+
+
+def _sharepoint_list_approved_budgets(entity_code):
+    """List 2026 Approved Budget Excel files matching the given entity_code.
+
+    Files live in a flat folder; filename pattern: <entity_code> ... Approved.xlsx
+    Match: filename starts with the entity_code followed by a non-digit character.
+
+    Returns list of dicts with name, web_url, size, last_modified, item_id.
+    Empty list if folder missing or no matches.
+    """
+    import urllib.parse
+    import re
+    try:
+        drive_id = _graph_get_drive_id()
+        encoded = urllib.parse.quote(SHAREPOINT_APPROVED_BUDGETS_PATH, safe="/")
+        listing = _graph_get(f"drives/{drive_id}/root:/{encoded}:/children")
+    except RuntimeError as e:
+        if "404" in str(e):
+            return []
+        raise
+
+    ec = str(entity_code)
+    pattern = re.compile(r"^" + re.escape(ec) + r"(?:\D|$)")
+    matches = []
+    for it in listing.get("value", []):
+        name = it.get("name", "")
+        if "folder" in it:
+            continue
+        if not pattern.match(name):
+            continue
+        if "approved" not in name.lower():
+            continue
+        matches.append({
+            "name": name,
+            "web_url": it.get("webUrl"),
+            "size": it.get("size"),
+            "last_modified": it.get("lastModifiedDateTime"),
+            "item_id": it.get("id"),
+        })
+    return matches
+
+
+@app.route("/api/wizard/<entity_code>/approved-budget-files", methods=["GET"])
+def wizard_approved_budget_files(entity_code):
+    """Read-only: list 2026 Approved Budget Excel files in SharePoint matching
+    the entity_code. Used by the wizard\'s Step 2 to surface what\'s available
+    for FA confirmation.
+    """
+    try:
+        files = _sharepoint_list_approved_budgets(entity_code)
+        return jsonify({
+            "entity_code": entity_code,
+            "folder_path": SHAREPOINT_APPROVED_BUDGETS_PATH,
+            "matches": files,
+            "count": len(files),
+        })
+    except Exception as e:
+        logger.error(f"approved-budget-files({entity_code}) failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wizard/<entity_code>/use-approved-budget", methods=["POST"])
+def wizard_use_approved_budget(entity_code):
+    """FA confirms a 2026 Approved Budget Excel file from SharePoint.
+    Downloads → parses with budget_summary_parser → extracts Col 1 + Col 6
+    → enriches with GL prefix map → upserts into budget_summary_rows.
+
+    Body: {"item_id": "<sharepoint drive item id>"}
+    """
+    data = request.get_json() or {}
+    item_id = (data.get("item_id") or "").strip()
+    if not item_id:
+        return jsonify({"error": "item_id required"}), 400
+
+    # Download the file from SharePoint
+    try:
+        filename, file_bytes = _sharepoint_download_item(item_id)
+    except Exception as e:
+        logger.error(f"SP download failed for item {item_id}: {e}")
+        return jsonify({"error": f"Download from SharePoint failed: {e}"}), 500
+
+    # Parse + extract + enrich. Imports are deferred so the route still loads
+    # if budget_summary parsers fail to import for any reason.
+    import tempfile
+    from pathlib import Path
+    import sys
+    bs_path = str(Path(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in sys.path:
+        sys.path.insert(0, bs_path)
+    try:
+        from budget_summary_parser import parse_yrlycomp
+        from batch_import import extract_importable_data, enrich_with_gl_map
+    except Exception as e:
+        logger.exception("Failed to import budget_summary parsers")
+        return jsonify({"error": f"Parser import failed: {e}"}), 500
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        parsed = parse_yrlycomp(tmp_path)
+        if "error" in parsed:
+            return jsonify({"error": f"Parse failed: {parsed['error']}", "filename": filename}), 500
+        imported = extract_importable_data(parsed)
+        if "error" in imported:
+            return jsonify({"error": f"Extract failed: {imported['error']}", "filename": filename}), 500
+        enriched = enrich_with_gl_map(imported)
+    except Exception as e:
+        logger.exception("Approved budget parse pipeline failed")
+        return jsonify({"error": f"Parse pipeline failed: {e}", "filename": filename}), 500
+
+    # Upsert into budget_summary_rows using the same logic as /api/summary/import.
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY, apply_summary_prefix_override
+    import json as _json
+    from datetime import datetime as _dt
+
+    # Ensure Budget row exists (it should, from Monday sync, but belt + suspenders)
+    if not Budget.query.filter_by(entity_code=entity_code, year=_BY).first():
+        db.session.add(Budget(
+            entity_code=entity_code,
+            building_name=enriched.get("building_name", "Unknown"),
+            year=_BY,
+            status="not_started",
+        ))
+        db.session.flush()
+
+    imported_count = 0
+    updated_count = 0
+    for i, row in enumerate(enriched.get("rows", [])):
+        display_order = row.get("display_order") or (i + 1)
+        existing = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code,
+            budget_year=_BY,
+            display_order=display_order,
+        ).first()
+        incoming_prefixes = row.get("gl_prefixes") or []
+        corrected_prefixes = apply_summary_prefix_override(row.get("label"), incoming_prefixes)
+        gl_pj = _json.dumps(corrected_prefixes) if corrected_prefixes else None
+        if existing:
+            existing.label = row["label"]
+            existing.section = row.get("section")
+            existing.row_type = row.get("row_type", "data")
+            existing.footnote_marker = row.get("footnote_marker")
+            existing.col1_prior_actual = row.get("col1_prior_actual")
+            existing.col6_approved_budget = row.get("col6_approved_budget")
+            existing.source_tab = row.get("source_tab") or existing.source_tab
+            existing.gl_prefixes_json = gl_pj or existing.gl_prefixes_json
+            existing.source_file = filename or existing.source_file
+            existing.updated_at = _dt.utcnow()
+            updated_count += 1
+        else:
+            db.session.add(BudgetSummaryRow(
+                entity_code=entity_code,
+                budget_year=_BY,
+                display_order=display_order,
+                label=row["label"],
+                section=row.get("section"),
+                row_type=row.get("row_type", "data"),
+                footnote_marker=row.get("footnote_marker"),
+                col1_prior_actual=row.get("col1_prior_actual"),
+                col6_approved_budget=row.get("col6_approved_budget"),
+                col7_proposed_budget=None,
+                source_tab=row.get("source_tab"),
+                gl_prefixes_json=gl_pj,
+                source_file=filename,
+            ))
+            imported_count += 1
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "entity_code": entity_code,
+        "filename": filename,
+        "size_bytes": len(file_bytes),
+        "rows_imported": imported_count,
+        "rows_updated": updated_count,
+        "total_rows": imported_count + updated_count,
+        "stats": enriched.get("stats", {}),
+    })
+
+
 @app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
 def wizard_sharepoint_sources(entity_code):
     """Read-only: return what's in this entity\'s SharePoint Supporting

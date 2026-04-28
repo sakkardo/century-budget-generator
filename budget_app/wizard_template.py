@@ -996,6 +996,17 @@ header {
         Step 2 collects the source files. Nothing is committed to your budget until you click "Build Budget" in Step 5. Files staged in SharePoint will be detected here — you confirm each one explicitly.
       </div>
 
+      <!-- 2026 Approved Budget Panel -->
+      <div class="approved-budget-panel" id="approvedBudgetPanel" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.04); display:none;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--gray-500); flex:1;">2026 Approved Budget (Cols 1 &amp; 6)</div>
+          <span id="approvedBudgetInfo" style="font-size:12px; color:var(--gray-500);"></span>
+        </div>
+        <div id="approvedBudgetBody" style="display:flex; flex-direction:column; gap:10px;">
+          <div style="color:var(--gray-500); font-size:13px;">Loading...</div>
+        </div>
+      </div>
+
       <!-- SharePoint Sources Panel -->
       <div class="sp-sources-panel" id="spSourcesPanel" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.04); display:none;">
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
@@ -1351,9 +1362,87 @@ function selectEntity(code, name) {
   completeStep(1);
   // Kick off SharePoint detection for Step 2 as soon as entity is picked.
   try { loadSharepointSources(); } catch (e) {}
+  try { loadApprovedBudgetFiles(); } catch (e) {}
 }
 
 // Render upload checklist
+// 2026 Approved Budget files state for current entity (Step 2)
+let _approvedBudgetMatches = null;
+
+function loadApprovedBudgetFiles() {
+  const ent = selectedEntity;
+  if (!ent) return;
+  const panel = document.getElementById("approvedBudgetPanel");
+  const body = document.getElementById("approvedBudgetBody");
+  const info = document.getElementById("approvedBudgetInfo");
+  if (!panel || !body) return;
+  panel.style.display = "block";
+  body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">Checking SharePoint for 2026 approved budget...</div>";
+  fetch("/api/wizard/" + ent + "/approved-budget-files")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      _approvedBudgetMatches = data;
+      renderApprovedBudgetFiles();
+      if (info) {
+        const n = (data.matches || []).length;
+        info.textContent = n === 0 ? "No matching file found"
+                          : n === 1 ? "1 match" : (n + " matches — pick one");
+      }
+    })
+    .catch(function (err) {
+      body.innerHTML = "<div style=\"color:#b45309; font-size:13px;\">Lookup failed: " + err + "</div>";
+    });
+}
+
+function renderApprovedBudgetFiles() {
+  const body = document.getElementById("approvedBudgetBody");
+  if (!body || !_approvedBudgetMatches) return;
+  const matches = _approvedBudgetMatches.matches || [];
+  if (matches.length === 0) {
+    body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">No 2026 Approved Budget Excel found in SharePoint for entity " + selectedEntity + ". Upload via the Excel admin tools or skip — Cols 1 &amp; 6 will remain blank.</div>";
+    return;
+  }
+  let html = "";
+  matches.forEach(function (f) {
+    html += "<div style=\"display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--gray-100);\">";
+    html += "<span style=\"color:#15803d; font-weight:700; font-size:14px;\">&#10003;</span>";
+    html += "<span style=\"font-family:ui-monospace,monospace; font-size:12px; flex:1; color:var(--text-200,#374151); overflow-wrap:anywhere;\">" + escapeHtml(f.name) + "</span>";
+    html += "<span style=\"font-size:11px; color:var(--gray-500); white-space:nowrap;\">" + (f.size ? Math.round(f.size/1024) + " KB" : "") + "</span>";
+    if (f.web_url) {
+      html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP &#8599;</a>";
+    }
+    html += "<button type=\"button\" onclick=\"useApprovedBudget(\\'" + f.item_id + "\\',\\'" + escapeHtmlAttr(f.name) + "\\')\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:var(--blue); color:white; border-radius:4px; cursor:pointer;\">Use this file</button>";
+    html += "</div>";
+  });
+  body.innerHTML = html;
+}
+
+function escapeHtmlAttr(s) {
+  return String(s || "").replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+}
+
+function useApprovedBudget(itemId, filename) {
+  const ent = selectedEntity;
+  if (!ent) return;
+  if (!confirm("Confirm: import this 2026 Approved Budget file as Cols 1 & 6 for entity " + ent + "?\n\n" + filename + "\n\nThis populates the budget_summary_rows table.")) return;
+  fetch("/api/wizard/" + ent + "/use-approved-budget", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_id: itemId })
+  })
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+    .then(function (res) {
+      if (res.ok && res.data && res.data.ok) {
+        const stats = res.data.stats || {};
+        alert("Imported " + (res.data.rows_imported||0) + " new rows, updated " + (res.data.rows_updated||0) + ".\n\n" + (stats.rows_with_col1||0) + " rows have Col 1 (2024 Actual)\n" + (stats.rows_with_col6||0) + " rows have Col 6 (2026 Approved Budget)");
+        loadApprovedBudgetFiles();  // refresh the panel
+      } else {
+        alert("Import failed: " + ((res.data && res.data.error) || "unknown error"));
+      }
+    })
+    .catch(function (err) { alert("Request failed: " + err); });
+}
+
 // SharePoint sources state for current entity (Step 2)
 let _spSources = null;
 
