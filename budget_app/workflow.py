@@ -5143,9 +5143,13 @@ function renderBudgets(budgets) {
       '</div>';
 
     // SLA: days in current status (using updated_at as proxy)
+    // For Setup entities (no work yet), show 0d in gray — the row\'s updated_at
+    // reflects auto-creation, not FA activity, so days-since is meaningless.
     const doneStatuses = ['approved','ar_pending','ar_complete'];
     let daysHtml = '<span style="color:var(--gray-300);">\u2014</span>';
-    if (!doneStatuses.includes(b.status) && b.updated_at) {
+    if (b.lifecycle_stage === 'Setup') {
+      daysHtml = '<span style="color:var(--gray-300); font-weight:600;">0d</span>';
+    } else if (!doneStatuses.includes(b.status) && b.updated_at) {
       const days = Math.floor((Date.now() - new Date(b.updated_at).getTime()) / 86400000);
       const color = days >= 14 ? 'var(--red)' : days >= 7 ? '#d97706' : 'var(--green)';
       const icon = days >= 14 ? ' \uD83D\uDD34' : days >= 7 ? ' \uD83D\uDFE1' : '';
@@ -6130,7 +6134,7 @@ function renderDetail(data) {
 
   const reviewPct = lines.length ? Math.round(linesWithProposed / lines.length * 100) : 0;
   const checks = [
-    { group: 'Data Collection', label: 'YSL Data Imported', done: true, detail: lines.length + ' GL lines loaded' },
+    { group: 'Data Collection', label: 'YSL Data Imported', done: lines.length > 0, detail: lines.length > 0 ? (lines.length + ' GL lines loaded') : 'No YSL data — run Build Budget' },
     { group: 'Data Collection', label: 'Expense Distribution', done: data.expenses.exists, detail: data.expenses.exists ? data.expenses.invoice_count + ' invoices (' + fmt(data.expenses.total_amount) + ')' : 'Upload via Data Collection' },
     { group: 'Data Collection', label: 'Audited Financials', done: data.audit.exists, detail: data.audit.exists ? Object.keys(data.audit.years || {}).length + ' years of history' : 'Upload via Data Collection' },
     { group: 'Configuration', label: 'Assumptions Configured', done: anyAssumptions, detail: hasBudgetPeriod ? 'Period: ' + assumptions.budget_period : 'Not set — click Assumptions tab', action: !anyAssumptions ? 'openAssumptions' : null },

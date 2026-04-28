@@ -6326,6 +6326,21 @@ def admin_wipe_entity_data():
             sum_count = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).count()
             BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).delete()
 
+            # Also clear expense_reports + audit_uploads — these power the
+            # FA Completion Checklist and need to be reset for a clean Setup state.
+            expense_count = 0
+            audit_count = 0
+            try:
+                row = db.session.execute(db.text("DELETE FROM expense_reports WHERE entity_code = :ec RETURNING id"), {"ec": ec}).fetchall()
+                expense_count = len(row)
+            except Exception:
+                db.session.rollback()
+            try:
+                row = db.session.execute(db.text("DELETE FROM audit_uploads WHERE entity_code = :ec RETURNING id"), {"ec": ec}).fetchall()
+                audit_count = len(row)
+            except Exception:
+                db.session.rollback()
+
             # Reset Budget row state
             budget.status = "not_started"
             budget.wizard_step = 0
@@ -6347,6 +6362,8 @@ def admin_wipe_entity_data():
                 "lines_deleted": line_count,
                 "revisions_deleted": rev_count,
                 "summary_rows_deleted": sum_count,
+                "expense_reports_deleted": expense_count,
+                "audit_uploads_deleted": audit_count,
                 "budget_id": budget.id,
                 "reset_to": "Setup",
             })
