@@ -6326,19 +6326,69 @@ def admin_wipe_entity_data():
             sum_count = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).count()
             BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=_BY).delete()
 
-            # Also clear expense_reports + audit_uploads — these power the
-            # FA Completion Checklist and need to be reset for a clean Setup state.
+            # Also clear expense_reports + audit_uploads + open_ap + maint_proof —
+            # these power the FA Completion Checklist + Data Status indicators.
+            # Child tables MUST be deleted first (FK constraints).
             expense_count = 0
             audit_count = 0
+            open_ap_count = 0
+            maint_count = 0
+            data_sources_count = 0
             try:
-                row = db.session.execute(db.text("DELETE FROM expense_reports WHERE entity_code = :ec RETURNING id"), {"ec": ec}).fetchall()
+                # Expense Distribution: invoices → reports
+                db.session.execute(db.text(
+                    "DELETE FROM expense_invoices WHERE report_id IN "
+                    "(SELECT id FROM expense_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM expense_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
                 expense_count = len(row)
-            except Exception:
+            except Exception as _e:
+                logger.warning(f"expense wipe failed for {ec}: {_e}")
                 db.session.rollback()
             try:
-                row = db.session.execute(db.text("DELETE FROM audit_uploads WHERE entity_code = :ec RETURNING id"), {"ec": ec}).fetchall()
+                # Open AP: invoices → reports
+                db.session.execute(db.text(
+                    "DELETE FROM open_ap_invoices WHERE report_id IN "
+                    "(SELECT id FROM open_ap_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM open_ap_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                open_ap_count = len(row)
+            except Exception as _e:
+                logger.warning(f"open_ap wipe failed for {ec}: {_e}")
+                db.session.rollback()
+            try:
+                # Maintenance Proof: units → reports
+                db.session.execute(db.text(
+                    "DELETE FROM maint_proof_units WHERE report_id IN "
+                    "(SELECT id FROM maint_proof_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM maint_proof_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                maint_count = len(row)
+            except Exception as _e:
+                logger.warning(f"maint_proof wipe failed for {ec}: {_e}")
+                db.session.rollback()
+            try:
+                row = db.session.execute(db.text(
+                    "DELETE FROM audit_uploads WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
                 audit_count = len(row)
-            except Exception:
+            except Exception as _e:
+                logger.warning(f"audit_uploads wipe failed for {ec}: {_e}")
+                db.session.rollback()
+            try:
+                # data_sources references budgets.id
+                row = db.session.execute(db.text(
+                    "DELETE FROM data_sources WHERE budget_id = :bid RETURNING id"
+                ), {"bid": budget.id}).fetchall()
+                data_sources_count = len(row)
+            except Exception as _e:
+                logger.warning(f"data_sources wipe failed for {ec}: {_e}")
                 db.session.rollback()
 
             # Reset Budget row state
@@ -6363,7 +6413,10 @@ def admin_wipe_entity_data():
                 "revisions_deleted": rev_count,
                 "summary_rows_deleted": sum_count,
                 "expense_reports_deleted": expense_count,
+                "open_ap_reports_deleted": open_ap_count,
+                "maint_proof_reports_deleted": maint_count,
                 "audit_uploads_deleted": audit_count,
+                "data_sources_deleted": data_sources_count,
                 "budget_id": budget.id,
                 "reset_to": "Setup",
             })
