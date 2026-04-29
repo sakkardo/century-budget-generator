@@ -5645,10 +5645,14 @@ def sharepoint_create_folders():
 # Case-insensitive substring match. First match wins (in order).
 SHAREPOINT_SOURCE_PATTERNS = [
     # (source_type, [substrings to match — any one matches])
-    ("ysl",           ["ysl"]),
+    # Order matters: first-match wins. Audit patterns checked first because audit
+    # PDFs in Supporting Documents are now expected (placed there by audit-sync admin).
+    ("audit_2025",            ["audit", "financial statement", "afs", " fs ", ".pdf"]),
+    ("approved_2026",         ["approved"]),
+    ("ysl",                   ["ysl"]),
     ("expense_distribution",  ["expensedistribution"]),
-    ("ap_aging",      ["apaging"]),
-    ("maint_proof",   ["adhoc_amp", "amp_"]),
+    ("ap_aging",              ["apaging"]),
+    ("maint_proof",           ["adhoc_amp", "amp_"]),
 ]
 
 
@@ -5689,6 +5693,7 @@ def _sharepoint_list_entity_sources(entity_code):
         "folder_exists": False,
         "folder_url": None,
         "by_source_type": {
+            "audit_2025": [], "approved_2026": [],
             "ysl": [], "expense_distribution": [], "ap_aging": [],
             "maint_proof": [], "unmatched": [],
         },
@@ -5720,6 +5725,34 @@ def _sharepoint_list_entity_sources(entity_code):
             result["by_source_type"][st].append(entry)
         else:
             result["by_source_type"]["unmatched"].append(entry)
+
+    # Second pass: scan the entity TOP folder for approved-budget XLSX files.
+    # These live at 2027 Budget/<entity>/ (NOT in Supporting Documents) per the
+    # 2026-04-28 bulk move. Match: filename contains "approved" AND .xlsx/.xls.
+    try:
+        top_path = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code)
+        top_enc = urllib.parse.quote(top_path, safe="/")
+        top_listing = _graph_get(f"drives/{drive_id}/root:/{top_enc}:/children")
+        for it in top_listing.get("value", []):
+            if "folder" in it:
+                continue  # skip Supporting Documents subfolder etc.
+            name = (it.get("name") or "")
+            low = name.lower()
+            if "approved" in low and (low.endswith(".xlsx") or low.endswith(".xls")):
+                entry = {
+                    "name": name,
+                    "web_url": it.get("webUrl"),
+                    "size": it.get("size"),
+                    "last_modified": it.get("lastModifiedDateTime"),
+                    "item_id": it.get("id"),
+                }
+                # Avoid duplicates if a file somehow matched twice
+                if not any(e.get("item_id") == entry["item_id"] for e in result["by_source_type"]["approved_2026"]):
+                    result["by_source_type"]["approved_2026"].append(entry)
+    except RuntimeError as e:
+        if "404" not in str(e):
+            # Don't fail the whole request if top folder scan errors; just record it.
+            result["top_folder_error"] = str(e)
     return result
 
 
@@ -5775,7 +5808,7 @@ def _wizard_record_selection(entity_code, source_label_default=None):
     if not source_type or not item_id:
         return jsonify({"error": "source_type and item_id required"}), 400
 
-    valid_sources = {"ysl", "expense_distribution", "ap_aging", "maint_proof", "approved_2026"}
+    valid_sources = {"ysl", "expense_distribution", "ap_aging", "maint_proof", "approved_2026", "audit_2025"}
     if source_type not in valid_sources:
         return jsonify({"error": f"source_type must be one of {sorted(valid_sources)}"}), 400
 

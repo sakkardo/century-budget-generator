@@ -1014,22 +1014,11 @@ header {
     <div class="step-content" data-step="2">
       <div class="step-header">
         <div class="step-badge">Step 2 of 5</div>
-        <h1 class="step-title">Upload Yardi Sources</h1>
-        <p class="step-description">Upload the required YSL and optional enrichment files</p>
+        <h1 class="step-title">Upload Sources</h1>
+        <p class="step-description">Verify the source files detected in SharePoint, or upload directly below as a fallback</p>
       </div>
       <div class="prompt-banner">
         Step 2 collects the source files. Nothing is committed to your budget until you click "Build Budget" in Step 5. Files staged in SharePoint will be detected here — you confirm each one explicitly.
-      </div>
-
-      <!-- 2026 Approved Budget Panel -->
-      <div class="approved-budget-panel" id="approvedBudgetPanel" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.04); display:none;">
-        <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
-          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--gray-500); flex:1;">2026 Approved Budget (Cols 1 &amp; 6)</div>
-          <span id="approvedBudgetInfo" style="font-size:12px; color:var(--gray-500);"></span>
-        </div>
-        <div id="approvedBudgetBody" style="display:flex; flex-direction:column; gap:10px;">
-          <div style="color:var(--gray-500); font-size:13px;">Loading...</div>
-        </div>
       </div>
 
       <!-- SharePoint Sources Panel -->
@@ -1526,7 +1515,6 @@ function selectEntity(code, name) {
   completeStep(1);
   // Kick off SharePoint detection for Step 2 as soon as entity is picked.
   try { loadSharepointSources(); } catch (e) {}
-  try { loadApprovedBudgetFiles(); } catch (e) {}
   try { loadWizardSelections(); } catch (e) {}
 }
 
@@ -1542,103 +1530,12 @@ function loadWizardSelections() {
     .then(function (data) {
       _wizardSelections = data.selections || {};
       // Re-render any panels that show selection state
-      try { renderApprovedBudgetFiles(); } catch (e) {}
       try { renderSharepointSources(); } catch (e) {}
     })
     .catch(function () { _wizardSelections = {}; });
 }
 
-// 2026 Approved Budget files state for current entity (Step 2)
-let _approvedBudgetMatches = null;
-
-function loadApprovedBudgetFiles() {
-  const ent = selectedEntity;
-  if (!ent) return;
-  const panel = document.getElementById("approvedBudgetPanel");
-  const body = document.getElementById("approvedBudgetBody");
-  const info = document.getElementById("approvedBudgetInfo");
-  if (!panel || !body) return;
-  panel.style.display = "block";
-  body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">Checking SharePoint for 2026 approved budget...</div>";
-  fetch("/api/wizard/" + ent + "/approved-budget-files")
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      _approvedBudgetMatches = data;
-      renderApprovedBudgetFiles();
-      if (info) {
-        const n = (data.matches || []).length;
-        info.textContent = n === 0 ? "No matching file found"
-                          : n === 1 ? "1 match" : (n + " matches — pick one");
-      }
-    })
-    .catch(function (err) {
-      body.innerHTML = "<div style=\"color:#b45309; font-size:13px;\">Lookup failed: " + err + "</div>";
-    });
-}
-
-function renderApprovedBudgetFiles() {
-  const body = document.getElementById("approvedBudgetBody");
-  if (!body || !_approvedBudgetMatches) return;
-  const matches = _approvedBudgetMatches.matches || [];
-  const selectedItemId = (_wizardSelections && _wizardSelections.approved_2026 && _wizardSelections.approved_2026.item_id) || null;
-  if (matches.length === 0) {
-    body.innerHTML = "<div style=\"color:var(--gray-500); font-size:13px;\">No 2026 Approved Budget Excel found in SharePoint for entity " + selectedEntity + ". Upload via the Excel admin tools or skip — Cols 1 &amp; 6 will remain blank.</div>";
-    return;
-  }
-  let html = "";
-  matches.forEach(function (f) {
-    const isSelected = (f.item_id === selectedItemId);
-    const bg = isSelected ? "#eff6ff" : "transparent";
-    html += "<div style=\"display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid var(--gray-100); background:" + bg + ";\">";
-    if (isSelected) {
-      html += "<span style=\"color:#1d4ed8; font-weight:700; font-size:14px;\" title=\"Selected for build\">&#9679;</span>";
-    } else {
-      html += "<span style=\"color:var(--gray-300); font-weight:700; font-size:14px;\">&#9675;</span>";
-    }
-    html += "<span style=\"font-family:ui-monospace,monospace; font-size:12px; flex:1; color:var(--text-200,#374151); overflow-wrap:anywhere;\">" + escapeHtml(f.name) + "</span>";
-    html += "<span style=\"font-size:11px; color:var(--gray-500); white-space:nowrap;\">" + (f.size ? Math.round(f.size/1024) + " KB" : "") + "</span>";
-    if (f.web_url) {
-      html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP &#8599;</a>";
-    }
-    if (isSelected) {
-      html += "<span style=\"font-size:12px; padding:5px 10px; background:#dbeafe; color:#1d4ed8; border-radius:4px; font-weight:600;\">&#10003; Selected</span>";
-    } else {
-      html += "<button type=\"button\" data-action=\"select-approved\" data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\" data-filename=\"" + escapeHtmlAttr(f.name) + "\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
-    }
-    html += "</div>";
-  });
-  body.innerHTML = html;
-  // Attach handlers via data-attribute event delegation (avoids onclick apostrophe escape issues)
-  body.querySelectorAll('button[data-action="select-approved"]').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      useApprovedBudget(btn.getAttribute('data-item-id'), btn.getAttribute('data-filename'));
-    });
-  });
-}
-
-function escapeHtmlAttr(s) {
-  return String(s || "").replace(/'/g, "&apos;").replace(/"/g, "&quot;");
-}
-
-function useApprovedBudget(itemId, filename) {
-  const ent = selectedEntity;
-  if (!ent) return;
-  fetch("/api/wizard/" + ent + "/use-approved-budget", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_id: itemId, filename: filename || "" })
-  })
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      if (data.ok) {
-        if (data.selections) { _wizardSelections = data.selections; }
-        loadApprovedBudgetFiles();
-      } else {
-        alert("Selection failed: " + (data.error || "unknown error"));
-      }
-    })
-    .catch(function (err) { alert("Request failed: " + err); });
-}
+// (Removed: 2026 approved budget panel — now rendered via shared FROM SHAREPOINT panel)
 
 // SharePoint sources state for current entity (Step 2)
 let _spSources = null;
@@ -1661,7 +1558,7 @@ function loadSharepointSources() {
       renderSharepointSources();
       if (info) {
         if (data.folder_exists) {
-          const total = (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
+          const total = (data.by_source_type.audit_2025||[]).length + (data.by_source_type.approved_2026||[]).length + (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
           info.textContent = total + " matched · " + (data.by_source_type.unmatched||[]).length + " other";
         } else {
           info.textContent = "Folder not yet created";
@@ -1684,6 +1581,8 @@ function renderSharepointSources() {
     return;
   }
   const slots = [
+    { key: "audit_2025",           label: "2025 Audited Financial" },
+    { key: "approved_2026",        label: "2026 Approved Budget (Cols 1 & 6)" },
     { key: "ysl",                  label: "YSL" },
     { key: "expense_distribution", label: "Expense Distribution" },
     { key: "ap_aging",             label: "AP Aging" },
@@ -1755,7 +1654,6 @@ function useSharepointFile(sourceType, itemId, filename) {
         // Refresh selections cache first, then re-render panels to reflect new state.
         if (data.selections) { _wizardSelections = data.selections; }
         loadSharepointSources();
-        loadApprovedBudgetFiles();
       } else {
         alert("Selection failed: " + (data.error || "unknown"));
       }
