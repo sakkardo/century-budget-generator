@@ -1640,6 +1640,10 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
 }
 
+function escapeHtmlAttr(s) {
+  return String(s || "").replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+}
+
 function useSharepointFile(sourceType, itemId, filename) {
   const ent = selectedEntity;
   if (!ent) return;
