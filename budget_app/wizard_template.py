@@ -1647,22 +1647,49 @@ function escapeHtmlAttr(s) {
 function useSharepointFile(sourceType, itemId, filename) {
   const ent = selectedEntity;
   if (!ent) return;
+  // Find the clicked button and disable it with a working indicator.
+  const btn = document.querySelector('button[data-action="select-yardi"][data-item-id="' + itemId.replace(/"/g, '\\\"') + '"]');
+  let originalText = "Select for build";
+  if (btn) {
+    originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Working...";
+    btn.style.opacity = "0.6";
+  }
   fetch("/api/wizard/" + ent + "/use-sp-source", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source_type: sourceType, item_id: itemId, filename: filename || "" })
   })
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
+    .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+    .then(function (resp) {
+      const data = resp.body;
       if (data.ok) {
-        // Refresh selections cache first, then re-render panels to reflect new state.
         if (data.selections) { _wizardSelections = data.selections; }
+        if (data.parse_result) {
+          const pr = data.parse_result;
+          const msg = "\u2713 Imported " + (pr.rows_imported || 0) + " rows from " + (pr.filename || "file") + ".";
+          alert(msg);
+        }
         loadSharepointSources();
       } else {
-        alert("Selection failed: " + (data.error || "unknown"));
+        const err = data.parse_error || data.error || ("HTTP " + resp.status);
+        alert("Click failed: " + err);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = originalText;
+          btn.style.opacity = "1";
+        }
       }
     })
-    .catch(function (err) { alert("Request failed: " + err); });
+    .catch(function (err) {
+      alert("Request failed: " + err);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        btn.style.opacity = "1";
+      }
+    });
 }
 
 // Render upload checklist

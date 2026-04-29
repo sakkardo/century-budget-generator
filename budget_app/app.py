@@ -5827,8 +5827,59 @@ def _wizard_record_selection(entity_code, source_label_default=None):
         "source": "sharepoint",
     }
     budget.wizard_selections_json = json.dumps(current)
+
+    # ── PARSE-ON-CLICK dispatch (Phase D) ────────────────────────────────────
+    # Each source-type click runs its parser immediately so the FA gets feedback
+    # and downstream sources (e.g. audit) have what they need (e.g. categories).
+    # No auto-cascade — only the clicked source-type is parsed.
+    parse_result = None
+    parse_error = None
+    try:
+        if source_type == "approved_2026":
+            BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+            from workflow import BUDGET_YEAR, apply_summary_prefix_override
+            # Clean replace: drop old rows so a different XLSX overwrites cleanly.
+            BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code,
+                budget_year=BUDGET_YEAR,
+            ).delete()
+            db.session.flush()
+            written = _build_apply_approved_2026(
+                entity_code,
+                current[source_type],
+                BudgetSummaryRow,
+                BUDGET_YEAR,
+                apply_summary_prefix_override,
+            )
+            parse_result = {"source_type": source_type, "rows_imported": written,
+                            "filename": filename}
+    except Exception as e:
+        # Roll back parser changes; preserve the staged selection so the FA
+        # can re-click after fixing the source file.
+        db.session.rollback()
+        # Re-stage the selection (rollback wiped the unflushed change above).
+        budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+        try:
+            current_after_rb = json.loads(budget.wizard_selections_json or "{}")
+        except Exception:
+            current_after_rb = {}
+        current_after_rb[source_type] = current[source_type]
+        budget.wizard_selections_json = json.dumps(current_after_rb)
+        db.session.commit()
+        parse_error = str(e)[:1000]
+        return jsonify({
+            "ok": False,
+            "entity_code": entity_code,
+            "selections": current_after_rb,
+            "source_type": source_type,
+            "parse_error": parse_error,
+        }), 500
+
     db.session.commit()
-    return jsonify({"ok": True, "entity_code": entity_code, "selections": current})
+    resp = {"ok": True, "entity_code": entity_code, "selections": current}
+    if parse_result:
+        resp["parse_result"] = parse_result
+    return jsonify(resp)
 
 
 @app.route("/api/wizard/<entity_code>/selections", methods=["GET"])
