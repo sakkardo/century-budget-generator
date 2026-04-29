@@ -6664,8 +6664,26 @@ def _build_apply_audit_2025(entity_code, selection):
     upload.status = "extracted"
     upload.updated_at = _dt.utcnow()
 
-    rev_count = len((extracted.get("revenue") or []))
-    exp_count = len((extracted.get("expenses") or []))
+    # The extracted dict has nested structure: revenue.items (list) and
+    # expenses.categories (list of dicts each containing items list).
+    def _count_items(node):
+        if not node:
+            return 0
+        if isinstance(node, list):
+            return len(node)
+        if isinstance(node, dict):
+            return len(node.get("items") or [])
+        return 0
+    rev_count = _count_items(extracted.get("revenue"))
+    exp_node = extracted.get("expenses") or {}
+    exp_cats = exp_node.get("categories") if isinstance(exp_node, dict) else exp_node
+    exp_count = 0
+    if isinstance(exp_cats, list):
+        for c in exp_cats:
+            exp_count += _count_items(c)
+    elif isinstance(exp_cats, dict):
+        for c in exp_cats.values():
+            exp_count += _count_items(c)
 
     return {
         "source_type": "audit_2025",
