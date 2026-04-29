@@ -6043,6 +6043,253 @@ def admin_move_approved_budgets():
     })
 
 
+# ─── 2025 Audit Sync ─────────────────────────────────────────────────────────
+# Admin-triggered: copies new PDFs from the 2025 audit master folder into each
+# entity's 2027 Budget/<entity>/Supporting Documents/. Idempotent. No scheduler
+# in v1 — invoked by POST /api/admin/audit-sync/run. Run log queryable via
+# GET /api/admin/audit-sync-log.
+
+SHAREPOINT_AUDIT_MASTER_PATH = "01 - Accounting General/Audited Financials/2025 Audited Financial Statements"
+
+
+def _graph_put_content(path, body_bytes, content_type="application/octet-stream"):
+    """PUT raw bytes to a SharePoint path. Creates or replaces the file.
+    For files <4MB this is a single PUT to /content; audit PDFs are all under that.
+    Returns parsed JSON (item metadata) or raises RuntimeError.
+    """
+    import urllib.request
+    import urllib.parse
+    drive_id = _graph_get_drive_id()
+    encoded = urllib.parse.quote(path, safe="/")
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded}:/content"
+    token = _get_graph_token()
+    req = urllib.request.Request(
+        url,
+        data=body_bytes,
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.request.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8")[:600]
+        except Exception:
+            pass
+        raise RuntimeError(f"Graph {e.code} {e.reason} on PUT {path}: {body_text}")
+
+
+def _parse_audit_entity_code(filename):
+    """Extract leading numeric token. Handles all variations seen in master folder.
+    Examples that all return their entity code: "106 - 2025 audit.pdf", "140- 29-45.pdf",
+    "140 29-45 ...", "933 - 132 E 35th ...". Returns string or None.
+    """
+    import re
+    m = re.match(r"^\s*(\d+)", filename or "")
+    return m.group(1) if m else None
+
+
+def _parse_iso_dt(s):
+    """Parse an ISO-8601 datetime string (e.g. from Graph) to naive UTC datetime."""
+    if not s:
+        return None
+    from datetime import datetime as _dt
+    try:
+        if s.endswith("Z"):
+            s = s[:-1]
+        if "." in s:
+            return _dt.strptime(s, "%Y-%m-%dT%H:%M:%S.%f")
+        return _dt.strptime(s, "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+
+
+def _sync_audit_folder_to_entities():
+    """Copy 2025 audit PDFs from master folder to per-entity Supporting Documents.
+
+    Behavior per file:
+      - parse leading numeric token → entity_code
+      - if entity_code not in active budgets → log "unmatched"
+      - duplicate filenames for same entity → keep the most recently modified
+      - dest folder has same filename + same size → log "skipped"
+      - dest has same filename, different size, source mtime newer → REPLACE, log "replaced"
+      - otherwise → COPY, log "copied"
+      - on exception per-entity → log "error" with text, continue with next entity
+
+    Returns {"run_id", "summary": {copied, skipped, replaced, unmatched, error}, "entries": [...]}.
+    """
+    import urllib.parse
+    import uuid
+    AuditSyncRun = workflow_models["AuditSyncRun"]
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    run_id = str(uuid.uuid4())
+    summary = {"copied": 0, "skipped": 0, "replaced": 0, "unmatched": 0, "error": 0}
+    entries = []
+
+    active = {str(r[0]) for r in db.session.query(Budget.entity_code).filter_by(year=_BY).all()}
+
+    drive_id = _graph_get_drive_id()
+    audit_path_enc = urllib.parse.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
+
+    try:
+        listing = _graph_get(f"drives/{drive_id}/root:/{audit_path_enc}:/children")
+    except Exception as e:
+        return {"run_id": run_id, "fatal_error": str(e), "summary": summary, "entries": []}
+
+    pdfs = [it for it in listing.get("value", [])
+            if "folder" not in it and (it.get("name") or "").lower().endswith(".pdf")]
+
+    by_entity = {}
+    unmatched_files = []
+    for it in pdfs:
+        ec = _parse_audit_entity_code(it.get("name", ""))
+        if not ec or ec not in active:
+            unmatched_files.append((ec, it))
+            continue
+        prev = by_entity.get(ec)
+        if not prev or (it.get("lastModifiedDateTime", "") > prev.get("lastModifiedDateTime", "")):
+            by_entity[ec] = it
+
+    # Log unmatched
+    for ec, it in unmatched_files:
+        row = AuditSyncRun(
+            run_id=run_id,
+            entity_code=ec,
+            source_filename=it.get("name") or "",
+            source_size=it.get("size"),
+            source_mtime=_parse_iso_dt(it.get("lastModifiedDateTime")),
+            action="unmatched",
+            error_text=("entity_code not active in current year"
+                        if ec else "could not parse entity_code from filename"),
+        )
+        db.session.add(row)
+        entries.append({"action": "unmatched", "entity_code": ec, "filename": it.get("name")})
+        summary["unmatched"] += 1
+    try:
+        db.session.flush()
+    except Exception:
+        db.session.rollback()
+
+    for ec, src in by_entity.items():
+        src_name = src.get("name") or ""
+        src_size = src.get("size") or 0
+        src_mtime = _parse_iso_dt(src.get("lastModifiedDateTime"))
+        dest_folder_path = f"{SHAREPOINT_2027_FOLDER_PATH}/{ec}/Supporting Documents"
+        dest_full_path = f"{dest_folder_path}/{src_name}"
+        dest_url = None
+        action = None
+        error_text = None
+
+        try:
+            dest_enc = urllib.parse.quote(dest_folder_path, safe="/")
+            try:
+                dest_listing = _graph_get(f"drives/{drive_id}/root:/{dest_enc}:/children")
+                dest_files = {f.get("name"): f for f in dest_listing.get("value", []) if "folder" not in f}
+            except RuntimeError as e:
+                if "404" in str(e):
+                    _sharepoint_ensure_entity_folder(ec)
+                    dest_files = {}
+                else:
+                    raise
+
+            existing = dest_files.get(src_name)
+            if existing and (existing.get("size") or 0) == src_size:
+                action = "skipped"
+                dest_url = existing.get("webUrl")
+            elif existing:
+                exist_mtime = _parse_iso_dt(existing.get("lastModifiedDateTime"))
+                if src_mtime and exist_mtime and src_mtime > exist_mtime:
+                    _, body = _sharepoint_download_item(src.get("id"))
+                    new_meta = _graph_put_content(dest_full_path, body, content_type="application/pdf")
+                    action = "replaced"
+                    dest_url = new_meta.get("webUrl")
+                else:
+                    action = "skipped"
+                    dest_url = existing.get("webUrl")
+            else:
+                _, body = _sharepoint_download_item(src.get("id"))
+                new_meta = _graph_put_content(dest_full_path, body, content_type="application/pdf")
+                action = "copied"
+                dest_url = new_meta.get("webUrl")
+        except Exception as e:
+            action = "error"
+            error_text = str(e)[:1000]
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
+        row = AuditSyncRun(
+            run_id=run_id,
+            entity_code=ec,
+            source_filename=src_name,
+            source_size=src_size,
+            source_mtime=src_mtime,
+            dest_path=dest_full_path,
+            dest_url=dest_url,
+            action=action,
+            error_text=error_text,
+        )
+        db.session.add(row)
+        entries.append({"action": action, "entity_code": ec, "filename": src_name,
+                        "dest_url": dest_url, "error": error_text})
+        summary[action] = summary.get(action, 0) + 1
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return {"run_id": run_id, "fatal_error": f"commit failed: {e}",
+                "summary": summary, "entries": entries}
+
+    return {"run_id": run_id, "summary": summary, "entries": entries}
+
+
+@app.route("/api/admin/audit-sync/run", methods=["POST"])
+def admin_audit_sync_run():
+    """ADMIN: trigger one run of _sync_audit_folder_to_entities. No body required.
+    Returns {run_id, summary, entries}. Idempotent — re-running on a clean state
+    is a no-op (everything skipped).
+    """
+    try:
+        result = _sync_audit_folder_to_entities()
+        return jsonify(result)
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/audit-sync-log", methods=["GET"])
+def admin_audit_sync_log():
+    """ADMIN: list recent AuditSyncRun rows. Query params:
+       run_id (filter to a specific run), action (filter copied/skipped/etc),
+       limit (default 100, max 500).
+    """
+    AuditSyncRun = workflow_models["AuditSyncRun"]
+    try:
+        limit = min(max(int(request.args.get("limit", "100")), 1), 500)
+    except ValueError:
+        limit = 100
+    q = AuditSyncRun.query
+    rid = request.args.get("run_id")
+    if rid:
+        q = q.filter(AuditSyncRun.run_id == rid)
+    act = request.args.get("action")
+    if act:
+        q = q.filter(AuditSyncRun.action == act)
+    rows = q.order_by(AuditSyncRun.id.desc()).limit(limit).all()
+    return jsonify({"count": len(rows), "rows": [r.to_dict() for r in rows]})
+
 
 @app.route("/api/wizard/<entity_code>/build-budget", methods=["POST"])
 def wizard_build_budget(entity_code):

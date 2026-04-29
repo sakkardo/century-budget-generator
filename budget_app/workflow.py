@@ -671,6 +671,43 @@ def create_workflow_blueprint(db):
             }
 
 
+    class AuditSyncRun(db.Model):
+        """One row per (file, run) processed by the audit-sync admin job.
+
+        Logs every PDF the sync touched in the 2025 audit master folder and the
+        action taken: copied to the entity folder, skipped (already present and
+        identical), replaced (source newer than destination), unmatched (filename
+        could not be parsed to an active entity), or errored.
+        """
+        __tablename__ = "audit_sync_runs"
+
+        id = db.Column(db.Integer, primary_key=True)
+        run_id = db.Column(db.String(36), nullable=False, index=True)  # uuid4
+        entity_code = db.Column(db.String(20), nullable=True, index=True)  # null for unmatched
+        source_filename = db.Column(db.Text, nullable=False)
+        source_size = db.Column(db.BigInteger, nullable=True)
+        source_sha256 = db.Column(db.String(64), nullable=True)
+        source_mtime = db.Column(db.DateTime, nullable=True)
+        dest_path = db.Column(db.Text, nullable=True)
+        dest_url = db.Column(db.Text, nullable=True)
+        action = db.Column(db.String(20), nullable=False)  # copied/skipped/replaced/unmatched/error
+        error_text = db.Column(db.Text, nullable=True)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+        def to_dict(self):
+            return {
+                "id": self.id, "run_id": self.run_id,
+                "entity_code": self.entity_code,
+                "source_filename": self.source_filename,
+                "source_size": self.source_size,
+                "source_sha256": self.source_sha256,
+                "source_mtime": self.source_mtime.isoformat() if self.source_mtime else None,
+                "dest_path": self.dest_path, "dest_url": self.dest_url,
+                "action": self.action, "error_text": self.error_text,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+            }
+
+
     class BudgetRevision(db.Model):
         """Audit trail for every change to a budget or its lines."""
         __tablename__ = "budget_revisions"
@@ -4298,7 +4335,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow, "AuditSyncRun": AuditSyncRun, "DataSource": DataSource},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
