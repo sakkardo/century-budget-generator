@@ -6620,7 +6620,7 @@ def _build_apply_audit_2025(entity_code, selection):
     # Use the same helper as af_helpers if exposed, else compute path
     data_dir = af_helpers["get_data_dir"]() if "get_data_dir" in af_helpers else None
     if data_dir is None:
-        data_dir = Path(__file__).resolve().parent / "data" / "audited_financials"
+        data_dir = Path(__file__).resolve().parent / "data" / "audit_pdfs"
         data_dir.mkdir(parents=True, exist_ok=True)
     safe_filename = f"wizard_{entity_code}_{filename}"
     pdf_path = Path(data_dir) / safe_filename

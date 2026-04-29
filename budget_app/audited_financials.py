@@ -2786,7 +2786,8 @@ async function uploadAll() {
         "get_confirmed_actuals": get_confirmed_actuals,
         "get_buildings_list": get_buildings_list,
         "apply_mapping_rules": apply_mapping_rules,
-        "extract_from_pdf": extract_from_pdf
+        "extract_from_pdf": extract_from_pdf,
+        "get_data_dir": get_data_dir,
     }
 
     return bp, models, helpers
