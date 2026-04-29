@@ -1,7 +1,4 @@
+# Smoke-test marker: 2026-04-29 — Railway transfer verified, deploy pipeline test
 flask==3.1.2
 flask-sqlalchemy==3.1.1
-openpyxl==3.1.5
-psycopg2-binary==2.9.10
-gunicorn==23.0.0
-anthropic>=0.40.0
-msal>=1.28.0
+open

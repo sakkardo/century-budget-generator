@@ -573,7 +573,7 @@ def save_buildings(buildings):
         writer.writerows(buildings)
 
 
-# ─── Assumptions Functions ────────────────────────────────────────────────────
+# ─── Assumptions Functions ─────────────────────────────────────────────────────
 
 def load_portfolio_defaults():
     """Load portfolio-wide defaults, or return defaults."""
@@ -5833,7 +5833,7 @@ def wizard_save_assumptions(entity_code):
     Body: a partial assumptions dict shaped like Budget.assumptions_json
       e.g. {"insurance_renewal": {"increase_percent": 0.18}, "energy": {...}}
     Deep-merges into the existing staged assumptions. Does NOT write to
-    Budget.assumptions_json - that happens at Build Budget time.
+    Budget.assumptions_json — that happens at Build Budget time.
     """
     Budget = workflow_models["Budget"]
     from workflow import BUDGET_YEAR as _BY
@@ -5855,7 +5855,7 @@ def wizard_save_assumptions(entity_code):
     if not isinstance(staged, dict):
         staged = {}
 
-    # Deep merge by section (one level deep - matches Budget.assumptions_json shape)
+    # Deep merge by section (one level deep — matches Budget.assumptions_json shape)
     for key, value in data.items():
         if isinstance(value, dict) and isinstance(staged.get(key), dict):
             staged[key].update(value)
@@ -5866,6 +5866,8 @@ def wizard_save_assumptions(entity_code):
     budget.wizard_selections_json = json.dumps(current)
     db.session.commit()
     return jsonify({"ok": True, "entity_code": entity_code, "assumptions": staged})
+
+
 
 
 
@@ -6115,7 +6117,7 @@ def wizard_build_budget(entity_code):
         # Anything the FA edited in Step 3 lands in selections["assumptions"];
         # we deep-merge into whatever may already be on the Budget row (typically
         # empty on a fresh build). Existing assumptions_json values win only for
-        # keys the FA did NOT touch - FA edits override.
+        # keys the FA did NOT touch — FA edits override.
         staged_assumptions = selections.get("assumptions") or {}
         if isinstance(staged_assumptions, dict) and staged_assumptions:
             try:
