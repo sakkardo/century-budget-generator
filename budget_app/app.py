@@ -6353,6 +6353,111 @@ def admin_audit_sync_run():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/clear-source", methods=["POST"])
+def admin_clear_source():
+    """ADMIN: clear staged data for one or more source_types on an entity.
+
+    Body: {"entity_code": "148", "source_types": ["approved_2026", "audit_2025"]}
+      - source_types is a list; each is one of:
+          approved_2026 | audit_2025 | ysl | expense_distribution | ap_aging | maint_proof
+        Plus the special token "all" which clears every source_type and the
+        staged wizard_selections_json.
+
+    Per source_type, deletes the corresponding tables AND the staged selection
+    in Budget.wizard_selections_json. Does NOT touch SharePoint files. Does NOT
+    reset the Budget row's status / wizard_step (use /api/admin/wipe-entity-data
+    for full reset).
+
+    Returns {ok, entity_code, results: {<source_type>: {tables_cleared: {...}}}}.
+    Idempotent — re-running on already-clear state is a no-op.
+    """
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    BudgetLine = workflow_models["BudgetLine"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json() or {}
+    ec = (data.get("entity_code") or "").strip()
+    types = data.get("source_types") or []
+    if not ec:
+        return jsonify({"error": "entity_code required"}), 400
+    if not isinstance(types, list) or not types:
+        return jsonify({"error": "source_types (non-empty list) required"}), 400
+
+    valid = {"approved_2026", "audit_2025", "ysl", "expense_distribution",
+             "ap_aging", "maint_proof", "all"}
+    bad = [t for t in types if t not in valid]
+    if bad:
+        return jsonify({"error": f"invalid source_types: {bad}; valid: {sorted(valid)}"}), 400
+    if "all" in types:
+        types = ["approved_2026", "audit_2025", "ysl", "expense_distribution",
+                 "ap_aging", "maint_proof"]
+
+    budget = Budget.query.filter_by(entity_code=ec, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {ec} year {_BY}"}), 404
+
+    results = {}
+    try:
+        # Load staged selections to remove the cleared keys.
+        try:
+            staged = json.loads(budget.wizard_selections_json or "{}")
+        except Exception:
+            staged = {}
+
+        for st in types:
+            cleared = {}
+            if st == "approved_2026":
+                n = BudgetSummaryRow.query.filter_by(
+                    entity_code=ec, budget_year=_BY).delete()
+                cleared["budget_summary_rows"] = n
+            elif st == "audit_2025":
+                row = db.session.execute(db.text(
+                    "DELETE FROM audit_uploads WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                cleared["audit_uploads"] = len(row)
+            elif st == "ysl":
+                # YSL feeds budget_lines; identify by budget_id.
+                n = BudgetLine.query.filter_by(budget_id=budget.id).delete()
+                cleared["budget_lines"] = n
+            elif st == "expense_distribution":
+                db.session.execute(db.text(
+                    "DELETE FROM expense_invoices WHERE report_id IN "
+                    "(SELECT id FROM expense_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM expense_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                cleared["expense_reports"] = len(row)
+            elif st == "ap_aging":
+                db.session.execute(db.text(
+                    "DELETE FROM open_ap_invoices WHERE report_id IN "
+                    "(SELECT id FROM open_ap_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM open_ap_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                cleared["open_ap_reports"] = len(row)
+            elif st == "maint_proof":
+                db.session.execute(db.text(
+                    "DELETE FROM maint_proof_units WHERE report_id IN "
+                    "(SELECT id FROM maint_proof_reports WHERE entity_code = :ec)"
+                ), {"ec": ec})
+                row = db.session.execute(db.text(
+                    "DELETE FROM maint_proof_reports WHERE entity_code = :ec RETURNING id"
+                ), {"ec": ec}).fetchall()
+                cleared["maint_proof_reports"] = len(row)
+            staged.pop(st, None)
+            results[st] = {"tables_cleared": cleared}
+        budget.wizard_selections_json = json.dumps(staged) if staged else None
+        db.session.commit()
+        return jsonify({"ok": True, "entity_code": ec, "source_types": types, "results": results})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"clear_source failed for entity {ec}")
+        return jsonify({"error": str(e), "results_partial": results}), 500
+
+
 @app.route("/api/admin/audit-sync-log", methods=["GET"])
 def admin_audit_sync_log():
     """ADMIN: list recent AuditSyncRun rows. Query params:
