@@ -6627,13 +6627,16 @@ def _build_apply_audit_2025(entity_code, selection):
     with open(pdf_path, "wb") as f:
         f.write(file_bytes)
 
-    # Building name lookup
-    Budget = workflow_models["Budget"]
-    from workflow import BUDGET_YEAR as _BY
-    bld_row = db.session.execute(db.text(
-        "SELECT building_name FROM building_info WHERE entity_code = :ec"
-    ), {"ec": entity_code}).fetchone()
-    building_name = (bld_row[0] if bld_row else None) or f"Entity {entity_code}"
+    # Building name lookup via af_helpers (canonical source)
+    try:
+        buildings = af_helpers["get_buildings_list"]()
+        building_name = next(
+            (b.get("building_name") for b in buildings
+             if str(b.get("entity_code")) == str(entity_code)),
+            None,
+        ) or f"Entity {entity_code}"
+    except Exception:
+        building_name = f"Entity {entity_code}"
 
     # Upsert AuditUpload — clean replace any existing row for this entity so
     # re-clicks overwrite (idempotent).
