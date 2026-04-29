@@ -925,20 +925,16 @@ header {
         <li class="rail-phase">Assumptions</li>
         <li class="rail-step" onclick="showStep(3)" data-step="3">
           <div class="step-circle" data-step="3">3</div>
-          <span>Portfolio Review</span>
-        </li>
-        <li class="rail-step" onclick="showStep(4)" data-step="4">
-          <div class="step-circle" data-step="4">4</div>
-          <span>Building Overrides</span>
+          <span>Set Assumptions</span>
         </li>
 
         <li class="rail-phase">Generate</li>
-        <li class="rail-step" onclick="showStep(5)" data-step="5">
-          <div class="step-circle" data-step="5">5</div>
+        <li class="rail-step" onclick="showStep(4)" data-step="4">
+          <div class="step-circle" data-step="4">4</div>
           <span>Preview & Generate</span>
         </li>
-        <li class="rail-step" onclick="showStep(6)" data-step="6">
-          <div class="step-circle" data-step="6">6</div>
+        <li class="rail-step" onclick="showStep(5)" data-step="5">
+          <div class="step-circle" data-step="5">5</div>
           <span>Complete</span>
         </li>
       </ul>
@@ -951,7 +947,7 @@ header {
     <!-- Step 1: Select Entity -->
     <div class="step-content active" data-step="1">
       <div class="step-header">
-        <div class="step-badge">Step 1 of 6</div>
+        <div class="step-badge">Step 1 of 5</div>
         <h1 class="step-title">Select Entity</h1>
         <p class="step-description">Choose which building to create a budget for</p>
       </div>
@@ -1017,7 +1013,7 @@ header {
     <!-- Step 2: Upload Sources -->
     <div class="step-content" data-step="2">
       <div class="step-header">
-        <div class="step-badge">Step 2 of 6</div>
+        <div class="step-badge">Step 2 of 5</div>
         <h1 class="step-title">Upload Yardi Sources</h1>
         <p class="step-description">Upload the required YSL and optional enrichment files</p>
       </div>
@@ -1061,41 +1057,26 @@ header {
       </div>
     </div>
 
-    <!-- Step 3: Review Portfolio Assumptions -->
+    <!-- Step 3: Set Assumptions (CFO defaults pre-filled, FA can override) -->
     <div class="step-content" data-step="3">
       <div class="step-header">
-        <div class="step-badge">Step 3 of 6</div>
-        <h1 class="step-title">Review Portfolio Assumptions</h1>
-        <p class="step-description">These are your admin-set defaults</p>
+        <div class="step-badge">Step 3 of 5</div>
+        <h1 class="step-title">Set Assumptions</h1>
+        <p class="step-description">Firm defaults are pre-filled. Override anything specific to this building.</p>
       </div>
       <div class="prompt-banner">
-        Review only — these are set by your admin. If something looks wrong, flag it before continuing.
+        Values save automatically as you type. Defaults come from the CFO Portfolio Defaults page. Anything you change here applies only to this building and lands in the Assumptions tab on the dashboard after Build.
       </div>
-      <div class="version-chip" id="versionChip">v1 · Updated Today</div>
-      <div class="assumptions-grid" id="portfolioAssumptions">
+      <div id="wizardAssumptionsForm">
         <!-- Populated by JavaScript -->
       </div>
+      <div id="wizardAssumpStatus" style="margin-top:12px; font-size:12px; color:var(--gray-500); height:16px;"></div>
     </div>
 
-    <!-- Step 4: Set Building Assumptions -->
+    <!-- Step 4: Preview & Generate -->
     <div class="step-content" data-step="4">
       <div class="step-header">
-        <div class="step-badge">Step 4 of 6</div>
-        <h1 class="step-title">Set Building Assumptions</h1>
-        <p class="step-description">Override defaults for this specific entity</p>
-      </div>
-      <div class="prompt-banner">
-        Only fill in overrides — blank fields inherit the portfolio default shown in gray.
-      </div>
-      <div class="building-assumptions-form" id="buildingAssumptionsForm">
-        <!-- Populated by JavaScript -->
-      </div>
-    </div>
-
-    <!-- Step 5: Preview & Generate -->
-    <div class="step-content" data-step="5">
-      <div class="step-header">
-        <div class="step-badge">Step 5 of 6</div>
+        <div class="step-badge">Step 4 of 5</div>
         <h1 class="step-title">Preview & Generate Budget</h1>
         <p class="step-description">Review the impact of assumptions before generating</p>
       </div>
@@ -1117,10 +1098,10 @@ header {
       </table>
     </div>
 
-    <!-- Step 6: Success -->
-    <div class="step-content" data-step="6">
+    <!-- Step 5: Success -->
+    <div class="step-content" data-step="5">
       <div class="step-header">
-        <div class="step-badge">Step 6 of 6</div>
+        <div class="step-badge">Step 5 of 5</div>
         <h1 class="step-title">Budget Complete</h1>
         <p class="step-description">You\'re ready to fine-tune your budget</p>
       </div>
@@ -1852,52 +1833,190 @@ function renderUploadChecklist() {
   });
 }
 
-// Render portfolio assumptions
-function renderPortfolioAssumptions() {
-  const container = document.getElementById('portfolioAssumptions');
-  container.innerHTML = '';
+// Wizard staged assumptions — populated by renderWizardAssumptionsForm,
+// updated by every onchange handler before POSTing.
+let wizardStagedAssumptions = {};
+let _wizardAssumpSaveTimer = null;
 
-  const assumptions = [
-    { label: 'Payroll Tax Rate', key: 'payroll_tax' },
-    { label: 'Union Benefits ($/employee)', key: 'union_benefits' },
-    { label: 'Workers Comp Rate', key: 'workers_comp' },
-    { label: 'Wage Increase (%)', key: 'wage_increase' }
-  ];
+// Render the wizard\'s editable assumptions form. CFO defaults come from
+// `portfolio` (server-rendered). Staged FA edits are loaded from the wizard
+// selections endpoint and merged on top. Auto-saves on change.
+function renderWizardAssumptionsForm() {
+  const host = document.getElementById('wizardAssumptionsForm');
+  if (!host) return;
+  host.innerHTML = '<div style="padding:20px; color:var(--gray-500);">Loading assumptions...</div>';
 
-  assumptions.forEach(assumption => {
-    const value = portfolio[assumption.key] || 'Not set';
-    const row = document.createElement('div');
-    row.className = 'assumption-row';
-    row.innerHTML = `
-      <div class="assumption-label">${assumption.label}</div>
-      <div class="assumption-value">${value}</div>
-    `;
-    container.appendChild(row);
+  // Pull any staged values from selections (overrides over CFO defaults)
+  fetch('/api/wizard/' + selectedEntity + '/selections')
+    .then(r => r.json())
+    .then(data => {
+      const staged = (data && data.selections && data.selections.assumptions) || {};
+      wizardStagedAssumptions = staged;
+      // Deep-merge: CFO defaults under, staged on top
+      const merged = JSON.parse(JSON.stringify(portfolio || {}));
+      Object.keys(staged).forEach(k => {
+        if (typeof staged[k] === 'object' && staged[k] !== null && typeof merged[k] === 'object' && merged[k] !== null) {
+          merged[k] = Object.assign({}, merged[k], staged[k]);
+        } else {
+          merged[k] = staged[k];
+        }
+      });
+      _renderWizardAssumpHTML(host, merged);
+    })
+    .catch(err => {
+      console.error('Failed to load staged assumptions, using CFO defaults only:', err);
+      wizardStagedAssumptions = {};
+      _renderWizardAssumpHTML(host, JSON.parse(JSON.stringify(portfolio || {})));
+    });
+}
+
+function _renderWizardAssumpHTML(host, a) {
+  const pt = a.payroll_tax || {};
+  const ub = a.union_benefits || {};
+  const wc = a.workers_comp || {};
+  const wi = a.wage_increase || {};
+  const ir = a.insurance_renewal || {};
+  const en = a.energy || {};
+  const ws = a.water_sewer || {};
+
+  // Inject scoped style once
+  if (!document.getElementById('wiz-asm-style')) {
+    const st = document.createElement('style');
+    st.id = 'wiz-asm-style';
+    st.textContent =
+      '.wiz-asm { padding: 4px 0 12px; font-variant-numeric: tabular-nums; }' +
+      '.wiz-asm .wa-section { margin-bottom: 24px; }' +
+      '.wiz-asm .wa-section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gray-700); margin-bottom: 10px; }' +
+      '.wiz-asm .wa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; align-items: start; }' +
+      '.wiz-asm .wa-card { background: #fff; border-radius: 10px; border: 1px solid var(--gray-200); padding: 16px 20px 14px; }' +
+      '.wiz-asm .wa-card-title { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray-700); margin: 0 0 10px; }' +
+      '.wiz-asm .wa-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; }' +
+      '.wiz-asm .wa-row label { font-size: 13px; color: var(--gray-700); font-weight: 400; flex: 1 1 auto; }' +
+      '.wiz-asm .wa-input-wrap { display: inline-flex; align-items: center; gap: 6px; }' +
+      '.wiz-asm .wa-unit { font-size: 11px; color: var(--gray-500); min-width: 8px; }' +
+      '.wiz-asm .wa-input { width: 100px; padding: 6px 10px; border: 1px solid var(--gray-200); border-radius: 6px; font-size: 13px; text-align: right; background: #fff; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }' +
+      '.wiz-asm .wa-input::-webkit-outer-spin-button, .wiz-asm .wa-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }' +
+      '.wiz-asm .wa-input:focus { outline: none; border-color: var(--brown-700, #5a4a3f); box-shadow: 0 0 0 3px rgba(90, 74, 63, 0.12); }' +
+      '.wiz-asm .wa-sub { font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase; color: var(--gray-500); padding: 8px 0 2px; }' +
+      '.wiz-asm .wa-card .wa-sub:first-child { padding-top: 0; }';
+    document.head.appendChild(st);
+  }
+
+  function pctVal(v) { return (v || v === 0) ? (v * 100).toFixed(2) : '0'; }
+  function numVal(v) { return (v || v === 0) ? v : 0; }
+
+  function pctF(section, key, val) {
+    return '<div class="wa-input-wrap"><input class="wa-input" type="number" step="any" value="' + pctVal(val) +
+      '" data-section="' + section + '" data-key="' + key + '" data-kind="pct"><span class="wa-unit">%</span></div>';
+  }
+  function numF(section, key, val, unit) {
+    return '<div class="wa-input-wrap"><input class="wa-input" type="number" step="any" value="' + numVal(val) +
+      '" data-section="' + section + '" data-key="' + key + '" data-kind="num"><span class="wa-unit">' + (unit || '') + '</span></div>';
+  }
+  function txtF(section, key, val) {
+    return '<div class="wa-input-wrap"><input class="wa-input" type="text" value="' + (val || '') +
+      '" data-section="' + section + '" data-key="' + key + '" data-kind="txt"><span class="wa-unit"></span></div>';
+  }
+  function row(label, inp) { return '<div class="wa-row"><label>' + label + '</label>' + inp + '</div>'; }
+  function sub(label) { return '<div class="wa-sub">' + label + '</div>'; }
+  function card(title, body) { return '<div class="wa-card"><h3 class="wa-card-title">' + title + '</h3>' + body + '</div>'; }
+  function section(title, cards) { return '<div class="wa-section"><div class="wa-section-title">' + title + '</div><div class="wa-grid">' + cards + '</div></div>'; }
+
+  const payrollTax = card('Payroll Tax Rates',
+    row('FICA', pctF('payroll_tax','FICA', pt.FICA)) +
+    row('SUI', pctF('payroll_tax','SUI', pt.SUI)) +
+    row('FUI', pctF('payroll_tax','FUI', pt.FUI)) +
+    row('MTA', pctF('payroll_tax','MTA', pt.MTA)) +
+    row('NYS Disability', pctF('payroll_tax','NYS_Disability', pt.NYS_Disability)) +
+    row('PFL', pctF('payroll_tax','PFL', pt.PFL))
+  );
+  const union = card('Union Benefits · 32BJ',
+    row('Welfare · $/mo/man', numF('union_benefits','welfare_monthly', ub.welfare_monthly, '$')) +
+    row('Pension · $/wk/man', numF('union_benefits','pension_weekly', ub.pension_weekly, '$')) +
+    row('Supp Retirement · $/wk', numF('union_benefits','supp_retirement_weekly', ub.supp_retirement_weekly, '$')) +
+    row('Legal · $/mo', numF('union_benefits','legal_monthly', ub.legal_monthly, '$')) +
+    row('Training · $/mo', numF('union_benefits','training_monthly', ub.training_monthly, '$')) +
+    row('Profit Sharing · $/qtr', numF('union_benefits','profit_sharing_quarterly', ub.profit_sharing_quarterly, '$'))
+  );
+  const wcWi = card('Workers Comp & Wage Increase',
+    sub('Workers Comp') +
+    row('Workers Comp', pctF('workers_comp','percent', wc.percent)) +
+    sub('Wage Increase') +
+    row('Wage Increase', pctF('wage_increase','percent', wi.percent)) +
+    row('Effective Week', txtF('wage_increase','effective_week', wi.effective_week || 'Wk 16')) +
+    row('Pre-Increase Weeks', numF('wage_increase','pre_increase_weeks', wi.pre_increase_weeks, '')) +
+    row('Post-Increase Weeks', numF('wage_increase','post_increase_weeks', wi.post_increase_weeks, ''))
+  );
+  const ins = card('Insurance Renewal',
+    row('Renewal Increase', pctF('insurance_renewal','increase_percent', ir.increase_percent)) +
+    row('Effective Date', txtF('insurance_renewal','effective_date', ir.effective_date || 'Mar 2027')) +
+    row('Pre-Renewal Months', numF('insurance_renewal','pre_renewal_months', ir.pre_renewal_months, '')) +
+    row('Post-Renewal Months', numF('insurance_renewal','post_renewal_months', ir.post_renewal_months, ''))
+  );
+  const energy = card('Energy Rates',
+    sub('Gas') +
+    row('ESCO Rate · $/Therm', numF('energy','gas_esco_rate', en.gas_esco_rate, '$')) +
+    row('Rate Increase', pctF('energy','gas_rate_increase', en.gas_rate_increase)) +
+    sub('Electric') +
+    row('ESCO Rate · $/KWH', numF('energy','electric_esco_rate', en.electric_esco_rate, '$')) +
+    row('Rate Increase', pctF('energy','electric_rate_increase', en.electric_rate_increase)) +
+    sub('Oil') +
+    row('Price · $/gallon', numF('energy','oil_price_per_gallon', en.oil_price_per_gallon, '$')) +
+    row('Rate Increase', pctF('energy','oil_rate_increase', en.oil_rate_increase))
+  );
+  const water = card('Water & Sewer',
+    row('Rate Increase', pctF('water_sewer','rate_increase', ws.rate_increase))
+  );
+
+  host.innerHTML = '<div class="wiz-asm">' +
+    section('Payroll', payrollTax + union + wcWi) +
+    section('Operating', ins + energy + water) +
+    '</div>';
+
+  // Wire onchange handlers to auto-save staged values
+  host.querySelectorAll('.wa-input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const sectionKey = inp.dataset.section;
+      const fieldKey = inp.dataset.key;
+      const kind = inp.dataset.kind;
+      let value;
+      if (kind === 'pct') {
+        value = (parseFloat(inp.value) || 0) / 100;
+      } else if (kind === 'num') {
+        value = parseFloat(inp.value) || 0;
+      } else {
+        value = inp.value;
+      }
+      _stageWizardAssumption(sectionKey, fieldKey, value);
+    });
   });
 }
 
-// Render building assumptions form
-function renderBuildingAssumptionsForm() {
-  const form = document.getElementById('buildingAssumptionsForm');
-  form.innerHTML = '';
-
-  const overrides = [
-    { label: 'Insurance Renewal %', key: 'insurance_renewal', default: '5.2%' },
-    { label: 'Energy Escalation %', key: 'energy_escalation', default: '3.1%' },
-    { label: 'Water / Sewer %', key: 'water_sewer', default: '2.5%' }
-  ];
-
-  overrides.forEach(override => {
-    const value = building[override.key] || '';
-    const row = document.createElement('div');
-    row.className = 'form-row';
-    row.innerHTML = `
-      <div class="form-label">${override.label}</div>
-      <div class="form-default">${override.default}</div>
-      <input type="text" class="form-input" placeholder="Leave blank to use default" value="${value}" data-key="${override.key}">
-    `;
-    form.appendChild(row);
-  });
+function _stageWizardAssumption(section, field, value) {
+  const status = document.getElementById('wizardAssumpStatus');
+  if (status) status.textContent = 'Saving...';
+  clearTimeout(_wizardAssumpSaveTimer);
+  _wizardAssumpSaveTimer = setTimeout(() => {
+    const payload = {};
+    payload[section] = {};
+    payload[section][field] = value;
+    fetch('/api/wizard/' + selectedEntity + '/selections/assumptions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data && data.ok) {
+          wizardStagedAssumptions = data.assumptions || {};
+          if (status) status.textContent = 'Saved';
+          setTimeout(() => { if (status) status.textContent = ''; }, 1500);
+        } else {
+          if (status) status.textContent = 'Save failed';
+        }
+      })
+      .catch(() => { if (status) status.textContent = 'Save failed'; });
+  }, 500);
 }
 
 // Render preview table — fetches live data from API
@@ -1971,9 +2090,8 @@ function showStep(stepNum) {
       renderUploadChecklist();
     }
   }
-  if (stepNum === 3) renderPortfolioAssumptions();
-  if (stepNum === 4) renderBuildingAssumptionsForm();
-  if (stepNum === 5) renderPreviewTable();
+  if (stepNum === 3) renderWizardAssumptionsForm();
+  if (stepNum === 4) renderPreviewTable();
 
   // Update action buttons
   renderActionButtons();
@@ -1994,7 +2112,7 @@ function completeStep(stepNum) {
     }).catch(err => console.error('Step save error:', err));
   }
 
-  if (stepNum < 6) {
+  if (stepNum < 5) {
     showStep(stepNum + 1);
   }
 }
@@ -2060,38 +2178,20 @@ function renderActionButtons() {
 
     const btn2 = document.createElement('button');
     btn2.className = 'btn btn-secondary';
-    btn2.textContent = 'Flag an issue';
-    btn2.onclick = () => flagAssumption();
+    btn2.textContent = 'Use all defaults';
+    btn2.onclick = () => completeStep(3);
     container.appendChild(btn2);
 
     const btn3 = document.createElement('button');
     btn3.className = 'btn btn-primary';
-    btn3.textContent = 'Looks good, continue →';
+    btn3.textContent = 'Continue →';
     btn3.onclick = () => completeStep(3);
     container.appendChild(btn3);
   } else if (currentStep === 4) {
     const btn1 = document.createElement('button');
     btn1.className = 'btn btn-secondary';
-    btn1.textContent = '← Back';
-    btn1.onclick = () => showStep(3);
-    container.appendChild(btn1);
-
-    const btn2 = document.createElement('button');
-    btn2.className = 'btn btn-secondary';
-    btn2.textContent = 'Use all defaults';
-    btn2.onclick = () => completeStep(4);
-    container.appendChild(btn2);
-
-    const btn3 = document.createElement('button');
-    btn3.className = 'btn btn-primary';
-    btn3.textContent = 'Save & continue →';
-    btn3.onclick = () => saveBuildingAssumptions();
-    container.appendChild(btn3);
-  } else if (currentStep === 5) {
-    const btn1 = document.createElement('button');
-    btn1.className = 'btn btn-secondary';
     btn1.textContent = '← Adjust assumptions';
-    btn1.onclick = () => showStep(4);
+    btn1.onclick = () => showStep(3);
     container.appendChild(btn1);
 
     const btn2 = document.createElement('button');
@@ -2099,7 +2199,7 @@ function renderActionButtons() {
     btn2.textContent = 'Generate budget →';
     btn2.onclick = () => generateBudget();
     container.appendChild(btn2);
-  } else if (currentStep === 6) {
+  } else if (currentStep === 5) {
     const btn = document.createElement('button');
     btn.className = 'btn btn-primary btn-full';
     btn.textContent = 'Open Dashboard →';

@@ -5826,6 +5826,46 @@ def wizard_clear_selections(entity_code):
     return jsonify({"ok": True, "entity_code": entity_code, "selections": {}})
 
 
+@app.route("/api/wizard/<entity_code>/selections/assumptions", methods=["POST"])
+def wizard_save_assumptions(entity_code):
+    """Stage FA-edited assumption values into wizard_selections_json["assumptions"].
+
+    Body: a partial assumptions dict shaped like Budget.assumptions_json
+      e.g. {"insurance_renewal": {"increase_percent": 0.18}, "energy": {...}}
+    Deep-merges into the existing staged assumptions. Does NOT write to
+    Budget.assumptions_json - that happens at Build Budget time.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Body must be a dict"}), 400
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code} year {_BY}"}), 404
+
+    try:
+        current = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        current = {}
+
+    staged = current.get("assumptions") or {}
+    if not isinstance(staged, dict):
+        staged = {}
+
+    # Deep merge by section (one level deep - matches Budget.assumptions_json shape)
+    for key, value in data.items():
+        if isinstance(value, dict) and isinstance(staged.get(key), dict):
+            staged[key].update(value)
+        else:
+            staged[key] = value
+
+    current["assumptions"] = staged
+    budget.wizard_selections_json = json.dumps(current)
+    db.session.commit()
+    return jsonify({"ok": True, "entity_code": entity_code, "assumptions": staged})
 
 
 
@@ -6069,6 +6109,28 @@ def wizard_build_budget(entity_code):
                     "status": "selection_recorded_only",
                     "note": "Parser pipeline for this source type pending — file selection saved but not yet auto-imported.",
                 })
+
+        # Seed Budget.assumptions_json from staged wizard assumptions.
+        # CFO defaults are file-based and read by the wizard UI for pre-population.
+        # Anything the FA edited in Step 3 lands in selections["assumptions"];
+        # we deep-merge into whatever may already be on the Budget row (typically
+        # empty on a fresh build). Existing assumptions_json values win only for
+        # keys the FA did NOT touch - FA edits override.
+        staged_assumptions = selections.get("assumptions") or {}
+        if isinstance(staged_assumptions, dict) and staged_assumptions:
+            try:
+                existing = json.loads(budget.assumptions_json or "{}")
+            except Exception:
+                existing = {}
+            for key, value in staged_assumptions.items():
+                if isinstance(value, dict) and isinstance(existing.get(key), dict):
+                    existing[key].update(value)
+                else:
+                    existing[key] = value
+            budget.assumptions_json = json.dumps(existing)
+            summary["assumptions_seeded"] = True
+        else:
+            summary["assumptions_seeded"] = False
 
         # Stamp wizard_completed_at on success
         budget.wizard_completed_at = _dt.utcnow()
