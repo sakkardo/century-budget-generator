@@ -2176,12 +2176,6 @@ function renderActionButtons() {
     btn1.onclick = () => showStep(2);
     container.appendChild(btn1);
 
-    const btn2 = document.createElement('button');
-    btn2.className = 'btn btn-secondary';
-    btn2.textContent = 'Use all defaults';
-    btn2.onclick = () => completeStep(3);
-    container.appendChild(btn2);
-
     const btn3 = document.createElement('button');
     btn3.className = 'btn btn-primary';
     btn3.textContent = 'Continue →';
@@ -2237,64 +2231,6 @@ function handleFileUpload(event) {
     });
   } catch (e) {
     alert('Error uploading file: ' + e.message);
-  }
-}
-
-// Flag assumption
-function flagAssumption() {
-  const note = prompt('What looks wrong? (optional)');
-  if (note !== null) {
-    try {
-      fetch(`/api/wizard/${selectedEntity}/flag`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: note })
-      })
-      .then(() => {
-        alert('Flag saved. An admin will review it.');
-        completeStep(3);
-      })
-      .catch(error => {
-        console.error('Flag error:', error);
-        alert('Error saving flag: ' + error.message);
-      });
-    } catch (e) {
-      alert('Error: ' + e.message);
-    }
-  }
-}
-
-// Save building assumptions
-function saveBuildingAssumptions() {
-  const formInputs = document.querySelectorAll('.form-input');
-  const overrides = {};
-
-  formInputs.forEach(input => {
-    if (input.value) {
-      overrides[input.dataset.key] = input.value;
-    }
-  });
-
-  try {
-    fetch(`/api/wizard/${selectedEntity}/assumptions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ overrides: overrides })
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.error) {
-        alert('Error saving assumptions: ' + data.error);
-      } else {
-        completeStep(4);
-      }
-    })
-    .catch(error => {
-      console.error('Save error:', error);
-      alert('Error saving assumptions: ' + error.message);
-    });
-  } catch (e) {
-    alert('Error: ' + e.message);
   }
 }
 
