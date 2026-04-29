@@ -5853,6 +5853,9 @@ def _wizard_record_selection(entity_code, source_label_default=None):
             )
             parse_result = {"source_type": source_type, "rows_imported": written,
                             "filename": filename}
+        elif source_type == "audit_2025":
+            # Long-running: Claude extraction is 30-60s. Done synchronously here.
+            parse_result = _build_apply_audit_2025(entity_code, current[source_type])
     except Exception as e:
         # Roll back parser changes; preserve the staged selection so the FA
         # can re-click after fixing the source file.
@@ -6587,6 +6590,90 @@ def wizard_build_budget(entity_code):
         summary["errors"].append(str(e))
         summary["fatal_error"] = str(e)
         return jsonify(summary), 500
+
+
+def _build_apply_audit_2025(entity_code, selection):
+    """Download + extract a 2025 audit PDF from SharePoint into the AuditUpload
+    pipeline. Sets status='extracted' (skips mapping — FA picks auditor profile
+    and confirms at /audited-financials/review/<upload_id>).
+
+    Returns dict with upload_id, raw_extraction summary, review_url.
+    Raises on failure.
+    """
+    import sys
+    from pathlib import Path
+    from datetime import datetime as _dt
+    AuditUpload = af_models["AuditUpload"]
+
+    item_id = (selection.get("item_id") or "").strip()
+    if not item_id:
+        raise RuntimeError("audit_2025 selection missing item_id")
+
+    filename, file_bytes = _sharepoint_download_item(item_id)
+
+    # Save PDF to the audited_financials data dir so the existing review UI
+    # can find it later.
+    af_path = str(Path(__file__).resolve().parent)
+    if af_path not in sys.path:
+        sys.path.insert(0, af_path)
+    from audited_financials import _category_section  # ensure module loaded
+    # Use the same helper as af_helpers if exposed, else compute path
+    data_dir = af_helpers["get_data_dir"]() if "get_data_dir" in af_helpers else None
+    if data_dir is None:
+        data_dir = Path(__file__).resolve().parent / "data" / "audited_financials"
+        data_dir.mkdir(parents=True, exist_ok=True)
+    safe_filename = f"wizard_{entity_code}_{filename}"
+    pdf_path = Path(data_dir) / safe_filename
+    with open(pdf_path, "wb") as f:
+        f.write(file_bytes)
+
+    # Building name lookup
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    bld_row = db.session.execute(db.text(
+        "SELECT building_name FROM building_info WHERE entity_code = :ec"
+    ), {"ec": entity_code}).fetchone()
+    building_name = (bld_row[0] if bld_row else None) or f"Entity {entity_code}"
+
+    # Upsert AuditUpload — clean replace any existing row for this entity so
+    # re-clicks overwrite (idempotent).
+    AuditUpload.query.filter_by(entity_code=entity_code).delete()
+    db.session.flush()
+
+    upload = AuditUpload(
+        entity_code=entity_code,
+        building_name=building_name,
+        profile_id=None,  # FA will pick at review
+        fiscal_year_end=None,
+        pdf_filename=safe_filename,
+        status="uploaded",
+    )
+    db.session.add(upload)
+    db.session.flush()  # need upload.id
+
+    # Run Claude extraction
+    extract_fn = af_helpers["extract_from_pdf"]
+    extracted = extract_fn(str(pdf_path), building_name, entity_code=entity_code)
+    if not extracted:
+        raise RuntimeError("Claude extraction returned no data")
+
+    upload.raw_extraction = json.dumps(extracted)
+    upload.status = "extracted"
+    upload.updated_at = _dt.utcnow()
+
+    rev_count = len((extracted.get("revenue") or []))
+    exp_count = len((extracted.get("expenses") or []))
+
+    return {
+        "source_type": "audit_2025",
+        "upload_id": upload.id,
+        "filename": filename,
+        "revenue_lines": rev_count,
+        "expense_lines": exp_count,
+        "review_url": f"/audited-financials/review/{upload.id}",
+        "status": "extracted",
+        "note": "Open the review URL to assign auditor profile and confirm mapping.",
+    }
 
 
 def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_YEAR, apply_summary_prefix_override):

@@ -1668,8 +1668,16 @@ function useSharepointFile(sourceType, itemId, filename) {
         if (data.selections) { _wizardSelections = data.selections; }
         if (data.parse_result) {
           const pr = data.parse_result;
-          const msg = "\u2713 Imported " + (pr.rows_imported || 0) + " rows from " + (pr.filename || "file") + ".";
-          alert(msg);
+          let msg;
+          if (pr.source_type === "audit_2025") {
+            msg = "\u2713 Audit extracted: " + (pr.revenue_lines || 0) + " revenue + " + (pr.expense_lines || 0) + " expense lines.\n\nNext: open the review page to assign auditor profile + confirm mapping:\n" + pr.review_url;
+            if (confirm(msg + "\n\nOpen review page now?")) {
+              window.open(pr.review_url, "_blank");
+            }
+          } else {
+            msg = "\u2713 Imported " + (pr.rows_imported || 0) + " rows from " + (pr.filename || "file") + ".";
+            alert(msg);
+          }
         }
         loadSharepointSources();
       } else {
