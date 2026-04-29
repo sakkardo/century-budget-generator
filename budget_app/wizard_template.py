@@ -976,13 +976,42 @@ header {
       <div class="prompt-banner" id="entityPrompt">
         Each entity has its own budget timeline. Select one to get started.
       </div>
+      <!-- Lifecycle stage filter chips -->
+      <div class="stage-filter-row" id="stageFilterRow" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:6px;">FILTER BY STAGE</span>
+        <!-- Populated by JavaScript -->
+      </div>
       <div class="entity-search-bar">
         <svg class="search-icon" viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
         <input type="text" id="entitySearch" class="entity-search-input" placeholder="Search by name or entity code..." oninput="renderEntityGrid()">
       </div>
-      <div class="entity-grid" id="entityGrid">
-        <!-- Populated by JavaScript from budgets_json -->
+      <div class="entity-table-wrap" style="background:white; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.04); margin-bottom:32px;">
+        <table class="entity-table" id="entityTable" style="width:100%; border-collapse:collapse; table-layout:fixed;">
+          <colgroup>
+            <col style="width:38%"/>
+            <col style="width:8%"/>
+            <col style="width:18%"/>
+            <col style="width:14%"/>
+            <col style="width:14%"/>
+            <col style="width:8%"/>
+          </colgroup>
+          <thead>
+            <tr style="background:var(--gray-50); border-bottom:1px solid var(--gray-200);">
+              <th data-col="building_name" onclick="setEntitySort(\'building_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="entity_code" onclick="setEntitySort(\'entity_code\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:1;">&#9650;</span></th>
+              <th data-col="fa_name" onclick="setEntitySort(\'fa_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">FA <span class="sort-arrow" data-arrow="fa_name" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="lifecycle_stage" onclick="setEntitySort(\'lifecycle_stage\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Stage <span class="sort-arrow" data-arrow="lifecycle_stage" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="updated_at" onclick="setEntitySort(\'updated_at\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Last activity <span class="sort-arrow" data-arrow="updated_at" style="opacity:0.3;">&#9650;</span></th>
+              <th style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700);"></th>
+            </tr>
+          </thead>
+          <tbody id="entityTableBody">
+            <!-- Populated by JavaScript -->
+          </tbody>
+        </table>
       </div>
+      <!-- Hidden legacy container kept for backward-compat references; not used. -->
+      <div class="entity-grid" id="entityGrid" style="display:none;"></div>
     </div>
 
     <!-- Step 2: Upload Sources -->
@@ -1259,98 +1288,252 @@ function filterByFA() {
 }
 
 // Render entity grid
-function renderEntityGrid() {
-  const grid = document.getElementById('entityGrid');
-  grid.innerHTML = '';
+let _entitySortState = { column: "entity_code", direction: "asc" };
+let _stageFilter = "all";
+let _faNameByEntity = {};
 
-  // Filter by FA if one is selected
-  let filteredBudgets = budgets;
+function _rebuildFaNameLookup() {
+  _faNameByEntity = {};
+  const usersById = {};
+  (faUsers || []).forEach(function (u) { usersById[String(u.id)] = u.name; });
+  (faAssignments || []).forEach(function (a) {
+    if (a.role && a.role !== "fa") return;
+    const existing = _faNameByEntity[a.entity_code];
+    const name = usersById[String(a.user_id)];
+    if (!name) return;
+    _faNameByEntity[a.entity_code] = existing ? (existing + ", " + name) : name;
+  });
+}
+
+function setEntitySort(col) {
+  if (_entitySortState.column === col) {
+    _entitySortState.direction = _entitySortState.direction === "asc" ? "desc" : "asc";
+  } else {
+    _entitySortState.column = col;
+    _entitySortState.direction = (col === "entity_code") ? "asc" : "asc";
+  }
+  renderEntityGrid();
+}
+
+function setStageFilter(stage) {
+  _stageFilter = stage;
+  renderEntityGrid();
+}
+
+function _entitySortValue(b, col) {
+  if (col === "entity_code") return parseInt(b.entity_code, 10) || 0;
+  if (col === "building_name") return (b.building_name || "").toLowerCase();
+  if (col === "fa_name") return (_faNameByEntity[b.entity_code] || "").toLowerCase();
+  if (col === "lifecycle_stage") {
+    const order = ["Setup","Sources Collected","Assumptions Confirmed","Budget Built (draft)","PM Review","Approved"];
+    const idx = order.indexOf(b.lifecycle_stage || "Setup");
+    return idx < 0 ? 99 : idx;
+  }
+  if (col === "updated_at") return new Date(b.updated_at || 0).getTime();
+  return 0;
+}
+
+function _formatRelativeTime(iso) {
+  if (!iso) return "—";
+  const dt = new Date(iso);
+  if (isNaN(dt.getTime())) return "—";
+  const now = Date.now();
+  const diffMs = now - dt.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + " min ago";
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + (hrs === 1 ? " hr ago" : " hrs ago");
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return days + (days === 1 ? " day ago" : " days ago");
+  return dt.toLocaleDateString();
+}
+
+function _stageColor(stage) {
+  const map = {
+    "Setup":                  "var(--gray-100)",
+    "Sources Collected":      "#dbeafe",
+    "Assumptions Confirmed":  "#fef3c7",
+    "Budget Built (draft)":   "#dcfce7",
+    "PM Review":              "#fde68a",
+    "Approved":               "#bbf7d0",
+  };
+  return map[stage] || "var(--gray-100)";
+}
+
+function renderEntityGrid() {
+  // Build FA name lookup if needed (faUsers/faAssignments are loaded once at init).
+  if (Object.keys(_faNameByEntity).length === 0) _rebuildFaNameLookup();
+
+  const tbody = document.getElementById("entityTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  // 1. Filter by FA dropdown
+  let filtered = budgets;
   if (selectedFA) {
-    const assignedEntities = new Set(
-      faAssignments.filter(a => String(a.user_id) === selectedFA).map(a => a.entity_code)
+    const assigned = new Set(
+      faAssignments.filter(function (a) { return String(a.user_id) === selectedFA; })
+                   .map(function (a) { return a.entity_code; })
     );
-    filteredBudgets = budgets.filter(b => assignedEntities.has(b.entity_code));
+    filtered = filtered.filter(function (b) { return assigned.has(b.entity_code); });
   }
 
-  // Filter by search term
-  const searchInput = document.getElementById('entitySearch');
-  const searchTerm = (searchInput ? searchInput.value : '').toLowerCase().trim();
+  // 2. Filter by stage chip
+  if (_stageFilter && _stageFilter !== "all") {
+    filtered = filtered.filter(function (b) { return (b.lifecycle_stage || "Setup") === _stageFilter; });
+  }
+
+  // 3. Filter by search
+  const searchInput = document.getElementById("entitySearch");
+  const searchTerm = (searchInput ? searchInput.value : "").toLowerCase().trim();
   if (searchTerm) {
-    filteredBudgets = filteredBudgets.filter(b => {
-      const name = (b.building_name || '').toLowerCase();
-      const code = (b.entity_code || '').toLowerCase();
-      return name.includes(searchTerm) || code.includes(searchTerm);
+    filtered = filtered.filter(function (b) {
+      const name = (b.building_name || "").toLowerCase();
+      const code = (b.entity_code || "").toLowerCase();
+      const fa = (_faNameByEntity[b.entity_code] || "").toLowerCase();
+      return name.includes(searchTerm) || code.includes(searchTerm) || fa.includes(searchTerm);
     });
   }
 
-  // Update entity count
-  const countEl = document.getElementById('faEntityCount');
+  // 4. Sort
+  const dir = _entitySortState.direction === "asc" ? 1 : -1;
+  filtered.sort(function (a, b) {
+    const va = _entitySortValue(a, _entitySortState.column);
+    const vb = _entitySortValue(b, _entitySortState.column);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return 1 * dir;
+    return 0;
+  });
+
+  // 5. Update column-header arrow indicators
+  document.querySelectorAll("#entityTable th[data-col]").forEach(function (th) {
+    const col = th.getAttribute("data-col");
+    const arrow = th.querySelector(".sort-arrow");
+    if (!arrow) return;
+    if (col === _entitySortState.column) {
+      arrow.style.opacity = "1";
+      arrow.innerHTML = _entitySortState.direction === "asc" ? "&#9650;" : "&#9660;";
+    } else {
+      arrow.style.opacity = "0.3";
+      arrow.innerHTML = "&#9650;";
+    }
+  });
+
+  // 6. Render stage filter chips with live counts (based on FA + search filters, NOT stage filter)
+  const stageRow = document.getElementById("stageFilterRow");
+  if (stageRow) {
+    // Compute counts on the FA-filtered set (so chips reflect what is reachable)
+    let chipBase = budgets;
+    if (selectedFA) {
+      const assigned = new Set(
+        faAssignments.filter(function (a) { return String(a.user_id) === selectedFA; })
+                     .map(function (a) { return a.entity_code; })
+      );
+      chipBase = chipBase.filter(function (b) { return assigned.has(b.entity_code); });
+    }
+    const stages = ["Setup","Sources Collected","Assumptions Confirmed","Budget Built (draft)","PM Review","Approved"];
+    const counts = { "all": chipBase.length };
+    stages.forEach(function (s) { counts[s] = 0; });
+    chipBase.forEach(function (b) { const s = b.lifecycle_stage || "Setup"; if (counts[s] !== undefined) counts[s] += 1; });
+
+    // Keep the leading label, replace any prior chips.
+    const headerLabel = stageRow.querySelector("span");
+    stageRow.innerHTML = "";
+    if (headerLabel) stageRow.appendChild(headerLabel);
+
+    function makeChip(label, count, key) {
+      const isActive = _stageFilter === key;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.textContent = label + " " + count;
+      chip.style.cssText =
+        "font-size:12px; font-weight:" + (isActive ? "700" : "600") +
+        "; padding:6px 12px; border-radius:14px; cursor:pointer; border:1px solid " +
+        (isActive ? "var(--brown, #5a4a3f)" : "var(--gray-200)") +
+        "; background:" + (isActive ? "var(--brown, #5a4a3f)" : "white") +
+        "; color:" + (isActive ? "white" : "var(--gray-700)") + ";";
+      chip.onclick = function () { setStageFilter(key); };
+      return chip;
+    }
+    stageRow.appendChild(makeChip("All", counts.all, "all"));
+    stages.forEach(function (s) {
+      stageRow.appendChild(makeChip(s, counts[s], s));
+    });
+  }
+
+  // 7. Update header count caption
+  const countEl = document.getElementById("faEntityCount");
   if (countEl) {
     const total = selectedFA
-      ? faAssignments.filter(a => String(a.user_id) === selectedFA).length
+      ? faAssignments.filter(function (a) { return String(a.user_id) === selectedFA && (a.role === "fa" || !a.role); }).length
       : budgets.length;
-    const showing = filteredBudgets.length;
-    if (searchTerm) {
-      countEl.textContent = showing + ' of ' + total + ' shown';
+    const showing = filtered.length;
+    if (searchTerm || _stageFilter !== "all") {
+      countEl.textContent = showing + " of " + total + " shown";
     } else if (selectedFA) {
-      countEl.textContent = showing + ' building' + (showing !== 1 ? 's' : '') + ' assigned';
+      countEl.textContent = showing + " building" + (showing !== 1 ? "s" : "") + " assigned";
     } else {
-      countEl.textContent = total + ' total buildings';
+      countEl.textContent = total + " total buildings";
     }
   }
 
-  // Update prompt
-  const prompt = document.getElementById('entityPrompt');
-  if (prompt) {
-    if (selectedFA && filteredBudgets.length === 0) {
-      prompt.textContent = 'No buildings assigned to this analyst yet. Assignments are managed in Monday.com.';
-    } else if (selectedFA) {
-      const faName = faUsers.find(u => String(u.id) === selectedFA);
-      prompt.textContent = 'Showing buildings assigned to ' + (faName ? faName.name : 'this analyst') + '. Select one to get started.';
-    } else {
-      prompt.textContent = 'Each entity has its own budget timeline. Select one to get started.';
-    }
-  }
-
-  if (filteredBudgets.length === 0) {
+  // 8. Render rows. Empty-state row if no matches.
+  if (filtered.length === 0) {
     const msg = searchTerm
-      ? 'No entities match "' + searchTerm + '"'
-      : (selectedFA ? 'No buildings assigned to this analyst.' : 'No entities found.');
-    grid.innerHTML = '<p style="color:var(--gray-500);padding:20px;">' + msg + '</p>';
+      ? "No entities match \"" + searchTerm + "\""
+      : (_stageFilter !== "all" ? ("No entities in " + _stageFilter + " stage")
+         : (selectedFA ? "No buildings assigned to this analyst." : "No entities found."));
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.style.cssText = "padding:32px; color:var(--gray-500); font-size:13px; text-align:center;";
+    td.textContent = msg;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
     return;
   }
 
-  filteredBudgets.forEach(budget => {
-    // Map DB status to display status
-    let displayStatus;
-    const ws = budget.wizard_step || 0;
-    if (budget.wizard_completed_at) {
-      displayStatus = { class: 'status-complete', label: 'Complete' };
-    } else if (budget.has_lines && ws >= 2) {
-      displayStatus = { class: 'status-has-edits', label: 'Step ' + ws + ' of 6' };
-    } else if (budget.has_lines) {
-      displayStatus = { class: 'status-in-progress', label: 'Has Data' };
-    } else {
-      displayStatus = { class: 'status-fresh', label: 'Fresh' };
-    }
+  filtered.forEach(function (b, idx) {
+    const tr = document.createElement("tr");
+    const isSelected = (selectedEntity === b.entity_code);
+    tr.style.cssText = "cursor:pointer; transition:background 0.1s; border-bottom:1px solid var(--gray-100);" +
+                       (idx % 2 === 1 ? " background:#fbfaf6;" : "") +
+                       (isSelected ? " background:#f5efe7;" : "");
+    tr.onmouseenter = function () { if (!isSelected) tr.style.background = "#f4f1eb"; };
+    tr.onmouseleave = function () {
+      tr.style.background = isSelected ? "#f5efe7" : (idx % 2 === 1 ? "#fbfaf6" : "");
+    };
+    tr.onclick = function () { selectEntity(b.entity_code, b.building_name || b.entity_code); };
 
-    const code = budget.entity_code;
-    const name = budget.building_name || code;
+    const stage = b.lifecycle_stage || "Setup";
+    const stageBg = _stageColor(stage);
+    const faName = _faNameByEntity[b.entity_code] || "—";
 
-    const card = document.createElement('div');
-    card.className = 'entity-card' + (selectedEntity === code ? ' selected' : '');
-    card.onclick = () => selectEntity(code, name);
+    const cell = function (text, css) {
+      const td = document.createElement("td");
+      td.style.cssText = "padding:10px 14px; font-size:13px; color:var(--gray-900); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" + (css || "");
+      td.textContent = text;
+      return td;
+    };
 
-    card.innerHTML = `
-      <div class="entity-status">
-        <span class="status-dot ${displayStatus.class}"></span>
-        ${displayStatus.label}
-      </div>
-      <div class="entity-name">${name}</div>
-      <div class="entity-address">Entity ${code}</div>
-    `;
+    tr.appendChild(cell(b.building_name || b.entity_code, " font-weight:600;"));
+    tr.appendChild(cell(b.entity_code, " font-family:ui-monospace,SFMono-Regular,monospace; color:var(--gray-700);"));
+    tr.appendChild(cell(faName, " color:var(--gray-700);"));
 
-    grid.appendChild(card);
+    const stageTd = document.createElement("td");
+    stageTd.style.cssText = "padding:10px 14px;";
+    stageTd.innerHTML = "<span style=\"display:inline-block; padding:3px 10px; border-radius:11px; font-size:11px; font-weight:600; background:" + stageBg + "; color:var(--gray-700);\">" + stage + "</span>";
+    tr.appendChild(stageTd);
+
+    tr.appendChild(cell(_formatRelativeTime(b.updated_at), " color:var(--gray-500); font-size:12px;"));
+
+    const arrowTd = document.createElement("td");
+    arrowTd.style.cssText = "padding:10px 14px; text-align:right; color:var(--gray-300); font-size:14px;";
+    arrowTd.textContent = "→";
+    tr.appendChild(arrowTd);
+
+    tbody.appendChild(tr);
   });
 }
 
