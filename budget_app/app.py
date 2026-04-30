@@ -6516,6 +6516,13 @@ def wizard_build_budget(entity_code):
     if not budget:
         return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
 
+    # Phase E gate: Foundation must be confirmed before any build can run.
+    if not budget.foundation_confirmed_at:
+        return jsonify({
+            "error": "Foundation not confirmed. Process the 2026 Approved Budget and confirm the 2025 Audit mapping before building.",
+            "foundation_required": True,
+        }), 400
+
     if budget.wizard_completed_at is not None:
         return jsonify({"error": "Budget already built. Discard via /selections DELETE if you want to re-run."}), 400
 
