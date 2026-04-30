@@ -63,6 +63,11 @@ def _run_idempotent_migrations():
     """Run additive schema migrations that are safe to retry."""
     statements = [
         "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS wizard_selections_json TEXT",
+        # Phase E — Foundation gate
+        "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS foundation_confirmed_at TIMESTAMP",
+        "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS foundation_confirmed_by INTEGER",
+        "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS foundation_no_prior_budget BOOLEAN DEFAULT FALSE NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_budgets_foundation_confirmed_at ON budgets (foundation_confirmed_at)",
     ]
     with app.app_context():
         for stmt in statements:

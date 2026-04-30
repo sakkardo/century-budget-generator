@@ -527,6 +527,15 @@ def create_workflow_blueprint(db):
         # Empty until FA picks files; cleared after Build Budget commits successfully.
         wizard_selections_json = db.Column(db.Text, nullable=True)
 
+        # Foundation gate (Phase E) — set when FA confirms 2025 audit mapping;
+        # required before Step 3+ (Yardi sources, assumptions, Build Budget).
+        foundation_confirmed_at = db.Column(db.DateTime, nullable=True, index=True)
+        foundation_confirmed_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+        # Explicit "No 2026 approved budget exists for this entity" acknowledgment.
+        # Unlocks audit extraction with CENTURY_CATEGORIES fallback for the 24 entities
+        # that don\'t have a prior-year approved budget XLSX in SharePoint.
+        foundation_no_prior_budget = db.Column(db.Boolean, default=False, nullable=False)
+
         # Relationships (use backref on child side to avoid forward-reference issues)
         lines = db.relationship("BudgetLine", back_populates="budget", cascade="all, delete-orphan")
 
@@ -555,7 +564,10 @@ def create_workflow_blueprint(db):
                 "wizard_step": self.wizard_step or 0,
                 "wizard_completed_at": self.wizard_completed_at.isoformat() if self.wizard_completed_at else None,
                 "lifecycle_stage": derive_lifecycle_stage(self),
-                "wizard_selections": _parse_backup_json(self.wizard_selections_json) if False else (json.loads(self.wizard_selections_json) if self.wizard_selections_json else {})
+                "wizard_selections": _parse_backup_json(self.wizard_selections_json) if False else (json.loads(self.wizard_selections_json) if self.wizard_selections_json else {}),
+                "foundation_confirmed_at": self.foundation_confirmed_at.isoformat() if self.foundation_confirmed_at else None,
+                "foundation_confirmed_by": self.foundation_confirmed_by,
+                "foundation_no_prior_budget": bool(self.foundation_no_prior_budget),
             }
 
 
