@@ -2638,9 +2638,22 @@ async function uploadAll() {
             upload.confirmed_by = data.get("confirmed_by", "system")
             upload.confirmed_at = datetime.utcnow()
             upload.updated_at = datetime.utcnow()
+
+            # Phase E hook: confirming the audit also confirms the Foundation
+            # for this entity (since audit mapping correctness was the whole
+            # point of the foundation gate).
+            try:
+                db.session.execute(db.text(
+                    "UPDATE budgets SET foundation_confirmed_at = NOW() "
+                    "WHERE entity_code = :ec AND foundation_confirmed_at IS NULL"
+                ), {"ec": upload.entity_code})
+            except Exception as _e:
+                logger.warning(f"foundation stamp on audit confirm failed (non-fatal): {_e}")
+
             db.session.commit()
 
-            return jsonify({"success": True})
+            return jsonify({"success": True, "foundation_confirmed": True,
+                            "entity_code": upload.entity_code})
         except Exception as e:
             logger.error(f"Confirm error: {e}")
             return jsonify({"success": False, "error": str(e)}), 400

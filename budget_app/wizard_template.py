@@ -919,7 +919,7 @@ header {
         </li>
         <li class="rail-step" onclick="showStep(2)" data-step="2">
           <div class="step-circle" data-step="2">2</div>
-          <span>Upload Sources</span>
+          <span>Foundation</span>
         </li>
 
         <li class="rail-phase">Assumptions</li>
@@ -1014,17 +1014,34 @@ header {
     <div class="step-content" data-step="2">
       <div class="step-header">
         <div class="step-badge">Step 2 of 5</div>
-        <h1 class="step-title">Upload Sources</h1>
-        <p class="step-description">Verify the source files detected in SharePoint, or upload directly below as a fallback</p>
+        <h1 class="step-title">Foundation</h1>
+        <p class="step-description">Lock in the prior-year framework. The 2026 Approved Budget and 2025 Audit must both be confirmed before the rest of the budget process unlocks.</p>
       </div>
       <div class="prompt-banner">
         Step 2 collects the source files. Nothing is committed to your budget until you click "Build Budget" in Step 5. Files staged in SharePoint will be detected here — you confirm each one explicitly.
       </div>
 
+      <!-- Foundation Panel (Phase E) -->
+      <div id="foundationPanel" style="display:none; margin-bottom:16px;">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="foundation-card" id="foundationApprovedCard" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+            <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; color:var(--gray-500); text-transform:uppercase; margin-bottom:6px;">2026 Approved Budget</div>
+            <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--gray-700, #374151);">Sets Col 1 (2024 Actual) + Col 6 + categories</div>
+            <div id="foundationApprovedBody"><div style="color:var(--gray-500); font-size:13px;">Loading…</div></div>
+          </div>
+          <div class="foundation-card" id="foundationAuditCard" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+            <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; color:var(--gray-500); text-transform:uppercase; margin-bottom:6px;">2025 Audited Financial</div>
+            <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--gray-700, #374151);">Sets Col 2 (2025 Actual)</div>
+            <div id="foundationAuditBody"><div style="color:var(--gray-500); font-size:13px;">Loading…</div></div>
+          </div>
+        </div>
+        <div id="foundationStatusBanner" style="margin-top:12px;"></div>
+      </div>
+
       <!-- SharePoint Sources Panel -->
       <div class="sp-sources-panel" id="spSourcesPanel" style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:18px 22px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.04); display:none;">
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
-          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--gray-500); flex:1;">From SharePoint</div>
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--gray-500); flex:1;">Yardi Sources</div>
           <span id="spFolderInfo" style="font-size:12px; color:var(--gray-500);"></span>
           <button type="button" id="spRefreshBtn" onclick="loadSharepointSources()" style="font-size:12px; padding:5px 12px; border:1px solid #ddd; background:#fff; border-radius:4px; cursor:pointer;" title="Re-list files in this entity Supporting Documents folder">↻ Refresh from SP</button>
         </div>
@@ -1518,6 +1535,7 @@ function selectEntity(code, name) {
   completeStep(1);
   // Kick off SharePoint detection for Step 2 as soon as entity is picked.
   try { loadSharepointSources(); } catch (e) {}
+  try { loadFoundationStatus(); } catch (e) {}
   try { loadWizardSelections(); } catch (e) {}
 }
 
@@ -1561,7 +1579,7 @@ function loadSharepointSources() {
       renderSharepointSources();
       if (info) {
         if (data.folder_exists) {
-          const total = (data.by_source_type.audit_2025||[]).length + (data.by_source_type.approved_2026||[]).length + (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
+          const total = (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
           info.textContent = total + " matched · " + (data.by_source_type.unmatched||[]).length + " other";
         } else {
           info.textContent = "Folder not yet created";
@@ -1584,8 +1602,6 @@ function renderSharepointSources() {
     return;
   }
   const slots = [
-    { key: "audit_2025",           label: "2025 Audited Financial" },
-    { key: "approved_2026",        label: "2026 Approved Budget (Cols 1 & 6)" },
     { key: "ysl",                  label: "YSL" },
     { key: "expense_distribution", label: "Expense Distribution" },
     { key: "ap_aging",             label: "AP Aging" },
@@ -1638,6 +1654,177 @@ function renderSharepointSources() {
   });
 }
 
+// ─── Phase E: Foundation panel (2026 Approved Budget + 2025 Audit) ─────────
+let _foundationStatus = null;
+
+function loadFoundationStatus() {
+  const ent = selectedEntity;
+  if (!ent) return Promise.resolve();
+  return fetch("/api/wizard/" + ent + "/foundation-status")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      _foundationStatus = data;
+      renderFoundationPanel();
+      applyYardiGate();
+      return data;
+    })
+    .catch(function (err) {
+      console.error("foundation-status load failed:", err);
+    });
+}
+
+function renderFoundationPanel() {
+  const panel = document.getElementById("foundationPanel");
+  if (!panel) return;
+  panel.style.display = "block";
+  if (!_foundationStatus || !_spSources) return;
+
+  // ─── Approved Budget card ──
+  const apprBody = document.getElementById("foundationApprovedBody");
+  const fs = _foundationStatus;
+  const sp = _spSources.by_source_type || {};
+  const apprFiles = sp.approved_2026 || [];
+  let apprHtml = "";
+  if (fs.approved_budget === "imported") {
+    apprHtml += "<div style=\"background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    apprHtml += "<div style=\"color:#15803d; font-weight:700; font-size:13px;\">\u2713 Imported \u00b7 " + fs.approved_budget_summary_rows + " category rows</div>";
+    if (apprFiles.length) {
+      apprHtml += "<div style=\"font-family:ui-monospace,monospace; font-size:11px; color:var(--gray-600,#4b5563); margin-top:4px;\">" + escapeHtml(apprFiles[0].name) + "</div>";
+    }
+    apprHtml += "</div>";
+    if (apprFiles.length) {
+      apprHtml += "<button data-action=\"foundation-approved\" data-item-id=\"" + escapeHtmlAttr(apprFiles[0].item_id) + "\" data-filename=\"" + escapeHtmlAttr(apprFiles[0].name) + "\" style=\"font-size:12px; padding:6px 12px; border:1px solid #ddd; background:white; border-radius:4px; cursor:pointer;\">\u21bb Re-process</button>";
+    }
+  } else if (fs.approved_budget === "acknowledged_missing") {
+    apprHtml += "<div style=\"background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:10px 12px;\">";
+    apprHtml += "<div style=\"color:#15803d; font-weight:700; font-size:13px;\">\u2713 Acknowledged \u00b7 No prior budget</div>";
+    apprHtml += "<div style=\"font-size:11px; color:var(--gray-600,#4b5563); margin-top:4px;\">Audit mapping will use default Century categories.</div>";
+    apprHtml += "</div>";
+  } else if (fs.approved_budget === "in_sp_not_imported") {
+    apprHtml += "<div style=\"background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    apprHtml += "<div style=\"font-family:ui-monospace,monospace; font-size:12px; color:var(--gray-700,#374151);\">\ud83d\udcc4 " + escapeHtml(apprFiles[0] ? apprFiles[0].name : "(file)") + "</div>";
+    apprHtml += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:4px;\">Found in SharePoint \u00b7 ready to import</div>";
+    apprHtml += "</div>";
+    apprHtml += "<button data-action=\"foundation-approved\" data-item-id=\"" + escapeHtmlAttr(apprFiles[0] ? apprFiles[0].item_id : "") + "\" data-filename=\"" + escapeHtmlAttr(apprFiles[0] ? apprFiles[0].name : "") + "\" style=\"font-size:12px; padding:8px 14px; border:1px solid #2563eb; background:#2563eb; color:white; border-radius:4px; cursor:pointer; font-weight:600;\">Process this file</button>";
+  } else {
+    // missing
+    apprHtml += "<div style=\"background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    apprHtml += "<div style=\"color:#92400e; font-weight:600; font-size:13px;\">\u26a0 Not found in SharePoint</div>";
+    apprHtml += "<div style=\"font-size:11px; color:#92400e; margin-top:4px;\">No 2026 approved budget XLSX detected for this entity.</div>";
+    apprHtml += "</div>";
+    apprHtml += "<button data-action=\"foundation-ack-noprior\" style=\"font-size:12px; padding:8px 14px; border:1px solid #b45309; background:white; color:#b45309; border-radius:4px; cursor:pointer; font-weight:600;\">Acknowledge: no prior budget</button>";
+  }
+  apprBody.innerHTML = apprHtml;
+
+  // ─── Audit card ──
+  const auditBody = document.getElementById("foundationAuditBody");
+  const auditFiles = sp.audit_2025 || [];
+  // Audit click is gated by approved_budget being in a complete state
+  const apprDone = (fs.approved_budget === "imported" || fs.approved_budget === "acknowledged_missing");
+  let auditHtml = "";
+  if (fs.audit === "confirmed") {
+    auditHtml += "<div style=\"background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    auditHtml += "<div style=\"color:#15803d; font-weight:700; font-size:13px;\">\u2713 Confirmed</div>";
+    auditHtml += "<div style=\"font-size:11px; color:var(--gray-600,#4b5563); margin-top:4px;\">Foundation locked in. Mapping signed off.</div>";
+    auditHtml += "</div>";
+    if (fs.review_url) {
+      auditHtml += "<a href=\"" + fs.review_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; padding:6px 12px; border:1px solid #ddd; background:white; border-radius:4px; cursor:pointer; text-decoration:none; color:var(--gray-700,#374151); display:inline-block;\">\u21d7 View mapping</a>";
+    }
+  } else if (fs.audit === "extracted") {
+    auditHtml += "<div style=\"background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    auditHtml += "<div style=\"color:#b45309; font-weight:700; font-size:13px;\">\u21d7 Extracted, awaiting mapping confirm</div>";
+    auditHtml += "<div style=\"font-size:11px; color:#92400e; margin-top:4px;\">Open the review page to assign auditor profile and confirm.</div>";
+    auditHtml += "</div>";
+    auditHtml += "<a href=\"" + (fs.review_url || "#") + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; padding:8px 14px; border:1px solid #2563eb; background:#2563eb; color:white; border-radius:4px; cursor:pointer; font-weight:600; text-decoration:none; display:inline-block;\">Review &amp; Confirm Mapping \u2192</a>";
+  } else if (fs.audit === "in_sp") {
+    auditHtml += "<div style=\"background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
+    auditHtml += "<div style=\"font-family:ui-monospace,monospace; font-size:12px; color:var(--gray-700,#374151);\">\ud83d\udcc4 " + escapeHtml(auditFiles[0] ? auditFiles[0].name : "(file)") + "</div>";
+    auditHtml += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:4px;\">Found in SharePoint \u00b7 click to extract via Claude (~30-60s)</div>";
+    auditHtml += "</div>";
+    if (apprDone) {
+      auditHtml += "<button data-action=\"foundation-audit\" data-item-id=\"" + escapeHtmlAttr(auditFiles[0] ? auditFiles[0].item_id : "") + "\" data-filename=\"" + escapeHtmlAttr(auditFiles[0] ? auditFiles[0].name : "") + "\" style=\"font-size:12px; padding:8px 14px; border:1px solid #2563eb; background:#2563eb; color:white; border-radius:4px; cursor:pointer; font-weight:600;\">Process this file</button>";
+    } else {
+      auditHtml += "<button disabled style=\"font-size:12px; padding:8px 14px; border:1px solid #d1d5db; background:#f3f4f6; color:#9ca3af; border-radius:4px; cursor:not-allowed; font-weight:600;\">Process this file</button>";
+      auditHtml += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:6px;\">\ud83d\udd12 Process the 2026 Approved Budget first.</div>";
+    }
+  } else {
+    // missing
+    auditHtml += "<div style=\"background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:10px 12px;\">";
+    auditHtml += "<div style=\"color:#92400e; font-weight:600; font-size:13px;\">\u26a0 Not found in SharePoint</div>";
+    auditHtml += "<div style=\"font-size:11px; color:#92400e; margin-top:4px;\">Drop a PDF below or wait for the audit-sync to copy it from the master folder.</div>";
+    auditHtml += "</div>";
+  }
+  auditBody.innerHTML = auditHtml;
+
+  // ─── Status banner ──
+  const banner = document.getElementById("foundationStatusBanner");
+  if (banner) {
+    if (fs.foundation_confirmed_at) {
+      banner.innerHTML = '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:14px 18px; display:flex; align-items:center; gap:14px;"><div style="font-size:20px;">\u2713</div><div style="flex:1;"><div style="font-weight:700; color:#15803d;">Foundation confirmed</div><div style="font-size:12px; color:var(--gray-600,#4b5563); margin-top:2px;">Yardi sources, assumptions, and Build Budget are now unlocked. You can come back any time before the cycle starts.</div></div></div>';
+    } else if (fs.blocking_reason) {
+      banner.innerHTML = '<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:8px; padding:12px 16px; font-size:13px; color:#92400e;"><strong>Foundation pending \u00b7</strong> ' + escapeHtml(fs.blocking_reason) + '</div>';
+    } else {
+      banner.innerHTML = "";
+    }
+  }
+
+  // Attach event handlers via delegation (no inline handlers — apostrophe escapes are tricky)
+  panel.querySelectorAll('button[data-action="foundation-approved"]').forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      useSharepointFile("approved_2026", btn.getAttribute("data-item-id"), btn.getAttribute("data-filename"));
+    });
+  });
+  panel.querySelectorAll('button[data-action="foundation-audit"]').forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      useSharepointFile("audit_2025", btn.getAttribute("data-item-id"), btn.getAttribute("data-filename"));
+    });
+  });
+  panel.querySelectorAll('button[data-action="foundation-ack-noprior"]').forEach(function (btn) {
+    btn.addEventListener("click", acknowledgeNoPriorBudget);
+  });
+}
+
+function acknowledgeNoPriorBudget() {
+  if (!selectedEntity) return;
+  if (!confirm("Acknowledge that no 2026 Approved Budget exists for this entity? The audit mapping will use default Century categories.")) return;
+  fetch("/api/wizard/" + selectedEntity + "/acknowledge-no-prior-budget", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({acknowledged: true}),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.ok) {
+        loadFoundationStatus();
+      } else {
+        alert("Acknowledgment failed: " + (data.error || "unknown"));
+      }
+    });
+}
+
+function applyYardiGate() {
+  // Visually lock the Yardi panel until Foundation is confirmed.
+  const sp = document.getElementById("spSourcesPanel");
+  if (!sp || !_foundationStatus) return;
+  if (_foundationStatus.foundation_confirmed_at) {
+    sp.style.opacity = "1";
+    sp.style.pointerEvents = "auto";
+    // Remove any lock overlay
+    const overlay = document.getElementById("yardiLockOverlay");
+    if (overlay) overlay.remove();
+  } else {
+    sp.style.opacity = "0.55";
+    sp.style.pointerEvents = "none";
+    if (!document.getElementById("yardiLockOverlay")) {
+      const ov = document.createElement("div");
+      ov.id = "yardiLockOverlay";
+      ov.style.cssText = "background:#f9fafb; border:1px dashed #d1d5db; border-radius:8px; padding:10px 14px; margin-top:8px; font-size:12px; color:#6b7280; pointer-events:none;";
+      ov.innerHTML = "\ud83d\udd12 Yardi sources unlock once Foundation is confirmed above.";
+      sp.parentElement.insertBefore(ov, sp);
+    }
+  }
+}
+
 function escapeHtml(s) {
   if (!s) return "";
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
@@ -1669,6 +1856,7 @@ function useSharepointFile(sourceType, itemId, filename) {
       const data = resp.body;
       if (data.ok) {
         if (data.selections) { _wizardSelections = data.selections; }
+        loadFoundationStatus();
         if (data.parse_result) {
           const pr = data.parse_result;
           let msg;
@@ -2104,6 +2292,7 @@ function handleFileUpload(event) {
         }
         // Refresh the FROM SHAREPOINT panel so the new file appears.
         loadSharepointSources();
+        loadFoundationStatus();
         // Reset clear after a moment
         setTimeout(function () {
           if (status) {

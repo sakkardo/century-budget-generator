@@ -6424,6 +6424,12 @@ def admin_clear_source():
                     "DELETE FROM audit_uploads WHERE entity_code = :ec RETURNING id"
                 ), {"ec": ec}).fetchall()
                 cleared["audit_uploads"] = len(row)
+                # Un-confirm Foundation: clearing the audit means mapping is gone.
+                db.session.execute(db.text(
+                    "UPDATE budgets SET foundation_confirmed_at = NULL, foundation_confirmed_by = NULL "
+                    "WHERE entity_code = :ec"
+                ), {"ec": ec})
+                cleared["foundation_unconfirmed"] = 1
             elif st == "ysl":
                 # YSL feeds budget_lines; identify by budget_id.
                 n = BudgetLine.query.filter_by(budget_id=budget.id).delete()
@@ -6644,8 +6650,13 @@ def _build_apply_audit_2025(entity_code, selection):
         building_name = f"Entity {entity_code}"
 
     # Upsert AuditUpload — clean replace any existing row for this entity so
-    # re-clicks overwrite (idempotent).
+    # re-clicks overwrite (idempotent). Also un-confirms Foundation since the
+    # mapping for the new audit hasn\'t been done yet.
     AuditUpload.query.filter_by(entity_code=entity_code).delete()
+    db.session.execute(db.text(
+        "UPDATE budgets SET foundation_confirmed_at = NULL, foundation_confirmed_by = NULL "
+        "WHERE entity_code = :ec"
+    ), {"ec": entity_code})
     db.session.flush()
 
     upload = AuditUpload(
@@ -6778,6 +6789,129 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
             ))
         written += 1
     return written
+
+
+@app.route("/api/wizard/<entity_code>/foundation-status", methods=["GET"])
+def wizard_foundation_status(entity_code):
+    """Return the Foundation gate state for an entity. Used by Step 2 to render
+    the cards and decide whether Steps 3+ are unlocked.
+
+    Response shape:
+    {
+      "entity_code": "148",
+      "approved_budget": "imported"|"in_sp_not_imported"|"missing"|"acknowledged_missing",
+      "approved_budget_summary_rows": <int>,
+      "audit": "missing"|"in_sp"|"extracted"|"confirmed",
+      "audit_upload_id": <int|null>,
+      "foundation_confirmed_at": "...iso..."|null,
+      "foundation_no_prior_budget": <bool>,
+      "blocking_reason": <str|null>,
+      "review_url": "/audited-financials/review/<id>"|null,
+    }
+    """
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    AuditUpload = af_models["AuditUpload"]
+    from workflow import BUDGET_YEAR as _BY
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+
+    # Approved budget state
+    summary_count = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=_BY
+    ).count()
+
+    # SP scan tells us whether the file is even available
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code)
+        approved_in_sp = bool(sp.get("by_source_type", {}).get("approved_2026"))
+    except Exception:
+        approved_in_sp = False
+
+    if summary_count > 0:
+        approved_state = "imported"
+    elif budget.foundation_no_prior_budget:
+        approved_state = "acknowledged_missing"
+    elif approved_in_sp:
+        approved_state = "in_sp_not_imported"
+    else:
+        approved_state = "missing"
+
+    # Audit state
+    audit = AuditUpload.query.filter_by(entity_code=entity_code).order_by(
+        AuditUpload.id.desc()
+    ).first()
+    audit_state = "missing"
+    audit_upload_id = None
+    review_url = None
+    if audit:
+        audit_upload_id = audit.id
+        review_url = f"/audited-financials/review/{audit.id}"
+        if audit.status == "confirmed":
+            audit_state = "confirmed"
+        elif audit.status in ("mapped", "extracted"):
+            audit_state = "extracted"
+        else:
+            audit_state = "in_sp"
+    else:
+        try:
+            sp_audit = sp.get("by_source_type", {}).get("audit_2025") if approved_in_sp or True else []
+            if sp_audit:
+                audit_state = "in_sp"
+        except Exception:
+            pass
+
+    # Compute blocking_reason
+    blocking_reason = None
+    if not budget.foundation_confirmed_at:
+        if approved_state == "missing":
+            blocking_reason = "No 2026 approved budget in SharePoint. Acknowledge \"no prior budget\" or upload one."
+        elif approved_state == "in_sp_not_imported":
+            blocking_reason = "Click Process on the 2026 Approved Budget card to import categories."
+        elif audit_state == "missing":
+            blocking_reason = "No 2025 audit in SharePoint for this entity. Upload one to proceed."
+        elif audit_state == "in_sp":
+            blocking_reason = "Click Process on the 2025 Audited Financial card to extract."
+        elif audit_state == "extracted":
+            blocking_reason = "Click Review &amp; Confirm Mapping to finalize the audit and complete the Foundation."
+
+    return jsonify({
+        "entity_code": entity_code,
+        "approved_budget": approved_state,
+        "approved_budget_summary_rows": summary_count,
+        "audit": audit_state,
+        "audit_upload_id": audit_upload_id,
+        "foundation_confirmed_at": (
+            budget.foundation_confirmed_at.isoformat()
+            if budget.foundation_confirmed_at else None
+        ),
+        "foundation_no_prior_budget": bool(budget.foundation_no_prior_budget),
+        "blocking_reason": blocking_reason,
+        "review_url": review_url,
+    })
+
+
+@app.route("/api/wizard/<entity_code>/acknowledge-no-prior-budget", methods=["POST"])
+def wizard_ack_no_prior_budget(entity_code):
+    """Set Budget.foundation_no_prior_budget = True for entities without a 2026
+    approved budget XLSX. Audit extraction will then use CENTURY_CATEGORIES.
+    Body: {"acknowledged": true}.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+    body = request.get_json(silent=True) or {}
+    budget.foundation_no_prior_budget = bool(body.get("acknowledged", True))
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "entity_code": entity_code,
+        "foundation_no_prior_budget": budget.foundation_no_prior_budget,
+    })
 
 
 @app.route("/api/wizard/<entity_code>/sharepoint-sources", methods=["GET"])
