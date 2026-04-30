@@ -6029,6 +6029,252 @@ def wizard_approved_budget_files(entity_code):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/foundation-summary", methods=["GET"])
+def admin_foundation_summary():
+    """Return Foundation status for every entity in the current Budget year.
+
+    Used by /admin/foundation page. One row per Budget. Pre-computes
+    approved_budget state, audit state, and Foundation confirmed flag for
+    fast rendering.
+    """
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    AuditUpload = af_models["AuditUpload"]
+    BuildingAssignment = workflow_models["BuildingAssignment"]
+    User = workflow_models["User"]
+    from workflow import BUDGET_YEAR as _BY
+
+    # All budgets for current year
+    budgets = Budget.query.filter_by(year=_BY).order_by(Budget.entity_code).all()
+
+    # Bulk fetch summary row counts per entity
+    summary_counts = {}
+    rows = db.session.execute(db.text(
+        "SELECT entity_code, COUNT(*) FROM budget_summary_rows "
+        "WHERE budget_year = :y GROUP BY entity_code"
+    ), {"y": _BY}).fetchall()
+    for ec, cnt in rows:
+        summary_counts[ec] = cnt
+
+    # Bulk fetch audit_uploads — latest per entity
+    audits = {}
+    rows = db.session.execute(db.text(
+        "SELECT DISTINCT ON (entity_code) entity_code, id, status FROM audit_uploads "
+        "ORDER BY entity_code, id DESC"
+    )).fetchall()
+    for ec, uid, status in rows:
+        audits[ec] = {"id": uid, "status": status}
+
+    # Bulk fetch FA assignment per entity (for display)
+    fa_by_entity = {}
+    rows = db.session.execute(db.text(
+        "SELECT ba.entity_code, u.name FROM building_assignments ba "
+        "JOIN users u ON u.id = ba.user_id "
+        "WHERE ba.role = \'fa\'"
+    )).fetchall()
+    for ec, name in rows:
+        fa_by_entity[ec] = name
+
+    out = []
+    for b in budgets:
+        sc = summary_counts.get(b.entity_code, 0)
+        a = audits.get(b.entity_code) or {}
+        if sc > 0:
+            approved_state = "imported"
+        elif b.foundation_no_prior_budget:
+            approved_state = "acknowledged_missing"
+        else:
+            approved_state = "missing"
+        audit_status = a.get("status")
+        if audit_status == "confirmed":
+            audit_state = "confirmed"
+        elif audit_status in ("mapped", "extracted"):
+            audit_state = "extracted"
+        elif audit_status == "uploaded":
+            audit_state = "in_sp"
+        else:
+            audit_state = "missing"
+        out.append({
+            "entity_code": b.entity_code,
+            "building_name": b.building_name,
+            "fa_name": fa_by_entity.get(b.entity_code) or "",
+            "approved_budget": approved_state,
+            "approved_budget_summary_rows": sc,
+            "audit": audit_state,
+            "audit_upload_id": a.get("id"),
+            "foundation_confirmed_at": (
+                b.foundation_confirmed_at.isoformat()
+                if b.foundation_confirmed_at else None
+            ),
+            "foundation_no_prior_budget": bool(b.foundation_no_prior_budget),
+        })
+
+    # Aggregate counts for filter chips
+    counts = {
+        "all": len(out),
+        "confirmed": sum(1 for r in out if r["foundation_confirmed_at"]),
+        "pending": sum(1 for r in out if not r["foundation_confirmed_at"]),
+        "no_prior_budget": sum(1 for r in out if r["foundation_no_prior_budget"]),
+        "audit_missing": sum(1 for r in out if r["audit"] == "missing"),
+        "audit_extracted_unconfirmed": sum(1 for r in out if r["audit"] == "extracted"),
+    }
+
+    return jsonify({
+        "year": _BY,
+        "total": len(out),
+        "counts": counts,
+        "entities": out,
+    })
+
+
+@app.route("/admin/foundation", methods=["GET"])
+def admin_foundation_page():
+    """HTML dashboard listing every entity\'s Foundation status. Lead view to
+    track progress across the portfolio between now and the August cycle start."""
+    return r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Foundation Dashboard - Century Management</title>
+<style>
+  body { font-family: -apple-system,BlinkMacSystemFont,system-ui,sans-serif; margin: 0; background: #fafaf9; color: #111827; }
+  header { background: #1f2937; color: white; padding: 14px 28px; display: flex; align-items: center; gap: 16px; }
+  header a { color: #d1d5db; text-decoration: none; font-size: 13px; }
+  header a:hover { color: white; }
+  h1 { font-size: 20px; margin: 0; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  .card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chip { padding: 6px 14px; border: 1px solid #e5e7eb; border-radius: 20px; cursor: pointer; font-size: 12px; font-weight: 600; background: white; user-select: none; }
+  .chip.active { background: #1f2937; color: white; border-color: #1f2937; }
+  .chip-count { font-weight: 700; margin-left: 6px; opacity: 0.7; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 10px 12px; background: #f9fafb; font-weight: 700; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: #6b7280; border-bottom: 1px solid #e5e7eb; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; }
+  tr:hover td { background: #fafafa; }
+  .ec { font-family: ui-monospace,monospace; font-size: 12px; color: #4b5563; width: 70px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-ok { background: #dcfce7; color: #15803d; }
+  .badge-pending { background: #fef3c7; color: #92400e; }
+  .badge-missing { background: #fee2e2; color: #b91c1c; }
+  .badge-neutral { background: #f3f4f6; color: #4b5563; }
+  .open-link { color: #2563eb; text-decoration: none; font-size: 12px; font-weight: 600; }
+  .open-link:hover { text-decoration: underline; }
+  .summary { font-size: 12px; color: #6b7280; margin-bottom: 12px; }
+  input[type=text] { width: 280px; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foundation Dashboard</h1>
+  <span style="opacity:0.6">·</span>
+  <a href="/wizard">Wizard</a>
+  <a href="/dashboard">FA Dashboard</a>
+  <a href="/audited-financials">Audited Financials</a>
+</header>
+<main>
+  <div class="card">
+    <div class="summary" id="summary">Loading…</div>
+    <div class="chips" id="chips"></div>
+    <input type="text" id="search" placeholder="Filter by entity code or building name…">
+    <table>
+      <thead>
+        <tr>
+          <th>Entity</th>
+          <th>Building</th>
+          <th>FA</th>
+          <th>2026 Approved</th>
+          <th>2025 Audit</th>
+          <th>Foundation</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+let _data = null;
+let _filter = "all";
+let _search = "";
+
+function badgeApproved(state, count) {
+  if (state === "imported") return '<span class="badge badge-ok">\u2713 Imported ' + count + ' rows</span>';
+  if (state === "acknowledged_missing") return '<span class="badge badge-neutral">\u2713 No prior budget ack\u2019d</span>';
+  return '<span class="badge badge-missing">Missing</span>';
+}
+function badgeAudit(state) {
+  if (state === "confirmed") return '<span class="badge badge-ok">\u2713 Confirmed</span>';
+  if (state === "extracted") return '<span class="badge badge-pending">Awaiting confirm</span>';
+  if (state === "in_sp") return '<span class="badge badge-pending">In SP, not extracted</span>';
+  return '<span class="badge badge-missing">Missing</span>';
+}
+function badgeFoundation(at) {
+  if (at) return '<span class="badge badge-ok">\u2713 Confirmed</span>';
+  return '<span class="badge badge-pending">Pending</span>';
+}
+
+function renderChips() {
+  if (!_data) return;
+  const c = _data.counts;
+  const chips = [
+    {k: "all", label: "All", count: c.all},
+    {k: "pending", label: "Foundation pending", count: c.pending},
+    {k: "confirmed", label: "Foundation confirmed", count: c.confirmed},
+    {k: "no_prior_budget", label: "No prior budget", count: c.no_prior_budget},
+    {k: "audit_missing", label: "Audit missing", count: c.audit_missing},
+    {k: "audit_extracted_unconfirmed", label: "Audit awaiting confirm", count: c.audit_extracted_unconfirmed},
+  ];
+  const wrap = document.getElementById("chips");
+  wrap.innerHTML = chips.map(c => '<div class="chip ' + (_filter === c.k ? "active" : "") + '" data-k="' + c.k + '">' + c.label + '<span class="chip-count">' + c.count + '</span></div>').join("");
+  wrap.querySelectorAll(".chip").forEach(el => {
+    el.addEventListener("click", () => { _filter = el.dataset.k; renderChips(); renderRows(); });
+  });
+}
+
+function matchesFilter(e) {
+  if (_filter === "all") return true;
+  if (_filter === "pending") return !e.foundation_confirmed_at;
+  if (_filter === "confirmed") return !!e.foundation_confirmed_at;
+  if (_filter === "no_prior_budget") return e.foundation_no_prior_budget;
+  if (_filter === "audit_missing") return e.audit === "missing";
+  if (_filter === "audit_extracted_unconfirmed") return e.audit === "extracted";
+  return true;
+}
+
+function renderRows() {
+  if (!_data) return;
+  const search = _search.toLowerCase();
+  const filtered = (_data.entities || []).filter(e => matchesFilter(e) && (
+    !search || (e.entity_code + " " + e.building_name).toLowerCase().indexOf(search) !== -1
+  ));
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = filtered.map(e => (
+    '<tr><td class="ec">' + e.entity_code + '</td>' +
+    '<td>' + (e.building_name || "") + '</td>' +
+    '<td>' + (e.fa_name || "\u2014") + '</td>' +
+    '<td>' + badgeApproved(e.approved_budget, e.approved_budget_summary_rows) + '</td>' +
+    '<td>' + badgeAudit(e.audit) + (e.audit_upload_id ? ' <a class="open-link" href="/audited-financials/review/' + e.audit_upload_id + '" target="_blank">review \u2197</a>' : "") + '</td>' +
+    '<td>' + badgeFoundation(e.foundation_confirmed_at) + '</td>' +
+    '<td><a class="open-link" href="/wizard" target="_blank">open \u2197</a></td></tr>'
+  )).join("");
+  document.getElementById("summary").textContent = filtered.length + " of " + _data.total + " entities";
+}
+
+document.getElementById("search").addEventListener("input", e => { _search = e.target.value; renderRows(); });
+
+fetch("/api/admin/foundation-summary").then(r => r.json()).then(j => {
+  _data = j;
+  renderChips();
+  renderRows();
+});
+</script>
+</body>
+</html>
+"""
+
+
 @app.route("/api/wizard/<entity_code>/use-approved-budget", methods=["POST"])
 def wizard_use_approved_budget(entity_code):
     """Stage a 2026 Approved Budget file from SharePoint. Same staging-only
