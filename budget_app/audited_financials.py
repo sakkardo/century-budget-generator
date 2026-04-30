@@ -1499,6 +1499,22 @@ async function uploadAll() {
 <div class="container">
     <div style="margin-bottom:16px;"><a href="/audited-financials" class="back-link">← Back to Uploads</a></div>
 
+    <!-- Auditor profile + dropdown scope controls -->
+    <div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:14px 18px; margin-bottom:16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <label for="profilePicker" style="font-size:12px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--gray-500);">Auditor Profile</label>
+            <select id="profilePicker" onchange="onProfileChange()" style="padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; min-width:240px;">
+                <option value="">— Loading profiles… —</option>
+            </select>
+            <span id="profileStatus" style="font-size:12px; color:var(--gray-500);"></span>
+            <a href="/audited-financials/profiles" target="_blank" style="font-size:12px; color:var(--blue); text-decoration:none;">Manage profiles ↗</a>
+        </div>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="showAllCategories" onchange="toggleCategoryScope()">
+            <label for="showAllCategories" style="font-size:12px; color:var(--gray-700);">Show all Century categories (not just this building\'s)</label>
+        </div>
+    </div>
+
     <div class="columns">
         <div class="column">
             <h3>Extracted Data — Map Each Item</h3>
@@ -2135,6 +2151,76 @@ async function uploadAll() {
             // Update accept state (controls confirm button)
             updateAcceptState();
         }
+
+        // ─── F2: profile picker + scope toggle ───
+        let _profiles = [];
+        let _currentProfileId = profileId || null;
+        function loadProfiles() {
+            fetch('/api/af/profiles').then(r => r.json()).then(j => {
+                _profiles = j.profiles || [];
+                const sel = document.getElementById('profilePicker');
+                const cur = _currentProfileId;
+                let opts = '<option value="">— Pick auditor profile to enable Save —</option>';
+                _profiles.forEach(p => {
+                    const sel = (cur && p.id === cur) ? ' selected' : '';
+                    const label = p.firm_name || p.name;
+                    opts += '<option value="' + p.id + '"' + sel + '>' + escapeHtml(label) + '</option>';
+                });
+                sel.innerHTML = opts;
+                updateProfileStatus();
+            }).catch(err => {
+                document.getElementById('profileStatus').textContent = 'Profile load failed: ' + err;
+            });
+        }
+        function escapeHtml(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function updateProfileStatus() {
+            const el = document.getElementById('profileStatus');
+            if (!el) return;
+            if (_currentProfileId) {
+                const p = _profiles.find(x => x.id === _currentProfileId);
+                el.innerHTML = '<span style="color:#15803d;">✓ ' + escapeHtml((p && (p.firm_name || p.name)) || 'profile #' + _currentProfileId) + '</span>';
+            } else {
+                el.innerHTML = '<span style="color:#b45309;">⚠ No profile assigned — Save Mappings is disabled</span>';
+            }
+        }
+        function onProfileChange() {
+            const sel = document.getElementById('profilePicker');
+            const newId = parseInt(sel.value || '0', 10) || null;
+            if (!newId) return;
+            // PATCH the upload
+            fetch('/api/af/uploads/' + {{ upload_id }}, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({profile_id: newId})
+            }).then(r => r.json()).then(j => {
+                if (j.success === false) {
+                    alert('Profile update failed: ' + (j.error || 'unknown'));
+                    return;
+                }
+                _currentProfileId = newId;
+                updateProfileStatus();
+                // Reload so existing rules for the new profile pre-populate dropdowns
+                location.reload();
+            });
+        }
+        function toggleCategoryScope() {
+            const showAll = document.getElementById('showAllCategories').checked;
+            document.querySelectorAll('select[id^="map_"] optgroup').forEach(g => {
+                if ((g.label || '').includes('Other Century')) {
+                    g.style.display = showAll ? '' : 'none';
+                    g.querySelectorAll('option').forEach(o => o.disabled = !showAll);
+                }
+            });
+        }
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadProfiles();
+            // Default to building-only scope
+            const cb = document.getElementById('showAllCategories');
+            if (cb) { cb.checked = false; toggleCategoryScope(); }
+        });
 
         function saveAllRules() {
             if (!profileId) { alert('No auditor profile assigned'); return; }
