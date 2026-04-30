@@ -6875,7 +6875,7 @@ def wizard_foundation_status(entity_code):
         elif audit_state == "in_sp":
             blocking_reason = "Click Process on the 2025 Audited Financial card to extract."
         elif audit_state == "extracted":
-            blocking_reason = "Click Review &amp; Confirm Mapping to finalize the audit and complete the Foundation."
+            blocking_reason = "Click Review & Confirm Mapping to finalize the audit and complete the Foundation."
 
     return jsonify({
         "entity_code": entity_code,
