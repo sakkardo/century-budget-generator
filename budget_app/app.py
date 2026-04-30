@@ -6788,6 +6788,76 @@ def wizard_sharepoint_sources(entity_code):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/wizard/<entity_code>/upload-to-sp", methods=["POST"])
+def wizard_upload_to_sp(entity_code):
+    """Manual-upload escape hatch: FA drops a file from their computer; we
+    classify it via SHAREPOINT_SOURCE_PATTERNS and PUT to the right SP path:
+      - approved_2026 (filename contains "approved" + .xlsx) → 2027 Budget/<ec>/
+      - everything else → 2027 Budget/<ec>/Supporting Documents/
+
+    Then the FROM SHAREPOINT panel refresh picks it up. Replaces files at the
+    same path (Graph default conflictBehavior=replace for PUT /content).
+
+    Body: multipart, field "file".
+    Returns: {ok, classified_as, dest_path, dest_url, note?}
+    """
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "file required (multipart field 'file')"}), 400
+
+    filename = file.filename
+    body = file.read()
+    if not body:
+        return jsonify({"error": "file is empty"}), 400
+
+    # Classify destination
+    classified = _classify_sharepoint_filename(filename)
+    base = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code)
+    if classified == "approved_2026":
+        dest_path = f"{base}/{filename}"
+    else:
+        # Ensure Supporting Documents folder exists
+        try:
+            _sharepoint_ensure_entity_folder(entity_code)
+        except Exception as e:
+            logger.warning(f"ensure_entity_folder for {entity_code} failed (continuing): {e}")
+        dest_path = f"{base}/Supporting Documents/{filename}"
+
+    # Sniff content-type for upload
+    low = filename.lower()
+    if low.endswith(".pdf"):
+        ct = "application/pdf"
+    elif low.endswith(".xlsx"):
+        ct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif low.endswith(".xls"):
+        ct = "application/vnd.ms-excel"
+    elif low.endswith(".csv"):
+        ct = "text/csv"
+    else:
+        ct = "application/octet-stream"
+
+    try:
+        meta = _graph_put_content(dest_path, body, content_type=ct)
+        return jsonify({
+            "ok": True,
+            "classified_as": classified or "unmatched",
+            "dest_path": dest_path,
+            "dest_url": meta.get("webUrl"),
+            "filename": filename,
+            "size": len(body),
+            "note": ("Upload routed to entity top folder (approved budget pattern)."
+                     if classified == "approved_2026"
+                     else ("Upload routed to Supporting Documents (classified as "
+                           + str(classified) + ")."
+                           if classified else
+                           "Upload routed to Supporting Documents (unmatched filename — "
+                           "FROM SHAREPOINT panel will list it under Other files.)")),
+        })
+    except Exception as e:
+        logger.exception(f"upload-to-sp failed for {entity_code}/{filename}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 @app.route("/api/admin/entity-trace/<entity_code>", methods=["GET"])
