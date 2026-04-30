@@ -2124,6 +2124,14 @@ function showStep(stepNum) {
     return;
   }
 
+  // Phase E gate: Steps 3+ require Foundation confirmed.
+  if (stepNum >= 3 && _foundationStatus && !_foundationStatus.foundation_confirmed_at) {
+    alert("Foundation must be confirmed before continuing.\n\n" +
+          (_foundationStatus.blocking_reason || "Process the 2026 Approved Budget and the 2025 Audit, then confirm the audit mapping."));
+    // Stay at Step 2
+    stepNum = 2;
+  }
+
   currentStep = stepNum;
 
   // Hide all steps
@@ -2173,6 +2181,13 @@ function completeStep(stepNum) {
     }).catch(err => console.error('Step save error:', err));
   }
 
+  // Phase E gate: completeStep(2) advancing to Step 3 requires Foundation confirmed.
+  if (stepNum === 2 && _foundationStatus && !_foundationStatus.foundation_confirmed_at) {
+    alert("Foundation must be confirmed before continuing.\n\n" +
+          (_foundationStatus.blocking_reason || "Process the 2026 Approved Budget and confirm the 2025 Audit mapping."));
+    return;
+  }
+
   if (stepNum < 5) {
     showStep(stepNum + 1);
   }
@@ -2180,6 +2195,8 @@ function completeStep(stepNum) {
 
 // Update rail UI
 function updateRail() {
+  // Phase E gate: when Foundation not confirmed, force-lock Steps 3-5
+  const foundationGate = (_foundationStatus && !_foundationStatus.foundation_confirmed_at);
   document.querySelectorAll('.rail-step').forEach(el => {
     const step = parseInt(el.dataset.step);
     el.classList.remove('active', 'locked');
@@ -2187,6 +2204,10 @@ function updateRail() {
     if (step === currentStep) {
       el.classList.add('active');
     } else if (step > highestStep) {
+      el.classList.add('locked');
+    }
+    // Foundation gate overrides — Steps 3-5 always locked until Foundation confirmed
+    if (foundationGate && step >= 3) {
       el.classList.add('locked');
     }
 

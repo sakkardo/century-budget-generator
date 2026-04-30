@@ -6504,6 +6504,8 @@ def wizard_build_budget(entity_code):
     exactly as it was before the click.
 
     On success: stamps Budget.wizard_completed_at = NOW.
+
+    Phase E gate: aborts with 400 if Foundation is not confirmed.
     """
     from datetime import datetime as _dt
     Budget = workflow_models["Budget"]
