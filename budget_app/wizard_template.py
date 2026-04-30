@@ -1564,6 +1564,8 @@ let _spSources = null;
 function loadSharepointSources() {
   const ent = selectedEntity;
   if (!ent) return;
+  // Kick off the foundation status load in parallel — they\'re independent.
+  try { loadFoundationStatus(); } catch (e) {}
   const panel = document.getElementById("spSourcesPanel");
   const body = document.getElementById("spSourcesBody");
   const info = document.getElementById("spFolderInfo");
@@ -1577,6 +1579,8 @@ function loadSharepointSources() {
     .then(function (data) {
       _spSources = data;
       renderSharepointSources();
+      // Re-render foundation panel now that filename details are available.
+      try { renderFoundationPanel(); } catch (e) {}
       if (info) {
         if (data.folder_exists) {
           const total = (data.by_source_type.ysl||[]).length + (data.by_source_type.expense_distribution||[]).length + (data.by_source_type.ap_aging||[]).length + (data.by_source_type.maint_proof||[]).length;
@@ -1677,12 +1681,15 @@ function renderFoundationPanel() {
   const panel = document.getElementById("foundationPanel");
   if (!panel) return;
   panel.style.display = "block";
-  if (!_foundationStatus || !_spSources) return;
+  // Render based on foundation_status alone — _spSources is used only for filename
+  // detail and is optional. Avoids a race where SP scan is still loading but
+  // foundation-status has returned.
+  if (!_foundationStatus) return;
 
   // ─── Approved Budget card ──
   const apprBody = document.getElementById("foundationApprovedBody");
   const fs = _foundationStatus;
-  const sp = _spSources.by_source_type || {};
+  const sp = (_spSources && _spSources.by_source_type) || {};
   const apprFiles = sp.approved_2026 || [];
   let apprHtml = "";
   if (fs.approved_budget === "imported") {
