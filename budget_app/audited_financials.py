@@ -1640,18 +1640,19 @@ async function uploadAll() {
         }
 
         // Pre-compute dropdown option groups (building-specific first, then other Century cats)
+        // Group by section then sort each group alphabetically for findability.
         const bldgIncome = buildingLabels.filter(c => {
             const s = (buildingLabelSections[c] || '').toLowerCase();
             return s.includes('income') && !s.includes('non-operating');
-        });
+        }).slice().sort();
         const bldgExpense = buildingLabels.filter(c => {
             const s = (buildingLabelSections[c] || '').toLowerCase();
             return s.includes('expense') || s === '';
-        });
+        }).slice().sort();
         const bldgNonOp = buildingLabels.filter(c => {
             const s = (buildingLabelSections[c] || '').toLowerCase();
             return s.includes('non-operating');
-        });
+        }).slice().sort();
         const bldgSet = new Set(buildingLabels);
         const otherCentury = centuryCategories.filter(c => !bldgSet.has(c)).sort();
 
@@ -2261,7 +2262,45 @@ async function uploadAll() {
         html = html.replace("{{ unmapped_json }}", json.dumps(unmapped))
         # Query building's own summary row labels + sections for auto-matching
         building_labels = []
-        building_label_sections = {}  # label → summary row (income/expense)
+        building_label_sections = {}  # label → summary row (income/expense/non-operating)
+
+        def _classify_label(label, raw_section):
+            """Return one of: 'Total Operating Income', 'Total Operating Expenses',
+            'Non-Operating Income'. Resolution order:
+              1. budget_summary_rows.section (most specific, set by parser)
+              2. CENTURY_TO_SUMMARY (if label matches a known Century category)
+              3. Keyword heuristic on the label text
+              4. Default to expense (safest fallback)
+            """
+            sec = (raw_section or "").lower()
+            if sec == "income":
+                return "Total Operating Income"
+            if sec in ("non-operating income", "non-operating"):
+                return "Non-Operating Income"
+            if sec in ("expense", "expenses"):
+                return "Total Operating Expenses"
+            # Layer 2: CENTURY_TO_SUMMARY mapping
+            mapped = CENTURY_TO_SUMMARY.get(label)
+            if mapped == "Non-Operating Income":
+                return "Non-Operating Income"
+            if mapped in INCOME_SUMMARY_ROWS:
+                return "Total Operating Income"
+            if mapped:
+                return "Total Operating Expenses"
+            # Layer 3: keyword heuristic
+            low = (label or "").lower()
+            if any(k in low for k in ("non-operating", "non operating", "interest income",
+                                      "capital assess", "special assess", "tax refund",
+                                      "insurance proceeds", "icon settlement", "sba-ppp",
+                                      "loan proceeds")):
+                return "Non-Operating Income"
+            if any(k in low for k in ("income", "rent", "credit", "fee", "charge",
+                                      "laundry", "garage", "storage", "bicycle",
+                                      "assessment", "tax benefit", "commercial")):
+                return "Total Operating Income"
+            # Layer 4: default
+            return "Total Operating Expenses"
+
         try:
             bl_rows = db.session.execute(db.text(
                 "SELECT label, section FROM budget_summary_rows "
@@ -2270,13 +2309,7 @@ async function uploadAll() {
             ), {"ec": upload.entity_code}).fetchall()
             building_labels = [r[0] for r in bl_rows]
             for r in bl_rows:
-                sec = (r[1] or "").lower()
-                if sec == "income":
-                    building_label_sections[r[0]] = "Total Operating Income"
-                elif sec == "non-operating income":
-                    building_label_sections[r[0]] = "Non-Operating Income"
-                else:
-                    building_label_sections[r[0]] = "Total Operating Expenses"
+                building_label_sections[r[0]] = _classify_label(r[0], r[1])
         except Exception:
             building_labels = []
             building_label_sections = {}
