@@ -2153,17 +2153,10 @@ function showStep(stepNum) {
 
   // Render step-specific content
   if (stepNum === 2) {
-    // Fetch fresh source status for selected entity
+    // Refresh Step 2 state when navigating in
     if (selectedEntity) {
-      fetch('/api/wizard/' + selectedEntity + '/status')
-        .then(r => r.json())
-        .then(data => {
-          if (data.sources) sources = data.sources;
-          renderUploadChecklist();
-        })
-        .catch(() => renderUploadChecklist());
-    } else {
-      renderUploadChecklist();
+      try { loadSharepointSources(); } catch (e) {}
+      try { loadFoundationStatus(); } catch (e) {}
     }
   }
   if (stepNum === 3) renderWizardAssumptionsForm();
