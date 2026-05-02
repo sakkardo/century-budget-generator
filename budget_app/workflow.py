@@ -2915,7 +2915,10 @@ def create_workflow_blueprint(db):
 
         if "payroll" in sheet or gl_prefix in ("50", "51"):
             return "Payroll"
-        if "insurance" in sheet or gl_prefix == "62":
+        # Insurance lines at Century are GL 6105–6195 (per Yardi KB Insurance
+        # Schedule). They live on the Gen & Admin sheet, so the sheet check
+        # rarely matches — the GL prefix is the load-bearing rule.
+        if "insurance" in sheet or gl_prefix == "61":
             return "Insurance"
         if "energy" in sheet or gl_prefix == "64":
             return "Energy"

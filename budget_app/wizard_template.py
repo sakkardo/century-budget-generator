@@ -2339,7 +2339,11 @@ function handleFileUpload(event) {
     });
 }
 
-// Generate budget
+// Generate budget — POSTs to wizard generate endpoint, then advances to the
+// success/Complete step (Step 5). The previous version called completeStep(5)
+// which never advanced the UI (its body is `if (stepNum < 5) showStep(...)`),
+// so the click looked like a no-op even on success. Also reads the correct
+// server response field (`lines_updated`, not `lines_generated`).
 function generateBudget() {
   try {
     fetch(`/api/wizard/${selectedEntity}/generate`, {
@@ -2348,13 +2352,24 @@ function generateBudget() {
     })
     .then(response => response.json())
     .then(data => {
-      if (data.error) {
-        alert('Error generating budget: ' + data.error);
-      } else {
-        document.getElementById('successDetails').textContent =
-          `${data.lines_generated || 0} budget lines generated. Snapshot saved at ${new Date().toLocaleString()}.`;
-        completeStep(5);
+      if (data.success === false || data.error) {
+        alert('Error generating budget: ' + (data.error || 'unknown error'));
+        return;
       }
+      const linesUpdated = data.lines_updated || 0;
+      const totalLines = data.total_lines || 0;
+      document.getElementById('successDetails').textContent =
+        `${linesUpdated} of ${totalLines} GL lines adjusted by your assumptions. Snapshot saved at ${new Date().toLocaleString()}.`;
+      // Persist completion + advance the UI to the success step.
+      if (selectedEntity) {
+        fetch(`/api/wizard/${selectedEntity}/step`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({step: 6})
+        }).catch(err => console.error('Step save error:', err));
+      }
+      if (highestStep < 6) highestStep = 6;
+      showStep(5);
     })
     .catch(error => {
       console.error('Generate error:', error);
