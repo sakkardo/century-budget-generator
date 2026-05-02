@@ -2321,7 +2321,8 @@ async function uploadAll() {
                         ? 'Extraction confirmed (override — totals not reconciled).'
                         : 'Extraction confirmed and saved!';
                     document.getElementById('confirmStatus').innerHTML = '<div class="success">' + msg + '</div>';
-                    setTimeout(() => window.location.href = '/audited-financials', 1500);
+                    const _ec = '{{ entity_code }}';
+                    setTimeout(() => window.location.href = _ec ? '/wizard/' + _ec : '/audited-financials', 1500);
                 } else {
                     document.getElementById('confirmStatus').innerHTML = '<div class="unmapped">Error: ' + data.error + ' — use <b>Override &amp; Save</b> if the mismatch is intentional.</div>';
                 }
@@ -2714,10 +2715,29 @@ async function uploadAll() {
                     if raw_extraction.get("expenses") and raw_extraction["expenses"].get("total_expenses"):
                         extracted_expense = raw_extraction["expenses"]["total_expenses"][0] if raw_extraction["expenses"]["total_expenses"] else 0
 
-                    # Sum mapped income and expense totals.
-                    # mapped_data shape: {century_category: {"total": X, "year_totals": [...], ...}}
-                    # Classify each category by CENTURY_TO_SUMMARY.
+                    # Classification must mirror the client-side renderReconciliation
+                    # classifier (CENTURY_TO_SUMMARY → buildingLabelSections fallback)
+                    # or the server validator disagrees with the on-page panel for
+                    # building-specific categories not in the Century-wide map.
                     income_summary_rows = {"Total Operating Income", "Non-Operating Income"}
+                    building_label_sections = {}
+                    try:
+                        bl_rows = db.session.execute(db.text(
+                            "SELECT label, section FROM budget_summary_rows "
+                            "WHERE entity_code = :ec AND row_type = 'data'"
+                        ), {"ec": upload.entity_code}).fetchall()
+                        for r in bl_rows:
+                            sec = (r[1] or "").lower()
+                            if sec == "income":
+                                building_label_sections[r[0]] = "Total Operating Income"
+                            elif sec == "non-operating income":
+                                building_label_sections[r[0]] = "Non-Operating Income"
+                            else:
+                                building_label_sections[r[0]] = "Total Operating Expenses"
+                    except Exception:
+                        db.session.rollback()
+                        building_label_sections = {}
+
                     mapped_revenue = 0
                     mapped_expense = 0
                     for cat, info in mapped_data.items():
@@ -2726,7 +2746,12 @@ async function uploadAll() {
                         # Use year_totals[0] (most recent year) to compare against extracted total[0]
                         year_totals = info.get("year_totals") or []
                         year0 = year_totals[0] if year_totals else (info.get("total", 0) or 0)
-                        if CENTURY_TO_SUMMARY.get(cat, "") in income_summary_rows:
+                        summary_row = (
+                            CENTURY_TO_SUMMARY.get(cat)
+                            or building_label_sections.get(cat)
+                            or ""
+                        )
+                        if summary_row in income_summary_rows:
                             mapped_revenue += year0
                         else:
                             mapped_expense += year0
