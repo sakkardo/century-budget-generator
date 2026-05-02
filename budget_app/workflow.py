@@ -2954,8 +2954,10 @@ def create_workflow_blueprint(db):
                 return raw * (1 + avg_rate / 100)
             return raw
 
-        # Insurance — apply insurance_renewal increase_percent
-        if "insurance" in sheet or gl_prefix == "62":
+        # Insurance — apply insurance_renewal increase_percent.
+        # GL prefix 61 (Century KB: Insurance Schedule = 6105–6195). The
+        # categorizer above uses the same prefix; keep these two in sync.
+        if "insurance" in sheet or gl_prefix == "61":
             ins = merged.get("insurance_renewal", {})
             pct = ins.get("increase_percent", 0)
             if pct:
