@@ -2891,16 +2891,39 @@ def create_workflow_blueprint(db):
             adjusted = _wizard_apply_assumption_to_line(line, merged)
             categories[cat]["adjusted"] += adjusted
 
-        # Build preview rows
+        # Build preview rows in P&L order: Income → operating expenses →
+        # Capital → catch-alls. Empty buckets are skipped so the FA sees a
+        # focused view; "Other" only appears if the categorizer truly didn't
+        # know where to put something (should be rare).
         preview = []
-        for cat_name in ["Payroll", "Insurance", "Energy", "Water / Sewer", "R&M / Other"]:
-            data = categories.get(cat_name, {"raw": 0.0, "adjusted": 0.0})
-            delta = data["adjusted"] - data["raw"]
-            pct = (delta / data["raw"] * 100) if data["raw"] != 0 else 0
+        category_order = [
+            "Income",
+            "Payroll",
+            "Insurance",
+            "Energy",
+            "Water / Sewer",
+            "Repairs & Supplies",
+            "Gen & Admin",
+            "Capital",
+            "Unmapped",
+            "Other",
+        ]
+        for cat_name in category_order:
+            data = categories.get(cat_name)
+            if not data:
+                continue
+            raw = data["raw"]
+            adjusted = data["adjusted"]
+            # Skip buckets where both columns round to zero — keeps the table
+            # focused on what's actually populated for this entity.
+            if abs(raw) < 0.005 and abs(adjusted) < 0.005:
+                continue
+            delta = adjusted - raw
+            pct = (delta / raw * 100) if raw != 0 else 0
             preview.append({
                 "category": cat_name,
-                "raw": round(data["raw"], 2),
-                "adjusted": round(data["adjusted"], 2),
+                "raw": round(raw, 2),
+                "adjusted": round(adjusted, 2),
                 "delta": round(delta, 2),
                 "delta_pct": round(pct, 1),
             })
@@ -2909,22 +2932,39 @@ def create_workflow_blueprint(db):
 
 
     def _wizard_categorize_gl(gl_code, sheet_or_category):
-        """Map a GL code/sheet to a wizard preview category."""
+        """Map a GL code/sheet to a wizard preview category. Categories mirror
+        SHEET_TO_CATEGORY (Income, Payroll, Energy, Water & Sewer, Repairs &
+        Supplies, Gen & Admin, Capital) plus Insurance (carved out of Gen &
+        Admin via GL prefix 61), plus Unmapped (lines whose GL isn't in the
+        template — surfaced so FAs see their own data, not "R&M / Other"
+        absorbing it). Order matters: Insurance before Gen & Admin (61xx
+        lives on the G&A sheet); specific buckets before generic ones.
+        """
         sheet = (sheet_or_category or "").lower()
         gl_prefix = (gl_code or "")[:2]
 
-        if "payroll" in sheet or gl_prefix in ("50", "51"):
-            return "Payroll"
-        # Insurance lines at Century are GL 6105–6195 (per Yardi KB Insurance
-        # Schedule). They live on the Gen & Admin sheet, so the sheet check
-        # rarely matches — the GL prefix is the load-bearing rule.
+        # Insurance Schedule = GL 6105–6195 (Century KB). Insurance lines live
+        # on the Gen & Admin sheet — check this first so they don't fall into
+        # the broader Gen & Admin bucket below.
         if "insurance" in sheet or gl_prefix == "61":
             return "Insurance"
+        if "payroll" in sheet or gl_prefix in ("50", "51"):
+            return "Payroll"
         if "energy" in sheet or gl_prefix == "64":
             return "Energy"
         if "water" in sheet or "sewer" in sheet or gl_prefix == "65":
             return "Water / Sewer"
-        return "R&M / Other"
+        if "income" in sheet:
+            return "Income"
+        if "capital" in sheet:
+            return "Capital"
+        if "repairs" in sheet or "supplies" in sheet:
+            return "Repairs & Supplies"
+        if "gen" in sheet or "admin" in sheet:
+            return "Gen & Admin"
+        if "unmapped" in sheet:
+            return "Unmapped"
+        return "Other"
 
 
     def _wizard_apply_assumption_to_line(line, merged):

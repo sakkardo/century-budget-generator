@@ -2405,6 +2405,15 @@ document.addEventListener('DOMContentLoaded', () => {
   renderEntityGrid();
   updateRail();
   renderActionButtons();
+  // Auto-select if /wizard/<entity_code> URL form was used. initializeData
+  // sets `selectedEntity` from the template var but does not trigger the
+  // entity-pick flow that advances to Step 2. Without this, deep-links
+  // (e.g. the post-audit-confirm redirect) land on Step 1 and require a
+  // manual click before the wizard moves forward.
+  if (selectedEntity) {
+    const ent = (budgets || []).find(b => b.entity_code === selectedEntity);
+    if (ent) selectEntity(selectedEntity, ent.building_name);
+  }
 });
 </script>
 
