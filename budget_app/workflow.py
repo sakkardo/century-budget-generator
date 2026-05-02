@@ -2895,6 +2895,13 @@ def create_workflow_blueprint(db):
         # Capital → catch-alls. Empty buckets are skipped so the FA sees a
         # focused view; "Other" only appears if the categorizer truly didn't
         # know where to put something (should be rare).
+        # NB: "Unmapped" is intentionally excluded — the underlying sheet
+        # absorbs subtotal rows ("TOTAL OPERATING EXPENSES" etc.) and balance-
+        # sheet codes that double-count or don't belong in the operating
+        # budget. The template's hide-zero-rows mechanism already keeps these
+        # out of the rendered output, so surfacing the bucket in the Preview
+        # produces a misleading "$X unmapped" alarm. Lines still land on the
+        # Unmapped sheet in budget_lines if anyone needs to inspect them.
         preview = []
         category_order = [
             "Income",
@@ -2905,7 +2912,6 @@ def create_workflow_blueprint(db):
             "Repairs & Supplies",
             "Gen & Admin",
             "Capital",
-            "Unmapped",
             "Other",
         ]
         for cat_name in category_order:
