@@ -2851,6 +2851,8 @@ async function uploadAll() {
             upload.status = data["status"]
         if "profile_id" in data:
             upload.profile_id = int(data["profile_id"]) if data["profile_id"] else None
+        if "fiscal_year_end" in data:
+            upload.fiscal_year_end = (data.get("fiscal_year_end") or "").strip()
         upload.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({"success": True})
