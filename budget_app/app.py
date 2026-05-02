@@ -248,6 +248,7 @@ with app.app_context():
             ("budgets", "assumptions_history_json", "TEXT"),
             ("budgets", "wizard_completed_at", "TIMESTAMP"),
             ("budgets", "wizard_step", "INTEGER DEFAULT 0"),
+            ("budgets", "pm_sent_at", "TIMESTAMP"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [

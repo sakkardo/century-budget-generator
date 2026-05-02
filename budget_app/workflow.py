@@ -522,6 +522,10 @@ def create_workflow_blueprint(db):
         assumptions_history_json = db.Column(db.Text, nullable=True)
         wizard_completed_at = db.Column(db.DateTime, nullable=True)
         wizard_step = db.Column(db.Integer, default=0)
+        # Timestamp the FA sent the budget to PM review (status -> pm_pending).
+        # Surfaced on the Building Detail page so FAs see "Sent on YYYY-MM-DD"
+        # next to the PM panel without having to dig into the revisions log.
+        pm_sent_at = db.Column(db.DateTime, nullable=True)
         # Staging area for files the FA has SELECTED (but not yet committed) during
         # the wizard. JSON shape: {source_type: {item_id, filename, selected_at, source}}
         # Empty until FA picks files; cleared after Build Budget commits successfully.
@@ -563,6 +567,7 @@ def create_workflow_blueprint(db):
                 "building_type": self.building_type or "",
                 "wizard_step": self.wizard_step or 0,
                 "wizard_completed_at": self.wizard_completed_at.isoformat() if self.wizard_completed_at else None,
+                "pm_sent_at": self.pm_sent_at.isoformat() if self.pm_sent_at else None,
                 "lifecycle_stage": derive_lifecycle_stage(self),
                 "wizard_selections": _parse_backup_json(self.wizard_selections_json) if False else (json.loads(self.wizard_selections_json) if self.wizard_selections_json else {}),
                 "foundation_confirmed_at": self.foundation_confirmed_at.isoformat() if self.foundation_confirmed_at else None,
@@ -1687,6 +1692,14 @@ def create_workflow_blueprint(db):
         if new_status == "approved":
             budget.approved_by = data.get("approved_by", "system")
             budget.approved_at = datetime.utcnow()
+
+        # Stamp pm_sent_at the first time the budget moves to PM. Surfaced on
+        # the Building Detail page as "Sent on YYYY-MM-DD" so FAs can see at
+        # a glance when handoff happened. Only set on first transition into
+        # pm_pending — preserve the original send date if FA bounces it back
+        # to PM later.
+        if new_status == "pm_pending" and not budget.pm_sent_at:
+            budget.pm_sent_at = datetime.utcnow()
 
         old_status = budget.status
         budget.status = new_status
@@ -3068,6 +3081,12 @@ def create_workflow_blueprint(db):
         # Mark wizard complete
         budget.wizard_step = 6
         budget.wizard_completed_at = datetime.utcnow()
+        # Advance status to "draft" so the dashboard's Send-to-PM transition
+        # (draft -> pm_pending in VALID_TRANSITIONS) is unblocked. Without
+        # this, status stays at "not_started" and Send to PM silently fails
+        # the transition check.
+        if budget.status in (None, "", "not_started", "data_collection", "data_ready"):
+            budget.status = "draft"
 
         db.session.commit()
 
@@ -5634,10 +5653,12 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <div class="context-strip">
     <div class="panel" id="pmPanel">
       <div class="panel-header" onclick="togglePanel(this)">
-        <div style="display:flex; align-items:center; gap:8px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <h3>PM Expense Review</h3>
           <span class="badge badge-gray" id="pmBadge"></span>
           <span class="panel-summary" id="pmSummary"></span>
+          <!-- Inline header action — populated by JS when status allows. -->
+          <span id="pmHeaderAction" style="margin-left:auto;"></span>
         </div>
         <span class="chevron">▾</span>
       </div>
@@ -5656,11 +5677,14 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- PM Review Panel — Notes + Invoice Reclasses -->
+  <!-- Pending Edits & Notes Panel — Notes + Invoice Reclasses + Budget Proposals.
+       Renamed from "PM Review" because the items here aren't strictly PM-only:
+       the FA also reviews + accepts/rejects each one, and Budget Proposals can
+       originate from either side. -->
   <div class="panel" id="pmReviewPanel" style="display:none; margin-bottom:16px;">
     <div class="panel-header" style="background:linear-gradient(to right,#fefce8,#fef9c3); border-bottom:1px solid #fde68a;" onclick="togglePanel(this)">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 style="color:var(--gray-800);">PM Review</h3>
+        <h3 style="color:var(--gray-800);" title="Items proposed by PM that need FA review/decision (notes, GL re-classifications, budget proposals)">Pending Edits &amp; Notes</h3>
         <span id="pmReviewBadge" style="display:inline-flex; align-items:center; gap:4px; background:var(--orange); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:12px;"><span style="width:6px;height:6px;background:white;border-radius:50%;animation:pmPulse 1.5s infinite;"></span> <span id="pmReviewBadgeText"></span></span>
       </div>
       <span class="chevron">▾</span>
@@ -5823,9 +5847,45 @@ const BY1 = BY - 1, BY2 = BY - 2, BY3 = BY - 3;
       sidebar.innerHTML = html;
       document.body.appendChild(sidebar);
 
-      // Adjust main content to make room
-      const container = document.querySelector('.container');
-      if (container) container.style.marginRight = '180px';
+      // Adjust main content + nav so the wizard sidebar doesn't overlap the
+      // breadcrumb's "Open in Wizard" link (which was getting truncated).
+      const adjustForSidebar = (open) => {
+        const container = document.querySelector('.container');
+        const nav = document.querySelector('nav');
+        const margin = open ? '180px' : '0px';
+        if (container) container.style.marginRight = margin;
+        if (nav) nav.style.paddingRight = open ? '180px' : '0px';
+      };
+
+      // Persistent show/hide toggle. Restored from localStorage so the FA's
+      // preference sticks across page loads. Default: visible.
+      const STATE_KEY = 'wizardSidebarOpen.' + entityCode;
+      const saved = localStorage.getItem(STATE_KEY);
+      const startOpen = saved === null ? true : saved === '1';
+
+      // Floating "Show Wizard" tab — always rendered, always clickable, sits
+      // on the right edge so the FA can pop the sidebar back without hunting.
+      const toggleTab = document.createElement('button');
+      toggleTab.id = 'wizardSidebarToggle';
+      toggleTab.style.cssText = 'position:fixed;right:0;top:120px;writing-mode:vertical-rl;transform:rotate(180deg);background:var(--blue);color:white;border:none;padding:10px 6px;border-radius:6px 0 0 6px;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;z-index:91;box-shadow:-2px 0 8px rgba(0,0,0,0.1);';
+      toggleTab.textContent = 'WIZARD';
+      const setOpen = (open) => {
+        sidebar.style.transform = open ? 'translateX(0)' : 'translateX(180px)';
+        toggleTab.style.display = open ? 'none' : 'block';
+        adjustForSidebar(open);
+        localStorage.setItem(STATE_KEY, open ? '1' : '0');
+      };
+      toggleTab.onclick = () => setOpen(true);
+      document.body.appendChild(toggleTab);
+
+      // Replace the existing in-sidebar "Collapse" button so it routes through
+      // setOpen() (which also shows the toggle pill).
+      setTimeout(() => {
+        const collapseBtn = sidebar.querySelector('button');
+        if (collapseBtn) collapseBtn.onclick = () => setOpen(false);
+      }, 0);
+
+      setOpen(startOpen);
     })
     .catch(() => {});  // Silently skip if wizard API fails
 })();
@@ -6194,16 +6254,39 @@ function renderDetail(data) {
     </div>
   `;
 
-  // PM Track — collapsible panel with badge
-  const pmStatusLabels = { draft: 'Not Sent', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
-  const pmStatus = pmStatusLabels[b.status] || (b.status ? b.status.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : '');
-  const pmBadgeClass = ['fa_review','approved'].includes(b.status) ? 'badge-green' : ['pm_pending','pm_in_progress'].includes(b.status) ? 'badge-amber' : 'badge-gray';
+  // PM Track — collapsible panel with badge.
+  // Status mapping: 'not_started' is grouped with 'draft' for display because
+  // post-wizard the budget is effectively a draft (wizard_completed_at set)
+  // even if the raw status column hasn't flipped yet.
+  const wizardDone = !!b.wizard_completed_at;
+  const isPreSend = !b.status || ['not_started','data_collection','data_ready','draft'].includes(b.status);
+  const pmStatusLabels = { draft: 'Not Sent', not_started: wizardDone ? 'Ready to Send' : 'Not Started', pm_pending: 'Sent to PM', pm_in_progress: 'PM Working', fa_review: 'Submitted for Review', approved: 'Approved', returned: 'Returned' };
+  let pmStatus = pmStatusLabels[b.status] || (b.status ? b.status.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : '');
+  // Once sent, append the date so FAs see "Sent on Apr 30" without expanding.
+  if (b.pm_sent_at && ['pm_pending','pm_in_progress','fa_review','approved','returned'].includes(b.status)) {
+    try {
+      const dt = new Date(b.pm_sent_at);
+      const mo = dt.toLocaleString('en-US', {month:'short'});
+      pmStatus = 'Sent ' + mo + ' ' + dt.getDate() + ', ' + dt.getFullYear();
+    } catch (e) {}
+  }
+  const pmBadgeClass = ['fa_review','approved'].includes(b.status) ? 'badge-green' : ['pm_pending','pm_in_progress'].includes(b.status) ? 'badge-amber' : (isPreSend && wizardDone ? 'badge-blue' : 'badge-gray');
   document.getElementById('pmBadge').className = 'badge ' + pmBadgeClass;
   document.getElementById('pmBadge').textContent = pmStatus;
   document.getElementById('pmSummary').textContent = data.assignments.pm ? data.assignments.pm : '';
 
+  // Header inline action — visible without expanding the panel.
+  const headerEl = document.getElementById('pmHeaderAction');
+  if (headerEl) {
+    if (isPreSend && wizardDone) {
+      headerEl.innerHTML = '<button onclick="event.stopPropagation(); sendToPM();" style="background:var(--blue); color:white; padding:4px 12px; font-size:12px; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Send to PM &rarr;</button>';
+    } else {
+      headerEl.innerHTML = '';
+    }
+  }
+
   let pmActions = '';
-  if (b.status === 'draft') {
+  if (isPreSend && wizardDone) {
     pmActions = '<button onclick="sendToPM()" style="background:var(--blue); color:white;">Send to PM for Review</button>';
   } else if (b.status === 'fa_review') {
     pmActions = '<button onclick="approvePM()" style="background:var(--green); color:white; margin-right:8px;">Approve PM Review</button>' +
