@@ -2276,12 +2276,54 @@ function renderActionButtons() {
     btn2.onclick = () => generateBudget();
     container.appendChild(btn2);
   } else if (currentStep === 5) {
-    const btn = document.createElement('button');
-    btn.className = 'btn btn-primary btn-full';
-    btn.textContent = 'Open Dashboard →';
-    btn.onclick = () => openDashboard();
-    container.appendChild(btn);
+    // Two CTAs: open the FA Dashboard for line edits, or send straight to
+    // PM review. Both use the existing /api/budgets/<entity>/status endpoint
+    // for the PM transition, so behavior matches the dashboard's "Send to PM"
+    // button at workflow.py:5217 (status: draft → pm_pending).
+    const btn1 = document.createElement('button');
+    btn1.className = 'btn btn-secondary';
+    btn1.textContent = '← Open Dashboard';
+    btn1.onclick = () => openDashboard();
+    container.appendChild(btn1);
+
+    const btn2 = document.createElement('button');
+    btn2.className = 'btn btn-primary';
+    btn2.textContent = 'Send to PM →';
+    btn2.onclick = () => sendToPM();
+    container.appendChild(btn2);
   }
+}
+
+// Send the budget to PM review — mirrors the FA Dashboard's "Send to PM"
+// button. POSTs to /api/budgets/<entity>/status with status="pm_pending".
+function sendToPM() {
+  if (!selectedEntity) { alert('No entity selected'); return; }
+  if (!confirm('Send this budget to PM for review? You can still re-open it from the FA Dashboard later.')) return;
+  fetch(`/api/budgets/${selectedEntity}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'pm_pending' })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data && (data.success || data.status === 'pm_pending')) {
+      const sd = document.getElementById('successDetails');
+      if (sd) sd.textContent = 'Sent to PM. The PM will see this in their portal at /pm/' + selectedEntity + '.';
+      // Replace the action buttons with a single "Open PM Portal" CTA.
+      const container = document.getElementById('actionButtons');
+      if (container) {
+        container.innerHTML = '';
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-primary btn-full';
+        btn.textContent = 'Open PM Portal →';
+        btn.onclick = () => { window.location.href = '/pm/' + selectedEntity; };
+        container.appendChild(btn);
+      }
+    } else {
+      alert('Could not change status: ' + ((data && data.error) || 'unknown error'));
+    }
+  })
+  .catch(err => { console.error('Send to PM error:', err); alert('Send to PM error: ' + err.message); });
 }
 
 // Handle file upload

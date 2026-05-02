@@ -6925,11 +6925,16 @@ def _build_apply_audit_2025(entity_code, selection):
     ), {"ec": entity_code})
     db.session.flush()
 
+    # fiscal_year_end is the load-bearing key for the summary endpoint's Col 2
+    # lookup ([workflow.py:4035-4039]: WHERE fiscal_year_end = :fy). Without it,
+    # confirmed audit data never reaches the budget summary tab even though
+    # status='confirmed'. The wizard's audit_2025 slot is BY-2 by definition.
+    from workflow import BUDGET_YEAR as _BY_AUDIT
     upload = AuditUpload(
         entity_code=entity_code,
         building_name=building_name,
         profile_id=None,  # FA will pick at review
-        fiscal_year_end=None,
+        fiscal_year_end=str(_BY_AUDIT - 2),
         pdf_filename=safe_filename,
         status="uploaded",
     )
@@ -7124,7 +7129,12 @@ def _build_apply_ysl(entity_code, selection):
 
 
 def _build_apply_expense_distribution(entity_code, selection):
-    """Download + parse an Expense Distribution file from SharePoint."""
+    """Download + parse an Expense Distribution file from SharePoint, store
+    the report, and apply accrual adjustments to budget_lines (mirrors the
+    /generate flow at app.py:1176-1184). Skipping apply_accrual_adjustments
+    leaves BudgetLine.accrual_adj at 0 across the entity, so the wizard's
+    forecast/preview ignores expense-driven accruals.
+    """
     import os as _os
     try:
         from expense_distribution import parse_expense_distribution
@@ -7140,15 +7150,27 @@ def _build_apply_expense_distribution(entity_code, selection):
                 "invoices": 0,
                 "warning": "Parser found no invoices in this file.",
             }
-        ed_helpers["store_expense_report"](
+        report = ed_helpers["store_expense_report"](
             str(entity_code), period_from, period_to, invoices, filename,
         )
+        accrual_applied = 0
+        accrual_error = None
+        if period_from and report and getattr(report, "id", None):
+            try:
+                accrual_result = ed_helpers["apply_accrual_adjustments"](
+                    str(entity_code), report.id, period_from,
+                )
+                accrual_applied = (accrual_result or {}).get("applied", 0)
+            except Exception as _e:
+                accrual_error = str(_e)[:200]
         return {
             "source_type": "expense_distribution",
             "filename": filename,
             "invoices": len(invoices),
             "period_from": period_from,
             "period_to": period_to,
+            "accrual_adjustments_applied": accrual_applied,
+            "accrual_error": accrual_error,
             "file_entity": exp_entity,
             "stored_under_entity": str(entity_code),
         }
