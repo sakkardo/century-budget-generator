@@ -5656,7 +5656,7 @@ SHAREPOINT_SOURCE_PATTERNS = [
     ("approved_2026",         ["approved"]),
     ("ysl",                   ["ysl"]),
     ("expense_distribution",  ["expensedistribution"]),
-    ("ap_aging",              ["apaging"]),
+    ("ap_aging",              ["apaging", "payablesaging"]),
     ("maint_proof",           ["adhoc_amp", "amp_"]),
 ]
 
@@ -5731,9 +5731,11 @@ def _sharepoint_list_entity_sources(entity_code):
         else:
             result["by_source_type"]["unmatched"].append(entry)
 
-    # Second pass: scan the entity TOP folder for approved-budget XLSX files.
-    # These live at 2027 Budget/<entity>/ (NOT in Supporting Documents) per the
-    # 2026-04-28 bulk move. Match: filename contains "approved" AND .xlsx/.xls.
+    # Second pass: scan the entity TOP folder. FAs commonly drop Yardi reports
+    # AND the approved budget straight into 2027 Budget/<entity>/ rather than
+    # Supporting Documents. Classify each file with the same patterns — but
+    # skip audit_2025: the audit needles include ".pdf", which would grab any
+    # stray PDF in the top folder. Audits live in Supporting Documents only.
     try:
         top_path = SHAREPOINT_2027_FOLDER_PATH + "/" + str(entity_code)
         top_enc = urllib.parse.quote(top_path, safe="/")
@@ -5742,18 +5744,19 @@ def _sharepoint_list_entity_sources(entity_code):
             if "folder" in it:
                 continue  # skip Supporting Documents subfolder etc.
             name = (it.get("name") or "")
-            low = name.lower()
-            if "approved" in low and (low.endswith(".xlsx") or low.endswith(".xls")):
-                entry = {
-                    "name": name,
-                    "web_url": it.get("webUrl"),
-                    "size": it.get("size"),
-                    "last_modified": it.get("lastModifiedDateTime"),
-                    "item_id": it.get("id"),
-                }
-                # Avoid duplicates if a file somehow matched twice
-                if not any(e.get("item_id") == entry["item_id"] for e in result["by_source_type"]["approved_2026"]):
-                    result["by_source_type"]["approved_2026"].append(entry)
+            st = _classify_sharepoint_filename(name)
+            if not st or st == "audit_2025":
+                continue
+            entry = {
+                "name": name,
+                "web_url": it.get("webUrl"),
+                "size": it.get("size"),
+                "last_modified": it.get("lastModifiedDateTime"),
+                "item_id": it.get("id"),
+            }
+            # Avoid duplicates if a file is also surfaced from Supporting Documents
+            if not any(e.get("item_id") == entry["item_id"] for e in result["by_source_type"][st]):
+                result["by_source_type"][st].append(entry)
     except RuntimeError as e:
         if "404" not in str(e):
             # Don't fail the whole request if top folder scan errors; just record it.
