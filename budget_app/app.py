@@ -5864,6 +5864,14 @@ def _wizard_record_selection(entity_code, source_label_default=None):
         elif source_type == "audit_2025":
             # Long-running: Claude extraction is 30-60s. Done synchronously here.
             parse_result = _build_apply_audit_2025(entity_code, current[source_type])
+        elif source_type == "ysl":
+            parse_result = _build_apply_ysl(entity_code, current[source_type])
+        elif source_type == "expense_distribution":
+            parse_result = _build_apply_expense_distribution(entity_code, current[source_type])
+        elif source_type == "ap_aging":
+            parse_result = _build_apply_ap_aging(entity_code, current[source_type])
+        elif source_type == "maint_proof":
+            parse_result = _build_apply_maint_proof(entity_code, current[source_type])
     except Exception as e:
         # Roll back parser changes; preserve the staged selection so the FA
         # can re-click after fixing the source file.
@@ -7047,6 +7055,168 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
             ))
         written += 1
     return written
+
+
+def _wizard_download_sp_to_tmp(selection, suffix):
+    """Download a SharePoint file by item_id into a tmp .xlsx (or other suffix).
+    Returns (Path, filename). Caller is responsible for deleting the tmp file.
+    Raises RuntimeError on missing item_id or download failure.
+    """
+    import tempfile
+    from pathlib import Path
+    item_id = (selection.get("item_id") or "").strip()
+    if not item_id:
+        raise RuntimeError("selection missing item_id")
+    filename, file_bytes = _sharepoint_download_item(item_id)
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix or ".xlsx")
+    try:
+        import os as _os
+        with _os.fdopen(fd, "wb") as fh:
+            fh.write(file_bytes)
+    except Exception:
+        try:
+            import os as _os
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
+    return Path(tmp_path), filename
+
+
+def _build_apply_ysl(entity_code, selection):
+    """Download + parse a YSL file from SharePoint and write GL lines to budget_lines.
+    Idempotent: re-running for the same entity overwrites prior YSL data via
+    workflow_helpers["store_all_lines"] (fresh_start=False = upsert).
+    """
+    import os as _os
+    from budget_system.ysl_parser import parse_ysl_file
+    tmp_path, filename = _wizard_download_sp_to_tmp(selection, ".xlsx")
+    try:
+        gl_data, property_info = parse_ysl_file(tmp_path)
+        # The YSL file's internal entity may or may not match the FA's chosen
+        # entity (Yardi has a known bug returning wrong-entity data sometimes).
+        # Trust the FA's wizard context: store under entity_code, not what
+        # the file claims.
+        building_name = property_info.get("property_name") or f"Entity {entity_code}"
+        merged = None
+        try:
+            merged = merge_assumptions(entity_code)
+        except Exception:
+            pass
+        workflow_helpers["store_all_lines"](
+            str(entity_code), building_name, gl_data, TEMPLATE_PATH,
+            assumptions=merged, fresh_start=False,
+        )
+        # Count GL rows we ingested (gl_data shape: {gl_code: {sheet, ...}})
+        gl_count = len(gl_data) if hasattr(gl_data, "__len__") else 0
+        return {
+            "source_type": "ysl",
+            "filename": filename,
+            "gl_lines": gl_count,
+            "file_entity": property_info.get("property_code"),
+            "stored_under_entity": str(entity_code),
+        }
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _build_apply_expense_distribution(entity_code, selection):
+    """Download + parse an Expense Distribution file from SharePoint."""
+    import os as _os
+    try:
+        from expense_distribution import parse_expense_distribution
+    except ImportError:
+        from budget_app.expense_distribution import parse_expense_distribution
+    tmp_path, filename = _wizard_download_sp_to_tmp(selection, ".xlsx")
+    try:
+        exp_entity, period_from, period_to, invoices = parse_expense_distribution(str(tmp_path))
+        if not invoices:
+            return {
+                "source_type": "expense_distribution",
+                "filename": filename,
+                "invoices": 0,
+                "warning": "Parser found no invoices in this file.",
+            }
+        ed_helpers["store_expense_report"](
+            str(entity_code), period_from, period_to, invoices, filename,
+        )
+        return {
+            "source_type": "expense_distribution",
+            "filename": filename,
+            "invoices": len(invoices),
+            "period_from": period_from,
+            "period_to": period_to,
+            "file_entity": exp_entity,
+            "stored_under_entity": str(entity_code),
+        }
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _build_apply_ap_aging(entity_code, selection):
+    """Download + parse an AP Aging file from SharePoint."""
+    import os as _os
+    from open_ap import parse_open_ap_report
+    tmp_path, filename = _wizard_download_sp_to_tmp(selection, ".xlsx")
+    try:
+        ap_entity, invoices = parse_open_ap_report(str(tmp_path))
+        if not invoices:
+            return {
+                "source_type": "ap_aging",
+                "filename": filename,
+                "invoices": 0,
+                "warning": "Parser found no invoices in this file.",
+            }
+        oa_helpers["store_open_ap_report"](str(entity_code), invoices, filename)
+        unpaid_applied = 0
+        try:
+            unpaid_result = oa_helpers["apply_unpaid_bills"](str(entity_code))
+            unpaid_applied = (unpaid_result or {}).get("applied", 0)
+        except Exception:
+            pass
+        return {
+            "source_type": "ap_aging",
+            "filename": filename,
+            "invoices": len(invoices),
+            "unpaid_bills_applied": unpaid_applied,
+            "file_entity": ap_entity,
+            "stored_under_entity": str(entity_code),
+        }
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _build_apply_maint_proof(entity_code, selection):
+    """Download + parse a Maintenance Proof file from SharePoint."""
+    import os as _os
+    tmp_path, filename = _wizard_download_sp_to_tmp(selection, ".xlsx")
+    try:
+        report_title, units, total_shares = mp_helpers["parse_maintenance_proof"](str(tmp_path))
+        mp_helpers["store_maintenance_proof"](
+            str(entity_code), report_title, units, total_shares, filename,
+        )
+        return {
+            "source_type": "maint_proof",
+            "filename": filename,
+            "report_title": report_title,
+            "units": len(units) if units else 0,
+            "total_shares": total_shares,
+            "stored_under_entity": str(entity_code),
+        }
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 @app.route("/api/wizard/<entity_code>/foundation-status", methods=["GET"])
