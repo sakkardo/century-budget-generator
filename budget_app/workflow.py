@@ -4036,6 +4036,11 @@ def create_workflow_blueprint(db):
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         col2_lookup = {}
         col2_meta = {}        # {summary_label: {matched_category, match_type}}
+        # source_lines per summary label = the auditor's raw line items that
+        # rolled up into Col 2 for this row. Used by the Inspector drill-down
+        # so FAs can see "Maintenance $4.66M came from these 3 auditor lines"
+        # without leaving the Building Detail page.
+        col2_source_lines = {}  # {summary_label: [{auditor_desc, amount, audit_category}, ...]}
         audit_info = None     # {id, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename}
         try:
             # Label aliases: audit category variant → canonical summary label
@@ -4065,8 +4070,11 @@ def create_workflow_blueprint(db):
                     "pdf_filename": row_au[5] or "",
                 }
                 mapped_raw = _json.loads(row_au[1])
-                # Extract {category: year_totals[0]} from mapped_data
+                # Extract {category: year_totals[0]} from mapped_data, and
+                # capture source_lines per category so we can attribute them
+                # to the right summary row below.
                 confirmed = {}
+                cat_source_lines = {}  # {audit_category: [{auditor_desc, amount}, ...]}
                 for cat, info in mapped_raw.items():
                     if isinstance(info, dict):
                         totals = info.get("year_totals", [])
@@ -4074,12 +4082,48 @@ def create_workflow_blueprint(db):
                             confirmed[cat] = totals[0]
                         elif info.get("total"):
                             confirmed[cat] = info["total"]
+                        # Normalize source_lines into a stable shape for the
+                        # frontend. Each line: {auditor_desc, amount}.
+                        sls_raw = info.get("source_lines") or []
+                        norm = []
+                        for sl in sls_raw:
+                            if not isinstance(sl, dict):
+                                continue
+                            desc = sl.get("auditor_desc") or sl.get("description") or ""
+                            # amounts is usually [year0_amt, year1_amt, ...]
+                            amts = sl.get("amounts") or []
+                            amt = None
+                            if isinstance(amts, list) and amts:
+                                amt = amts[0]
+                            if amt is None:
+                                amt = sl.get("amount")
+                            try:
+                                amt_f = float(amt) if amt is not None else 0.0
+                            except Exception:
+                                amt_f = 0.0
+                            norm.append({"auditor_desc": desc, "amount": amt_f})
+                        if norm:
+                            cat_source_lines[cat] = norm
                 # Build reverse alias: canonical → [variants]
                 alias_reverse = {}
                 for variant, canonical in _LABEL_ALIASES.items():
                     alias_reverse.setdefault(canonical, []).append(variant)
                 # Build label set from this building's summary rows
                 building_labels = {r.label for r in summary_rows if r.row_type == "data"}
+                # Helper: stamp source_lines onto the resolved summary label,
+                # tagging each line with the audit_category it came from so the
+                # FA can tell which auditor bucket fed the row.
+                def _attach_lines(summary_label, audit_cat):
+                    lines_for_cat = cat_source_lines.get(audit_cat) or []
+                    if not lines_for_cat:
+                        return
+                    bucket = col2_source_lines.setdefault(summary_label, [])
+                    for sl in lines_for_cat:
+                        bucket.append({
+                            "auditor_desc": sl.get("auditor_desc") or "",
+                            "amount": sl.get("amount") or 0.0,
+                            "audit_category": audit_cat,
+                        })
                 for cat, amount in confirmed.items():
                     if amount is None:
                         continue
@@ -4087,18 +4131,21 @@ def create_workflow_blueprint(db):
                     if cat in building_labels:
                         col2_lookup[cat] = col2_lookup.get(cat, 0) + amount
                         col2_meta[cat] = {"matched_category": cat, "match_type": "direct"}
+                        _attach_lines(cat, cat)
                     else:
                         # Try alias: audit category might be a variant
                         canonical = _LABEL_ALIASES.get(cat, cat)
                         if canonical in building_labels:
                             col2_lookup[canonical] = col2_lookup.get(canonical, 0) + amount
                             col2_meta[canonical] = {"matched_category": cat, "match_type": "alias"}
+                            _attach_lines(canonical, cat)
                         else:
                             # Try reverse: building label might be a variant of audit category
                             for variant in alias_reverse.get(cat, []):
                                 if variant in building_labels:
                                     col2_lookup[variant] = col2_lookup.get(variant, 0) + amount
                                     col2_meta[variant] = {"matched_category": cat, "match_type": "alias_reverse"}
+                                    _attach_lines(variant, cat)
                                     break
         except Exception as _col2_err:
             col2_lookup = {"_error": str(_col2_err)}
@@ -4200,6 +4247,10 @@ def create_workflow_blueprint(db):
                         "audit_confirmed_by": audit_info.get("confirmed_by") if audit_info else None,
                         "audit_filename": audit_info.get("pdf_filename") if audit_info else None,
                         "has_audit": bool(audit_info),
+                        # Per-line breakdown: each entry is {auditor_desc, amount, audit_category}
+                        # Multiple audit categories can roll up to one summary row, so the
+                        # audit_category field disambiguates which auditor bucket each line came from.
+                        "source_lines": col2_source_lines.get(row.label) or [],
                     },
                     "gl": {
                         "prefixes": prefixes,
@@ -11483,7 +11534,50 @@ function sumRenderDrillPanel(label, col) {
         '<div style="color:var(--gray-500);">Source file:</div><div>' + (c2.audit_filename || '\u2014') + '</div>' +
         '</div>' +
         '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;">' +
-        '<b>= ' + fmt(c2.value) + '</b> <span style="color:var(--gray-500);">(directly from audit total for "' + c2.matched_category + '")</span></div>';
+        '<b>= ' + fmt(c2.value) + '</b> <span style="color:var(--gray-500);">(rolled up from audit lines below)</span></div>';
+      // Per-auditor-line breakdown \u2014 Phase 1 (read-only). Phase 2 will add
+      // edit/move/add affordances per row.
+      const sourceLines = Array.isArray(c2.source_lines) ? c2.source_lines : [];
+      if (sourceLines.length) {
+        let lineSubtotal = 0;
+        let rowsHtml = '';
+        sourceLines.forEach(sl => {
+          const desc = (sl.auditor_desc || '').replace(/[<>]/g, '');
+          const amt = Number(sl.amount) || 0;
+          lineSubtotal += amt;
+          const auditCat = (sl.audit_category || '').replace(/[<>]/g, '');
+          const catBadge = auditCat && auditCat !== c2.matched_category
+            ? '<span style="display:inline-block;font-size:10px;color:var(--gray-500);margin-left:6px;background:var(--gray-100);padding:1px 6px;border-radius:8px;">via ' + auditCat + '</span>'
+            : '';
+          rowsHtml += '<tr>'
+            + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);">' + desc + catBadge + '</td>'
+            + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);text-align:right;font-family:monospace;">$' + fmt(amt) + '</td>'
+            + '</tr>';
+        });
+        const subtotalDelta = Math.round(lineSubtotal - (Number(c2.value) || 0));
+        const reconcileNote = Math.abs(subtotalDelta) < 1
+          ? '<span style="color:var(--green);">\u2713 reconciles</span>'
+          : '<span style="color:var(--orange);">\u26a0 differs by $' + fmt(Math.abs(subtotalDelta)) + '</span>';
+        html += '<div style="margin-top:14px;">'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:600;color:var(--gray-700);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
+          + '<span>Audit Breakdown \u00b7 ' + sourceLines.length + ' line' + (sourceLines.length === 1 ? '' : 's') + '</span>'
+          + '<span style="text-transform:none;letter-spacing:0;font-weight:500;">' + reconcileNote + '</span>'
+          + '</div>'
+          + '<div style="border:1px solid var(--gray-200);border-radius:6px;overflow:hidden;">'
+          + '<table style="width:100%;border-collapse:collapse;">'
+          + '<thead style="background:var(--gray-50);">'
+          + '<tr><th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:left;text-transform:uppercase;">Auditor description</th>'
+          + '<th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:right;text-transform:uppercase;">Amount</th></tr>'
+          + '</thead>'
+          + '<tbody>' + rowsHtml + '</tbody>'
+          + '<tfoot><tr style="background:var(--gray-50);font-weight:600;">'
+          + '<td style="padding:6px 8px;font-size:12px;">Subtotal</td>'
+          + '<td style="padding:6px 8px;font-size:12px;text-align:right;font-family:monospace;">$' + fmt(lineSubtotal) + '</td>'
+          + '</tr></tfoot>'
+          + '</table></div>'
+          + '<div style="margin-top:8px;font-size:11px;color:var(--gray-500);font-style:italic;">Read-only for now \u2014 Phase 2 will let you edit amounts and re-route lines to other categories.</div>'
+          + '</div>';
+      }
     } else {
       html += '<div style="background:#fffbeb;padding:10px 12px;border-radius:6px;color:#92400e;">Audit is confirmed for FY ' + (c2.audit_year || '?') + ', but no category matched the row label "<b>' + label + '</b>". Add an alias in <code>_LABEL_ALIASES</code> (workflow.py).</div>';
     }
