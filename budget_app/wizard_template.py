@@ -1853,10 +1853,21 @@ function useSharepointFile(sourceType, itemId, filename) {
     btn.textContent = "Working...";
     btn.style.opacity = "0.6";
   }
+  // Look up the file's SharePoint web_url from the cached SP scan so we can
+  // pass it through to the backend (used for the audit review page's
+  // "Open audit PDF" link, which deep-links into SharePoint instead of
+  // streaming bytes through this app).
+  let webUrl = "";
+  try {
+    if (_spSources && _spSources.by_source_type && _spSources.by_source_type[sourceType]) {
+      const match = _spSources.by_source_type[sourceType].find(f => f.item_id === itemId);
+      if (match && match.web_url) webUrl = match.web_url;
+    }
+  } catch (e) {}
   fetch("/api/wizard/" + ent + "/use-sp-source", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source_type: sourceType, item_id: itemId, filename: filename || "" })
+    body: JSON.stringify({ source_type: sourceType, item_id: itemId, filename: filename || "", web_url: webUrl })
   })
     .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
     .then(function (resp) {

@@ -250,6 +250,7 @@ with app.app_context():
             ("budgets", "wizard_step", "INTEGER DEFAULT 0"),
             ("budgets", "pm_sent_at", "TIMESTAMP"),
             ("audit_uploads", "summary_overrides", "TEXT"),
+            ("audit_uploads", "sharepoint_web_url", "TEXT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [
@@ -5815,6 +5816,7 @@ def _wizard_record_selection(entity_code, source_label_default=None):
     source_type = (data.get("source_type") or source_label_default or "").strip()
     item_id = (data.get("item_id") or "").strip()
     filename = (data.get("filename") or "").strip()
+    web_url = (data.get("web_url") or "").strip()
     if not source_type or not item_id:
         return jsonify({"error": "source_type and item_id required"}), 400
 
@@ -5833,6 +5835,7 @@ def _wizard_record_selection(entity_code, source_label_default=None):
     current[source_type] = {
         "item_id": item_id,
         "filename": filename,
+        "web_url": web_url,
         "selected_at": _dt.utcnow().isoformat(),
         "source": "sharepoint",
     }
@@ -6932,12 +6935,17 @@ def _build_apply_audit_2025(entity_code, selection):
     # confirmed audit data never reaches the budget summary tab even though
     # status='confirmed'. The wizard's audit_2025 slot is BY-2 by definition.
     from workflow import BUDGET_YEAR as _BY_AUDIT
+    # Capture the SharePoint web URL (Office viewer link) so the review
+    # page can deep-link to the source document. Survives Railway
+    # ephemeral-fs wipes — unlike the local PDF cache which can disappear.
+    sp_web_url = (selection or {}).get("web_url") or None
     upload = AuditUpload(
         entity_code=entity_code,
         building_name=building_name,
         profile_id=None,  # FA will pick at review
         fiscal_year_end=str(_BY_AUDIT - 2),
         pdf_filename=safe_filename,
+        sharepoint_web_url=sp_web_url,
         status="uploaded",
     )
     db.session.add(upload)

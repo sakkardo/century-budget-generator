@@ -209,6 +209,12 @@ def create_audited_financials_blueprint(db):
         # populated. Lets FAs edit/move/delete/add audit lines without
         # touching the original Claude extraction.
         summary_overrides = db.Column(db.Text, nullable=True)
+        # SharePoint web URL (Office viewer link) captured at audit-click
+        # time. Used for the review page's "Open audit PDF" link so the
+        # FA can open the source doc directly in SharePoint instead of
+        # streaming bytes through this app — robust against Railway's
+        # ephemeral local filesystem.
+        sharepoint_web_url = db.Column(db.Text, nullable=True)
         status = db.Column(db.String(20), default="uploaded")  # uploaded, extracted, mapped, confirmed
         confirmed_by = db.Column(db.String(255), default="")
         confirmed_at = db.Column(db.DateTime, nullable=True)
@@ -238,7 +244,8 @@ def create_audited_financials_blueprint(db):
                 "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-                "summary_overrides": so
+                "summary_overrides": so,
+                "sharepoint_web_url": self.sharepoint_web_url
             }
 
     # ─── Helper Functions ────────────────────────────────────────────────────
@@ -1515,7 +1522,7 @@ async function uploadAll() {
 <div class="container">
     <div style="margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
         <a href="/audited-financials" class="back-link">← Back to Uploads</a>
-        <a href="/api/af/uploads/{{ upload_id }}/pdf" target="_blank" rel="noopener" style="font-size:13px;font-weight:600;color:var(--blue);text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--blue);border-radius:6px;background:#eff6ff;">📄 Open audit PDF ↗</a>
+        {{ pdf_link_html }}
     </div>
 
     {{ status_banner }}
@@ -2531,6 +2538,32 @@ async function uploadAll() {
                 'when ready &mdash; this finalizes Col 2 on the Budget Summary.</div>'
             )
 
+        # Audit PDF link — prefer the SharePoint web viewer (durable across
+        # Railway dyno restarts that wipe the local file cache). Fall back
+        # to the local serve endpoint only if no SP URL is recorded; if
+        # both are missing, show a disabled hint.
+        if upload.sharepoint_web_url:
+            pdf_link_html = (
+                f'<a href="{upload.sharepoint_web_url}" target="_blank" rel="noopener" '
+                f'style="font-size:13px;font-weight:600;color:var(--blue);text-decoration:none;'
+                f'display:inline-flex;align-items:center;gap:6px;padding:5px 12px;'
+                f'border:1px solid var(--blue);border-radius:6px;background:#eff6ff;" '
+                f'title="Opens the audit PDF in SharePoint">'
+                f'&#128196; Open audit PDF in SharePoint &rsaquo;</a>'
+            )
+        elif upload.pdf_filename:
+            pdf_link_html = (
+                f'<a href="/api/af/uploads/{upload_id}/pdf" target="_blank" rel="noopener" '
+                f'style="font-size:13px;font-weight:600;color:var(--blue);text-decoration:none;'
+                f'display:inline-flex;align-items:center;gap:6px;padding:5px 12px;'
+                f'border:1px solid var(--blue);border-radius:6px;background:#eff6ff;" '
+                f'title="Opens the locally cached PDF">'
+                f'&#128196; Open audit PDF &rsaquo;</a>'
+            )
+        else:
+            pdf_link_html = ''
+
+        html = html.replace("{{ pdf_link_html }}", pdf_link_html)
         html = html.replace("{{ status_banner }}", status_banner)
         html = html.replace("{{ building_name }}", upload.building_name or "")
         html = html.replace("{{ entity_code }}", upload.entity_code or "")
