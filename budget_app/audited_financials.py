@@ -3359,64 +3359,24 @@ async function uploadAll() {
 
     @bp.route("/api/af/uploads/<int:upload_id>/pdf", methods=["GET"])
     def api_serve_audit_pdf(upload_id):
-        """Stream the original audit PDF for inline viewing.
-
-        Tries the locally cached PDF first; if absent (Railway dynos have
-        ephemeral filesystems, so /data/audit_pdfs/<file> may have been
-        wiped by a redeploy), falls back to re-fetching from SharePoint
-        via the wizard selections record. The fetched bytes are also
-        re-cached locally for the next call until the next dyno reset.
+        """Stream the original audit PDF for inline viewing in the browser.
+        Used by the review page's "Open PDF" link so FAs can cross-check
+        Claude's extraction against the source document.
         """
         upload = AuditUpload.query.get(upload_id)
         if not upload or not upload.pdf_filename:
             abort(404)
-
         from pathlib import Path as _Path
-        from io import BytesIO
         pdf_path = _Path(get_data_dir()) / upload.pdf_filename
-
-        if pdf_path.exists():
-            return send_file(
-                str(pdf_path), mimetype="application/pdf",
-                as_attachment=False, download_name=upload.pdf_filename,
-            )
-
-        # Local cache miss — try to recover via the wizard selections record
-        # for this entity, which stores the SharePoint item_id used at
-        # wizard-click time.
-        try:
-            ec = upload.entity_code
-            row = db.session.execute(db.text(
-                "SELECT wizard_selections_json FROM budgets "
-                "WHERE entity_code = :ec ORDER BY year DESC LIMIT 1"
-            ), {"ec": ec}).fetchone()
-            if not row or not row[0]:
-                abort(404)
-            sels = json.loads(row[0])
-            audit_sel = sels.get("audit_2025") or {}
-            item_id = (audit_sel.get("item_id") or "").strip()
-            if not item_id:
-                abort(404)
-            try:
-                from app import _sharepoint_download_item
-            except ImportError:
-                from budget_app.app import _sharepoint_download_item
-            filename, file_bytes = _sharepoint_download_item(item_id)
-            # Best-effort re-cache so the next call is fast.
-            try:
-                pdf_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(pdf_path, "wb") as fh:
-                    fh.write(file_bytes)
-            except Exception:
-                pass
-            return send_file(
-                BytesIO(file_bytes), mimetype="application/pdf",
-                as_attachment=False,
-                download_name=upload.pdf_filename or filename,
-            )
-        except Exception:
-            logger.exception("PDF SharePoint fallback failed")
+        if not pdf_path.exists():
             abort(404)
+        # Inline display so the browser opens the PDF rather than downloading.
+        return send_file(
+            str(pdf_path),
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=upload.pdf_filename,
+        )
 
     @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
     def api_delete_upload(upload_id):
