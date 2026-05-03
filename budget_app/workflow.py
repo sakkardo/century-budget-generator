@@ -11905,32 +11905,82 @@ function auditLineMove(btn) {
     alert('No other summary rows available to move to.');
     return;
   }
-  // Simple prompt-based picker — keeps dependency footprint zero. Lists all
-  // valid target labels; FA types or pastes one. Server validates.
-  const listed = targets.length > 25
-    ? targets.slice(0, 25).join(', ') + ', ... (' + (targets.length - 25) + ' more)'
-    : targets.join(', ');
-  const tgt = window.prompt(
-    'Move this line to which summary row?\n\nValid options:\n' + listed,
-    ''
-  );
-  if (!tgt) return;
-  if (!targets.includes(tgt)) {
-    alert('Not a valid summary row: "' + tgt + '". Type the label exactly as it appears in the summary table.');
-    return;
-  }
-  _auditLinePatch(ctx.auditId, {
-    summary_label: ctx.summaryLabel,
-    line_id: ctx.lineId,
-    action: 'move',
-    new_summary_label: tgt,
-  }).then(j => {
-    if (j && j.success) {
-      _auditAfterMutation(ctx.summaryLabel);
-    } else {
-      alert('Move failed: ' + (j && j.error || 'unknown error'));
-    }
-  }).catch(e => alert('Move error: ' + e.message));
+  const desc = btn.closest('tr')?.querySelector('td')?.textContent?.trim() || 'this line';
+  // Lightweight modal: backdrop + centered card with a real <select> dropdown
+  // and Move/Cancel buttons. No window.prompt typing — FA picks from a list.
+  // Group options by section (Income / Expenses / etc.) when section info is
+  // available on window._sumRowMap so the picker matches the summary layout.
+  const rowMap = window._sumRowMap || {};
+  const groups = {};  // {section: [labels]}
+  targets.forEach(t => {
+    const sec = (rowMap[t] && rowMap[t].section) || 'Other';
+    (groups[sec] = groups[sec] || []).push(t);
+  });
+  const sectionOrder = ['Income', 'Expenses', 'Non-Operating Income', 'Non-Operating Expenses', 'Other'];
+  let optsHtml = '';
+  sectionOrder.forEach(sec => {
+    if (!groups[sec]) return;
+    optsHtml += '<optgroup label="' + sec + '">';
+    groups[sec].forEach(t => {
+      optsHtml += '<option value="' + t.replace(/"/g, '&quot;') + '">' + t + '</option>';
+    });
+    optsHtml += '</optgroup>';
+  });
+  // Pick up any sections not in our preset order (defensive)
+  Object.keys(groups).forEach(sec => {
+    if (sectionOrder.includes(sec)) return;
+    optsHtml += '<optgroup label="' + sec + '">';
+    groups[sec].forEach(t => {
+      optsHtml += '<option value="' + t.replace(/"/g, '&quot;') + '">' + t + '</option>';
+    });
+    optsHtml += '</optgroup>';
+  });
+
+  const overlay = document.createElement('div');
+  overlay.id = 'auditMoveOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;';
+  overlay.innerHTML =
+    '<div style="background:white;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,0.25);width:420px;max-width:90vw;padding:20px 22px;">' +
+      '<div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Move audit line</div>' +
+      '<div style="font-size:14px;font-weight:600;color:var(--gray-800);margin-bottom:4px;">' + desc.replace(/[<>]/g, '') + '</div>' +
+      '<div style="font-size:12px;color:var(--gray-500);margin-bottom:14px;">From <b>' + ctx.summaryLabel + '</b> to:</div>' +
+      '<select id="auditMoveSelect" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;background:white;cursor:pointer;">' + optsHtml + '</select>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">' +
+        '<button id="auditMoveCancel" style="padding:6px 14px;font-size:13px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:6px;cursor:pointer;">Cancel</button>' +
+        '<button id="auditMoveConfirm" style="padding:6px 14px;font-size:13px;background:var(--blue);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Move</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  const closeOverlay = () => { try { document.body.removeChild(overlay); } catch (e) {} };
+  document.getElementById('auditMoveCancel').onclick = closeOverlay;
+  // Click outside the card → cancel.
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(); });
+  // ESC → cancel.
+  const escHandler = (e) => { if (e.key === 'Escape') { closeOverlay(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
+
+  document.getElementById('auditMoveConfirm').onclick = () => {
+    const sel = document.getElementById('auditMoveSelect');
+    const tgt = sel ? sel.value : '';
+    if (!tgt) { alert('Pick a target row.'); return; }
+    closeOverlay();
+    document.removeEventListener('keydown', escHandler);
+    _auditLinePatch(ctx.auditId, {
+      summary_label: ctx.summaryLabel,
+      line_id: ctx.lineId,
+      action: 'move',
+      new_summary_label: tgt,
+    }).then(j => {
+      if (j && j.success) {
+        _auditAfterMutation(ctx.summaryLabel);
+      } else {
+        alert('Move failed: ' + (j && j.error || 'unknown error'));
+      }
+    }).catch(e => alert('Move error: ' + e.message));
+  };
+  // Auto-focus the select for immediate keyboard navigation.
+  setTimeout(() => { const s = document.getElementById('auditMoveSelect'); if (s) s.focus(); }, 0);
 }
 
 function auditLineDelete(btn) {
