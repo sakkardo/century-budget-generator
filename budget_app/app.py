@@ -251,6 +251,7 @@ with app.app_context():
             ("budgets", "pm_sent_at", "TIMESTAMP"),
             ("audit_uploads", "summary_overrides", "TEXT"),
             ("audit_uploads", "sharepoint_web_url", "TEXT"),
+            ("building_info", "common_charges_history_json", "TEXT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [
@@ -7069,7 +7070,105 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
                 source_file=filename,
             ))
         written += 1
+
+    # Side-effect: also populate the Building Info → Maintenance History
+    # (coop) or Common Charges History (condo) card from the same XLSX's
+    # "Income" tab. Failure here is non-fatal; the main D1 import job has
+    # already done its work on budget_summary_rows.
+    try:
+        _populate_building_info_from_income(entity_code, tmp_path)
+    except Exception:
+        logger.warning(f"populate_building_info_from_income skipped for {entity_code}", exc_info=True)
+
     return written
+
+
+def _populate_building_info_from_income(entity_code, xlsx_path):
+    """Parse the Income tab's year-by-year history block and persist it onto
+    the entity's BuildingInfo row. Coop → maintenance_history_json (with
+    shares + perShare). Condo → common_charges_history_json (no shares).
+
+    Preserves FA edits — only writes if the existing record is null OR
+    consists entirely of the default-zeros placeholder rows.
+
+    Returns dict with status, or None on no-op.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    bs_path = str(_Path(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in _sys.path:
+        _sys.path.insert(0, bs_path)
+    from budget_summary_parser import parse_income_history
+    result = parse_income_history(xlsx_path)
+    if "error" in result or not result.get("history"):
+        return None
+    btype = result.get("building_type")
+    history = result.get("history", [])
+    if btype not in ("coop", "condo"):
+        return {"skipped": "unknown_building_type"}
+
+    BuildingInfo = workflow_models["BuildingInfo"]
+    info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+    if not info:
+        info = BuildingInfo(entity_code=entity_code)
+        db.session.add(info)
+
+    def _has_real_data(rows):
+        if not isinstance(rows, list):
+            return False
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            if any((r.get(k) or 0) != 0 for k in ("shares", "perShare", "monthly", "annual")):
+                return True
+        return False
+
+    if btype == "coop":
+        existing_raw = info.maintenance_history_json
+        if existing_raw:
+            try:
+                existing_rows = json.loads(existing_raw)
+                if _has_real_data(existing_rows):
+                    return {"skipped": "FA-edited", "type": btype}
+            except Exception:
+                pass
+        normalized = [
+            {
+                "year": (h.get("year") if isinstance(h.get("year"), int) else 0),
+                "year_label": h.get("year_label"),
+                "shares": h.get("shares") or 0,
+                "perShare": h.get("perShare") or 0,
+                "monthly": h.get("monthly") or 0,
+                "annual": h.get("annual") or 0,
+                # Parser emits raw fraction (0.015 = 1.5%); FE input expects percent value (1.5).
+                "increase": round((h.get("increase") or 0) * 100, 4),
+            }
+            for h in history
+        ]
+        info.maintenance_history_json = json.dumps(normalized)
+    else:  # condo
+        existing_raw = info.common_charges_history_json
+        if existing_raw:
+            try:
+                existing_rows = json.loads(existing_raw)
+                if _has_real_data(existing_rows):
+                    return {"skipped": "FA-edited", "type": btype}
+            except Exception:
+                pass
+        normalized = [
+            {
+                "year": (h.get("year") if isinstance(h.get("year"), int) else 0),
+                "year_label": h.get("year_label"),
+                "monthly": h.get("monthly") or 0,
+                "annual": h.get("annual") or 0,
+                "increase": round((h.get("increase") or 0) * 100, 4),
+            }
+            for h in history
+        ]
+        info.common_charges_history_json = json.dumps(normalized)
+
+    db.session.commit()
+    return {"populated": len(history), "type": btype, "gl_code": result.get("gl_code")}
 
 
 def _wizard_download_sp_to_tmp(selection, suffix):
@@ -7631,6 +7730,68 @@ def admin_add_summary_row():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)[:300]}), 500
+
+
+@app.route("/api/admin/refresh-building-info/<entity_code>", methods=["POST"])
+def admin_refresh_building_info(entity_code):
+    """ADMIN: Re-pull the maintenance/common-charges history from the entity's
+    2026 approved budget XLSX into BuildingInfo. Used to backfill entities that
+    were imported before the auto-populate hook existed.
+
+    Looks up the latest 2026-approved-budget item_id from the wizard selections
+    record, downloads via SharePoint, parses the Income tab, persists.
+
+    Body (optional): {"force": true} to overwrite even FA-edited histories.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    force = bool(data.get("force"))
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+
+    try:
+        sels = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        sels = {}
+    sel = sels.get("approved_2026") or {}
+    item_id = (sel.get("item_id") or "").strip()
+    if not item_id:
+        return jsonify({"error": "No 2026 approved budget item_id in wizard_selections_json"}), 400
+
+    try:
+        import tempfile
+        from pathlib import Path as _Path
+        filename, file_bytes = _sharepoint_download_item(item_id)
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
+            if force:
+                # Wipe existing first so the populate helper rewrites it.
+                BuildingInfo = workflow_models["BuildingInfo"]
+                info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+                if info:
+                    info.maintenance_history_json = None
+                    info.common_charges_history_json = None
+                    db.session.commit()
+            res = _populate_building_info_from_income(entity_code, tmp_path)
+        finally:
+            try:
+                import os as _os
+                _os.unlink(tmp_path)
+            except Exception:
+                pass
+        if not res:
+            return jsonify({"ok": False, "error": "parse_income_history found no data"}), 500
+        return jsonify({"ok": True, "result": res, "filename": filename})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("refresh-building-info failed")
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
 
 
 @app.route("/api/admin/wipe-entity-data", methods=["POST"])

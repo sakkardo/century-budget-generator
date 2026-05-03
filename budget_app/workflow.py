@@ -1305,6 +1305,10 @@ def create_workflow_blueprint(db):
 
         # Section blobs — JSON strings. Add new sections as new columns later.
         maintenance_history_json = db.Column(db.Text, nullable=True)
+        # Condo equivalent — auto-populated from the Income tab's GL
+        # 4020-0000 block (Common Charges). Same shape as maintenance_history
+        # but without shares / perShare since condos use % common interest.
+        common_charges_history_json = db.Column(db.Text, nullable=True)
         amort_config_json = db.Column(db.Text, nullable=True)
 
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1321,6 +1325,7 @@ def create_workflow_blueprint(db):
             return {
                 "entity_code": self.entity_code,
                 "maintenance_history": _load(self.maintenance_history_json),
+                "common_charges_history": _load(self.common_charges_history_json),
                 "amort_config": _load(self.amort_config_json),
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
                 "updated_by": self.updated_by,
@@ -3693,6 +3698,7 @@ def create_workflow_blueprint(db):
             return jsonify({
                 "entity_code": entity_code,
                 "maintenance_history": None,
+                "common_charges_history": None,
                 "amort_config": None,
                 "updated_at": None,
                 "updated_by": None,
@@ -3718,6 +3724,9 @@ def create_workflow_blueprint(db):
         if "maintenance_history" in body:
             mh = body.get("maintenance_history")
             info.maintenance_history_json = json.dumps(mh) if mh is not None else None
+        if "common_charges_history" in body:
+            cc = body.get("common_charges_history")
+            info.common_charges_history_json = json.dumps(cc) if cc is not None else None
         if "amort_config" in body:
             ac = body.get("amort_config")
             info.amort_config_json = json.dumps(ac) if ac is not None else None
@@ -7610,6 +7619,12 @@ async function renderBuildingInfoTab(contentDiv) {
 }
 
 function _biRenderAll(container) {
+  // Condo? Show the Common Charges History card alongside (or instead of)
+  // Maintenance History. We render Common Charges only when there's actually
+  // data on the BuildingInfo row \u2014 populated by D1 from the Income tab's
+  // GL 4020-0000 block.
+  const ccRows = (_biData && Array.isArray(_biData.common_charges_history)) ? _biData.common_charges_history : null;
+  const showCC = ccRows && ccRows.length > 0;
   container.innerHTML =
     '<div class="bi-page">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
@@ -7617,9 +7632,68 @@ function _biRenderAll(container) {
         '<span id="biSaveIndicator" style="font-size:11px; color:var(--gray-500);"></span>' +
       '</div>' +
       _biRenderMaint() +
+      (showCC ? _biRenderCommonCharges() : '') +
       _biRenderAmort() +
     '</div>';
   _biRecalcAmort();
+}
+
+// Common Charges History \u2014 condo equivalent of Maintenance History. Same
+// table shape minus shares/perShare since condos don't use per-share rates.
+function _biRenderCommonCharges() {
+  const rows = _biData.common_charges_history || [];
+  let body = '';
+  rows.forEach((r, i) => {
+    const isBudget = (r.year === BY);
+    const rowCls = isBudget ? 'budget-row' : '';
+    const yearLabel = r.year_label
+        ? r.year_label
+        : (isBudget ? (r.year + ' Budget') : r.year);
+    body += '<tr class="' + rowCls + '">';
+    body += '<td class="gl">' + (i === 0 ? '4020-0000' : '') + '</td>';
+    body += '<td class="label">' + (i === 0 ? 'Common Charges' : '') + '</td>';
+    body += '<td class="year-label">' + yearLabel + '</td>';
+    body += '<td><input class="bi-cell" value="' + (r.monthly || 0).toLocaleString() + '" onblur="_biCcUpd(' + i + ',\'monthly\',this.value)" onfocus="this.select()"></td>';
+    body += '<td><input class="bi-cell" value="' + (r.annual || 0).toLocaleString() + '" onblur="_biCcUpd(' + i + ',\'annual\',this.value)" onfocus="this.select()"></td>';
+    body += '<td><input class="bi-cell small" value="' + (r.increase || 0).toFixed(2) + '%" onblur="_biCcUpd(' + i + ',\'increase\',this.value)" onfocus="this.select()"></td>';
+    body += '</tr>';
+  });
+  return ''
+    + '<div class="bi-card">'
+    +   '<div class="bi-card-header">'
+    +     '<h2>Common Charges History \u2014 4020-0000</h2>'
+    +     '<span class="bi-illus-chip">Illustrative Only</span>'
+    +   '</div>'
+    +   '<div class="bi-card-body">'
+    +     '<table class="bi-mh">'
+    +       '<thead><tr>'
+    +         '<th style="width:120px;">G/L</th>'
+    +         '<th style="width:160px;">Label</th>'
+    +         '<th style="width:140px;">Year</th>'
+    +         '<th>Monthly</th>'
+    +         '<th>Annual</th>'
+    +         '<th>Increase</th>'
+    +       '</tr></thead>'
+    +       '<tbody>' + body + '</tbody>'
+    +     '</table>'
+    +     '<div class="bi-note">Auto-populated from the 2026 approved budget\u2019s Income tab (GL 4020-0000). Edits saved per-building \u2014 do not affect budget math.</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+function _biCcUpd(i, field, val) {
+  const n = _biNum(val);
+  if (!_biData.common_charges_history || !_biData.common_charges_history[i]) return;
+  _biData.common_charges_history[i][field] = n;
+  // Re-render in place \u2014 find the Common Charges card by its header text.
+  const cards = document.querySelectorAll('.bi-page .bi-card');
+  cards.forEach(card => {
+    const h = card.querySelector('h2');
+    if (h && h.textContent.indexOf('Common Charges') >= 0) {
+      card.outerHTML = _biRenderCommonCharges();
+    }
+  });
+  _biSaveSoon();
 }
 
 // Flush any pending save, then re-activate Summary tab

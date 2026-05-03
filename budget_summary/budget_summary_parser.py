@@ -291,6 +291,172 @@ def parse_yrlycomp(filepath, target_year=2024):
     return result
 
 
+# ─── Income tab — Maintenance / Common Charges history ────────────────────
+# Pulls the year-by-year history block from the "Income" sheet of an approved
+# budget XLSX. Coops use GL 4010-0000 (Maintenance) with shares + $/share;
+# condos use GL 4020-0000 (Common Charges) without shares. Auto-detects
+# building type by which GL appears first in the tab.
+
+_GL_RE = re.compile(r'^\d{4}-\d{4}$')
+
+def _income_to_int_year(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        n = int(v)
+        return n if 1900 <= n <= 2100 else None
+    s = str(v).strip().replace(',', '')
+    m = re.search(r'(?<!\d)(20[0-2]\d|19[5-9]\d)(?!\d)', s)
+    return int(m.group(1)) if m else None
+
+
+def _income_to_float(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(',', '').replace('$', '').replace('%', '')
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _income_gl_in_row(ws, row):
+    for c in (1, 2):
+        v = str(ws.cell(row=row, column=c).value or '').strip()
+        if _GL_RE.match(v):
+            return v
+    return None
+
+
+def parse_income_history(filepath):
+    """Read the Income tab's year-by-year history for the first GL section
+    (Maintenance for coops, Common Charges for condos). Stops at the next
+    GL marker so we don't bleed into Storage/Garage/etc.
+
+    Returns dict:
+      {
+        "building_type": "coop" | "condo" | "other",
+        "gl_code": "4010-0000",
+        "history": [
+            {year, year_label?, monthly, annual, increase, shares?, perShare?},
+            ...
+        ]
+      }
+    On any structural problem, returns {"error": "..."}. Caller is expected
+    to catch and treat as a non-fatal side-effect.
+    """
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    if 'Income' not in wb.sheetnames:
+        return {"error": "No Income tab"}
+    ws = wb['Income']
+
+    # 1) Find the first GL marker — anchors our section.
+    target_gl = None
+    target_gl_row = None
+    for r in range(1, min(ws.max_row + 1, 60)):
+        gl = _income_gl_in_row(ws, r)
+        if gl:
+            target_gl = gl
+            target_gl_row = r
+            break
+    if not target_gl:
+        return {"error": "No GL code found in Income tab"}
+
+    if target_gl.startswith('4010'):
+        btype = 'coop'
+    elif target_gl.startswith('4020'):
+        btype = 'condo'
+    else:
+        btype = 'other'
+
+    # 2) Locate header row (where 'Shares', 'Monthly', or 'Annual' appears).
+    header_row = None
+    for r in range(1, min(target_gl_row + 5, ws.max_row + 1)):
+        for c in range(1, min(ws.max_column + 1, 20)):
+            v = str(ws.cell(row=r, column=c).value or '').strip()
+            if v in ('Shares', 'Monthly', 'Annual'):
+                header_row = r
+                break
+        if header_row:
+            break
+    if not header_row:
+        return {"error": "No header row found"}
+
+    # 3) Map columns by header text.
+    col_map = {}
+    for c in range(1, min(ws.max_column + 1, 20)):
+        v = str(ws.cell(row=header_row, column=c).value or '').strip()
+        if v == 'Shares':
+            col_map['shares'] = c
+        elif v in ('Mthly $/per sh', 'Mthly $/per Sh'):
+            col_map['perShare'] = c
+        elif v == 'Monthly':
+            col_map['monthly'] = c
+        elif v == 'Annual':
+            col_map['annual'] = c
+        elif v == 'Increase':
+            col_map['increase'] = c
+
+    # 4) Year column = the col immediately left of Shares (coop) or Monthly (condo).
+    candidates = []
+    if 'shares' in col_map:
+        candidates.append(col_map['shares'] - 1)
+    if 'monthly' in col_map:
+        candidates.append(col_map['monthly'] - 1)
+    year_col = None
+    for cc in candidates:
+        if cc < 1:
+            continue
+        for r in range(header_row + 1, min(header_row + 30, ws.max_row + 1)):
+            v = ws.cell(row=r, column=cc).value
+            if _income_to_int_year(v) is not None or (v and re.search(r'20\d{2}', str(v))):
+                year_col = cc
+                break
+        if year_col:
+            break
+    if not year_col:
+        return {"error": "No year column detected"}
+
+    # 5) Walk rows, stop at next different GL.
+    history = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        gl_here = _income_gl_in_row(ws, r)
+        if gl_here and gl_here != target_gl:
+            break
+        year_raw = ws.cell(row=r, column=year_col).value
+        year_int = _income_to_int_year(year_raw)
+        year_str = str(year_raw or '').strip() if year_raw else ''
+        if year_int is None and not (year_str and re.search(r'20\d{2}', year_str)):
+            continue
+
+        shares = _income_to_float(ws.cell(row=r, column=col_map['shares']).value) if 'shares' in col_map else None
+        per_sh = _income_to_float(ws.cell(row=r, column=col_map['perShare']).value) if 'perShare' in col_map else None
+        monthly = _income_to_float(ws.cell(row=r, column=col_map['monthly']).value) if 'monthly' in col_map else None
+        annual = _income_to_float(ws.cell(row=r, column=col_map['annual']).value) if 'annual' in col_map else None
+        incr = _income_to_float(ws.cell(row=r, column=col_map['increase']).value) if 'increase' in col_map else None
+
+        if not any(v is not None and v != 0 for v in (shares, per_sh, monthly, annual)):
+            continue
+
+        rec = {
+            "year": year_int if year_int is not None else year_str,
+            "year_label": year_str if year_str and year_str != str(year_int) else None,
+            "monthly": monthly,
+            "annual": annual,
+            "increase": incr,
+        }
+        if 'shares' in col_map:
+            rec["shares"] = shares
+        if 'perShare' in col_map:
+            rec["perShare"] = per_sh
+        history.append(rec)
+
+    wb.close()
+    return {"building_type": btype, "gl_code": target_gl, "history": history}
+
+
 def format_currency(val):
     """Format a number as currency string."""
     if val is None:
