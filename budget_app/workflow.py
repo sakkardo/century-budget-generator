@@ -4512,6 +4512,118 @@ def create_workflow_blueprint(db):
         })
 
 
+    @bp.route("/api/admin/summary-debug/<entity_code>", methods=["GET"])
+    def api_summary_debug(entity_code):
+        """ADMIN: Diagnostic view of an entity's Budget Summary aggregation.
+
+        Lists every BudgetSummaryRow + its matched GL prefixes + GL line
+        match counts, so we can see at a glance:
+          - Which rows have no GL prefix configured (label-alias miss)
+          - Which rows have GL prefixes but zero matching budget_lines
+          - Which budget_lines aren't picked up by ANY summary row
+            (orphan GL codes — the FA's "missing data" complaints)
+
+        This is the diagnostic tool for FA #9 / #12 / #16 (and any future
+        "X isn't pulling into the summary"). Run it for any entity, look
+        for empty/orphan rows, then add the appropriate LABEL_ALIASES
+        entry or extend the SUMMARY_ROW_MAP gl_prefix list.
+
+        Returns:
+          {
+            "entity_code": "...",
+            "summary_rows": [
+              {"label", "row_type", "section", "gl_prefixes",
+               "matched_lines", "ytd_total", "match_count",
+               "has_data": bool, "is_orphan": bool}
+            ],
+            "orphan_gl_codes": [
+              # GL codes on this entity not matched by ANY summary row prefix
+              {"gl_code", "description", "ytd_actual", "current_budget"}
+            ],
+            "stats": {"total_rows", "rows_with_no_prefix", "rows_with_zero_data",
+                      "orphan_gl_count"}
+          }
+        """
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        summary_rows = BudgetSummaryRow.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).all()
+        budget_lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        bl_dicts = [l.to_dict() for l in budget_lines]
+
+        # Track which GL codes are matched by SOME summary row's prefix
+        matched_gls = set()
+        out_rows = []
+
+        for row in summary_rows:
+            label = row.label
+            try:
+                prefixes = _json.loads(row.gl_prefixes_json) if row.gl_prefixes_json else []
+            except Exception:
+                prefixes = []
+
+            matches = []
+            ytd_total = 0.0
+            for line in bl_dicts:
+                gl = line.get("gl_code", "")
+                if not _gl_matches_prefixes(gl, prefixes):
+                    continue
+                matches.append({
+                    "gl_code": gl,
+                    "description": line.get("description") or "",
+                    "ytd_actual": round(float(line.get("ytd_actual", 0) or 0), 2),
+                    "category": line.get("category"),
+                })
+                matched_gls.add(gl)
+                ytd_total += float(line.get("ytd_actual", 0) or 0)
+
+            out_rows.append({
+                "label": label,
+                "row_type": row.row_type,
+                "section": row.section,
+                "display_order": row.display_order,
+                "gl_prefixes": prefixes,
+                "match_count": len(matches),
+                "ytd_total": round(ytd_total, 2),
+                "matched_lines": matches[:10],  # cap for readability; full count in match_count
+                "has_data": ytd_total != 0,
+                "is_orphan": row.row_type == "data" and not prefixes and not (row.special if hasattr(row, "special") else None),
+            })
+
+        # Orphan GL codes (have data but no summary row claims them)
+        orphans = []
+        for line in bl_dicts:
+            gl = line.get("gl_code", "")
+            if gl and gl not in matched_gls:
+                ytd = float(line.get("ytd_actual", 0) or 0)
+                cb = float(line.get("current_budget", 0) or 0)
+                if abs(ytd) > 0.01 or abs(cb) > 0.01:  # only show non-zero
+                    orphans.append({
+                        "gl_code": gl,
+                        "description": line.get("description") or "",
+                        "sheet_name": line.get("sheet_name"),
+                        "category": line.get("category"),
+                        "ytd_actual": round(ytd, 2),
+                        "current_budget": round(cb, 2),
+                    })
+
+        stats = {
+            "total_rows": len(out_rows),
+            "rows_with_no_prefix": sum(1 for r in out_rows if r["row_type"] == "data" and not r["gl_prefixes"]),
+            "rows_with_zero_data": sum(1 for r in out_rows if r["row_type"] == "data" and r["match_count"] == 0),
+            "orphan_gl_count": len(orphans),
+            "orphan_ytd_total": round(sum(o["ytd_actual"] for o in orphans), 2),
+        }
+
+        return jsonify({
+            "entity_code": entity_code,
+            "summary_rows": out_rows,
+            "orphan_gl_codes": orphans,
+            "stats": stats,
+        })
+
+
     @bp.route("/api/summary/<entity_code>", methods=["PUT"])
     def api_summary_edit(entity_code):
         """FA edits Col 7 (proposed budget) on summary rows.

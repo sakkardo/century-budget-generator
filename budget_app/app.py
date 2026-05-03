@@ -7787,6 +7787,200 @@ def admin_add_summary_row():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@app.route("/api/admin/backfill-period/<entity_code>", methods=["POST"])
+def admin_backfill_period(entity_code):
+    """ADMIN: Set budget_period on an existing budget. Used to backfill
+    entities whose budgets were generated before the period selector
+    shipped (default ytd_months=2 was applied silently, producing wrong
+    forecast formulas).
+
+    Detection order:
+    1. If body provides `{"month": N}` (1-12), use that explicitly.
+    2. Else if a YSL file exists for this entity on SharePoint, download
+       and parse to auto-detect the period from the header.
+    3. Else return 400 with an error explaining what to do.
+
+    On success, writes budget_period to assumptions_json AND triggers a
+    full forecast/proposed_budget recompute for all lines (mirrors PUT
+    /api/budget-assumptions behavior).
+
+    Body:
+      {"month": 4}            - explicit month override
+      {"force": true}         - overwrite an existing period
+      (no body)               - auto-detect from YSL
+
+    Returns:
+      {"ok": true, "entity_code": "...", "month": N, "source": "ysl"|"manual",
+       "filename": "...", "lines_recomputed": N}
+    """
+    Budget = workflow_models["Budget"]
+    BudgetLine = workflow_models["BudgetLine"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    explicit_month = body.get("month")
+    force = bool(body.get("force"))
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+
+    # Check if period is already set; bail unless force=true
+    try:
+        existing = json.loads(budget.assumptions_json or "{}")
+    except Exception:
+        existing = {}
+    current_bp = existing.get("budget_period", "")
+    if current_bp and not force and not explicit_month:
+        return jsonify({
+            "ok": False,
+            "error": f"Period already set to {current_bp}. Pass {{\"force\": true}} to overwrite.",
+            "current_period": current_bp,
+        }), 400
+
+    detected_month = None
+    source = None
+    filename = None
+
+    # Branch 1: explicit override
+    if explicit_month is not None:
+        try:
+            m = int(explicit_month)
+        except Exception:
+            return jsonify({"error": "month must be an integer 1-12"}), 400
+        if not (1 <= m <= 12):
+            return jsonify({"error": "month must be 1-12"}), 400
+        detected_month = m
+        source = "manual"
+    else:
+        # Branch 2: auto-detect from SharePoint YSL
+        try:
+            sp = _sharepoint_list_entity_sources(entity_code)
+            ysl_files = sp.get("by_source_type", {}).get("ysl") or []
+        except Exception as e:
+            return jsonify({"error": f"SharePoint scan failed: {str(e)[:200]}"}), 500
+        if not ysl_files:
+            return jsonify({
+                "ok": False,
+                "error": f"No YSL file in SharePoint for entity {entity_code}. Provide explicit month: POST body {{\"month\": N}}",
+            }), 400
+        # Use the most recently modified YSL
+        ysl_files_sorted = sorted(ysl_files, key=lambda x: x.get("last_modified", ""), reverse=True)
+        ysl_sel = ysl_files_sorted[0]
+        try:
+            from budget_system.ysl_parser import parse_ysl_file
+            tmp_path, filename = _wizard_download_sp_to_tmp(ysl_sel, ".xlsx")
+            try:
+                _gl_data, prop_info = parse_ysl_file(tmp_path)
+                detected_month = prop_info.get("budget_period_month")
+            finally:
+                try:
+                    import os as _os
+                    _os.unlink(tmp_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            return jsonify({"error": f"YSL parse failed: {str(e)[:200]}"}), 500
+        if not detected_month or not (1 <= detected_month <= 12):
+            return jsonify({
+                "ok": False,
+                "error": f"Could not auto-detect period from YSL header. Provide explicit month: POST body {{\"month\": N}}",
+                "filename": filename,
+            }), 400
+        source = "ysl"
+
+    # Apply: write to assumptions_json and recompute proposed_budget for all lines
+    mm = str(int(detected_month)).zfill(2)
+    new_period = f"{mm}/{_BY - 1}"
+    existing["budget_period"] = new_period
+    budget.assumptions_json = json.dumps(existing)
+
+    # Recompute proposed_budget for all lines (matches workflow.py PUT logic)
+    _ytd_months = detected_month
+    _remaining = 12 - _ytd_months
+    lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+    recomputed = 0
+    for line in lines:
+        ytd = float(line.ytd_actual or 0)
+        accrual = float(line.accrual_adj or 0)
+        unpaid = float(line.unpaid_bills or 0)
+        prior = float(line.prior_year or 0)
+        base = ytd + accrual + unpaid
+        # Mirror the FA #7 anomaly cap and one-time fee rules
+        if (line.gl_code or "") in ONE_TIME_FEE_GLS and abs(base) > 0.01:
+            estimate = 0
+        elif base < 0 and prior >= 0:
+            estimate = 0
+        else:
+            estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
+        forecast = base + estimate
+        line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
+        recomputed += 1
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("backfill-period commit failed")
+        return jsonify({"error": f"Commit failed: {str(e)[:200]}"}), 500
+
+    logger.info(
+        f"Period backfilled for {entity_code}: month={detected_month} source={source} "
+        f"filename={filename} recomputed={recomputed}"
+    )
+    return jsonify({
+        "ok": True,
+        "entity_code": entity_code,
+        "month": detected_month,
+        "period": new_period,
+        "source": source,
+        "filename": filename,
+        "lines_recomputed": recomputed,
+    })
+
+
+@app.route("/api/admin/backfill-period/all", methods=["POST"])
+def admin_backfill_period_all():
+    """ADMIN: Bulk backfill — try to auto-detect period for every entity
+    whose budget_period is unset. Skips entities already set unless
+    force=true. Returns per-entity status array.
+
+    Body (optional):
+      {"force": true}      - overwrite existing periods too
+      {"only_missing": true} - default; skip entities with period set
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force"))
+
+    budgets = Budget.query.filter_by(year=_BY).all()
+    results = []
+    for b in budgets:
+        try:
+            existing = json.loads(b.assumptions_json or "{}")
+        except Exception:
+            existing = {}
+        current_bp = existing.get("budget_period", "")
+        if current_bp and not force:
+            results.append({"entity_code": b.entity_code, "skipped": True, "reason": "period_already_set", "period": current_bp})
+            continue
+        # Inline call to the per-entity backfill logic. Use the test-client
+        # to reuse the route handler and keep behavior consistent.
+        try:
+            with app.test_client() as tc:
+                resp = tc.post(f"/api/admin/backfill-period/{b.entity_code}",
+                               json={"force": force})
+                data = resp.get_json() or {}
+                data["entity_code"] = b.entity_code
+                data["status_code"] = resp.status_code
+                results.append(data)
+        except Exception as e:
+            results.append({"entity_code": b.entity_code, "error": str(e)[:200]})
+    return jsonify({"ok": True, "count": len(results), "results": results})
+
+
 @app.route("/api/admin/refresh-building-info/<entity_code>", methods=["POST"])
 def admin_refresh_building_info(entity_code):
     """ADMIN: Re-pull the maintenance/common-charges history from the entity's

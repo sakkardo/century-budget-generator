@@ -17,12 +17,23 @@ LABEL_ALIASES = {
     "Common Charges (License Fee)": "Maintenance",     # sub-line, same GL
     "Common Charges - Storage Room": "Storage Income",
     "Common Charges - Parking": "Garage",
+    # FA #9 (2026-05-03): yrlycomp uses bare "Storage" / "Bicycle" labels;
+    # canonical map keys are "Storage Income" / "Bicycle Charge". Without
+    # these aliases the rows render with no GL prefix → empty col3-5.
+    "Storage": "Storage Income",
+    "Bicycle": "Bicycle Charge",
+    "Bike": "Bicycle Charge",
+    "Bike Storage": "Bicycle Charge",
+    # Assessment / commercial label variants seen on 168
+    "Assessment-Operating": "Assessment - Operating",
     # Energy variants
     "Gas - Heating": "Gas Cooking / Heating",
     "Gas Heating": "Gas Cooking / Heating",
     "Gas": "Gas Cooking / Heating",
     "Oil / Fuel": "Fuel",
     "Fuel Oil": "Fuel",
+    "Oil": "Fuel",
+    "Heating Oil": "Fuel",
     # RE Taxes variants
     "Real Estate Taxes/Supers Unit": "Real Estate Taxes",
     "RE Taxes": "Real Estate Taxes",
