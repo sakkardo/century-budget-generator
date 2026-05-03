@@ -3078,6 +3078,8 @@ async function uploadAll() {
             upload.profile_id = int(data["profile_id"]) if data["profile_id"] else None
         if "fiscal_year_end" in data:
             upload.fiscal_year_end = (data.get("fiscal_year_end") or "").strip()
+        if "sharepoint_web_url" in data:
+            upload.sharepoint_web_url = (data.get("sharepoint_web_url") or "").strip() or None
         upload.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({"success": True})
