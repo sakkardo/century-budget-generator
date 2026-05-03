@@ -2037,9 +2037,12 @@ def create_workflow_blueprint(db):
             pass
         _remaining = 12 - _ytd_months
 
-        # Recompute proposed_budget for all affected lines
+        # If budget_period changed, EVERY line's forecast/proposed needs to
+        # recompute (estimate depends on _ytd_months). Otherwise only lines
+        # touched by an assumption with increase_pct need to recompute.
+        period_changed = "budget_period" in data
         for line in lines:
-            if line.increase_pct:
+            if line.increase_pct or period_changed:
                 ytd = float(line.ytd_actual or 0)
                 accrual = float(line.accrual_adj or 0)
                 unpaid = float(line.unpaid_bills or 0)
@@ -5979,6 +5982,8 @@ BUILDING_DETAIL_TEMPLATE = r"""
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
+    <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
+    <div id="periodBanner" style="display:none; padding:10px 24px; font-size:13px; border-bottom:1px solid var(--gray-200);"></div>
     <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap; padding:0 24px; background:var(--gray-50);"></div>
     <div id="sheetContent" style="padding:0 24px;"></div>
     <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px; padding:0 24px 12px;"></div>
@@ -6334,6 +6339,100 @@ function estimateLabel() {
   return MONTH_ABBR[YTD_MONTHS] + '-Dec';
 }
 
+// Render the period banner above the workbook tabs. Reads
+// data.assumptions.budget_period ("MM/YYYY") and shows either:
+//   - red "Period not set" warning + dropdown to set it, OR
+//   - green "Actuals: Jan-Apr 2026 · Estimate: May-Dec 2026" + edit pencil
+function renderPeriodBanner(data) {
+  const banner = document.getElementById('periodBanner');
+  if (!banner) return;
+  const a = data.assumptions || {};
+  const bp = a.budget_period || '';
+  let mm = 0, yyyy = (BY - 1);
+  if (bp && bp.indexOf('/') > 0) {
+    const parts = bp.split('/');
+    const m = parseInt(parts[0], 10);
+    const y = parseInt(parts[1], 10);
+    if (!isNaN(m) && m >= 1 && m <= 12) mm = m;
+    if (!isNaN(y) && y > 1900) yyyy = y;
+  }
+  banner.style.display = '';
+  if (!mm) {
+    // Period not set — block of red, prompt to fix.
+    banner.style.background = '#fef2f2';
+    banner.style.borderBottom = '1px solid #fecaca';
+    banner.style.color = '#991b1b';
+    banner.innerHTML =
+      '<span style="font-weight:700;">⚠ Period not set</span>' +
+      ' &nbsp;·&nbsp; YTD/forecast formulas are using the default 2-month YTD.' +
+      ' &nbsp; <button onclick="editPeriod()" style="margin-left:8px; padding:4px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; cursor:pointer;">Set period</button>';
+  } else {
+    const actEnd = MONTH_ABBR[mm - 1];   // 1-indexed → 0-indexed
+    const estStart = mm < 12 ? MONTH_ABBR[mm] : null;
+    const actLabel = 'Jan–' + actEnd + ' ' + yyyy;
+    const estLabel = estStart ? estStart + '–Dec ' + yyyy : '—';
+    banner.style.background = '#f0fdf4';
+    banner.style.borderBottom = '1px solid #bbf7d0';
+    banner.style.color = '#166534';
+    banner.innerHTML =
+      '<span style="font-weight:700;">Period:</span>' +
+      ' &nbsp; Actuals <strong>' + actLabel + '</strong>' +
+      ' &nbsp;·&nbsp; Estimate <strong>' + estLabel + '</strong>' +
+      ' &nbsp; <button onclick="editPeriod()" style="margin-left:8px; padding:2px 8px; background:transparent; color:#166534; border:1px solid #86efac; border-radius:4px; font-size:11px; cursor:pointer;">✎ Edit</button>';
+  }
+}
+
+// Inline editor for the period banner — small dropdown overlay.
+// Saves via PUT /api/budget-assumptions/<entity> which already accepts
+// budget_period as a top-level key and recalculates downstream lines.
+function editPeriod() {
+  const banner = document.getElementById('periodBanner');
+  if (!banner) return;
+  const cur = (window._data && window._data.assumptions && window._data.assumptions.budget_period) || '';
+  let curMM = 0;
+  if (cur && cur.indexOf('/') > 0) {
+    const m = parseInt(cur.split('/')[0], 10);
+    if (!isNaN(m) && m >= 1 && m <= 12) curMM = m;
+  }
+  let opts = '<option value="0">— Select —</option>';
+  for (let i = 1; i <= 12; i++) {
+    opts += '<option value="' + i + '"' + (curMM === i ? ' selected' : '') + '>' + MONTH_ABBR[i - 1] + '</option>';
+  }
+  banner.innerHTML =
+    '<span style="font-weight:700;">Actuals through:</span>' +
+    ' &nbsp; <select id="periodMonthSel" style="padding:4px 8px; border:1px solid var(--gray-200); border-radius:4px; font-size:13px;">' + opts + '</select>' +
+    ' &nbsp; <button onclick="savePeriod()" style="padding:4px 12px; background:var(--green); color:#fff; border:none; border-radius:4px; font-size:12px; cursor:pointer;">Save</button>' +
+    ' &nbsp; <button onclick="renderPeriodBanner(window._data)" style="padding:4px 10px; background:transparent; color:var(--gray-700); border:1px solid var(--gray-200); border-radius:4px; font-size:12px; cursor:pointer;">Cancel</button>';
+}
+
+function savePeriod() {
+  const sel = document.getElementById('periodMonthSel');
+  if (!sel) return;
+  const mm = parseInt(sel.value, 10) || 0;
+  let value = '';
+  if (mm >= 1 && mm <= 12) {
+    value = String(mm).padStart(2, '0') + '/' + (BY - 1);
+  }
+  fetch('/api/budget-assumptions/' + entityCode, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({budget_period: value})
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d && d.error) {
+        alert('Save failed: ' + d.error);
+        return;
+      }
+      // Reload the dashboard to recompute everything against the new period.
+      // Server-side recomputation already updates proposed_budget; client-side
+      // YTD_MONTHS / REMAINING_MONTHS update via loadDetail.
+      showToast('Period updated — recomputing forecasts', 'success');
+      loadDetail();
+    })
+    .catch(err => alert('Save error: ' + err.message));
+}
+
 function showToast(msg, type='info') {
   const c = document.getElementById('toastContainer');
   const t = document.createElement('div');
@@ -6387,6 +6486,10 @@ function renderDetail(data) {
   // Set dynamic YTD months from API
   YTD_MONTHS = data.ytd_months || 2;
   REMAINING_MONTHS = data.remaining_months || 10;
+
+  // Period banner — shows "Actuals: Jan-Apr 2026 · Estimate: May-Dec 2026"
+  // or a red warning if the period was never set in the wizard.
+  renderPeriodBanner(data);
 
   // Header + breadcrumb
   document.getElementById('buildingName').textContent = b.building_name;

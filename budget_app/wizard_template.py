@@ -1155,6 +1155,7 @@ header {
 let currentStep = 1;
 let highestStep = 1;
 let selectedEntity = null;
+const BUDGET_YEAR = {{ budget_year }};   // server-injected; YSL actuals year = BUDGET_YEAR - 1
 let budgets = [];
 let portfolio = {};
 let building = {};
@@ -1957,6 +1958,14 @@ function _renderWizardAssumpHTML(host, a) {
   const ir = a.insurance_renewal || {};
   const en = a.energy || {};
   const ws = a.water_sewer || {};
+  // Budget Period (Phase F1: drives YTD/forecast formulas across the whole budget)
+  // Stored as "MM/YYYY" e.g. "04/2026" = actuals through April of the prior year.
+  const bp = a.budget_period || '';
+  let bpMonth = 0; // 0 = unset
+  if (bp && bp.indexOf('/') > 0) {
+    const mm = parseInt(bp.split('/')[0], 10);
+    if (!isNaN(mm) && mm >= 1 && mm <= 12) bpMonth = mm;
+  }
 
   // Inject scoped style once
   if (!document.getElementById('wiz-asm-style')) {
@@ -2047,10 +2056,42 @@ function _renderWizardAssumpHTML(host, a) {
     row('Rate Increase', pctF('water_sewer','rate_increase', ws.rate_increase))
   );
 
+  // Budget Period card — single dropdown for actuals-through month.
+  // Drives YTD_MONTHS / REMAINING_MONTHS everywhere (forecast formula, estimate label, Excel export).
+  const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let bpOpts = '<option value="0"' + (bpMonth === 0 ? ' selected' : '') + '>— Select —</option>';
+  for (let i = 1; i <= 12; i++) {
+    bpOpts += '<option value="' + i + '"' + (bpMonth === i ? ' selected' : '') + '>' + MONTH_NAMES[i - 1] + '</option>';
+  }
+  const periodCard =
+    '<div class="wa-card" style="border-color:' + (bpMonth === 0 ? '#dc2626' : 'var(--gray-200)') + ';">' +
+      '<h3 class="wa-card-title">Budget Period <span style="color:#dc2626;font-weight:700;">*</span></h3>' +
+      '<div class="wa-row"><label>Actuals through (last completed YSL month)</label>' +
+        '<div class="wa-input-wrap"><select class="wa-input" id="wizBudgetPeriodSelect" data-kind="period" style="width:120px;text-align:left;padding-left:10px;">' +
+          bpOpts +
+        '</select></div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--gray-500);margin-top:6px;">' +
+        (bpMonth === 0
+          ? 'Required. The period your YSL/YTD actuals cover. Drives the forecast formula for all expense and income lines.'
+          : 'Actuals: Jan–' + MONTH_NAMES[bpMonth - 1] + ' · Estimate: ' + (bpMonth < 12 ? MONTH_NAMES[bpMonth] + '–Dec' : 'none (full year actuals)')) +
+      '</div>' +
+    '</div>';
+
   host.innerHTML = '<div class="wiz-asm">' +
+    section('Budget Period', periodCard) +
     section('Payroll', payrollTax + union + wcWi) +
     section('Operating', ins + energy + water) +
     '</div>';
+
+  // Wire period dropdown
+  const bpSel = document.getElementById('wizBudgetPeriodSelect');
+  if (bpSel) {
+    bpSel.addEventListener('change', () => {
+      const mm = parseInt(bpSel.value, 10) || 0;
+      _stageWizardPeriod(mm);
+    });
+  }
 
   // Wire onchange handlers to auto-save staged values
   host.querySelectorAll('.wa-input').forEach(inp => {
@@ -2069,6 +2110,42 @@ function _renderWizardAssumpHTML(host, a) {
       _stageWizardAssumption(sectionKey, fieldKey, value);
     });
   });
+}
+
+// Save a top-level (non-nested) wizard assumption value, e.g. budget_period.
+// The submission endpoint deep-merges; non-dict values land at the top level
+// of the staged assumptions object as expected.
+function _stageWizardPeriod(monthNum) {
+  const status = document.getElementById('wizardAssumpStatus');
+  if (status) status.textContent = 'Saving...';
+  // Compose MM/YYYY where YYYY is the prior calendar year (YSL covers prior year actuals).
+  // Empty string when unset so dashboard can show the warning banner.
+  let value = '';
+  if (monthNum && monthNum >= 1 && monthNum <= 12) {
+    const mm = String(monthNum).padStart(2, '0');
+    // Year portion: BUDGET_YEAR - 1 (YSL actuals year). Read code only parses the
+    // month, but storing the right year makes audit/log entries readable.
+    const yyyy = BUDGET_YEAR - 1;
+    value = mm + '/' + yyyy;
+  }
+  fetch('/api/wizard/' + selectedEntity + '/selections/assumptions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({budget_period: value})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.ok) {
+        wizardStagedAssumptions = data.assumptions || {};
+        if (status) status.textContent = 'Saved';
+        // Re-render the form so the helper text under the dropdown updates
+        renderWizardAssumptionsForm();
+        setTimeout(() => { if (status) status.textContent = ''; }, 1500);
+      } else {
+        if (status) status.textContent = 'Save failed';
+      }
+    })
+    .catch(() => { if (status) status.textContent = 'Save failed'; });
 }
 
 function _stageWizardAssumption(section, field, value) {
@@ -2398,6 +2475,20 @@ function handleFileUpload(event) {
 // so the click looked like a no-op even on success. Also reads the correct
 // server response field (`lines_updated`, not `lines_generated`).
 function generateBudget() {
+  // Phase F1: hard-gate budget generation on the period being set.
+  // Without it, the forecast formula silently defaults to 2-month YTD / 10-month
+  // estimate and produces wrong numbers across every line.
+  const stagedPeriod = (wizardStagedAssumptions && wizardStagedAssumptions.budget_period) || '';
+  let stagedMonth = 0;
+  if (stagedPeriod && stagedPeriod.indexOf('/') > 0) {
+    const mm = parseInt(stagedPeriod.split('/')[0], 10);
+    if (!isNaN(mm) && mm >= 1 && mm <= 12) stagedMonth = mm;
+  }
+  if (!stagedMonth) {
+    alert('Please set the Budget Period in Step 3 (Set Assumptions) before generating.\n\nThe period drives the YTD/forecast formula for every line in the budget.');
+    showStep(3);
+    return;
+  }
   try {
     fetch(`/api/wizard/${selectedEntity}/generate`, {
       method: 'POST',
