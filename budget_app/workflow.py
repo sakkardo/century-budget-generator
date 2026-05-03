@@ -4531,19 +4531,12 @@ def create_workflow_blueprint(db):
         Returns:
           {
             "entity_code": "...",
-            "summary_rows": [
-              {"label", "row_type", "section", "gl_prefixes",
-               "matched_lines", "ytd_total", "match_count",
-               "has_data": bool, "is_orphan": bool}
-            ],
-            "orphan_gl_codes": [
-              # GL codes on this entity not matched by ANY summary row prefix
-              {"gl_code", "description", "ytd_actual", "current_budget"}
-            ],
-            "stats": {"total_rows", "rows_with_no_prefix", "rows_with_zero_data",
-                      "orphan_gl_count"}
+            "summary_rows": [...],
+            "orphan_gl_codes": [...],
+            "stats": {...}
           }
         """
+        import json as _json
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
