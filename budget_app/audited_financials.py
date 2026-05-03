@@ -12,7 +12,7 @@ Implements:
 - Review and confirmation workflow
 """
 
-from flask import Blueprint, render_template_string, request, jsonify
+from flask import Blueprint, render_template_string, request, jsonify, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from decimal import Decimal
@@ -1513,7 +1513,10 @@ async function uploadAll() {
     <p>{{ building_name }} ({{ entity_code }}) — Fiscal Year {{ fiscal_year }}</p>
 </header>
 <div class="container">
-    <div style="margin-bottom:16px;"><a href="/audited-financials" class="back-link">← Back to Uploads</a></div>
+    <div style="margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <a href="/audited-financials" class="back-link">← Back to Uploads</a>
+        <a href="/api/af/uploads/{{ upload_id }}/pdf" target="_blank" rel="noopener" style="font-size:13px;font-weight:600;color:var(--blue);text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--blue);border-radius:6px;background:#eff6ff;">📄 Open audit PDF ↗</a>
+    </div>
 
     {{ status_banner }}
 
@@ -1878,7 +1881,7 @@ async function uploadAll() {
                 html += '<h5 style="margin:15px 0 5px;">Revenue</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
                 for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
-                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
+                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th><th style="width:32px;"></th></tr>';
                 for (let item of rawExtraction.revenue.items) {
                     const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                     const mapId = 'map_' + itemIndex;  // peek at the next map id
@@ -1891,7 +1894,9 @@ async function uploadAll() {
                         else { html += makeAmtReadonly(item.amounts[yi]); }
                         html += '</td>';
                     }
-                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'revenue', (item.amounts && item.amounts[1]) || 0) + '</td></tr>';
+                    html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'revenue', (item.amounts && item.amounts[1]) || 0) + '</td>';
+                    html += '<td style="text-align:center;padding:4px;"><button type="button" title="Delete this row" onclick="deleteMappingRow(this)" style="border:1px solid #fecaca;background:white;color:#b91c1c;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;">×</button></td>';
+                    html += '</tr>';
                 }
                 if (rawExtraction.revenue.total) {
                     html += '<tr style="font-weight:bold; border-top:2px solid #333;"><td style="padding:6px;">Total Revenue</td>';
@@ -1899,8 +1904,12 @@ async function uploadAll() {
                         if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="total-revenue">' + formatAmount(rawExtraction.revenue.total[yi]) + '</span></td>'; }
                         else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.revenue.total[yi]) + '</td>'; }
                     }
-                    html += '<td></td></tr>';
+                    html += '<td></td><td></td></tr>';
                 }
+                // "+ Add row" footer for revenue — opens a modal with desc + amount + category fields.
+                html += '<tr><td colspan="' + (years.length + 3) + '" style="padding:8px 6px;text-align:left;">'
+                    + '<button type="button" onclick="addMappingRow(\'revenue\', null)" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add Revenue line</button>'
+                    + '</td></tr>';
                 html += '</table>';
             }
 
@@ -1908,7 +1917,7 @@ async function uploadAll() {
                 html += '<h5 style="margin:15px 0 5px;">Expenses</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
                 for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
-                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th></tr>';
+                html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th><th style="width:32px;"></th></tr>';
 
                 let expenseCategories = rawExtraction.expenses.categories;
                 if (!Array.isArray(expenseCategories)) {
@@ -1923,7 +1932,7 @@ async function uploadAll() {
 
                 let catIdx = 0;
                 for (let cat of expenseCategories) {
-                    html += '<tr><td colspan="' + (years.length + 2) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
+                    html += '<tr><td colspan="' + (years.length + 3) + '" style="font-weight:bold; background:#f0f0f0; padding:8px 6px;">' + cat.name + '</td></tr>';
                     for (let item of (cat.items || [])) {
                         const amount0 = item.amounts && item.amounts[0] ? item.amounts[0] : 0;
                         const mapId = 'map_' + itemIndex;
@@ -1936,7 +1945,9 @@ async function uploadAll() {
                             else { html += makeAmtReadonly(item.amounts[yi]); }
                             html += '</td>';
                         }
-                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'expense', (item.amounts && item.amounts[1]) || 0) + '</td></tr>';
+                        html += '<td style="padding:4px;">' + makeDropdown(item.description, amount0, 'expense', (item.amounts && item.amounts[1]) || 0) + '</td>';
+                        html += '<td style="text-align:center;padding:4px;"><button type="button" title="Delete this row" onclick="deleteMappingRow(this)" style="border:1px solid #fecaca;background:white;color:#b91c1c;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;">×</button></td>';
+                        html += '</tr>';
                     }
                     if (cat.total) {
                         html += '<tr style="font-weight:bold; border-bottom:2px solid #ddd;"><td style="padding:6px 6px 6px 20px;">Subtotal</td>';
@@ -1944,8 +1955,12 @@ async function uploadAll() {
                             if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="subtotal-exp-' + catIdx + '">' + formatAmount(cat.total[yi]) + '</span></td>'; }
                             else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(cat.total[yi]) + '</td>'; }
                         }
-                        html += '<td></td></tr>';
+                        html += '<td></td><td></td></tr>';
                     }
+                    // "+ Add row" footer per expense category — places new row at end of this group.
+                    html += '<tr><td colspan="' + (years.length + 3) + '" style="padding:8px 6px 8px 20px;text-align:left;">'
+                        + '<button type="button" onclick="addMappingRow(\'expense\', ' + catIdx + ')" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add line in ' + (cat.name || 'Expenses') + '</button>'
+                        + '</td></tr>';
                     catIdx++;
                 }
                 if (rawExtraction.expenses.total_expenses) {
@@ -1954,12 +1969,112 @@ async function uploadAll() {
                         if (yi === 0) { html += '<td style="text-align:right; padding:6px;"><span id="total-expenses">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</span></td>'; }
                         else { html += '<td style="text-align:right; padding:6px;">' + formatAmount(rawExtraction.expenses.total_expenses[yi]) + '</td>'; }
                     }
-                    html += '<td></td></tr>';
+                    html += '<td></td><td></td></tr>';
                 }
                 html += '</table>';
             }
 
             container.innerHTML = html;
+        }
+
+        // Delete a row from the mapping table. After Confirm, the absent
+        // dropdown means the line stops contributing to mapped_data — so this
+        // effectively excludes the row when the FA next saves. raw_extraction
+        // is unchanged so a re-extract restores Claude's original list.
+        function deleteMappingRow(btn) {
+            const tr = btn.closest('tr');
+            if (!tr) return;
+            const desc = tr.querySelector('td')?.textContent?.trim().split('\n')[0] || 'this row';
+            if (!confirm('Delete \"' + desc.slice(0, 60) + '\"?\\n\\nThe line is removed from this mapping but the original auditor extraction is preserved.')) return;
+            tr.parentNode.removeChild(tr);
+            try { renderReconciliation(); } catch (e) {}
+            try { recalcLeftTotals(); } catch (e) {}
+            try { updateAcceptState(); } catch (e) {}
+        }
+
+        // Add a new row to the mapping table — used when Claude missed a line.
+        // section is 'revenue' or 'expense'; catIdx is the expense category
+        // index (only relevant for expense — places the row at the end of
+        // that category group).
+        function addMappingRow(section, catIdx) {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;';
+            overlay.innerHTML =
+                '<div style="background:white;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,0.25);width:460px;max-width:92vw;padding:20px 22px;">' +
+                  '<div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Add ' + section + ' line</div>' +
+                  '<div style="font-size:12px;color:var(--gray-500);margin-bottom:14px;">For lines Claude missed. The new row joins the table and goes through the same Confirm flow as auto-extracted rows.</div>' +
+                  '<div style="display:flex;flex-direction:column;gap:10px;">' +
+                    '<label style="font-size:12px;font-weight:600;color:var(--gray-700);">Auditor description<input id="addRowDesc" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;" placeholder="e.g. Heat / Steam"></label>' +
+                    '<div style="display:flex;gap:10px;">' +
+                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">Year-0 amount<input id="addRowAmt0" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
+                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">Year-1 amount<input id="addRowAmt1" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">' +
+                    '<button id="addRowCancel" style="padding:6px 14px;font-size:13px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:6px;cursor:pointer;">Cancel</button>' +
+                    '<button id="addRowSave" style="padding:6px 14px;font-size:13px;background:var(--blue);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Add line</button>' +
+                  '</div>' +
+                '</div>';
+            document.body.appendChild(overlay);
+            const close = () => { try { document.body.removeChild(overlay); } catch (e) {} };
+            document.getElementById('addRowCancel').onclick = close;
+            overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+            const escH = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escH); } };
+            document.addEventListener('keydown', escH);
+            setTimeout(() => document.getElementById('addRowDesc').focus(), 0);
+
+            document.getElementById('addRowSave').onclick = () => {
+                const desc = (document.getElementById('addRowDesc').value || '').trim();
+                const a0 = parseFloat((document.getElementById('addRowAmt0').value || '0').replace(/[,$\s]/g, ''));
+                const a1 = parseFloat((document.getElementById('addRowAmt1').value || '0').replace(/[,$\s]/g, ''));
+                if (!desc) { alert('Description required'); return; }
+                if (isNaN(a0)) { alert('Year-0 amount must be a number'); return; }
+                close();
+                document.removeEventListener('keydown', escH);
+
+                // Build a new row matching the existing markup pattern. It
+                // gets a fresh map_<itemIndex> id so the Confirm flow picks
+                // it up the same as Claude-extracted rows.
+                const mapId = 'map_' + itemIndex;
+                const dropdownHtml = makeDropdown(desc, a0, section, isNaN(a1) ? 0 : a1);
+
+                const tr = document.createElement('tr');
+                tr.setAttribute('data-group', section === 'revenue' ? 'revenue' : ('exp_' + catIdx));
+                tr.style.borderBottom = '1px solid #eee';
+                tr.style.background = '#fef9c3';  // amber tint = manually added
+
+                const isExpense = section === 'expense';
+                const tdLabel = '<td style="padding:6px ' + (isExpense ? '6px 6px 20px' : '6px') + ';">'
+                    + desc + ' <span style="display:inline-block;font-size:10px;color:#7c3aed;margin-left:6px;background:#f3e8ff;padding:1px 6px;border-radius:8px;">manual</span></td>';
+                const tdAmt0 = '<td style="text-align:right; padding:4px;">' + makeAmtInput(a0, mapId) + '</td>';
+                const tdAmt1 = '<td style="text-align:right; padding:4px;">' + makeAmtReadonly(isNaN(a1) ? 0 : a1) + '</td>';
+                const tdDrop = '<td style="padding:4px;">' + dropdownHtml + '</td>';
+                const tdDel = '<td style="text-align:center;padding:4px;"><button type="button" title="Delete this row" onclick="deleteMappingRow(this)" style="border:1px solid #fecaca;background:white;color:#b91c1c;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;">×</button></td>';
+                tr.innerHTML = tdLabel + tdAmt0 + tdAmt1 + tdDrop + tdDel;
+
+                // Insert just before the appropriate "+ Add ..." footer button.
+                // Strategy: find the button whose onclick matches our section/cat
+                // and put the new tr right above its row.
+                const allBtns = document.querySelectorAll('button[onclick^="addMappingRow"]');
+                let targetBtn = null;
+                allBtns.forEach(b => {
+                    const oc = b.getAttribute('onclick') || '';
+                    if (section === 'revenue' && oc.indexOf("'revenue'") >= 0) targetBtn = b;
+                    else if (section === 'expense' && oc.indexOf("'expense', " + catIdx) >= 0) targetBtn = b;
+                });
+                if (targetBtn) {
+                    const footerTr = targetBtn.closest('tr');
+                    footerTr.parentNode.insertBefore(tr, footerTr);
+                } else {
+                    // Fallback: append at end of any table
+                    const tbl = document.querySelector('#rawData table');
+                    if (tbl) tbl.querySelector('tbody, table').appendChild(tr);
+                }
+
+                try { renderReconciliation(); } catch (e) {}
+                try { recalcLeftTotals(); } catch (e) {}
+                try { updateAcceptState(); } catch (e) {}
+            };
         }
 
         function renderMappedData() {
@@ -3241,6 +3356,27 @@ async function uploadAll() {
             db.session.rollback()
             logger.exception("source-line POST failed")
             return jsonify({"success": False, "error": str(e)[:300]}), 500
+
+    @bp.route("/api/af/uploads/<int:upload_id>/pdf", methods=["GET"])
+    def api_serve_audit_pdf(upload_id):
+        """Stream the original audit PDF for inline viewing in the browser.
+        Used by the review page's "Open PDF" link so FAs can cross-check
+        Claude's extraction against the source document.
+        """
+        upload = AuditUpload.query.get(upload_id)
+        if not upload or not upload.pdf_filename:
+            abort(404)
+        from pathlib import Path as _Path
+        pdf_path = _Path(get_data_dir()) / upload.pdf_filename
+        if not pdf_path.exists():
+            abort(404)
+        # Inline display so the browser opens the PDF rather than downloading.
+        return send_file(
+            str(pdf_path),
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=upload.pdf_filename,
+        )
 
     @bp.route("/api/af/uploads/<int:upload_id>", methods=["DELETE"])
     def api_delete_upload(upload_id):
