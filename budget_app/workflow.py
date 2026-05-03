@@ -1197,10 +1197,19 @@ def create_workflow_blueprint(db):
 
         Formula: ytd_actual + accrual_adj + unpaid_bills + estimate
         where estimate = (ytd_total / ytd_months) * remaining_months
-        Note: prior_year arg retained for signature compatibility but no longer used.
+
+        FA item #7 anomaly guard: if YTD is negative but prior_year is
+        zero/positive, treat as one-time refund/credit and skip extrapolation
+        (estimate = 0, forecast = YTD only). Recurring negatives (tax
+        credits where prior_year is also negative) keep extrapolating.
         """
         ytd_total = ytd_actual + accrual_adj + unpaid_bills
         remaining = 12 - ytd_months
+        prior = prior_year or 0
+
+        # FA #7 cap
+        if ytd_total < 0 and prior >= 0:
+            return ytd_total
 
         if ytd_months > 0:
             estimate = (ytd_total / ytd_months) * remaining
@@ -2046,9 +2055,15 @@ def create_workflow_blueprint(db):
                 ytd = float(line.ytd_actual or 0)
                 accrual = float(line.accrual_adj or 0)
                 unpaid = float(line.unpaid_bills or 0)
+                prior = float(line.prior_year or 0)
                 base = ytd + accrual + unpaid
                 # One-time fee rule: once YTD posted, no projection. Forecast = billed amount.
                 if (line.gl_code or "") in ONE_TIME_FEE_GLS and abs(base) > 0.01:
+                    estimate = 0
+                # FA #7 anomaly cap: don't extrapolate one-time refund/credit.
+                # Recurring negatives (tax abatements, where prior is also
+                # negative) keep extrapolating normally.
+                elif base < 0 and prior >= 0:
                     estimate = 0
                 else:
                     estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
@@ -3862,6 +3877,10 @@ def create_workflow_blueprint(db):
             # One-time fee rule: once YTD posted, no more projection
             if gl in ONE_TIME_FEE_GLS and abs(ytd_total) > 0.01:
                 est = 0
+            # FA #7 anomaly cap: negative YTD against non-negative prior
+            # year is a one-time refund/credit; don't extrapolate.
+            elif ytd_total < 0 and prior >= 0:
+                est = 0
             elif ytd_months > 0:
                 est = (ytd_total / ytd_months) * remaining
             else:
@@ -4298,8 +4317,13 @@ def create_workflow_blueprint(db):
                 ytd = float(line.get("ytd_actual", 0) or 0)
                 accrual = float(line.get("accrual_adj", 0) or 0)
                 unpaid = float(line.get("unpaid_bills", 0) or 0)
+                prior = float(line.get("prior_year", 0) or 0)
                 ytd_total = ytd + accrual + unpaid
-                est = (ytd_total / ytd_months) * remaining if ytd_months > 0 else 0
+                # FA #7 anomaly cap: don't extrapolate one-time refund/credit
+                if ytd_total < 0 and prior >= 0:
+                    est = 0
+                else:
+                    est = (ytd_total / ytd_months) * remaining if ytd_months > 0 else 0
                 out.append({
                     "gl": gl,
                     "desc": line.get("description") or line.get("gl_description") or "",
@@ -14697,6 +14721,10 @@ function computeForecast(l) {
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
   const ytdTotal = ytdActual + accrualAdj + unpaidBills;
+  // FA #7 anomaly cap: negative YTD against non-negative prior year is a
+  // one-time refund/credit; don't extrapolate.
+  const prior = l.prior_year || 0;
+  if (ytdTotal < 0 && prior >= 0) return ytdTotal;
   const ytdMonths = (typeof YTD_MONTHS !== 'undefined' && YTD_MONTHS > 0) ? YTD_MONTHS : 2;
   const remaining = (typeof REMAINING_MONTHS !== 'undefined') ? REMAINING_MONTHS : (12 - ytdMonths);
   return ytdTotal + (ytdTotal / ytdMonths) * remaining;
@@ -15687,6 +15715,9 @@ function computeEstimate(line) {
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
     const base = ytd + accrual + unpaid;
+    // FA #7 anomaly cap: don't extrapolate one-time refund/credit
+    const prior = line.prior_year || 0;
+    if (base < 0 && prior >= 0) return 0;
     // Formula: (YTD+Accrual+Unpaid) / YTD_MONTHS * REMAINING_MONTHS
     if (YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
     return 0;
@@ -17124,6 +17155,9 @@ function computeEstimate(l) {
   const accrual = isPayroll ? 0 : (l.accrual_adj || 0);
   const unpaid = isPayroll ? 0 : (l.unpaid_bills || 0);
   const base = ytd + accrual + unpaid;
+  // FA #7 anomaly cap: don't extrapolate one-time refund/credit
+  const prior = l.prior_year || 0;
+  if (base < 0 && prior >= 0) return 0;
   if (YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
   return 0;
 }

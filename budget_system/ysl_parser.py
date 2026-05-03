@@ -5,11 +5,27 @@ Reads YSL .xlsx files, extracts GL codes and values, and returns structured data
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Tuple, Optional, Any
 from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
+
+
+# Regex patterns for period extraction from YSL header metadata (rows 1-15).
+# YSL files commonly include strings like:
+#   "Period: 01/2026 - 04/2026"
+#   "Through: 04/30/2026"
+#   "From 1/1/2026 To 4/30/2026"
+# The "through" month is what we want for budget_period.
+_MONTH_NAMES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+# Match MM/YYYY or MM-YYYY (with optional leading zero)
+_MM_YYYY_RE = re.compile(r'(\d{1,2})[\-/](20\d{2})')
+# Match MM/DD/YYYY or M/D/YYYY (date with day)
+_MM_DD_YYYY_RE = re.compile(r'(\d{1,2})[\-/]\d{1,2}[\-/](20\d{2})')
+# Match "Apr 2026" or "April 2026"
+_MONTH_NAME_RE = re.compile(r'\b(' + '|'.join(_MONTH_NAMES) + r')[a-z]*\s+(20\d{2})\b', re.IGNORECASE)
 
 
 class YSLParser:
@@ -115,16 +131,82 @@ class YSLParser:
         self.wb.close()
         return gl_data, property_info
 
-    def _extract_property_info(self) -> Dict[str, str]:
+    def _extract_period_month(self) -> Optional[int]:
+        """
+        Scan header metadata rows (1-15) for the report period and return
+        the "actuals through" month as an integer 1-12.
+
+        Looks for patterns like:
+          "Period: 01/2026 - 04/2026"          -> 4 (last month of range)
+          "Through: 04/30/2026"                -> 4
+          "Apr 2026" / "April 2026"            -> 4
+          "From 01/01/2026 To 04/30/2026"      -> 4
+
+        Strategy: scan all metadata cells, collect every (month, year) pair
+        we can parse, return the LATEST month (highest month number that
+        appears in the most recent year present). The "through" month is
+        always the latest one.
+
+        Returns None if no recognizable period is found — caller falls
+        back to manual selection.
+        """
+        if not self.ws or self.ws.max_row < 1:
+            return None
+        scan_rows = min(self.ws.max_row, self.METADATA_SKIP_ROWS)
+        candidates = []  # list of (year, month) tuples
+        for row_idx in range(1, scan_rows + 1):
+            for cell in self.ws[row_idx]:
+                v = cell.value
+                if v is None:
+                    continue
+                text = str(v)
+                # MM/DD/YYYY first (more specific) so we don't read "04/30" as month=4 year=30
+                for m in _MM_DD_YYYY_RE.finditer(text):
+                    month = int(m.group(1))
+                    year = int(m.group(2))
+                    if 1 <= month <= 12 and 2000 <= year <= 2100:
+                        candidates.append((year, month))
+                # MM/YYYY (only if MM_DD didn't already swallow it)
+                # Use a simple heuristic: scan substrings that don't have an
+                # extra "/dd/" pattern around them.
+                for m in _MM_YYYY_RE.finditer(text):
+                    pos_start = m.start()
+                    pos_end = m.end()
+                    surrounding = text[max(0, pos_start - 3):min(len(text), pos_end + 3)]
+                    # Skip if it looks like part of MM/DD/YYYY
+                    if re.search(r'\d/\d{1,2}/' + m.group(0), surrounding):
+                        continue
+                    month = int(m.group(1))
+                    year = int(m.group(2))
+                    if 1 <= month <= 12 and 2000 <= year <= 2100:
+                        candidates.append((year, month))
+                # Month name + year
+                for m in _MONTH_NAME_RE.finditer(text):
+                    name = m.group(1).lower()[:3]
+                    if name in _MONTH_NAMES:
+                        month = _MONTH_NAMES.index(name) + 1
+                        year = int(m.group(2))
+                        candidates.append((year, month))
+        if not candidates:
+            return None
+        # The "through" month is the highest (year, month) tuple
+        candidates.sort()
+        latest_year, latest_month = candidates[-1]
+        logger.info(f"YSL period auto-detected: month={latest_month}, year={latest_year} (from {len(candidates)} candidate matches)")
+        return latest_month
+
+    def _extract_property_info(self) -> Dict[str, Any]:
         """
         Extract property information from metadata rows (rows 1-15).
 
         Returns:
-            Dict with property_code and property_name
+            Dict with property_code, property_name, and (when detectable)
+            budget_period_month (int 1-12).
         """
         property_info = {
             "property_code": None,
             "property_name": None,
+            "budget_period_month": self._extract_period_month(),
         }
 
         # YSL format: property code is in row 3, column B; property name is in row 11, column C

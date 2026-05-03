@@ -21,9 +21,22 @@ from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, SUBTOTAL_FORMULAS, LABEL_ALIASES,
 # ── Forecast computation (mirrors workflow.py compute_forecast) ──────────
 
 def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year, ytd_months=2):
-    """12-month forecast: ytd_total + estimate."""
+    """12-month forecast: ytd_total + estimate.
+
+    FA item #7 anomaly guard (added 2026-05-03): if YTD is negative but
+    prior_year is zero/positive, treat the negative as a one-time event
+    (refund, contractor reimbursement, insurance proceeds posted as a credit
+    to the expense GL) and don't extrapolate. Recurring negatives — tax
+    abatements, STAR/SCHE credits, where prior_year is also negative — keep
+    extrapolating normally.
+    """
     ytd_total = (ytd_actual or 0) + (accrual_adj or 0) + (unpaid_bills or 0)
     remaining = 12 - ytd_months
+    prior = prior_year or 0
+
+    # FA #7 cap
+    if ytd_total < 0 and prior >= 0:
+        return ytd_total  # estimate = 0; forecast = YTD only
 
     if ytd_total >= prior_year and prior_year > 0 and ytd_months > 0:
         estimate = (ytd_total / ytd_months) * remaining

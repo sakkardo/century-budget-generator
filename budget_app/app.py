@@ -7197,6 +7197,42 @@ def _wizard_download_sp_to_tmp(selection, suffix):
     return Path(tmp_path), filename
 
 
+def _stage_wizard_period_for_entity(entity_code, month_num):
+    """Write budget_period to the wizard's staged assumptions for an entity.
+
+    Used by YSL auto-detect: when we successfully parse a period from the
+    YSL header, pre-fill the wizard's staged assumptions so the FA sees the
+    detected month already selected in Step 3. FA can still change it.
+
+    The Build Budget step already deep-merges staged assumptions into
+    Budget.assumptions_json (app.py around line 6843), so no additional
+    plumbing is needed.
+
+    Idempotent: if the FA has already set a period manually, this overwrites
+    it. The wizard's UI shows the value either way; FA gets visual confirmation
+    on next render.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+    budget = Budget.query.filter_by(entity_code=str(entity_code), year=_BY).first()
+    if not budget:
+        return  # No-op; build hasn't been started yet
+    try:
+        sels = json.loads(budget.wizard_selections_json or "{}")
+    except Exception:
+        sels = {}
+    assumptions = sels.get("assumptions") or {}
+    if not isinstance(assumptions, dict):
+        assumptions = {}
+    # YSL covers prior-year actuals; year portion is BUDGET_YEAR - 1.
+    mm = str(int(month_num)).zfill(2)
+    yyyy = _BY - 1
+    assumptions["budget_period"] = f"{mm}/{yyyy}"
+    sels["assumptions"] = assumptions
+    budget.wizard_selections_json = json.dumps(sels)
+    db.session.commit()
+
+
 def _build_apply_ysl(entity_code, selection):
     """Download + parse a YSL file from SharePoint and write GL lines to budget_lines.
     Idempotent: re-running for the same entity overwrites prior YSL data via
@@ -7221,6 +7257,23 @@ def _build_apply_ysl(entity_code, selection):
             str(entity_code), building_name, gl_data, TEMPLATE_PATH,
             assumptions=merged, fresh_start=False,
         )
+        # FA #1 follow-up: auto-detect budget_period from YSL header.
+        # Hybrid model — we PRE-FILL the wizard's staged assumptions so the
+        # period dropdown shows the detected month; FA can still override.
+        # If parsing failed or no month was detected, leave the dropdown blank.
+        detected_month = property_info.get("budget_period_month")
+        period_set = False
+        if detected_month and 1 <= detected_month <= 12:
+            try:
+                _stage_wizard_period_for_entity(entity_code, detected_month)
+                period_set = True
+            except Exception as _e:
+                # Don't fail the YSL apply if staging the period fails; just
+                # log and let FA pick manually.
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to stage detected YSL period for {entity_code}: {_e}"
+                )
         # Count GL rows we ingested (gl_data shape: {gl_code: {sheet, ...}})
         gl_count = len(gl_data) if hasattr(gl_data, "__len__") else 0
         return {
@@ -7229,6 +7282,8 @@ def _build_apply_ysl(entity_code, selection):
             "gl_lines": gl_count,
             "file_entity": property_info.get("property_code"),
             "stored_under_entity": str(entity_code),
+            "detected_period_month": detected_month,
+            "period_auto_set": period_set,
         }
     finally:
         try:
