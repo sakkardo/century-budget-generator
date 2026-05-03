@@ -4054,10 +4054,13 @@ def create_workflow_blueprint(db):
                 "Garage": "Commercial Rent (Garage)",
                 "Interest Income": "Other Income",
             }
-            # Query audit_uploads directly (model defined in factory, can't import)
+            # Query audit_uploads directly (model defined in factory, can't import).
+            # summary_overrides (Phase 2) is the canonical per-line state set by the
+            # FA via the Inspector — takes precedence over mapped_data + raw_extraction
+            # when populated for a given summary label.
             fy = str(budget_year - 2)  # Col 2 = BY-2 actual
             row_au = db.session.execute(db.text(
-                "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename, raw_extraction FROM audit_uploads "
+                "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename, raw_extraction, summary_overrides FROM audit_uploads "
                 "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
                 "ORDER BY confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
@@ -4186,14 +4189,20 @@ def create_workflow_blueprint(db):
                 building_labels = {r.label for r in summary_rows if r.row_type == "data"}
                 # Helper: stamp source_lines onto the resolved summary label,
                 # tagging each line with the audit_category it came from so the
-                # FA can tell which auditor bucket fed the row.
+                # FA can tell which auditor bucket fed the row. Each line gets
+                # a deterministic position-based ID so the Phase 2 mutation
+                # endpoints can reference it before it's been promoted into
+                # summary_overrides. After first edit/move/add the lines have
+                # real UUIDs (assigned by _audit_promote_backfill).
                 def _attach_lines(summary_label, audit_cat):
                     lines_for_cat = cat_source_lines.get(audit_cat) or []
                     if not lines_for_cat:
                         return
                     bucket = col2_source_lines.setdefault(summary_label, [])
-                    for sl in lines_for_cat:
+                    base_idx = len(bucket)
+                    for off, sl in enumerate(lines_for_cat):
                         bucket.append({
+                            "id": "raw:" + str(audit_cat) + ":" + str(base_idx + off),
                             "auditor_desc": sl.get("auditor_desc") or "",
                             "amount": sl.get("amount") or 0.0,
                             "audit_category": audit_cat,
@@ -4221,6 +4230,48 @@ def create_workflow_blueprint(db):
                                     col2_meta[variant] = {"matched_category": cat, "match_type": "alias_reverse"}
                                     _attach_lines(variant, cat)
                                     break
+
+                # ── Phase 2: summary_overrides take precedence ──
+                # If the FA has used the Inspector to edit/move/add audit lines
+                # for a summary label, use those source_lines (with their
+                # persisted UUIDs) and the recomputed total — overriding the
+                # auto-mapped col2 from above.
+                try:
+                    overrides_raw = row_au[7] if len(row_au) > 7 else None
+                    overrides = _json.loads(overrides_raw) if overrides_raw else {}
+                except Exception:
+                    overrides = {}
+                for ov_label, ov_block in (overrides or {}).items():
+                    if not isinstance(ov_block, dict):
+                        continue
+                    ov_lines_raw = ov_block.get("source_lines") or []
+                    norm_lines = []
+                    for sl in ov_lines_raw:
+                        if not isinstance(sl, dict):
+                            continue
+                        amt = sl.get("amount")
+                        if amt is None:
+                            amts = sl.get("amounts") or []
+                            amt = amts[0] if (isinstance(amts, list) and amts) else 0
+                        try:
+                            amt_f = float(amt or 0)
+                        except Exception:
+                            amt_f = 0.0
+                        norm_lines.append({
+                            "id": sl.get("id"),
+                            "auditor_desc": sl.get("auditor_desc") or "",
+                            "amount": amt_f,
+                            "audit_category": ov_label,
+                            "user_added": bool(sl.get("user_added")),
+                        })
+                    # Use the override's total when present (already recomputed
+                    # by the mutation endpoints), else sum the lines.
+                    ov_total = ov_block.get("total")
+                    if ov_total is None:
+                        ov_total = sum(l["amount"] for l in norm_lines)
+                    col2_lookup[ov_label] = ov_total
+                    col2_meta[ov_label] = {"matched_category": ov_label, "match_type": "override"}
+                    col2_source_lines[ov_label] = norm_lines
         except Exception as _col2_err:
             col2_lookup = {"_error": str(_col2_err)}
 
@@ -11609,49 +11660,76 @@ function sumRenderDrillPanel(label, col) {
         '</div>' +
         '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;">' +
         '<b>= ' + fmt(c2.value) + '</b> <span style="color:var(--gray-500);">(rolled up from audit lines below)</span></div>';
-      // Per-auditor-line breakdown \u2014 Phase 1 (read-only). Phase 2 will add
-      // edit/move/add affordances per row.
+      // Per-auditor-line breakdown \u2014 Phase 2 (editable). FA can edit amounts,
+      // move lines to a different summary row, delete, or add manually. Each
+      // mutation goes through /api/af/uploads/<id>/source-line and re-fetches
+      // the summary to refresh the totals.
       const sourceLines = Array.isArray(c2.source_lines) ? c2.source_lines : [];
-      if (sourceLines.length) {
-        let lineSubtotal = 0;
-        let rowsHtml = '';
-        sourceLines.forEach(sl => {
-          const desc = (sl.auditor_desc || '').replace(/[<>]/g, '');
-          const amt = Number(sl.amount) || 0;
-          lineSubtotal += amt;
-          const auditCat = (sl.audit_category || '').replace(/[<>]/g, '');
-          const catBadge = auditCat && auditCat !== c2.matched_category
-            ? '<span style="display:inline-block;font-size:10px;color:var(--gray-500);margin-left:6px;background:var(--gray-100);padding:1px 6px;border-radius:8px;">via ' + auditCat + '</span>'
-            : '';
-          rowsHtml += '<tr>'
-            + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);">' + desc + catBadge + '</td>'
-            + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);text-align:right;font-family:monospace;">$' + fmt(amt) + '</td>'
-            + '</tr>';
-        });
-        const subtotalDelta = Math.round(lineSubtotal - (Number(c2.value) || 0));
-        const reconcileNote = Math.abs(subtotalDelta) < 1
-          ? '<span style="color:var(--green);">\u2713 reconciles</span>'
-          : '<span style="color:var(--orange);">\u26a0 differs by $' + fmt(Math.abs(subtotalDelta)) + '</span>';
-        html += '<div style="margin-top:14px;">'
-          + '<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:600;color:var(--gray-700);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
-          + '<span>Audit Breakdown \u00b7 ' + sourceLines.length + ' line' + (sourceLines.length === 1 ? '' : 's') + '</span>'
-          + '<span style="text-transform:none;letter-spacing:0;font-weight:500;">' + reconcileNote + '</span>'
-          + '</div>'
-          + '<div style="border:1px solid var(--gray-200);border-radius:6px;overflow:hidden;">'
-          + '<table style="width:100%;border-collapse:collapse;">'
-          + '<thead style="background:var(--gray-50);">'
-          + '<tr><th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:left;text-transform:uppercase;">Auditor description</th>'
-          + '<th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:right;text-transform:uppercase;">Amount</th></tr>'
-          + '</thead>'
-          + '<tbody>' + rowsHtml + '</tbody>'
-          + '<tfoot><tr style="background:var(--gray-50);font-weight:600;">'
-          + '<td style="padding:6px 8px;font-size:12px;">Subtotal</td>'
-          + '<td style="padding:6px 8px;font-size:12px;text-align:right;font-family:monospace;">$' + fmt(lineSubtotal) + '</td>'
-          + '</tr></tfoot>'
-          + '</table></div>'
-          + '<div style="margin-top:8px;font-size:11px;color:var(--gray-500);font-style:italic;">Read-only for now \u2014 Phase 2 will let you edit amounts and re-route lines to other categories.</div>'
-          + '</div>';
-      }
+      const auditId = c2.audit_id;
+      // List of all valid summary labels for the move dropdown \u2014 populated
+      // from the Inspector's parent rowMap, which has every data row label.
+      const moveTargets = Object.keys(window._sumRowMap || {}).filter(
+        k => (window._sumRowMap[k] || {}).row_type === 'data' && k !== label
+      ).sort();
+      const moveOptionsHtml = moveTargets.map(t =>
+        '<option value="' + t.replace(/"/g, '&quot;') + '">' + t + '</option>'
+      ).join('');
+      let lineSubtotal = 0;
+      let rowsHtml = '';
+      sourceLines.forEach((sl, sliIdx) => {
+        const desc = (sl.auditor_desc || '').replace(/[<>]/g, '');
+        const amt = Number(sl.amount) || 0;
+        lineSubtotal += amt;
+        const auditCat = (sl.audit_category || '').replace(/[<>]/g, '');
+        const catBadge = auditCat && auditCat !== c2.matched_category && auditCat !== label
+          ? '<span style="display:inline-block;font-size:10px;color:var(--gray-500);margin-left:6px;background:var(--gray-100);padding:1px 6px;border-radius:8px;">via ' + auditCat + '</span>'
+          : '';
+        const userBadge = sl.user_added
+          ? '<span style="display:inline-block;font-size:10px;color:#7c3aed;margin-left:6px;background:#f3e8ff;padding:1px 6px;border-radius:8px;">added</span>'
+          : '';
+        const lineId = (sl.id || '').replace(/"/g, '&quot;');
+        const dataAttrs = 'data-audit-id="' + auditId + '" data-line-id="' + lineId + '" data-summary-label="' + label.replace(/"/g, '&quot;') + '"';
+        rowsHtml += '<tr id="audrow-' + sliIdx + '">'
+          + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);">' + desc + catBadge + userBadge + '</td>'
+          + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);text-align:right;font-family:monospace;">$' + fmt(amt) + '</td>'
+          + '<td style="padding:4px 8px;font-size:12px;border-bottom:1px solid var(--gray-100);text-align:right;white-space:nowrap;">'
+          + '<button title="Edit amount" ' + dataAttrs + ' data-line-amount="' + amt + '" data-line-desc="' + desc.replace(/"/g,'&quot;') + '" onclick="auditLineEdit(this)" style="border:1px solid var(--gray-300);background:white;color:var(--gray-700);padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;margin-right:4px;">\u270f\ufe0f</button>'
+          + '<button title="Move to another category" ' + dataAttrs + ' onclick="auditLineMove(this)" style="border:1px solid var(--gray-300);background:white;color:var(--gray-700);padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;margin-right:4px;">\u2197</button>'
+          + '<button title="Delete this line" ' + dataAttrs + ' onclick="auditLineDelete(this)" style="border:1px solid #fecaca;background:white;color:#b91c1c;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;">\ud83d\uddd1\ufe0f</button>'
+          + '</td>'
+          + '</tr>';
+      });
+      const subtotalDelta = Math.round(lineSubtotal - (Number(c2.value) || 0));
+      const reconcileNote = Math.abs(subtotalDelta) < 1
+        ? '<span style="color:var(--green);">\u2713 reconciles</span>'
+        : '<span style="color:var(--orange);">\u26a0 differs by $' + fmt(Math.abs(subtotalDelta)) + '</span>';
+      html += '<div style="margin-top:14px;">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:600;color:var(--gray-700);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
+        + '<span>Audit Breakdown \u00b7 ' + sourceLines.length + ' line' + (sourceLines.length === 1 ? '' : 's') + '</span>'
+        + '<span style="text-transform:none;letter-spacing:0;font-weight:500;">' + reconcileNote + '</span>'
+        + '</div>'
+        + '<div style="border:1px solid var(--gray-200);border-radius:6px;overflow:hidden;">'
+        + '<table style="width:100%;border-collapse:collapse;">'
+        + '<thead style="background:var(--gray-50);">'
+        + '<tr><th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:left;text-transform:uppercase;">Auditor description</th>'
+        + '<th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:right;text-transform:uppercase;">Amount</th>'
+        + '<th style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--gray-500);text-align:right;text-transform:uppercase;">Actions</th></tr>'
+        + '</thead>'
+        + '<tbody>' + rowsHtml + '</tbody>'
+        + '<tfoot><tr style="background:var(--gray-50);font-weight:600;">'
+        + '<td style="padding:6px 8px;font-size:12px;">Subtotal</td>'
+        + '<td style="padding:6px 8px;font-size:12px;text-align:right;font-family:monospace;">$' + fmt(lineSubtotal) + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;">'
+        + (auditId ? '<button onclick="auditLineAdd(\'' + (auditId) + '\', \'' + label.replace(/"/g,'&quot;').replace(/'/g,"\\'") + '\')" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">+ Add line</button>' : '')
+        + '</td>'
+        + '</tr></tfoot>'
+        + '</table></div>'
+        + '<div style="margin-top:8px;font-size:11px;color:var(--gray-500);font-style:italic;">Edit amounts in place, move lines to a different summary row, or add manual entries. Saves to this building only.</div>'
+        + '</div>'
+        + '<datalist id="auditMoveTargets">' + moveOptionsHtml + '</datalist>';
+      // Stash move-target list and audit_id on window so handlers can reach
+      // them without rebuilding markup.
+      window._auditMoveTargets = moveTargets;
     } else {
       html += '<div style="background:#fffbeb;padding:10px 12px;border-radius:6px;color:#92400e;">Audit is confirmed for FY ' + (c2.audit_year || '?') + ', but no category matched the row label "<b>' + label + '</b>". Add an alias in <code>_LABEL_ALIASES</code> (workflow.py).</div>';
     }
@@ -11744,6 +11822,154 @@ function sumRenderDrillPanel(label, col) {
   }
   panel.innerHTML = html;
   panel.style.display = 'block';
+}
+
+// ── Phase 2: per-line audit drill-down mutations ─────────────────────────
+// All four mutations use the same backend endpoint:
+//   PATCH /api/af/uploads/<upload_id>/source-line  for edit/move/delete
+//   POST  /api/af/uploads/<upload_id>/source-line  for add
+// On success, re-fetch the summary to refresh col2 totals + the Inspector
+// panel, since the FA's edit may have moved value between summary rows.
+
+async function _auditLinePatch(uploadId, body) {
+  const resp = await fetch('/api/af/uploads/' + uploadId + '/source-line', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
+async function _auditLinePost(uploadId, body) {
+  const resp = await fetch('/api/af/uploads/' + uploadId + '/source-line', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
+// Reload summary + replay the drill panel for the same row so the FA stays
+// in context after a mutation.
+async function _auditAfterMutation(rowLabel) {
+  if (typeof loadSummary === 'function') {
+    try { await loadSummary(); } catch (e) { console.warn('loadSummary failed', e); }
+  }
+  // Re-render the drill panel for the same label in c2 mode.
+  if (rowLabel) {
+    try { sumRenderDrillPanel(rowLabel, 'c2'); } catch (e) { console.warn('drill replay failed', e); }
+  }
+}
+
+function _auditBtnContext(btn) {
+  return {
+    auditId: btn.getAttribute('data-audit-id'),
+    lineId: btn.getAttribute('data-line-id'),
+    summaryLabel: btn.getAttribute('data-summary-label'),
+  };
+}
+
+function auditLineEdit(btn) {
+  const ctx = _auditBtnContext(btn);
+  const oldAmt = Number(btn.getAttribute('data-line-amount')) || 0;
+  const desc = btn.getAttribute('data-line-desc') || '';
+  const inputStr = window.prompt(
+    'Edit amount for "' + desc + '":',
+    String(Math.round(oldAmt))
+  );
+  if (inputStr === null) return;
+  const newAmt = parseFloat(inputStr.replace(/[,$\s]/g, ''));
+  if (isNaN(newAmt)) {
+    alert('Invalid amount: "' + inputStr + '"');
+    return;
+  }
+  if (Math.abs(newAmt - oldAmt) < 0.005) return;  // no-op
+  _auditLinePatch(ctx.auditId, {
+    summary_label: ctx.summaryLabel,
+    line_id: ctx.lineId,
+    action: 'edit',
+    new_amount: newAmt,
+  }).then(j => {
+    if (j && j.success) {
+      _auditAfterMutation(ctx.summaryLabel);
+    } else {
+      alert('Edit failed: ' + (j && j.error || 'unknown error'));
+    }
+  }).catch(e => alert('Edit error: ' + e.message));
+}
+
+function auditLineMove(btn) {
+  const ctx = _auditBtnContext(btn);
+  const targets = window._auditMoveTargets || [];
+  if (!targets.length) {
+    alert('No other summary rows available to move to.');
+    return;
+  }
+  // Simple prompt-based picker — keeps dependency footprint zero. Lists all
+  // valid target labels; FA types or pastes one. Server validates.
+  const listed = targets.length > 25
+    ? targets.slice(0, 25).join(', ') + ', ... (' + (targets.length - 25) + ' more)'
+    : targets.join(', ');
+  const tgt = window.prompt(
+    'Move this line to which summary row?\n\nValid options:\n' + listed,
+    ''
+  );
+  if (!tgt) return;
+  if (!targets.includes(tgt)) {
+    alert('Not a valid summary row: "' + tgt + '". Type the label exactly as it appears in the summary table.');
+    return;
+  }
+  _auditLinePatch(ctx.auditId, {
+    summary_label: ctx.summaryLabel,
+    line_id: ctx.lineId,
+    action: 'move',
+    new_summary_label: tgt,
+  }).then(j => {
+    if (j && j.success) {
+      _auditAfterMutation(ctx.summaryLabel);
+    } else {
+      alert('Move failed: ' + (j && j.error || 'unknown error'));
+    }
+  }).catch(e => alert('Move error: ' + e.message));
+}
+
+function auditLineDelete(btn) {
+  const ctx = _auditBtnContext(btn);
+  if (!confirm('Delete this audit line? It will be removed from this building only — original audit extraction is preserved.')) return;
+  _auditLinePatch(ctx.auditId, {
+    summary_label: ctx.summaryLabel,
+    line_id: ctx.lineId,
+    action: 'delete',
+  }).then(j => {
+    if (j && j.success) {
+      _auditAfterMutation(ctx.summaryLabel);
+    } else {
+      alert('Delete failed: ' + (j && j.error || 'unknown error'));
+    }
+  }).catch(e => alert('Delete error: ' + e.message));
+}
+
+function auditLineAdd(uploadId, summaryLabel) {
+  const desc = window.prompt('New audit line description (e.g. "Late fee adjustment"):', '');
+  if (!desc) return;
+  const amtStr = window.prompt('Amount for "' + desc + '":', '0');
+  if (amtStr === null) return;
+  const amt = parseFloat(String(amtStr).replace(/[,$\s]/g, ''));
+  if (isNaN(amt)) {
+    alert('Invalid amount: "' + amtStr + '"');
+    return;
+  }
+  _auditLinePost(uploadId, {
+    summary_label: summaryLabel,
+    auditor_desc: desc,
+    amount: amt,
+  }).then(j => {
+    if (j && j.success) {
+      _auditAfterMutation(summaryLabel);
+    } else {
+      alert('Add failed: ' + (j && j.error || 'unknown error'));
+    }
+  }).catch(e => alert('Add error: ' + e.message));
 }
 
 function sumCellBlur(el) {

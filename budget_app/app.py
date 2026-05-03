@@ -249,6 +249,7 @@ with app.app_context():
             ("budgets", "wizard_completed_at", "TIMESTAMP"),
             ("budgets", "wizard_step", "INTEGER DEFAULT 0"),
             ("budgets", "pm_sent_at", "TIMESTAMP"),
+            ("audit_uploads", "summary_overrides", "TEXT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [
