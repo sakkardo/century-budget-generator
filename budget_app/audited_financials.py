@@ -219,6 +219,12 @@ def create_audited_financials_blueprint(db):
         profile = db.relationship("AuditorProfile", back_populates="uploads")
 
         def to_dict(self):
+            so = None
+            if self.summary_overrides:
+                try:
+                    so = json.loads(self.summary_overrides)
+                except Exception:
+                    so = None
             return {
                 "id": self.id,
                 "entity_code": self.entity_code,
@@ -231,7 +237,8 @@ def create_audited_financials_blueprint(db):
                 "confirmed_by": self.confirmed_by,
                 "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
-                "updated_at": self.updated_at.isoformat() if self.updated_at else None
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+                "summary_overrides": so
             }
 
     # ─── Helper Functions ────────────────────────────────────────────────────
