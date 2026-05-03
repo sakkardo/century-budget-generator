@@ -11850,12 +11850,16 @@ async function _auditLinePost(uploadId, body) {
 }
 
 // Reload summary + replay the drill panel for the same row so the FA stays
-// in context after a mutation.
+// in context after a mutation. The summary tab uses renderBudgetSummary
+// (not loadSummary, which doesn't exist on this page); calling it refetches
+// /api/summary and rebuilds the table + window._sumLineage so the next
+// sumRenderDrillPanel call sees fresh source_lines + IDs.
 async function _auditAfterMutation(rowLabel) {
-  if (typeof loadSummary === 'function') {
-    try { await loadSummary(); } catch (e) { console.warn('loadSummary failed', e); }
+  const contentDiv = document.getElementById('sheetContent');
+  if (contentDiv && typeof renderBudgetSummary === 'function') {
+    try { await renderBudgetSummary(contentDiv); } catch (e) { console.warn('renderBudgetSummary failed', e); }
   }
-  // Re-render the drill panel for the same label in c2 mode.
+  // Re-render the drill panel for the same label so the FA can keep editing.
   if (rowLabel) {
     try { sumRenderDrillPanel(rowLabel, 'c2'); } catch (e) { console.warn('drill replay failed', e); }
   }
