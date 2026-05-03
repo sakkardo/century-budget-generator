@@ -1515,6 +1515,8 @@ async function uploadAll() {
 <div class="container">
     <div style="margin-bottom:16px;"><a href="/audited-financials" class="back-link">← Back to Uploads</a></div>
 
+    {{ status_banner }}
+
     <!-- Auditor profile + dropdown scope controls -->
     <div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:14px 18px; margin-bottom:16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
         <div style="display:flex; align-items:center; gap:10px;">
@@ -2365,6 +2367,56 @@ async function uploadAll() {
 </html>
         """
 
+        # Status banner — explicit "already confirmed" cue so FAs know they're
+        # editing a finalized audit (and that re-confirming will OVERWRITE the
+        # mapped_data on this upload). For per-line tweaks they should use the
+        # FA Dashboard Inspector instead, which preserves mapped_data.
+        status_banner = ""
+        if upload.status == "confirmed":
+            confirmed_dt = ""
+            if upload.confirmed_at:
+                try:
+                    confirmed_dt = upload.confirmed_at.strftime("%b %-d, %Y")
+                except Exception:
+                    try:
+                        confirmed_dt = upload.confirmed_at.strftime("%b %d, %Y")
+                    except Exception:
+                        confirmed_dt = upload.confirmed_at.isoformat()[:10]
+            confirmed_by = upload.confirmed_by or "system"
+            ec = upload.entity_code or ""
+            status_banner = (
+                '<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-left:4px solid #10b981;'
+                'border-radius:8px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:flex-start;gap:14px;">'
+                '<div style="font-size:20px;line-height:1;">&#10003;</div>'
+                '<div style="flex:1;">'
+                f'<div style="font-size:14px;font-weight:700;color:#065f46;margin-bottom:4px;">'
+                f'Already confirmed{(" on " + confirmed_dt) if confirmed_dt else ""}'
+                f'{(" by " + confirmed_by) if confirmed_by and confirmed_by != "system" else ""}</div>'
+                '<div style="font-size:13px;color:#065f46;line-height:1.5;">'
+                'This audit has been finalized and the mapping is saved. Editing here and re-confirming will '
+                '<b>overwrite the saved mapping</b> for this upload &mdash; suitable for full re-extracts or '
+                'wholesale changes.'
+                f'<br/>For per-line tweaks (edit amounts, move lines to different summary rows, add manual entries), '
+                f'open <a href="/dashboard/{ec}" style="color:#065f46;font-weight:600;text-decoration:underline;">'
+                f'Dashboard &rsaquo; Summary tab</a> and use the &#128270; Inspector on the Col 2 cells &mdash; those '
+                'edits are preserved across re-confirms.</div></div></div>'
+            )
+        elif upload.status == "extracted":
+            status_banner = (
+                '<div style="background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;'
+                'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;">'
+                '<b>Extraction ready for review.</b> Pick an auditor profile, accept each row, then click '
+                'Confirm &amp; Save below to finalize.</div>'
+            )
+        elif upload.status == "mapped":
+            status_banner = (
+                '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #3b82f6;'
+                'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1e3a8a;">'
+                '<b>Mapping saved, awaiting confirm.</b> Review the categorization and click Confirm &amp; Save '
+                'when ready &mdash; this finalizes Col 2 on the Budget Summary.</div>'
+            )
+
+        html = html.replace("{{ status_banner }}", status_banner)
         html = html.replace("{{ building_name }}", upload.building_name or "")
         html = html.replace("{{ entity_code }}", upload.entity_code or "")
         html = html.replace("{{ fiscal_year }}", upload.fiscal_year_end or "")
