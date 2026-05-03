@@ -7541,6 +7541,90 @@ def admin_entity_trace(entity_code):
 
 
 
+@app.route("/api/admin/add-summary-row", methods=["POST"])
+def admin_add_summary_row():
+    """ADMIN: Insert a single new BudgetSummaryRow for one entity.
+
+    Used when an FA wants to break out an audit line (via the Inspector's
+    Move action) into its own summary row that wasn't in the original
+    approved budget template. Without this, summary_overrides[<label>]
+    becomes orphaned because no row matches it.
+
+    Body: {
+        "entity_code": "148",
+        "label": "Supplies",
+        "section": "Expenses"|"Income"|"Non-Operating Income"|"Non-Operating Expenses"|null,
+        "after_label": "Repairs & Maintenance"  # optional — placement hint
+    }
+    Returns the new row's display_order + label.
+    """
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    entity_code = (data.get("entity_code") or "").strip()
+    label = (data.get("label") or "").strip()
+    section = (data.get("section") or "Expenses").strip() or None
+    after_label = (data.get("after_label") or "").strip() or None
+
+    if not entity_code or not label:
+        return jsonify({"error": "entity_code and label required"}), 400
+
+    # Idempotent: if a row with this label already exists, return it.
+    existing = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=_BY, label=label
+    ).first()
+    if existing:
+        return jsonify({
+            "ok": True, "noop": "row already exists",
+            "id": existing.id, "label": existing.label,
+            "display_order": existing.display_order,
+        })
+
+    # Pick a display_order: just after `after_label` if provided + present,
+    # else at the end of the section's existing range, else at the end.
+    target_order = None
+    if after_label:
+        ref = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=_BY, label=after_label
+        ).first()
+        if ref and ref.display_order is not None:
+            target_order = ref.display_order + 1
+            # Shift everything at/after target_order by +1 to make room.
+            db.session.execute(db.text(
+                "UPDATE budget_summary_rows SET display_order = display_order + 1 "
+                "WHERE entity_code = :ec AND budget_year = :by AND display_order >= :ord"
+            ), {"ec": entity_code, "by": _BY, "ord": target_order})
+            db.session.flush()
+
+    if target_order is None:
+        # Fall back: max + 1 of all rows for this entity.
+        max_row = db.session.execute(db.text(
+            "SELECT COALESCE(MAX(display_order), 0) FROM budget_summary_rows "
+            "WHERE entity_code = :ec AND budget_year = :by"
+        ), {"ec": entity_code, "by": _BY}).scalar()
+        target_order = int(max_row or 0) + 1
+
+    try:
+        row = BudgetSummaryRow(
+            entity_code=entity_code,
+            budget_year=_BY,
+            display_order=target_order,
+            label=label,
+            section=section,
+            row_type="data",
+        )
+        db.session.add(row)
+        db.session.commit()
+        return jsonify({
+            "ok": True, "id": row.id, "label": row.label,
+            "display_order": row.display_order, "section": row.section,
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @app.route("/api/admin/wipe-entity-data", methods=["POST"])
 def admin_wipe_entity_data():
     """ADMIN: Wipe budget_lines + budget_revisions + budget_summary_rows for the
