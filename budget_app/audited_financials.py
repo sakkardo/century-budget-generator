@@ -2276,6 +2276,11 @@ async function uploadAll() {
             // Historical bug: this function used to POST straight to /confirm
             // without saving the user's dropdown selections, leaving
             // mapped_data empty in the DB and breaking col2 on the summary.
+            // We also persist source_lines (the auditor's literal description
+            // + amounts per row) so the FA Dashboard summary can drill down
+            // into Col 2 and show the per-line breakdown without re-running
+            // mapping rules. Audits confirmed before this change still work
+            // via a backfill from raw_extraction in the summary endpoint.
             const mapped = {};
             const selects = document.querySelectorAll('select[id^="map_"]');
             selects.forEach(s => {
@@ -2284,11 +2289,15 @@ async function uploadAll() {
                 const a0 = parseFloat(s.dataset.amount) || 0;
                 const a1 = parseFloat(s.dataset.amount1) || 0;
                 if (!mapped[cat]) {
-                    mapped[cat] = { total: 0, year_totals: [0, 0], years: [] };
+                    mapped[cat] = { total: 0, year_totals: [0, 0], years: [], source_lines: [] };
                 }
                 mapped[cat].total += a0;
                 mapped[cat].year_totals[0] += a0;
                 mapped[cat].year_totals[1] += a1;
+                mapped[cat].source_lines.push({
+                    auditor_desc: s.dataset.desc || '',
+                    amounts: [a0, a1],
+                });
             });
 
             if (force) {

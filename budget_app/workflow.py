@@ -4057,7 +4057,7 @@ def create_workflow_blueprint(db):
             # Query audit_uploads directly (model defined in factory, can't import)
             fy = str(budget_year - 2)  # Col 2 = BY-2 actual
             row_au = db.session.execute(db.text(
-                "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename FROM audit_uploads "
+                "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename, raw_extraction FROM audit_uploads "
                 "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
                 "ORDER BY confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
@@ -4070,6 +4070,67 @@ def create_workflow_blueprint(db):
                     "pdf_filename": row_au[5] or "",
                 }
                 mapped_raw = _json.loads(row_au[1])
+                # raw_extraction has Claude's per-line breakdown (auditor_desc + amounts)
+                # nested under each top-level item. Used as a backfill when mapped_data
+                # lacks source_lines (audits confirmed before source_lines persistence).
+                raw_ext = {}
+                try:
+                    raw_ext = _json.loads(row_au[6]) if row_au[6] else {}
+                except Exception:
+                    raw_ext = {}
+
+                # Build a lookup of nested source_lines from raw_extraction, keyed by
+                # the top-level auditor item description. Each top-level item carries
+                # its own auditor-granular source_lines (the auditor's literal lines).
+                raw_lines_by_desc = {}  # {top_desc: [{auditor_desc, amount}, ...]}
+                def _harvest_top_items(items):
+                    for it in items or []:
+                        if not isinstance(it, dict):
+                            continue
+                        top_desc = (it.get("description") or "").strip()
+                        nested = it.get("source_lines") or []
+                        flat = []
+                        for sl in nested:
+                            if not isinstance(sl, dict):
+                                continue
+                            sl_amts = sl.get("amounts") or []
+                            sl_amt = sl_amts[0] if (isinstance(sl_amts, list) and sl_amts) else (sl.get("amount") or 0)
+                            try:
+                                sl_amt_f = float(sl_amt or 0)
+                            except Exception:
+                                sl_amt_f = 0.0
+                            flat.append({
+                                "auditor_desc": sl.get("auditor_desc") or sl.get("description") or "",
+                                "amount": sl_amt_f,
+                            })
+                        # Fallback: top-level item with no nested source_lines becomes
+                        # a single-entry source list of itself.
+                        if not flat:
+                            top_amts = it.get("amounts") or []
+                            top_amt = top_amts[0] if (isinstance(top_amts, list) and top_amts) else 0
+                            try:
+                                top_amt_f = float(top_amt or 0)
+                            except Exception:
+                                top_amt_f = 0.0
+                            flat = [{"auditor_desc": top_desc, "amount": top_amt_f}]
+                        if top_desc:
+                            raw_lines_by_desc.setdefault(top_desc, []).extend(flat)
+
+                if isinstance(raw_ext.get("revenue"), dict):
+                    _harvest_top_items(raw_ext["revenue"].get("items"))
+                if isinstance(raw_ext.get("expenses"), dict):
+                    cats_node = raw_ext["expenses"].get("categories")
+                    if isinstance(cats_node, list):
+                        for grp in cats_node:
+                            if isinstance(grp, dict):
+                                _harvest_top_items(grp.get("items"))
+                    elif isinstance(cats_node, dict):
+                        for _k, items in cats_node.items():
+                            if isinstance(items, list):
+                                _harvest_top_items(items)
+                            elif isinstance(items, dict):
+                                _harvest_top_items([items])
+
                 # Extract {category: year_totals[0]} from mapped_data, and
                 # capture source_lines per category so we can attribute them
                 # to the right summary row below.
@@ -4082,15 +4143,13 @@ def create_workflow_blueprint(db):
                             confirmed[cat] = totals[0]
                         elif info.get("total"):
                             confirmed[cat] = info["total"]
-                        # Normalize source_lines into a stable shape for the
-                        # frontend. Each line: {auditor_desc, amount}.
+                        # Preferred: source_lines persisted in mapped_data.
                         sls_raw = info.get("source_lines") or []
                         norm = []
                         for sl in sls_raw:
                             if not isinstance(sl, dict):
                                 continue
                             desc = sl.get("auditor_desc") or sl.get("description") or ""
-                            # amounts is usually [year0_amt, year1_amt, ...]
                             amts = sl.get("amounts") or []
                             amt = None
                             if isinstance(amts, list) and amts:
@@ -4102,6 +4161,21 @@ def create_workflow_blueprint(db):
                             except Exception:
                                 amt_f = 0.0
                             norm.append({"auditor_desc": desc, "amount": amt_f})
+                        # Backfill from raw_extraction if mapped_data lacks source_lines.
+                        # Strategy: the auditor's top-level description for THIS category
+                        # is most often the cat name itself (Claude classifies items into
+                        # canonical buckets). If a direct key match doesn't work, try the
+                        # alias map. If still nothing, the FA's per-DOM-dropdown mapping
+                        # used a name we can't recover without re-confirming — fall back
+                        # to leaving source_lines empty rather than guessing.
+                        if not norm:
+                            # Direct: top_desc == cat
+                            norm = list(raw_lines_by_desc.get(cat, []))
+                        if not norm:
+                            # Reverse alias: any auditor desc whose canonical equals cat
+                            for top_desc, lines in raw_lines_by_desc.items():
+                                if _LABEL_ALIASES.get(top_desc) == cat:
+                                    norm.extend(lines)
                         if norm:
                             cat_source_lines[cat] = norm
                 # Build reverse alias: canonical → [variants]
