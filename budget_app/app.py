@@ -8509,6 +8509,14 @@ def admin_backfill_period(entity_code):
     # Recompute proposed_budget for all lines (matches workflow.py PUT logic)
     _ytd_months = detected_month
     _remaining = 12 - _ytd_months
+    # Codex review (2026-05-03) caught two bugs in this block:
+    #  1. ONE_TIME_FEE_GLS was used here without being imported into app.py
+    #     → NameError on the first real call. Now imported from workflow.
+    #  2. Capital lines were missing the FA #18 guard, so backfill-period
+    #     would annualize and overwrite their proposed_budget — the very
+    #     behavior tonight's #18 cap was added to prevent. Mirrors the
+    #     guards in workflow.py PUT /api/budget-assumptions.
+    from workflow import ONE_TIME_FEE_GLS as _OTFG
     lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
     recomputed = 0
     for line in lines:
@@ -8517,15 +8525,24 @@ def admin_backfill_period(entity_code):
         unpaid = float(line.unpaid_bills or 0)
         prior = float(line.prior_year or 0)
         base = ytd + accrual + unpaid
-        # Mirror the FA #7 anomaly cap and one-time fee rules
-        if (line.gl_code or "") in ONE_TIME_FEE_GLS and abs(base) > 0.01:
+        _is_cap = (line.sheet_name == "Capital"
+                   or (line.category or "").lower() == "capital")
+        # FA one-time fee rule
+        if (line.gl_code or "") in _OTFG and abs(base) > 0.01:
             estimate = 0
+        # FA #18: Capital — never extrapolate, never auto-fill proposed
+        elif _is_cap:
+            estimate = 0
+        # FA #7 anomaly cap
         elif base < 0 and prior >= 0:
             estimate = 0
         else:
             estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
         forecast = base + estimate
-        line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
+        # FA #18: don't auto-fill proposed for Capital — leave whatever
+        # the FA explicitly entered.
+        if not _is_cap:
+            line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
         recomputed += 1
 
     try:
