@@ -356,12 +356,15 @@ SUMMARY_ROW_MAP = {
     # ─── NON-OPERATING EXPENSE ───────────────────────────────────────────
     "Capital Expenses": {
         "sheet": "Capital",
-        "gl_prefix": ["7105", "7110", "7115", "7120", "7205", "7210", "7215",
-                       "7220", "7225", "7230", "7305", "7310", "7405", "7410",
-                       "7415", "7420", "7425", "7430", "7435", "7440", "7490"],
+        # FA #17 (2026-05-03): the prior list missed real Yardi sub-codes
+        # like 7140-1419 (Cap - Facade Waterproof) and 7165-1409 (Cap -
+        # Engineering / Architectural). Switched to single-digit "7" prefix
+        # which matches every 7xxx GL via the gl_base.startswith() rule.
+        "gl_prefix": ["7"],
         "section": "non_operating_expense",
         "gl_range": ("7000-0000", "7999-9999"),
-        "notes": "All 7xxx codes. Routed to Capital sheet via CAPITAL_GL_PREFIX fallback in workflow.py store_all_lines()."
+        "notes": "All 7xxx codes. Single-prefix '7' covers the entire capital range "
+                 "(matched against gl_base which strips sub-account suffixes)."
     },
     "Cert Fee for Tax Reduction": {
         "sheet": None,

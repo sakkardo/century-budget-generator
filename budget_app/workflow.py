@@ -2057,8 +2057,13 @@ def create_workflow_blueprint(db):
                 unpaid = float(line.unpaid_bills or 0)
                 prior = float(line.prior_year or 0)
                 base = ytd + accrual + unpaid
+                _is_cap = (line.sheet_name == "Capital"
+                           or (line.category or "").lower() == "capital")
                 # One-time fee rule: once YTD posted, no projection. Forecast = billed amount.
                 if (line.gl_code or "") in ONE_TIME_FEE_GLS and abs(base) > 0.01:
+                    estimate = 0
+                # FA #18: Capital — never extrapolate, never auto-fill proposed
+                elif _is_cap:
                     estimate = 0
                 # FA #7 anomaly cap: don't extrapolate one-time refund/credit.
                 # Recurring negatives (tax abatements, where prior is also
@@ -2068,7 +2073,11 @@ def create_workflow_blueprint(db):
                 else:
                     estimate = (base / _ytd_months) * _remaining if _ytd_months > 0 else 0
                 forecast = base + estimate
-                line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
+                # FA #18: don't auto-fill capital proposed_budget; leave it as-is
+                # (FA can manually enter; auto-formula would predict spend that
+                # shouldn't recur).
+                if not _is_cap:
+                    line.proposed_budget = forecast * (1 + float(line.increase_pct or 0))
 
         try:
             db.session.commit()
@@ -3880,6 +3889,13 @@ def create_workflow_blueprint(db):
             return "expenses"
         return ""
 
+    def _is_capital_line(line):
+        """FA #18: Capital lines must not extrapolate forecast or auto-fill proposed.
+        Capital lines are tagged BOTH ways at ingestion (sheet_name='Capital'
+        AND category='capital'), so check either."""
+        return (line.get("sheet_name") == "Capital"
+                or (line.get("category") or "").lower() == "capital")
+
     def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
         """Sum budget_lines matching GL prefixes. Returns ytd/estimate/forecast/current_budget."""
         totals = {"ytd_actual": 0.0, "estimate": 0.0, "forecast": 0.0, "current_budget": 0.0, "proposed_budget": 0.0, "count": 0}
@@ -3893,8 +3909,12 @@ def create_workflow_blueprint(db):
             prior = float(line.get("prior_year", 0) or 0)
             ytd_total = ytd + accrual + unpaid
             remaining = 12 - ytd_months
+            is_capital = _is_capital_line(line)
             # One-time fee rule: once YTD posted, no more projection
             if gl in ONE_TIME_FEE_GLS and abs(ytd_total) > 0.01:
+                est = 0
+            # FA #18: Capital — no forecast extrapolation, no proposed.
+            elif is_capital:
                 est = 0
             # FA #7 anomaly cap: negative YTD against non-negative prior
             # year is a one-time refund/credit; don't extrapolate.
@@ -3909,10 +3929,14 @@ def create_workflow_blueprint(db):
             totals["estimate"] += est
             totals["forecast"] += line_forecast
             totals["current_budget"] += float(line.get("current_budget", 0) or 0)
-            proposed = float(line.get("proposed_budget", 0) or 0)
-            if proposed == 0 and line_forecast > 0:
-                inc_pct = float(line.get("increase_pct", 0) or 0)
-                proposed = line_forecast * (1 + inc_pct)
+            # FA #18: Capital lines never auto-fill proposed_budget
+            if is_capital:
+                proposed = float(line.get("proposed_budget", 0) or 0)  # only what FA explicitly set
+            else:
+                proposed = float(line.get("proposed_budget", 0) or 0)
+                if proposed == 0 and line_forecast > 0:
+                    inc_pct = float(line.get("increase_pct", 0) or 0)
+                    proposed = line_forecast * (1 + inc_pct)
             totals["proposed_budget"] += proposed
             totals["count"] += 1
         return totals
@@ -4338,8 +4362,11 @@ def create_workflow_blueprint(db):
                 unpaid = float(line.get("unpaid_bills", 0) or 0)
                 prior = float(line.get("prior_year", 0) or 0)
                 ytd_total = ytd + accrual + unpaid
+                # FA #18: Capital — never extrapolate
+                if _is_capital_line(line):
+                    est = 0
                 # FA #7 anomaly cap: don't extrapolate one-time refund/credit
-                if ytd_total < 0 and prior >= 0:
+                elif ytd_total < 0 and prior >= 0:
                     est = 0
                 else:
                     est = (ytd_total / ytd_months) * remaining if ytd_months > 0 else 0
@@ -15036,6 +15063,8 @@ function computeForecast(l) {
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
   const ytdTotal = ytdActual + accrualAdj + unpaidBills;
+  // FA #18: Capital — no extrapolation, just YTD as-is
+  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return ytdTotal;
   // FA #7 anomaly cap: negative YTD against non-negative prior year is a
   // one-time refund/credit; don't extrapolate.
   const prior = l.prior_year || 0;
@@ -16026,6 +16055,8 @@ function computeEstimate(line) {
         return (line.current_budget || 0) - (line.ytd_actual || 0);
     }
     if (isOneTimeFeeBilled(line)) return 0;
+    // FA #18: Capital — no extrapolation
+    if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') return 0;
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
@@ -16050,6 +16081,11 @@ function computeForecast(line) {
 }
 
 function computeProposed(line) {
+    // FA #18: Capital lines never auto-fill a proposed budget.
+    // Show the FA-entered proposed_budget if any, otherwise blank/0.
+    if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
+        return line.proposed_budget || 0;
+    }
     const forecast = computeForecast(line);
     return forecast * (1 + (line.increase_pct || 0));
 }
@@ -17464,6 +17500,8 @@ function computeEstimate(l) {
   if (isFixedToBudgetLine(l)) return (l.current_budget || 0) - (l.ytd_actual || 0);
   // One-time annual fees: once YTD posts, no more projection (forecast = billed amount)
   if (isOneTimeFeeBilled(l)) return 0;
+  // FA #18: Capital — no extrapolation
+  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
   // Payroll tab uses a simplified base (no accrual/unpaid). Other tabs unchanged.
   const isPayroll = l.sheet_name === 'Payroll';
   const ytd = l.ytd_actual || 0;

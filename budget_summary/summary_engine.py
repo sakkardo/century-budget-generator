@@ -129,13 +129,19 @@ def aggregate_lines_for_row(budget_lines, row_config, ytd_months=2):
         curr_budget = float(line.get("current_budget", 0) or 0)
         proposed = float(line.get("proposed_budget", 0) or 0)
 
-        # Per-line forecast
-        line_forecast = compute_forecast(ytd, accrual, unpaid, prior, ytd_months)
-
-        # If proposed_budget is 0 but we have a forecast + increase, compute it
-        if proposed == 0 and line_forecast > 0:
-            inc_pct = float(line.get("increase_pct", 0) or 0)
-            proposed = line_forecast * (1 + inc_pct)
+        # FA #18: Capital lines — no extrapolation, no auto-proposed.
+        is_capital = (line.get("sheet_name") == "Capital"
+                      or (line.get("category") or "").lower() == "capital")
+        if is_capital:
+            line_forecast = ytd + accrual + unpaid  # truth, no projection
+            # Don't auto-fill proposed for capital
+        else:
+            # Per-line forecast
+            line_forecast = compute_forecast(ytd, accrual, unpaid, prior, ytd_months)
+            # If proposed_budget is 0 but we have a forecast + increase, compute it
+            if proposed == 0 and line_forecast > 0:
+                inc_pct = float(line.get("increase_pct", 0) or 0)
+                proposed = line_forecast * (1 + inc_pct)
 
         totals["ytd_actual"] += ytd
         totals["accrual_adj"] += accrual
