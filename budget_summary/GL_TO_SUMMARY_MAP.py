@@ -104,10 +104,15 @@ SUMMARY_ROW_MAP = {
     },
     "Tax Benefit Credits (Abatement, Star,etc)": {
         "sheet": "RE Taxes",
-        "gl_prefix": ["6315"],
+        # 168 has data on 4105-0000 (Real Estate Tax Abatement), 4110-0000
+        # (STAR Exemption), 4115-0000 (Veterans Exemption) — orphans before.
+        # 6315 is the expense-side credit (used for re_taxes_credits special).
+        "gl_prefix": ["4105", "4110", "4115", "6315"],
         "section": "income",
         "special": "re_taxes_credits",  # Pull from dof_taxes.total_exemptions_budget, negate
-        "notes": "Computed by RE Taxes tab. Show as negative. GL 6315-0010/0020/0025/0035."
+        "notes": "Computed by RE Taxes tab. Show as negative. "
+                 "Income-side: GL 4105 (RE Tax Abatement), 4110 (STAR), 4115 (Veterans). "
+                 "Expense-side: GL 6315-0010/0020/0025/0035."
     },
     "Commercial": {
         "sheet": "Income",
@@ -220,14 +225,25 @@ SUMMARY_ROW_MAP = {
     },
     "Repairs & Maintenance": {
         "sheet": "Repairs & Supplies",
-        "gl_prefix": ["5606", "5610", "5615", "5620", "5625", "5630", "5635",
-                       "5640", "5645", "5650", "5655", "5660", "5665", "5668",
-                       "5803", "5806", "5810", "5815", "5820", "5825", "5830",
-                       "5835", "5840", "5845", "5850", "5855", "5860", "5865",
-                       "5870", "5874"],
+        # Comprehensive 5606-5874 range. The prior list missed odd-numbered
+        # codes (5627, 5633, 5642, 5666, 5682, 5695, 5812, 5821, etc.) —
+        # diagnosed via /api/admin/summary-debug/168 orphan scan 2026-05-03.
+        "gl_prefix": [
+            # Repairs (5606-5699)
+            "5606", "5610", "5612", "5615", "5620", "5625", "5627", "5630",
+            "5633", "5635", "5639", "5640", "5642", "5645", "5648", "5650",
+            "5655", "5660", "5665", "5666", "5668", "5680", "5682", "5690",
+            "5695",
+            # Maintenance contracts (5800-5874)
+            "5803", "5806", "5809", "5810", "5812", "5815", "5818", "5820",
+            "5821", "5825", "5828", "5830", "5831", "5834", "5835", "5837",
+            "5840", "5845", "5850", "5852", "5855", "5860", "5865", "5870",
+            "5874",
+        ],
         "category": ["repairs", "maintenance"],
         "section": "expenses",
-        "notes": "SUM of repairs + maintenance categories from R&M sheet."
+        "notes": "SUM of repairs + maintenance categories from R&M sheet. "
+                 "Prefix list expanded 2026-05-03 to cover odd-numbered sub-GLs."
     },
     "Insurance": {
         "sheet": "Gen & Admin",
@@ -266,12 +282,20 @@ SUMMARY_ROW_MAP = {
     },
     "Administrative & Other": {
         "sheet": "Gen & Admin",
-        "gl_prefix": ["6706", "6710", "6715", "6720", "6725", "6730", "6735",
-                       "6740", "6745", "6750", "6755", "6760", "6765", "6770",
-                       "6775", "6780", "6785", "6790", "6795"],
+        # FA #16 (2026-05-03): expanded from 5-step to full 6700-6799 range.
+        # 168 had real data on 6714, 6718, 6722, 6726, 6728, 6734, 6738,
+        # 6742, 6754, 6762, 6763, 6764, 6768, 6774 — all orphans before.
+        "gl_prefix": [
+            "6706", "6710", "6714", "6715", "6718", "6720", "6722", "6725",
+            "6726", "6728", "6730", "6734", "6735", "6738", "6740", "6742",
+            "6745", "6750", "6754", "6755", "6760", "6762", "6763", "6764",
+            "6765", "6768", "6770", "6774", "6775", "6780", "6785", "6790",
+            "6795",
+        ],
         "section": "expenses",
         "gl_range": ("6700-0000", "6899-9999"),
-        "notes": "Office, telephone, permits, board expenses, misc admin."
+        "notes": "Office, telephone, permits, board expenses, misc admin. "
+                 "Prefix list expanded 2026-05-03 from FA #16 orphan diagnosis."
     },
     "Financial Expenses": {
         "sheet": "Gen & Admin",
