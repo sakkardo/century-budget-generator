@@ -901,6 +901,7 @@ header {
     </nav>
   </div>
   <div class="header-right">
+    <a href="/admin/login?next=/wizard" class="nav-item" style="font-size:12px;color:rgba(255,255,255,0.6);text-decoration:none;margin-right:14px;" title="Sign in with ADMIN_KEY to access /api/admin/* endpoints">🔑 Admin</a>
     <button class="btn-admin-bypass" onclick="showAdminBypassModal()">⚡ Admin Upload</button>
   </div>
 </header>

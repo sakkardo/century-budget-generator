@@ -5544,6 +5544,7 @@ DASHBOARD_TEMPLATE = r"""
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/admin/login?next=/dashboard" class="nav-link" style="margin-left:auto;font-size:12px;color:var(--gray-500);" title="Sign in with ADMIN_KEY to access admin endpoints">🔑 Admin</a>
   </div>
 </nav>
 
@@ -6169,6 +6170,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/dashboard" class="nav-link active">FA Dashboard</a>
     <a href="/pm" class="nav-link">PM Portal</a>
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
+    <a href="/admin/login?next=/dashboard/{{ entity_code }}" class="nav-link" style="font-size:12px;color:var(--gray-500);" title="Sign in with ADMIN_KEY to access admin endpoints">🔑 Admin</a>
   </div>
   <div class="breadcrumb" style="display:flex; align-items:center; gap:14px;">
     <span><a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span></span>
