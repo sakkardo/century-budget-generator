@@ -12552,7 +12552,38 @@ document.addEventListener('input', function(e) {
 });
 
 // ── Summary tab: insert row ──
-function sumShowInsert(secKey, secLabel) {
+// Tier 4 universal-row support (2026-05-03): pick from a canonical dropdown
+// of SUMMARY_ROW_MAP labels (Commercial Rent, Cable TV, Interest Income, etc).
+// On submit we POST to /api/admin/add-summary-row, then run alias-resolve so
+// the new row inherits the right gl_prefix and starts pulling data on the
+// next render. Falls back to "Custom" free-text for one-off building-specific lines.
+let _sumRowOptionsCache = null;
+
+async function sumLoadRowOptions() {
+  if (_sumRowOptionsCache) return _sumRowOptionsCache;
+  try {
+    const r = await fetch('/api/admin/summary-row-options');
+    if (r.ok) _sumRowOptionsCache = await r.json();
+  } catch (e) { /* ignore */ }
+  return _sumRowOptionsCache || {};
+}
+
+function _secKeyToApiSection(secKey) {
+  if (secKey === 'income') return 'income';
+  if (secKey === 'expenses') return 'expenses';
+  if (secKey === 'noi') return 'non_operating_income';
+  if (secKey === 'noe') return 'non_operating_expense';
+  return 'expenses';
+}
+function _secKeyToServerSection(secKey) {
+  if (secKey === 'income') return 'Income';
+  if (secKey === 'expenses') return 'Expenses';
+  if (secKey === 'noi') return 'Non-Operating Income';
+  if (secKey === 'noe') return 'Non-Operating Expenses';
+  return 'Expenses';
+}
+
+async function sumShowInsert(secKey, secLabel) {
   let modal = document.getElementById('sumInsertModal');
   let overlay = document.getElementById('sumInsertOverlay');
   if (!modal) {
@@ -12561,23 +12592,48 @@ function sumShowInsert(secKey, secLabel) {
     overlay.onclick = sumCloseInsert;
     document.body.appendChild(overlay);
     modal = document.createElement('div'); modal.id = 'sumInsertModal';
-    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:24px;z-index:100;width:380px;';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:24px;z-index:100;width:440px;';
     document.body.appendChild(modal);
   }
   overlay.style.display = 'block'; modal.style.display = 'block';
-  modal.innerHTML = '<h3 style="font-size:15px;font-weight:700;color:var(--blue-dark);margin-bottom:12px;">Add Row to '+secLabel+'</h3>' +
-    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Line Item Name</label>' +
-    '<input id="sumInsLabel" type="text" placeholder="e.g. Lobby Renovation" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
-    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;margin-top:10px;">Source Tab</label>' +
-    '<select id="sumInsTab" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
-    '<option value="Manual">Manual</option><option value="Income">Income</option><option value="Payroll">Payroll</option>' +
-    '<option value="Energy">Energy</option><option value="Water & Sewer">Water & Sewer</option>' +
-    '<option value="Repairs & Supplies">Repairs & Supplies</option><option value="Gen & Admin">Gen & Admin</option>' +
-    '<option value="RE Taxes">RE Taxes</option></select>' +
+
+  // Filter canonical labels to those NOT already on this entity's summary
+  const opts = await sumLoadRowOptions();
+  const apiSec = _secKeyToApiSection(secKey);
+  const candidates = (opts[apiSec] || []).slice();
+  const existingLabels = new Set(Object.keys(window._sumRowMap || {}));
+  const available = candidates.filter(l => !existingLabels.has(l));
+
+  let dropdownHtml = '<select id="sumInsCanonical" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
+    '<option value="">— Pick a row to add —</option>';
+  available.forEach(l => {
+    dropdownHtml += '<option value="'+l.replace(/"/g,'&quot;')+'">'+l+'</option>';
+  });
+  dropdownHtml += '<option value="__custom__" style="font-style:italic;">Other (custom name)…</option></select>';
+
+  modal.innerHTML = '<h3 style="font-size:15px;font-weight:700;color:var(--blue-dark);margin-bottom:6px;">Add Row to '+secLabel+'</h3>' +
+    '<div style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">Pick from the canonical list. The new row will start pulling data from the matching GL codes automatically.</div>' +
+    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Row</label>' +
+    dropdownHtml +
+    '<div id="sumInsCustomBlock" style="display:none;margin-top:10px;">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Custom Label</label>' +
+      '<input id="sumInsCustomLabel" type="text" placeholder="e.g. Lobby Renovation" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
+      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Custom rows do not auto-pull GL data — they\'re manual-entry only.</div>' +
+    '</div>' +
     '<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">' +
     '<button onclick="sumCloseInsert()" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;">Cancel</button>' +
-    '<button onclick="sumDoInsert(\''+secKey+'\')" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--blue);color:white;">Add Row</button></div>';
-  setTimeout(() => document.getElementById('sumInsLabel').focus(), 50);
+    '<button id="sumInsSaveBtn" onclick="sumDoInsert(\''+secKey+'\')" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--blue);color:white;">Add Row</button></div>';
+
+  // Wire dropdown to show/hide custom block
+  const sel = document.getElementById('sumInsCanonical');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      const cb = document.getElementById('sumInsCustomBlock');
+      if (cb) cb.style.display = sel.value === '__custom__' ? 'block' : 'none';
+      if (sel.value === '__custom__') setTimeout(() => document.getElementById('sumInsCustomLabel').focus(), 30);
+    });
+  }
+  setTimeout(() => sel && sel.focus(), 50);
 }
 
 function sumCloseInsert() {
@@ -12587,36 +12643,59 @@ function sumCloseInsert() {
   if (o) o.style.display = 'none';
 }
 
-function sumDoInsert(secKey) {
-  const label = document.getElementById('sumInsLabel').value.trim();
-  if (!label) return;
-  const tab = document.getElementById('sumInsTab').value;
-  const tbody = document.getElementById('sumBody');
-  const subRow = tbody.querySelector('tr[data-sums="'+secKey+'"]') || tbody.querySelector('tr[data-calc]');
-  if (!subRow) { sumCloseInsert(); return; }
-
-  const SUM_TAB_COLORS = {"Income":{bg:"rgba(76,175,80,0.15)",color:"#2e7d32"},"Payroll":{bg:"rgba(33,150,243,0.15)",color:"#1565c0"},"Energy":{bg:"rgba(255,152,0,0.15)",color:"#e65100"},"Water & Sewer":{bg:"rgba(0,188,212,0.15)",color:"#00838f"},"Repairs & Supplies":{bg:"rgba(121,85,72,0.15)",color:"#5d4037"},"Gen & Admin":{bg:"rgba(156,39,176,0.15)",color:"#7b1fa2"},"RE Taxes":{bg:"rgba(244,67,54,0.15)",color:"#c62828"},"Manual":{bg:"rgba(255,213,79,0.15)",color:"#f57f17"}};
-  const SUM_TAB_SHORT = {"Income":"Income","Payroll":"Payroll","Energy":"Energy","Water & Sewer":"Water","Repairs & Supplies":"R&S","Gen & Admin":"Gen&Admin","RE Taxes":"RE Tax","Manual":"Manual"};
-  const tc = SUM_TAB_COLORS[tab]||{bg:'rgba(158,158,158,0.15)',color:'#757575'};
-  const chipH = '<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:'+tc.bg+';color:'+tc.color+'">'+(SUM_TAB_SHORT[tab]||tab)+'</span>';
-
-  function mkIn(col, bg) {
-    return '<td style="text-align:right;padding:4px 6px;background:'+(bg||'#fbfaf4')+';border-bottom:1px solid var(--gray-200);">' +
-      '<input type="text" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="" ' +
-      'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
-      'style="width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fbfaf4')+';font-variant-numeric:tabular-nums;font-family:inherit;"></td>';
+async function sumDoInsert(secKey) {
+  const sel = document.getElementById('sumInsCanonical');
+  const choice = sel ? sel.value : '';
+  let label = '';
+  let isCanonical = false;
+  if (choice && choice !== '__custom__') {
+    label = choice;
+    isCanonical = true;
+  } else if (choice === '__custom__') {
+    const ci = document.getElementById('sumInsCustomLabel');
+    label = (ci ? ci.value : '').trim();
   }
+  if (!label) {
+    alert('Pick a row from the dropdown or enter a custom name.');
+    return;
+  }
+  const serverSection = _secKeyToServerSection(secKey);
+  const btn = document.getElementById('sumInsSaveBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
-  const tr = document.createElement('tr');
-  tr.dataset.sec = secKey; tr.dataset.type = 'd';
-  tr.innerHTML = '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+label+' <span style="color:var(--yellow);font-size:10px;font-weight:700;">NEW</span></td>' +
-    '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+chipH+'</td>' +
-    mkIn('c1','#fbfaf4')+mkIn('c2','#f9f9f7')+mkIn('c3','#f9f9f7')+mkIn('c4','#f9f9f7')+mkIn('c5','#f9f9f7')+mkIn('c6','#fbfaf4')+mkIn('c7','#fffbeb') +
-    '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);">\u2014</td>' +
-    '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-200);"><input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;"></td>';
-  subRow.parentNode.insertBefore(tr, subRow);
-  sumCloseInsert();
-  sumRecalcTotals();
+  try {
+    // Persist via the existing endpoint
+    const resp = await fetch('/api/admin/add-summary-row', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_code: entityCode, label: label, section: serverSection})
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      alert('Add Row failed: ' + (data.error || 'unknown'));
+      if (btn) { btn.disabled = false; btn.textContent = 'Add Row'; }
+      return;
+    }
+
+    // For canonical labels, attach gl_prefixes via alias-resolve
+    if (isCanonical) {
+      try {
+        await fetch('/api/admin/resolve-summary-aliases/' + entityCode,
+                    {method: 'POST', headers: {'Content-Type': 'application/json'}});
+      } catch (e) { /* non-fatal */ }
+    }
+
+    sumCloseInsert();
+    showToast('Added: ' + label, 'success');
+    // Reload the summary tab so the new row + its data appear
+    const sheetContent = document.getElementById('sheetContent');
+    if (sheetContent && typeof renderBudgetSummary === 'function') {
+      renderBudgetSummary(sheetContent);
+    }
+  } catch (e) {
+    alert('Add Row error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Add Row'; }
+  }
 }
 
 function renderReadOnlySheet(sheetName, sheetLines, contentDiv) {

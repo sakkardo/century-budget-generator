@@ -7703,6 +7703,43 @@ def admin_entity_trace(entity_code):
 
 
 
+@app.route("/api/admin/summary-row-options", methods=["GET"])
+def admin_summary_row_options():
+    """Return canonical SUMMARY_ROW_MAP labels grouped by section, used to
+    populate the Add Row dropdown on the FA dashboard. The FA picks from a
+    canonical list so the new row inherits the right gl_prefix automatically.
+
+    Returns:
+      {
+        "income": ["Maintenance", "Commercial Rent", "Storage Income", ...],
+        "expenses": ["Payroll", "Insurance", "Repairs & Maintenance", ...],
+        "non_operating_income": [...],
+        "non_operating_expense": [...]
+      }
+    """
+    try:
+        from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, _CONDO_ROWS
+    except ImportError:
+        from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, _CONDO_ROWS
+
+    grouped = {
+        "income": [],
+        "expenses": [],
+        "non_operating_income": [],
+        "non_operating_expense": [],
+    }
+    # Combine canonical map + condo-specific rows
+    all_rows = {**SUMMARY_ROW_MAP, **_CONDO_ROWS}
+    for label, cfg in all_rows.items():
+        section = (cfg or {}).get("section") or "expenses"
+        if section in grouped:
+            grouped[section].append(label)
+    # Sort each list alphabetically for FA scan-ability
+    for k in grouped:
+        grouped[k].sort()
+    return jsonify(grouped)
+
+
 @app.route("/api/admin/add-summary-row", methods=["POST"])
 def admin_add_summary_row():
     """ADMIN: Insert a single new BudgetSummaryRow for one entity.
