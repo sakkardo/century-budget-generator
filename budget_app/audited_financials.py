@@ -2925,6 +2925,25 @@ async function uploadAll() {
             or bool(body.get("force"))
         )
 
+        # Empty-mapping guard: confirming an upload with no mapped categories
+        # leaves Col 2 (audit-derived) blank on the summary tab and produces
+        # a row that's status='confirmed' yet structurally useless. Reject
+        # outright unless the caller explicitly forces it (e.g. an FA who
+        # intentionally has nothing to map for a specific year).
+        try:
+            md = json.loads(upload.mapped_data) if upload.mapped_data else {}
+        except Exception:
+            md = {}
+        if not force and (not isinstance(md, dict) or len(md) == 0):
+            return jsonify({
+                "success": False,
+                "error": (
+                    "mapped_data is empty — open the review page, assign each "
+                    "extracted line to a category, save, then confirm. Pass "
+                    "force=true to bypass (intentional empty mapping)."
+                )
+            }), 400
+
         try:
             # Validate totals match before confirming (unless forced)
             if not force and upload.raw_extraction and upload.mapped_data:
