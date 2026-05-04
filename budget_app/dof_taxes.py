@@ -197,6 +197,26 @@ def _lookup_bbl_from_address(address: str, zip_code: str = "") -> str | None:
     return None
 
 
+def _split_bbl(bbl: str) -> dict:
+    """Decompose a BBL string into {borough, block, lot} for UI display.
+
+    Accepts the same formats as `_bbl_to_parid` (10-digit parid or
+    "B-BBBBB-LLLL"). Returns {} when input is unparseable. Borough is
+    returned as a single-digit string; block as 5-digit zero-padded
+    string; lot as 4-digit zero-padded string. The RE Tax tab needs these
+    populated even when the entity isn't in PROPERTY_TAX_CONFIG (e.g.
+    coops where the BBL was auto-resolved via NYC GeoSearch).
+    """
+    parid = _bbl_to_parid(bbl)
+    if not parid:
+        return {}
+    return {
+        "borough": parid[0],
+        "block": parid[1:6],
+        "lot": parid[6:10],
+    }
+
+
 def _bbl_to_parid(bbl: str) -> str | None:
     """Normalize various BBL formats to a 10-char parid string.
     Accepts:
@@ -472,9 +492,14 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
 
     net_tax = gross_tax - total_exemptions_budget
 
+    bbl_str = cfg.get("bbl") or dof.get("bbl") or ""
+    bbl_parts = _split_bbl(bbl_str) if bbl_str else {}
     return {
         "entity_code": entity_code,
-        "bbl": cfg.get("bbl", dof.get("bbl", "")),
+        "bbl": bbl_str,
+        "borough": cfg.get("borough") or bbl_parts.get("borough", ""),
+        "block": cfg.get("block") or bbl_parts.get("block", ""),
+        "lot": cfg.get("lot") or bbl_parts.get("lot", ""),
         "tax_class": cfg.get("tax_class", "2"),
         "address": cfg.get("address", ""),
         "source": dof.get("source", "unknown"),
@@ -504,9 +529,14 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
 def _empty_re_taxes(entity_code: str) -> dict:
     """Return an empty RE Taxes structure for properties without DOF data."""
     cfg = PROPERTY_TAX_CONFIG.get(entity_code, {})
+    bbl_str = cfg.get("bbl", "")
+    bbl_parts = _split_bbl(bbl_str) if bbl_str else {}
     return {
         "entity_code": entity_code,
-        "bbl": cfg.get("bbl", ""),
+        "bbl": bbl_str,
+        "borough": cfg.get("borough") or bbl_parts.get("borough", ""),
+        "block": cfg.get("block") or bbl_parts.get("block", ""),
+        "lot": cfg.get("lot") or bbl_parts.get("lot", ""),
         "tax_class": cfg.get("tax_class", ""),
         "address": cfg.get("address", ""),
         "source": "none",
