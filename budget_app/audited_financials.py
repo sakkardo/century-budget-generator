@@ -1991,7 +1991,7 @@ async function uploadAll() {
         function deleteMappingRow(btn) {
             const tr = btn.closest('tr');
             if (!tr) return;
-            const desc = tr.querySelector('td')?.textContent?.trim().split('\n')[0] || 'this row';
+            const desc = tr.querySelector('td')?.textContent?.trim().split('\\n')[0] || 'this row';
             if (!confirm('Delete \"' + desc.slice(0, 60) + '\"?\\n\\nThe line is removed from this mapping but the original auditor extraction is preserved.')) return;
             tr.parentNode.removeChild(tr);
             try { renderReconciliation(); } catch (e) {}
