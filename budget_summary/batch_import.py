@@ -15,12 +15,18 @@ import glob
 from budget_summary_parser import parse_yrlycomp
 
 
-def extract_importable_data(parsed):
+def extract_importable_data(parsed, expected_col1_year=None):
     """
     From a parsed yrlycomp result, extract only:
       - Row framework (labels, sections, row types)
-      - Col 1: last audited_actual column values (2024 Actual)
+      - Col 1: last audited_actual column values (BUDGET_YEAR - 3, e.g. 2024 Actual for 2027 cycle)
       - Col 6: last budget column values (approved budget for current cycle)
+
+    FA #27a (2026-05-03): if `expected_col1_year` is supplied and the
+    yrlycomp's last audited_actual column doesn't match, leave Col 1
+    blank instead of silently using the wrong year. The result includes
+    `col1_year_match: bool` and `col1_warning: str|None` so the caller
+    can attempt an audit fallback or surface a banner.
 
     Returns dict ready for DB storage or batch report.
     """
@@ -30,12 +36,30 @@ def extract_importable_data(parsed):
     columns = parsed.get("columns", [])
     rows = parsed.get("rows", [])
 
-    # Find the last audited_actual column → Col 1 (2024 Actual)
+    # Find the last audited_actual column → Col 1 (e.g. 2024 Actual for 2027 cycle)
     col1_source = None
     for col in reversed(columns):
         if col["type"] == "audited_actual":
             col1_source = col
             break
+
+    # FA #27a year-validation guard.
+    col1_warning = None
+    col1_year_match = True
+    if col1_source and expected_col1_year is not None:
+        col_year = col1_source.get("year")
+        try:
+            col_year_int = int(col_year) if col_year is not None else None
+        except (ValueError, TypeError):
+            col_year_int = None
+        if col_year_int != int(expected_col1_year):
+            col1_warning = (
+                f"yrlycomp's last audited_actual column is year {col_year_int!r} "
+                f"but expected {expected_col1_year}. Col 1 left blank to prevent "
+                f"silent year mismatch (e.g. 2023 numbers labeled as 2024)."
+            )
+            col1_year_match = False
+            col1_source = None  # Force Col 1 blank — caller should fall back to confirmed audit.
 
     # Find the last budget column → Col 6 (2026 Approved Budget)
     # The last "budget" type column is the new year's approved budget
@@ -79,6 +103,9 @@ def extract_importable_data(parsed):
         "source_file": parsed.get("source_file"),
         "col1_label": col1_source["display"] if col1_source else None,
         "col6_label": col6_source["display"] if col6_source else None,
+        # FA #27a — surface the year-validation outcome to caller
+        "col1_year_match": col1_year_match,
+        "col1_warning": col1_warning,
         "rows": imported_rows,
         "stats": {
             "total_rows": len(imported_rows),

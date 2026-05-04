@@ -7025,9 +7025,55 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
     parsed = parse_yrlycomp(tmp_path)
     if "error" in parsed:
         raise RuntimeError(f"yrlycomp parse error: {parsed['error']}")
-    imported = extract_importable_data(parsed)
+    # FA #27a: pass expected Col 1 year so the parser blanks the column
+    # instead of silently using a wrong-year audited_actual column.
+    from workflow import BUDGET_YEAR as _BY
+    _expected_c1_year = _BY - 3   # for 2027 cycle, Col 1 = 2024 Actual
+    imported = extract_importable_data(parsed, expected_col1_year=_expected_c1_year)
     if "error" in imported:
         raise RuntimeError(f"extract_importable_data error: {imported['error']}")
+    if imported.get("col1_warning"):
+        logger.warning(
+            f"[batch-import] {entity_code}: {imported['col1_warning']} "
+            f"Will attempt confirmed-audit fallback."
+        )
+        # FA #27a fallback: try to fill Col 1 from a confirmed audit for
+        # the expected year before persisting blank rows.
+        try:
+            audit_actuals = af_helpers["get_confirmed_actuals"](entity_code, _expected_c1_year)
+            if audit_actuals:
+                filled = 0
+                for row in imported.get("rows", []):
+                    label = row.get("label")
+                    if label and row.get("col1_prior_actual") is None:
+                        # Try direct, then case-insensitive label match against
+                        # whatever shape get_confirmed_actuals returns.
+                        v = audit_actuals.get(label)
+                        if v is None:
+                            for k, candidate in audit_actuals.items():
+                                if str(k).strip().lower() == str(label).strip().lower():
+                                    v = candidate
+                                    break
+                        if v is not None:
+                            try:
+                                row["col1_prior_actual"] = round(float(v), 2)
+                                filled += 1
+                            except (TypeError, ValueError):
+                                pass
+                imported["col1_audit_fallback_used"] = True
+                imported["col1_audit_rows_filled"] = filled
+                logger.info(
+                    f"[batch-import] {entity_code}: confirmed-audit fallback "
+                    f"filled {filled} Col 1 rows for year {_expected_c1_year}"
+                )
+            else:
+                imported["col1_audit_fallback_used"] = False
+                imported["col1_audit_rows_filled"] = 0
+        except Exception as _fallback_err:
+            logger.warning(
+                f"[batch-import] {entity_code}: confirmed-audit fallback failed: {_fallback_err}"
+            )
+            imported["col1_audit_fallback_used"] = False
     enriched = enrich_with_gl_map(imported)
 
     # Upsert budget_summary_rows
