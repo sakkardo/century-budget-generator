@@ -129,19 +129,21 @@ SUMMARY_ROW_MAP = {
     },
     "Storage Income": {
         "sheet": "Income",
-        "gl_prefix": ["4130"],  # 4130-series covers storage
+        # Use full sub-account codes to avoid greedy match on "4130" claiming
+        # 4130-0015 (Bicycle) and 4130-0030 (Laundry).
+        "gl_prefix": ["4130-0000", "4130-0010", "4130-0020"],
         "section": "income",
-        "notes": "building_assumptions has unit count × rate × occupancy."
+        "notes": "building_assumptions has unit count × rate × occupancy. 4130-0010 = Storage Room Rental seen on 168."
     },
     "Bicycle Charge": {
         "sheet": "Income",
-        "gl_prefix": ["4132"],  # varies - may be under 4130 series
+        "gl_prefix": ["4130-0015", "4132"],  # 4130-0015 seen on 168; 4132 legacy
         "section": "income",
         "notes": "building_assumptions has rack count × rate."
     },
     "Laundry": {
         "sheet": "Income",
-        "gl_prefix": ["4140", "4150"],
+        "gl_prefix": ["4130-0030", "4140", "4150"],   # 4130-0030 seen on 168
         "section": "income",
         "notes": "Laundry/vending. building_assumptions has monthly amount."
     },
@@ -153,10 +155,14 @@ SUMMARY_ROW_MAP = {
     },
     "Other Income": {
         "sheet": "Income",
-        "gl_prefix": ["4250", "4700", "4705", "4710", "4715", "4720", "4725",
-                       "4803", "4812", "4815", "4922", "4932", "4990"],
+        "gl_prefix": ["4070", "4250", "4700", "4705", "4710", "4715", "4720", "4725",
+                       "4803", "4812", "4815", "4818", "4911", "4917", "4922",
+                       "4926", "4932", "4990"],
         "section": "income",
-        "notes": "Catch-all. SUM of all Income GL codes not covered above."
+        "notes": "Catch-all. SUM of all Income GL codes not covered above. "
+                 "Added 2026-05-03 from 168 orphan scan: 4070 (Prepaid Income), "
+                 "4818 (Flip Tax - Operating), 4911 (Messenger), 4917 (Credit Check), "
+                 "4926 (Administrative Fees)."
     },
 
     # ─── EXPENSES ────────────────────────────────────────────────────────
@@ -166,9 +172,10 @@ SUMMARY_ROW_MAP = {
                        "5040", "5045", "5050", "5055", "5060", "5065", "5070",
                        "5100", "5105", "5110", "5115", "5120", "5125", "5130",
                        "5135", "5140", "5145", "5150", "5155", "5160", "5165",
-                       "5166", "5170"],
+                       "5166", "5168", "5170", "5172"],
         "section": "expenses",
-        "notes": "SUM of entire Payroll sheet. Includes wages, benefits, taxes, workers comp."
+        "notes": "SUM of entire Payroll sheet. Includes wages, benefits, taxes, workers comp. "
+                 "FA #11 (2026-05-03): added 5168, 5172 (Payroll Processing) — were orphans on 168."
     },
     "Electric": {
         "sheet": "Energy",
