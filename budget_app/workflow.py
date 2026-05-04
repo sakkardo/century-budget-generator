@@ -4512,6 +4512,89 @@ def create_workflow_blueprint(db):
         })
 
 
+    @bp.route("/api/admin/resolve-summary-aliases/<entity_code>", methods=["POST"])
+    def api_resolve_summary_aliases(entity_code):
+        """ADMIN: Re-resolve label aliases for an existing entity's summary rows.
+
+        Use case: when we add a new entry to LABEL_ALIASES (e.g., Storage ->
+        Storage Income), existing BudgetSummaryRow records still have their
+        original empty gl_prefixes_json because aliases resolve only at
+        import time. This endpoint walks the entity's rows, looks up each
+        label via LABEL_ALIASES + SUMMARY_ROW_MAP, and updates gl_prefixes_json
+        when it finds a match the previous import missed.
+
+        Body (optional): {"all_entities": true} to run for every entity.
+
+        Idempotent. Safe to run repeatedly. Only updates rows where the new
+        prefix list differs from what's already stored.
+        """
+        import json as _json
+        try:
+            from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+        except ImportError:
+            from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+
+        body = request.get_json(silent=True) or {}
+        all_entities = bool(body.get("all_entities"))
+
+        if all_entities:
+            entities = [b.entity_code for b in Budget.query.filter_by(year=BUDGET_YEAR).all()]
+        else:
+            entities = [entity_code]
+
+        results = []
+        total_updated = 0
+        for ec in entities:
+            rows = BudgetSummaryRow.query.filter_by(entity_code=ec, year=BUDGET_YEAR).all()
+            updated = 0
+            updated_labels = []
+            for row in rows:
+                if row.row_type != "data":
+                    continue
+                label = row.label
+                # Resolution chain: direct -> alias -> condo-specific
+                cfg = SUMMARY_ROW_MAP.get(label)
+                if not cfg:
+                    canonical = LABEL_ALIASES.get(label)
+                    if canonical and canonical != label:
+                        cfg = SUMMARY_ROW_MAP.get(canonical)
+                if not cfg:
+                    cfg = _CONDO_ROWS.get(label)
+                if not cfg:
+                    continue
+                new_prefixes = cfg.get("gl_prefix", [])
+                if not new_prefixes:
+                    continue
+                try:
+                    current = _json.loads(row.gl_prefixes_json) if row.gl_prefixes_json else []
+                except Exception:
+                    current = []
+                if current != new_prefixes:
+                    row.gl_prefixes_json = _json.dumps(new_prefixes)
+                    updated += 1
+                    updated_labels.append({"label": label, "old": current, "new": new_prefixes})
+            if updated:
+                try:
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    results.append({"entity_code": ec, "error": str(e)[:200]})
+                    continue
+            total_updated += updated
+            results.append({
+                "entity_code": ec,
+                "rows_examined": len(rows),
+                "rows_updated": updated,
+                "updates": updated_labels,
+            })
+        return jsonify({
+            "ok": True,
+            "total_entities": len(entities),
+            "total_rows_updated": total_updated,
+            "results": results,
+        })
+
+
     @bp.route("/api/admin/summary-debug/<entity_code>", methods=["GET"])
     def api_summary_debug(entity_code):
         """ADMIN: Diagnostic view of an entity's Budget Summary aggregation.
