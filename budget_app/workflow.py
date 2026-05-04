@@ -3024,6 +3024,10 @@ def create_workflow_blueprint(db):
         If the line has an FA override (estimate_override or forecast_override),
         the override is preserved — we return the override value, not the
         assumption-adjusted value.
+
+        IMPORTANT: All percent values in `merged` are stored as decimal
+        fractions (0.05 = 5%, 0.15 = 15%) — the form serializes them divided
+        by 100 already. Multiply by raw directly; do NOT divide by 100 again.
         """
         # If FA already overrode this line, preserve that
         if line.estimate_override is not None:
@@ -3035,40 +3039,81 @@ def create_workflow_blueprint(db):
         gl_prefix = (line.gl_code or "")[:2]
         sheet = (line.sheet_name or "").lower()
 
-        # Payroll — apply wage_increase from assumptions
+        # Payroll — apply wage_increase weighted by pre/post weeks.
+        # The form stores: percent (decimal fraction), pre_increase_weeks,
+        # post_increase_weeks. Effective annual increase =
+        # percent * (post_weeks / 52). Old code averaged ALL numeric fields
+        # in wage_increase, including the week counts (15 + 37 + 0.03)/3 = 17.34
+        # → 17.3% inflation instead of ~3% (or ~2.1% weighted).
         if "payroll" in sheet or gl_prefix in ("50", "51"):
-            wage_inc = merged.get("wage_increase", {})
-            # Use average of available wage increase rates
-            rates = [v for k, v in wage_inc.items() if isinstance(v, (int, float)) and v > 0]
-            if rates:
-                avg_rate = sum(rates) / len(rates)
-                return raw * (1 + avg_rate / 100)
+            wage_inc = merged.get("wage_increase", {}) or {}
+            pct = wage_inc.get("percent", 0) or 0
+            pre_weeks = wage_inc.get("pre_increase_weeks", 0) or 0
+            post_weeks = wage_inc.get("post_increase_weeks", 0) or 0
+            total_weeks = pre_weeks + post_weeks
+            if pct and total_weeks > 0:
+                # Weighted: pre-weeks at 0%, post-weeks at pct, divided by 52
+                effective = pct * (post_weeks / 52.0)
+                return raw * (1 + effective)
+            if pct:
+                # Fallback: full-year application if weeks not set
+                return raw * (1 + pct)
             return raw
 
-        # Insurance — apply insurance_renewal increase_percent.
-        # GL prefix 61 (Century KB: Insurance Schedule = 6105–6195). The
-        # categorizer above uses the same prefix; keep these two in sync.
+        # Insurance — apply insurance_renewal increase_percent (decimal fraction).
+        # GL prefix 61 (Century KB: Insurance Schedule = 6105–6195). Pre/post
+        # months weight the renewal so a Mar 2027 renewal at 15% only applies
+        # to 9 of 12 months → ~11.25% effective.
         if "insurance" in sheet or gl_prefix == "61":
-            ins = merged.get("insurance_renewal", {})
-            pct = ins.get("increase_percent", 0)
+            ins = merged.get("insurance_renewal", {}) or {}
+            pct = ins.get("increase_percent", 0) or 0
+            pre_months = ins.get("pre_renewal_months", 0) or 0
+            post_months = ins.get("post_renewal_months", 0) or 0
+            total = pre_months + post_months
+            if pct and total > 0:
+                effective = pct * (post_months / 12.0)
+                return raw * (1 + effective)
             if pct:
-                return raw * (1 + pct / 100)
+                return raw * (1 + pct)
             return raw
 
-        # Energy — apply energy escalation
+        # Energy — keys depend on GL: gas (640x), electric (641x), oil (645x).
+        # Form stores electric_rate_increase / gas_rate_increase /
+        # oil_rate_increase as decimal fractions. Old code looked for
+        # escalation_pct / increase_pct which don't exist → always $0 delta.
         if "energy" in sheet or gl_prefix == "64":
-            energy = merged.get("energy", {})
-            pct = energy.get("escalation_pct", energy.get("increase_pct", 0))
+            energy = merged.get("energy", {}) or {}
+            gl = (line.gl_code or "")
+            desc = (line.description or "").lower()
+            pct = 0
+            # GL-prefix routing: 6400-series gas, 6410-series electric, 6450 oil.
+            # Fall back to description keywords if GL doesn't match cleanly.
+            if gl.startswith("641") or "electric" in desc:
+                pct = energy.get("electric_rate_increase", 0) or 0
+            elif gl.startswith("645") or "oil" in desc:
+                pct = energy.get("oil_rate_increase", 0) or 0
+            elif gl.startswith("640") or "gas" in desc:
+                pct = energy.get("gas_rate_increase", 0) or 0
+            else:
+                # Unknown energy line — average the three rates as a safe default
+                rates = [
+                    energy.get("electric_rate_increase", 0) or 0,
+                    energy.get("gas_rate_increase", 0) or 0,
+                    energy.get("oil_rate_increase", 0) or 0,
+                ]
+                non_zero = [r for r in rates if r]
+                pct = (sum(non_zero) / len(non_zero)) if non_zero else 0
             if pct:
-                return raw * (1 + pct / 100)
+                return raw * (1 + pct)
             return raw
 
-        # Water/Sewer — apply water_sewer escalation
+        # Water/Sewer — form stores rate_increase (decimal fraction). Old code
+        # used escalation_pct / increase_pct (don't exist).
         if "water" in sheet or "sewer" in sheet or gl_prefix == "65":
-            ws = merged.get("water_sewer", {})
-            pct = ws.get("escalation_pct", ws.get("increase_pct", 0))
+            ws = merged.get("water_sewer", {}) or {}
+            pct = ws.get("rate_increase", 0) or 0
             if pct:
-                return raw * (1 + pct / 100)
+                return raw * (1 + pct)
             return raw
 
         # R&M and other — no assumption, pass through
@@ -3083,6 +3128,8 @@ def create_workflow_blueprint(db):
         - Only recalculates lines in assumption-affected categories
         - Preserves per-line FA overrides (estimate_override, forecast_override)
         - Snapshots assumptions to history
+        - Propagates Step 3 staged edits (incl. budget_period from YSL auto-
+          detect) into Budget.assumptions_json so the dashboard sees them.
         """
         from app import merge_assumptions
 
@@ -3090,7 +3137,28 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"success": False, "error": "No budget found"}), 404
 
+        # CFO defaults + per-building overrides (file-based)
         merged = merge_assumptions(entity_code)
+
+        # Deep-merge Step 3 staged edits (FA overrides + auto-detected budget_period)
+        # on top so Step 3 wins. Mirrors the build-budget endpoint's deep-merge
+        # (app.py ~6955). Without this, budget_period gets dropped and the
+        # dashboard falls back to the 2-month YTD default → forecasts inflate 6×.
+        # NB: forecast/estimate are computed on-the-fly at render time from
+        # assumptions_json["budget_period"], so we don't need to write them to
+        # BudgetLine here — saving the merged dict is sufficient.
+        try:
+            _staged = json.loads(budget.wizard_selections_json or "{}")
+            staged_assumptions = _staged.get("assumptions") or {}
+        except Exception:
+            staged_assumptions = {}
+        if isinstance(staged_assumptions, dict):
+            for key, value in staged_assumptions.items():
+                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key].update(value)
+                else:
+                    merged[key] = value
+
         lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
 
         updated_count = 0
@@ -3107,7 +3175,7 @@ def create_workflow_blueprint(db):
                 line.proposed_budget = adjusted
                 updated_count += 1
 
-        # Save assumptions snapshot
+        # Save assumptions snapshot (now includes staged budget_period + FA edits)
         budget.assumptions_json = json.dumps(merged)
 
         # Mark wizard complete
@@ -6789,8 +6857,13 @@ function renderDetail(data) {
     totalPM += proposed;
   });
 
-  const variance = totalBudget - totalForecast;
-  const pctChange = totalForecast ? ((variance) / totalForecast * 100) : 0;
+  // Variance/% Change compare Current Budget to Prior Year — matches the
+  // "Prior Year" / "Current Budget" labels on the adjacent cards. Old code
+  // computed against totalForecast (an invisible quantity), and when YTD
+  // months was unset the forecast inflated 6× and made the cards show
+  // wildly negative variances on year-over-year-flat budgets.
+  const variance = totalBudget - totalPrior;
+  const pctChange = totalPrior ? ((variance) / totalPrior * 100) : 0;
   const absPct = Math.abs(pctChange);
   const varColor = absPct > 10 ? 'var(--red)' : absPct > 5 ? '#d97706' : 'var(--green)';
   const varBg = absPct > 10 ? '#fef2f2' : absPct > 5 ? '#fffbeb' : '#f0fdf4';

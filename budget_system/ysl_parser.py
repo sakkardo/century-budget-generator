@@ -133,67 +133,126 @@ class YSLParser:
 
     def _extract_period_month(self) -> Optional[int]:
         """
-        Scan header metadata rows (1-15) for the report period and return
-        the "actuals through" month as an integer 1-12.
+        Return the "actuals through" month as an integer 1-12.
 
-        Looks for patterns like:
-          "Period: 01/2026 - 04/2026"          -> 4 (last month of range)
-          "Through: 04/30/2026"                -> 4
-          "Apr 2026" / "April 2026"            -> 4
-          "From 01/01/2026 To 04/30/2026"      -> 4
+        Strategy (in order — first hit wins):
 
-        Strategy: scan all metadata cells, collect every (month, year) pair
-        we can parse, return the LATEST month (highest month number that
-        appears in the most recent year present). The "through" month is
-        always the latest one.
+        1. **Column-F (YTD Actual) header scan.** Yardi YSL_Annual_Budget
+           reports label each period column in metadata rows 1-15 with a
+           date range. Column F = COL_PERIOD3 = "YTD Actual" — its header
+           is the only one bound to the YTD-through-current-month range.
+           Reading dates ONLY from column F avoids the trap where the
+           overall report header says "01/2026 - 12/2026" (the annual
+           budget side, which spans the whole year regardless of the
+           current period).
 
-        Returns None if no recognizable period is found — caller falls
-        back to manual selection.
+        2. **All-header scan with bias toward shorter ranges.** If no
+           column-F header date is found, fall back to scanning every
+           metadata cell. Same regex set as before, but pick the latest
+           month from "Through:" / "ending" patterns first; only if those
+           are absent, take the latest month from any (year, month) match.
+
+        3. Returns None if nothing recognizable — caller falls back to
+           manual FA selection.
+
+        Why the previous all-header scan failed: the YSL "Annual_Budget"
+        report layout has BOTH a YTD column (F) and a full-year budget
+        column (H) in the same workbook. The header text typically
+        includes "Period: 1/1/YYYY - 12/31/YYYY" describing the full
+        report range. Picking the latest (year, month) from that returns
+        December even when YTD only goes through April.
         """
         if not self.ws or self.ws.max_row < 1:
             return None
+
+        # Step 1: column-F-only scan (preferred).
         scan_rows = min(self.ws.max_row, self.METADATA_SKIP_ROWS)
-        candidates = []  # list of (year, month) tuples
+        f_candidates = []  # (year, month) from column F headers only
+        for row_idx in range(1, scan_rows + 1):
+            try:
+                cell = self.ws.cell(row=row_idx, column=self.COL_PERIOD3 + 1)
+            except Exception:
+                continue
+            v = cell.value
+            if v is None:
+                continue
+            text = str(v)
+            f_candidates.extend(self._scan_text_for_year_month(text))
+        if f_candidates:
+            f_candidates.sort()
+            latest_year, latest_month = f_candidates[-1]
+            logger.info(
+                f"YSL period auto-detected from COL F header: month={latest_month}, "
+                f"year={latest_year} (from {len(f_candidates)} candidate matches)"
+            )
+            return latest_month
+
+        # Step 2: fallback — scan all metadata cells but PREFER "through"-
+        # style ranges over generic date pairs. The original "latest-wins"
+        # behavior is preserved as the last resort.
+        through_candidates = []
+        all_candidates = []
         for row_idx in range(1, scan_rows + 1):
             for cell in self.ws[row_idx]:
                 v = cell.value
                 if v is None:
                     continue
                 text = str(v)
-                # MM/DD/YYYY first (more specific) so we don't read "04/30" as month=4 year=30
-                for m in _MM_DD_YYYY_RE.finditer(text):
-                    month = int(m.group(1))
-                    year = int(m.group(2))
-                    if 1 <= month <= 12 and 2000 <= year <= 2100:
-                        candidates.append((year, month))
-                # MM/YYYY (only if MM_DD didn't already swallow it)
-                # Use a simple heuristic: scan substrings that don't have an
-                # extra "/dd/" pattern around them.
-                for m in _MM_YYYY_RE.finditer(text):
-                    pos_start = m.start()
-                    pos_end = m.end()
-                    surrounding = text[max(0, pos_start - 3):min(len(text), pos_end + 3)]
-                    # Skip if it looks like part of MM/DD/YYYY
-                    if re.search(r'\d/\d{1,2}/' + m.group(0), surrounding):
-                        continue
-                    month = int(m.group(1))
-                    year = int(m.group(2))
-                    if 1 <= month <= 12 and 2000 <= year <= 2100:
-                        candidates.append((year, month))
-                # Month name + year
-                for m in _MONTH_NAME_RE.finditer(text):
-                    name = m.group(1).lower()[:3]
-                    if name in _MONTH_NAMES:
-                        month = _MONTH_NAMES.index(name) + 1
-                        year = int(m.group(2))
-                        candidates.append((year, month))
-        if not candidates:
-            return None
-        # The "through" month is the highest (year, month) tuple
-        candidates.sort()
-        latest_year, latest_month = candidates[-1]
-        logger.info(f"YSL period auto-detected: month={latest_month}, year={latest_year} (from {len(candidates)} candidate matches)")
-        return latest_month
+                pairs = self._scan_text_for_year_month(text)
+                all_candidates.extend(pairs)
+                low = text.lower()
+                if any(tok in low for tok in ("through", "thru", "ending", "to ", " to:")):
+                    through_candidates.extend(pairs)
+        if through_candidates:
+            through_candidates.sort()
+            latest_year, latest_month = through_candidates[-1]
+            logger.info(
+                f"YSL period auto-detected from 'through'/'ending' header: "
+                f"month={latest_month}, year={latest_year}"
+            )
+            return latest_month
+        if all_candidates:
+            all_candidates.sort()
+            latest_year, latest_month = all_candidates[-1]
+            logger.info(
+                f"YSL period auto-detected (fallback latest-in-header): "
+                f"month={latest_month}, year={latest_year} "
+                f"(from {len(all_candidates)} candidates)"
+            )
+            return latest_month
+        return None
+
+    @staticmethod
+    def _scan_text_for_year_month(text: str):
+        """Scan a single string for (year, month) pairs using the standard
+        regex set. Returns a list of tuples; caller decides which to pick.
+        """
+        out = []
+        # MM/DD/YYYY first (more specific) so we don't read "04/30" as month=4 year=30
+        for m in _MM_DD_YYYY_RE.finditer(text):
+            month = int(m.group(1))
+            year = int(m.group(2))
+            if 1 <= month <= 12 and 2000 <= year <= 2100:
+                out.append((year, month))
+        # MM/YYYY (only if MM_DD didn't already swallow it)
+        for m in _MM_YYYY_RE.finditer(text):
+            pos_start = m.start()
+            pos_end = m.end()
+            surrounding = text[max(0, pos_start - 3):min(len(text), pos_end + 3)]
+            if re.search(r'\d/\d{1,2}/' + m.group(0), surrounding):
+                continue
+            month = int(m.group(1))
+            year = int(m.group(2))
+            if 1 <= month <= 12 and 2000 <= year <= 2100:
+                out.append((year, month))
+        # Month name + year
+        for m in _MONTH_NAME_RE.finditer(text):
+            name = m.group(1).lower()[:3]
+            if name in _MONTH_NAMES:
+                month = _MONTH_NAMES.index(name) + 1
+                year = int(m.group(2))
+                out.append((year, month))
+        return out
 
     def _extract_property_info(self) -> Dict[str, Any]:
         """

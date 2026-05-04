@@ -7438,6 +7438,7 @@ def _build_apply_ysl(entity_code, selection):
             "source_type": "ysl",
             "filename": filename,
             "gl_lines": gl_count,
+            "rows_imported": gl_count,  # mirror gl_lines so the wizard alert reports a non-zero count
             "file_entity": property_info.get("property_code"),
             "stored_under_entity": str(entity_code),
             "detected_period_month": detected_month,
@@ -7489,6 +7490,7 @@ def _build_apply_expense_distribution(entity_code, selection):
             "source_type": "expense_distribution",
             "filename": filename,
             "invoices": len(invoices),
+            "rows_imported": len(invoices),  # mirror invoices for the wizard alert
             "period_from": period_from,
             "period_to": period_to,
             "accrual_adjustments_applied": accrual_applied,
@@ -7528,6 +7530,7 @@ def _build_apply_ap_aging(entity_code, selection):
             "source_type": "ap_aging",
             "filename": filename,
             "invoices": len(invoices),
+            "rows_imported": len(invoices),  # mirror invoices for the wizard alert
             "unpaid_bills_applied": unpaid_applied,
             "file_entity": ap_entity,
             "stored_under_entity": str(entity_code),
@@ -7553,6 +7556,7 @@ def _build_apply_maint_proof(entity_code, selection):
             "filename": filename,
             "report_title": report_title,
             "units": len(units) if units else 0,
+            "rows_imported": len(units) if units else 0,  # mirror units for the wizard alert
             "total_shares": total_shares,
             "stored_under_entity": str(entity_code),
         }

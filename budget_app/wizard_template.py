@@ -1054,10 +1054,10 @@ header {
         <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; color:var(--gray-500); text-transform:uppercase; margin-bottom:8px;">From Your Computer (Fallback)</div>
         <div class="upload-dropzone" onclick="document.getElementById('fileInput').click()" style="padding:14px 18px; min-height:auto;">
           <div style="display:flex; align-items:center; gap:14px; justify-content:center;">
-            <div style="font-size:24px;">\ud83d\udcc1</div>
+            <div style="font-size:24px;">&#128193;</div>
             <div style="text-align:left;">
               <div style="font-weight:600; font-size:14px;">Drop a file or click to browse</div>
-              <div style="font-size:12px; color:var(--gray-500); margin-top:2px;">We\'ll route it to SharePoint and refresh the panel above</div>
+              <div style="font-size:12px; color:var(--gray-500); margin-top:2px;">We'll route it to SharePoint and refresh the panel above</div>
             </div>
           </div>
         </div>
