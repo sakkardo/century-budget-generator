@@ -4529,10 +4529,16 @@ def create_workflow_blueprint(db):
         prefix list differs from what's already stored.
         """
         import json as _json
+        # GL_TO_SUMMARY_MAP lives in budget_summary; both flat and packaged
+        # forms appear elsewhere — try them in order.
+        SUMMARY_ROW_MAP = LABEL_ALIASES = _CONDO_ROWS = None
         try:
-            from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
-        except ImportError:
             from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+        except ImportError:
+            try:
+                from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+            except ImportError as e:
+                return jsonify({"error": f"GL_TO_SUMMARY_MAP import failed: {e}"}), 500
 
         body = request.get_json(silent=True) or {}
         all_entities = bool(body.get("all_entities"))
@@ -4597,6 +4603,16 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/admin/summary-debug/<entity_code>", methods=["GET"])
     def api_summary_debug(entity_code):
+        try:
+            return _api_summary_debug_impl(entity_code)
+        except Exception as e:
+            import traceback
+            return jsonify({
+                "error": str(e),
+                "traceback": traceback.format_exc().split("\n")[-15:],
+            }), 500
+
+    def _api_summary_debug_impl(entity_code):
         """ADMIN: Diagnostic view of an entity's Budget Summary aggregation.
 
         Lists every BudgetSummaryRow + its matched GL prefixes + GL line
