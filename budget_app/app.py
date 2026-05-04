@@ -6058,21 +6058,6 @@ def wizard_save_assumptions(entity_code):
     if not isinstance(data, dict):
         return jsonify({"error": "Body must be a dict"}), 400
 
-    # Reject literal "undefined" / "null" string keys at any nesting level —
-    # these are JS bugs leaking through (e.g. an event handler reads
-    # event.target.dataset.section on an element that has no data-section
-    # attribute and serializes the resulting `undefined` as a key).
-    # Without this guard, the staged assumptions accumulate {"undefined":
-    # {"undefined": value}} entries that are never read by anything but
-    # pollute the audit trail. Strip them silently rather than 400-ing
-    # because the rest of the payload is still useful.
-    BAD_KEYS = {"undefined", "null", "None", ""}
-    def _scrub(d):
-        if not isinstance(d, dict):
-            return d
-        return {k: _scrub(v) for k, v in d.items() if k not in BAD_KEYS}
-    data = _scrub(data)
-
     budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
     if not budget:
         return jsonify({"error": f"No Budget row for entity {entity_code} year {_BY}"}), 404
@@ -6085,9 +6070,6 @@ def wizard_save_assumptions(entity_code):
     staged = current.get("assumptions") or {}
     if not isinstance(staged, dict):
         staged = {}
-
-    # Heal any pre-existing pollution from earlier requests
-    staged = _scrub(staged)
 
     # Deep merge by section (one level deep — matches Budget.assumptions_json shape)
     for key, value in data.items():
@@ -7054,6 +7036,40 @@ def _build_apply_audit_2025(entity_code, selection):
     # Upsert AuditUpload — clean replace any existing row for this entity so
     # re-clicks overwrite (idempotent). Also un-confirms Foundation since the
     # mapping for the new audit hasn\'t been done yet.
+    #
+    # PROTECTION: skip the wipe if there's already a confirmed audit with a
+    # real mapped_data payload — re-clicking the wizard tile must not destroy
+    # FA mapping work. Status='confirmed' + empty mapped_data is treated as a
+    # broken state and is allowed to be wiped.
+    from workflow import BUDGET_YEAR as _BY_AUDIT_PRECHECK
+    expected_fy = str(_BY_AUDIT_PRECHECK - 2)
+    existing_confirmed = AuditUpload.query.filter_by(
+        entity_code=entity_code,
+        fiscal_year_end=expected_fy,
+        status="confirmed",
+    ).first()
+    if existing_confirmed:
+        try:
+            md = json.loads(existing_confirmed.mapped_data) if existing_confirmed.mapped_data else {}
+        except Exception:
+            md = {}
+        if isinstance(md, dict) and len(md) > 0:
+            logger.info(
+                f"[wizard audit_2025] {entity_code}: existing confirmed upload "
+                f"id={existing_confirmed.id} fy={expected_fy} has {len(md)} mapped categories — "
+                f"skipping re-extract to preserve FA mapping work."
+            )
+            return {
+                "source_type": "audit_2025",
+                "upload_id": existing_confirmed.id,
+                "filename": existing_confirmed.pdf_filename or filename,
+                "revenue_lines": 0,
+                "expense_lines": 0,
+                "review_url": f"/audited-financials/review/{existing_confirmed.id}",
+                "status": "confirmed",
+                "note": "Existing confirmed mapping preserved — wizard re-click is a no-op.",
+                "skipped": True,
+            }
     AuditUpload.query.filter_by(entity_code=entity_code).delete()
     db.session.execute(db.text(
         "UPDATE budgets SET foundation_confirmed_at = NULL, foundation_confirmed_by = NULL "
@@ -7169,10 +7185,10 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
         )
         # FA #27a fallback: try to fill Col 1 from a confirmed audit for
         # the expected year before persisting blank rows.
+        filled = 0
         try:
             audit_actuals = af_helpers["get_confirmed_actuals"](entity_code, _expected_c1_year)
             if audit_actuals:
-                filled = 0
                 for row in imported.get("rows", []):
                     label = row.get("label")
                     if label and row.get("col1_prior_actual") is None:
@@ -7204,6 +7220,35 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
                 f"[batch-import] {entity_code}: confirmed-audit fallback failed: {_fallback_err}"
             )
             imported["col1_audit_fallback_used"] = False
+        # Final fallback: if neither expected-year column nor confirmed-year
+        # audit produced data, re-extract WITHOUT the year guard so we use
+        # whatever year the yrlycomp actually has (e.g. 2023 in a 2026-cycle
+        # file used during the 2027 run). Surfaced via col1_actual_year so
+        # the FA can see the real source year. Better to show last-known
+        # audited numbers than a wall of blanks.
+        if filled == 0:
+            relax = extract_importable_data(parsed, expected_col1_year=None)
+            if "error" not in relax:
+                relaxed_rows = {r.get("display_order"): r for r in relax.get("rows", [])}
+                refilled = 0
+                for row in imported.get("rows", []):
+                    if row.get("col1_prior_actual") is None:
+                        rr = relaxed_rows.get(row.get("display_order"))
+                        if rr and rr.get("col1_prior_actual") is not None:
+                            row["col1_prior_actual"] = rr["col1_prior_actual"]
+                            refilled += 1
+                imported["col1_actual_year"] = (
+                    int(str(relax.get("col1_label", "")).split()[0])
+                    if relax.get("col1_label") and str(relax["col1_label"]).split()[0].isdigit()
+                    else None
+                )
+                imported["col1_yrlycomp_fallback_used"] = True
+                imported["col1_yrlycomp_rows_filled"] = refilled
+                logger.info(
+                    f"[batch-import] {entity_code}: yrlycomp-year fallback "
+                    f"filled {refilled} Col 1 rows from year "
+                    f"{imported.get('col1_actual_year')!r}"
+                )
     enriched = enrich_with_gl_map(imported)
 
     # Upsert budget_summary_rows
@@ -7456,7 +7501,6 @@ def _build_apply_ysl(entity_code, selection):
             "source_type": "ysl",
             "filename": filename,
             "gl_lines": gl_count,
-            "rows_imported": gl_count,  # mirror gl_lines so the wizard alert reports a non-zero count
             "file_entity": property_info.get("property_code"),
             "stored_under_entity": str(entity_code),
             "detected_period_month": detected_month,
@@ -7508,7 +7552,6 @@ def _build_apply_expense_distribution(entity_code, selection):
             "source_type": "expense_distribution",
             "filename": filename,
             "invoices": len(invoices),
-            "rows_imported": len(invoices),  # mirror invoices for the wizard alert
             "period_from": period_from,
             "period_to": period_to,
             "accrual_adjustments_applied": accrual_applied,
@@ -7548,7 +7591,6 @@ def _build_apply_ap_aging(entity_code, selection):
             "source_type": "ap_aging",
             "filename": filename,
             "invoices": len(invoices),
-            "rows_imported": len(invoices),  # mirror invoices for the wizard alert
             "unpaid_bills_applied": unpaid_applied,
             "file_entity": ap_entity,
             "stored_under_entity": str(entity_code),
@@ -7574,7 +7616,6 @@ def _build_apply_maint_proof(entity_code, selection):
             "filename": filename,
             "report_title": report_title,
             "units": len(units) if units else 0,
-            "rows_imported": len(units) if units else 0,  # mirror units for the wizard alert
             "total_shares": total_shares,
             "stored_under_entity": str(entity_code),
         }
