@@ -3837,13 +3837,32 @@ def create_workflow_blueprint(db):
     # ─── Budget Summary API ──────────────────────────────────────────────
 
     def _gl_matches_prefixes(gl_code, prefixes):
-        """Check if a GL code starts with any of the given prefixes."""
+        """Check if a GL code matches any of the given prefixes.
+
+        Two matching modes (chosen per prefix):
+          - Bare prefix like "5260": match `gl_base.startswith(prefix)` where
+            gl_base strips the sub-account suffix (4130-0010 -> 4130). Used
+            for whole-account-family categories (Payroll, R&M, etc).
+          - Full GL like "4130-0010": match `gl_code.startswith(prefix)`
+            against the un-stripped GL. Used to disambiguate sub-accounts
+            (Storage 4130-0010 vs Bicycle 4130-0015 vs Laundry 4130-0030).
+
+        Detection: a prefix containing "-" enables exact sub-account mode.
+        """
         if not gl_code or not prefixes:
             return False
-        gl_base = gl_code.split("-")[0].strip()
+        gl_str = str(gl_code).strip()
+        gl_base = gl_str.split("-")[0].strip()
         for prefix in prefixes:
-            if gl_base.startswith(prefix):
-                return True
+            p = str(prefix).strip()
+            if "-" in p:
+                # Sub-account exact-prefix mode: keep the suffix on both sides.
+                if gl_str.startswith(p):
+                    return True
+            else:
+                # Whole-account-family mode: strip suffix on the GL side.
+                if gl_base.startswith(p):
+                    return True
         return False
 
     def _section_key(section_label):

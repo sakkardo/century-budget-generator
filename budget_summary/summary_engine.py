@@ -49,15 +49,29 @@ def compute_forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year, ytd_mont
 # ── GL prefix matching ───────────────────────────────────────────────────
 
 def gl_matches_prefixes(gl_code, prefixes):
-    """Check if a GL code starts with any of the given prefixes."""
+    """Check if a GL code matches any of the given prefixes.
+
+    Two matching modes (chosen per prefix):
+      - Bare prefix like "5260": match against `gl_base` (suffix stripped:
+        "5110-0000" -> "5110"). Used for whole-account-family categories.
+      - Full GL like "4130-0010": match against the un-stripped gl_code.
+        Used to disambiguate sub-accounts (Storage 4130-0010 vs
+        Bicycle 4130-0015 vs Laundry 4130-0030).
+
+    Detection: a prefix containing "-" enables exact sub-account mode.
+    """
     if not gl_code or not prefixes:
         return False
-    # Normalize: strip sub-account suffix for prefix matching
-    # e.g. "5110-0000" should match prefix "5110"
-    gl_base = gl_code.split("-")[0].strip()
+    gl_str = str(gl_code).strip()
+    gl_base = gl_str.split("-")[0].strip()
     for prefix in prefixes:
-        if gl_base.startswith(prefix):
-            return True
+        p = str(prefix).strip()
+        if "-" in p:
+            if gl_str.startswith(p):
+                return True
+        else:
+            if gl_base.startswith(p):
+                return True
     return False
 
 
