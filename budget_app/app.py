@@ -6058,6 +6058,21 @@ def wizard_save_assumptions(entity_code):
     if not isinstance(data, dict):
         return jsonify({"error": "Body must be a dict"}), 400
 
+    # Reject literal "undefined" / "null" string keys at any nesting level —
+    # these are JS bugs leaking through (e.g. an event handler reads
+    # event.target.dataset.section on an element that has no data-section
+    # attribute and serializes the resulting `undefined` as a key).
+    # Without this guard, the staged assumptions accumulate {"undefined":
+    # {"undefined": value}} entries that are never read by anything but
+    # pollute the audit trail. Strip them silently rather than 400-ing
+    # because the rest of the payload is still useful.
+    BAD_KEYS = {"undefined", "null", "None", ""}
+    def _scrub(d):
+        if not isinstance(d, dict):
+            return d
+        return {k: _scrub(v) for k, v in d.items() if k not in BAD_KEYS}
+    data = _scrub(data)
+
     budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
     if not budget:
         return jsonify({"error": f"No Budget row for entity {entity_code} year {_BY}"}), 404
@@ -6070,6 +6085,9 @@ def wizard_save_assumptions(entity_code):
     staged = current.get("assumptions") or {}
     if not isinstance(staged, dict):
         staged = {}
+
+    # Heal any pre-existing pollution from earlier requests
+    staged = _scrub(staged)
 
     # Deep merge by section (one level deep — matches Budget.assumptions_json shape)
     for key, value in data.items():

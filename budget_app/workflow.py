@@ -2644,6 +2644,13 @@ def create_workflow_blueprint(db):
         from wizard_template import WIZARD_TEMPLATE
         from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
 
+        # Bug #4: support querystring form ?entity=<code> in addition to
+        # /wizard/<entity_code>. FAs commonly bookmark or paste links with
+        # ?entity=168&step=3 — without this fallback the wizard lands on
+        # Step 1 with "no entity selected" and the FA has to re-search.
+        if not entity_code:
+            entity_code = (request.args.get("entity") or "").strip() or None
+
         # Read-only snapshot of last Monday sync. Auto-sync (if stale) is
         # triggered by the client after the page renders — keeps the wizard
         # fast and avoids cross-blueprint app-context issues.
@@ -3152,12 +3159,25 @@ def create_workflow_blueprint(db):
             staged_assumptions = _staged.get("assumptions") or {}
         except Exception:
             staged_assumptions = {}
+        # Scrub literal "undefined"/"null" keys that can leak in from
+        # JS event handlers reading missing data-* attributes. Mirror the
+        # guard in /api/wizard/<id>/selections/assumptions so the same
+        # defense applies at both write-time and read-time.
+        _BAD_KEYS = {"undefined", "null", "None", ""}
+        def _scrub_assumptions(d):
+            if not isinstance(d, dict):
+                return d
+            return {k: _scrub_assumptions(v) for k, v in d.items() if k not in _BAD_KEYS}
         if isinstance(staged_assumptions, dict):
+            staged_assumptions = _scrub_assumptions(staged_assumptions)
             for key, value in staged_assumptions.items():
                 if isinstance(value, dict) and isinstance(merged.get(key), dict):
                     merged[key].update(value)
                 else:
                     merged[key] = value
+        # Also scrub merged itself in case CFO defaults or per-building overrides
+        # got polluted historically.
+        merged = _scrub_assumptions(merged)
 
         lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
 

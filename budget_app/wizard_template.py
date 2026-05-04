@@ -1112,10 +1112,10 @@ header {
       <div class="step-header">
         <div class="step-badge">Step 5 of 5</div>
         <h1 class="step-title">Budget Complete</h1>
-        <p class="step-description">You\'re ready to fine-tune your budget</p>
+        <p class="step-description">You're ready to fine-tune your budget</p>
       </div>
       <div class="prompt-banner">
-        You\'re ready! Budget generated with your assumptions. Open the dashboard to fine-tune individual lines.
+        You're ready! Budget generated with your assumptions. Open the dashboard to fine-tune individual lines.
       </div>
       <div class="success-card">
         <div class="success-icon">✓</div>
@@ -2149,6 +2149,14 @@ function _stageWizardPeriod(monthNum) {
 }
 
 function _stageWizardAssumption(section, field, value) {
+  // Bail when section/field aren't real strings — happens when an event
+  // fires on an element without data-section/data-key attributes (e.g.,
+  // the period dropdown, which has its own dedicated handler). Without
+  // this guard, the payload becomes {"undefined": {"undefined": value}}
+  // and pollutes the staged assumptions JSON forever.
+  if (!section || section === 'undefined' || !field || field === 'undefined') {
+    return;
+  }
   const status = document.getElementById('wizardAssumpStatus');
   if (status) status.textContent = 'Saving...';
   clearTimeout(_wizardAssumpSaveTimer);
@@ -2549,15 +2557,28 @@ document.addEventListener('DOMContentLoaded', () => {
   renderEntityGrid();
   updateRail();
   renderActionButtons();
-  // Auto-select if /wizard/<entity_code> URL form was used. initializeData
-  // sets `selectedEntity` from the template var but does not trigger the
-  // entity-pick flow that advances to Step 2. Without this, deep-links
-  // (e.g. the post-audit-confirm redirect) land on Step 1 and require a
-  // manual click before the wizard moves forward.
+  // Auto-select if /wizard/<entity_code> or ?entity=<code> URL form was used.
+  // initializeData sets `selectedEntity` from the template var but does not
+  // trigger the entity-pick flow that advances to Step 2. Without this,
+  // deep-links (e.g. the post-audit-confirm redirect) land on Step 1 and
+  // require a manual click before the wizard moves forward.
   if (selectedEntity) {
     const ent = (budgets || []).find(b => b.entity_code === selectedEntity);
     if (ent) selectEntity(selectedEntity, ent.building_name);
   }
+  // Bug #4 deep-link: ?step=N — after entity is selected, jump to step N.
+  // Capped to highestStep so the FA can't skip ahead of their progress.
+  // Wrapped in setTimeout(0) so it runs after selectEntity's async loads
+  // settle and `_foundationStatus` is populated (showStep reads it).
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const stepParam = parseInt(params.get('step') || '', 10);
+    if (selectedEntity && stepParam >= 1 && stepParam <= 5) {
+      setTimeout(() => {
+        if (typeof showStep === 'function') showStep(stepParam);
+      }, 250);
+    }
+  } catch (e) { /* noop */ }
 });
 </script>
 
