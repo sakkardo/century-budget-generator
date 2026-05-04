@@ -7837,11 +7837,20 @@ def admin_add_summary_row():
         ).first()
         if ref and ref.display_order is not None:
             target_order = ref.display_order + 1
-            # Shift everything at/after target_order by +1 to make room.
+            # Shift everything at/after target_order by +1. The unique
+            # constraint on (entity, year, display_order) means a single
+            # UPDATE would violate uniqueness mid-statement, so use the
+            # temporary-offset trick: push rows out of range first, then
+            # pull them back to the desired positions.
             db.session.execute(db.text(
-                "UPDATE budget_summary_rows SET display_order = display_order + 1 "
+                "UPDATE budget_summary_rows SET display_order = display_order + 10000 "
                 "WHERE entity_code = :ec AND budget_year = :by AND display_order >= :ord"
             ), {"ec": entity_code, "by": _BY, "ord": target_order})
+            db.session.flush()
+            db.session.execute(db.text(
+                "UPDATE budget_summary_rows SET display_order = display_order - 9999 "
+                "WHERE entity_code = :ec AND budget_year = :by AND display_order >= 10000"
+            ), {"ec": entity_code, "by": _BY})
             db.session.flush()
 
     if target_order is None:
