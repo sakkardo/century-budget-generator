@@ -48,6 +48,113 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "century-budget-dev-key"
 
 db = SQLAlchemy(app)
 
+# ─── Admin Authentication ────────────────────────────────────────────────────
+# Shared-secret gate for /api/admin/* endpoints. Until proper SSO is in place,
+# this prevents anyone-with-the-URL from calling destructive admin endpoints.
+#
+# Accepts the secret via either:
+#   - X-Admin-Key request header  (use for curl / scripts / Postman)
+#   - admin_key cookie            (set by /admin/login form for browser use)
+#
+# To configure: set ADMIN_KEY in Railway env vars. If unset, admin endpoints
+# remain open (with a startup warning) so we don't accidentally lock ourselves
+# out of an existing deployment. Once ADMIN_KEY is set, every admin call
+# without the right value gets a 401.
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "").strip()
+ADMIN_COOKIE_NAME = "century_admin_key"
+ADMIN_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+
+if not ADMIN_KEY:
+    logger.warning(
+        "ADMIN_KEY env var is not set — /api/admin/* endpoints are OPEN. "
+        "Set ADMIN_KEY in Railway env to enable authentication."
+    )
+
+
+def require_admin(f):
+    """Decorator: require ADMIN_KEY via X-Admin-Key header or admin_key cookie.
+
+    Returns 401 if the value doesn't match. If ADMIN_KEY env var is unset,
+    requests pass through unchanged (failsafe — won't lock you out by default).
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not ADMIN_KEY:
+            return f(*args, **kwargs)
+        provided = (
+            (request.headers.get("X-Admin-Key") or "").strip()
+            or (request.cookies.get(ADMIN_COOKIE_NAME) or "").strip()
+        )
+        if provided != ADMIN_KEY:
+            # Generic 401 — don't leak whether the key was wrong vs missing
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "unauthorized — admin key required"}), 401
+            # For non-API requests, redirect to login page
+            from flask import redirect
+            return redirect(f"/admin/login?next={request.path}")
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    """Tiny login page that accepts the ADMIN_KEY and sets a cookie.
+    Browser users hit this once; the cookie remembers them for 30 days."""
+    next_url = request.args.get("next") or request.form.get("next") or "/"
+    error = None
+    if request.method == "POST":
+        provided = (request.form.get("key") or "").strip()
+        if not ADMIN_KEY:
+            error = "Server has no ADMIN_KEY set. Configure it in Railway env."
+        elif provided == ADMIN_KEY:
+            from flask import redirect
+            resp = make_response(redirect(next_url))
+            resp.set_cookie(
+                ADMIN_COOKIE_NAME, provided,
+                max_age=ADMIN_COOKIE_MAX_AGE,
+                httponly=True,
+                secure=True,
+                samesite="Lax",
+            )
+            return resp
+        else:
+            error = "Invalid key."
+    # Minimal inline HTML — no template needed
+    html = """
+    <!DOCTYPE html>
+    <html><head><title>Admin Login</title>
+    <style>
+      body{font-family:-apple-system,sans-serif;max-width:400px;margin:80px auto;padding:0 20px;color:#374151}
+      h1{font-size:18px;margin-bottom:8px}
+      p{color:#6b7280;font-size:13px;margin-bottom:20px}
+      input{width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;font-family:monospace}
+      button{margin-top:12px;padding:10px 20px;background:#1a56db;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600}
+      .err{color:#dc2626;font-size:13px;margin-top:8px}
+    </style></head>
+    <body>
+      <h1>Admin login</h1>
+      <p>Paste the ADMIN_KEY value to access admin endpoints. Cookie remembers for 30 days.</p>
+      <form method="POST">
+        <input type="password" name="key" autofocus placeholder="ADMIN_KEY" required>
+        <input type="hidden" name="next" value="%NEXT%">
+        <button type="submit">Sign in</button>
+        %ERR%
+      </form>
+    </body></html>
+    """.replace("%NEXT%", next_url).replace(
+        "%ERR%", f'<div class="err">{error}</div>' if error else ""
+    )
+    return html
+
+
+@app.route("/admin/logout", methods=["GET"])
+def admin_logout():
+    """Clear the admin cookie."""
+    from flask import redirect
+    resp = make_response(redirect("/admin/login"))
+    resp.delete_cookie(ADMIN_COOKIE_NAME)
+    return resp
+
 # Register workflow blueprint (PM review, admin, dashboard)
 try:
     from workflow import create_workflow_blueprint
@@ -6047,6 +6154,7 @@ def wizard_approved_budget_files(entity_code):
 
 
 @app.route("/api/admin/foundation-summary", methods=["GET"])
+@require_admin
 def admin_foundation_summary():
     """Return Foundation status for every entity in the current Budget year.
 
@@ -6310,6 +6418,7 @@ def wizard_use_approved_budget(entity_code):
     return _wizard_record_selection(entity_code, source_label_default="approved_2026")
 
 @app.route("/api/admin/move-approved-budgets", methods=["POST", "GET"])
+@require_admin
 def admin_move_approved_budgets():
     """Move every file in the flat \"2026 budget approved budgets only/\" folder
     into its matching <entity>/ folder, based on the entity_code prefix in the
@@ -6608,6 +6717,7 @@ def _sync_audit_folder_to_entities():
 
 
 @app.route("/api/admin/audit-sync/run", methods=["POST"])
+@require_admin
 def admin_audit_sync_run():
     """ADMIN: trigger one run of _sync_audit_folder_to_entities. No body required.
     Returns {run_id, summary, entries}. Idempotent — re-running on a clean state
@@ -6625,6 +6735,7 @@ def admin_audit_sync_run():
 
 
 @app.route("/api/admin/clear-source", methods=["POST"])
+@require_admin
 def admin_clear_source():
     """ADMIN: clear staged data for one or more source_types on an entity.
 
@@ -6736,6 +6847,7 @@ def admin_clear_source():
 
 
 @app.route("/api/admin/audit-sync-log", methods=["GET"])
+@require_admin
 def admin_audit_sync_log():
     """ADMIN: list recent AuditSyncRun rows. Query params:
        run_id (filter to a specific run), action (filter copied/skipped/etc),
@@ -7660,6 +7772,7 @@ def wizard_upload_to_sp(entity_code):
 
 
 @app.route("/api/admin/entity-trace/<entity_code>", methods=["GET"])
+@require_admin
 def admin_entity_trace(entity_code):
     """Trace upload provenance for a single entity. Shows which columns of
     budget_lines have non-default values, distinct sources of revisions, and
@@ -7750,6 +7863,7 @@ def admin_entity_trace(entity_code):
 
 
 @app.route("/api/admin/sync-afs/<entity_code>", methods=["POST"])
+@require_admin
 def admin_sync_afs(entity_code):
     """ADMIN: Scan SharePoint for AFS PDFs for one entity and create
     AuditUpload rows for any not yet ingested.
@@ -7773,6 +7887,7 @@ def admin_sync_afs(entity_code):
 
 
 @app.route("/api/admin/portfolio-health", methods=["GET"])
+@require_admin
 def admin_portfolio_health():
     """ADMIN: Portfolio-wide health check.
 
@@ -8081,6 +8196,7 @@ def admin_portfolio_health():
 
 
 @app.route("/api/admin/sync-afs/all", methods=["POST"])
+@require_admin
 def admin_sync_afs_all():
     """ADMIN: Bulk variant of sync-afs — scan SP for every entity that has
     a Budget row this cycle. Per-entity errors are captured but don't
@@ -8221,6 +8337,7 @@ def _do_afs_sync(entity_code, dry_run=False, force=False, AuditUpload=None, retu
 
 
 @app.route("/api/admin/delete-summary-row", methods=["POST"])
+@require_admin
 def admin_delete_summary_row():
     """ADMIN: Remove a BudgetSummaryRow by entity + label.
 
@@ -8269,6 +8386,7 @@ def admin_delete_summary_row():
 
 
 @app.route("/api/admin/summary-row-options", methods=["GET"])
+@require_admin
 def admin_summary_row_options():
     """Return canonical SUMMARY_ROW_MAP labels grouped by section, used to
     populate the Add Row dropdown on the FA dashboard. The FA picks from a
@@ -8306,6 +8424,7 @@ def admin_summary_row_options():
 
 
 @app.route("/api/admin/add-summary-row", methods=["POST"])
+@require_admin
 def admin_add_summary_row():
     """ADMIN: Insert a single new BudgetSummaryRow for one entity.
 
@@ -8399,6 +8518,7 @@ def admin_add_summary_row():
 
 
 @app.route("/api/admin/backfill-period/<entity_code>", methods=["POST"])
+@require_admin
 def admin_backfill_period(entity_code):
     """ADMIN: Set budget_period on an existing budget. Used to backfill
     entities whose budgets were generated before the period selector
@@ -8568,6 +8688,7 @@ def admin_backfill_period(entity_code):
 
 
 @app.route("/api/admin/backfill-period/all", methods=["POST"])
+@require_admin
 def admin_backfill_period_all():
     """ADMIN: Bulk backfill — try to auto-detect period for every entity
     whose budget_period is unset. Skips entities already set unless
@@ -8610,6 +8731,7 @@ def admin_backfill_period_all():
 
 
 @app.route("/api/admin/refresh-building-info/<entity_code>", methods=["POST"])
+@require_admin
 def admin_refresh_building_info(entity_code):
     """ADMIN: Re-pull the maintenance/common-charges history from the entity's
     2026 approved budget XLSX into BuildingInfo. Used to backfill entities that
@@ -8672,6 +8794,7 @@ def admin_refresh_building_info(entity_code):
 
 
 @app.route("/api/admin/wipe-entity-data", methods=["POST"])
+@require_admin
 def admin_wipe_entity_data():
     """ADMIN: Wipe budget_lines + budget_revisions + budget_summary_rows for the
     given entities (year=BUDGET_YEAR), and reset their Budget row state to Setup.
@@ -8834,6 +8957,7 @@ def admin_wipe_entity_data():
 
 
 @app.route("/api/admin/upload-audit", methods=["GET"])
+@require_admin
 def admin_upload_audit():
     """Read-only audit summary for the 4/7-ish window: counts revisions and
     budget lines created by date so we can see when budgets were last touched.
