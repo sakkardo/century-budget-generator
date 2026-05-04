@@ -7772,6 +7772,314 @@ def admin_sync_afs(entity_code):
     return _do_afs_sync(entity_code, dry_run=dry_run, force=force, AuditUpload=AuditUpload)
 
 
+@app.route("/api/admin/portfolio-health", methods=["GET"])
+def admin_portfolio_health():
+    """ADMIN: Portfolio-wide health check.
+
+    Runs a battery of invariants across every Budget and surfaces issues
+    grouped by severity. Read-only. Safe to run anytime. Built to catch
+    the bug patterns we discovered manually for entity 168 — silent
+    fallbacks, magic constants, per-building variation, math edge cases,
+    half-built features.
+
+    Query params:
+      severity=critical|high|medium|low   - filter to one severity
+      check=<check_name>                  - filter to one check
+      entity_code=<ec>                    - scope to one entity
+      include_passing=true                - include entities with no issues
+
+    Returns:
+      {
+        "scanned_at": "...",
+        "entities_scanned": N,
+        "issues_total": M,
+        "by_severity": {"critical": A, "high": B, "medium": C, "low": D},
+        "by_check": {"period_not_set": X, ...},
+        "issues": [
+          {entity, check, severity, message, fix, details}, ...
+        ]
+      }
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from statistics import median as _median, stdev as _stdev
+
+    Budget = workflow_models["Budget"]
+    BudgetLine = workflow_models["BudgetLine"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    AuditUpload = af_models["AuditUpload"]
+    from workflow import BUDGET_YEAR as _BY
+
+    severity_filter = (request.args.get("severity") or "").strip().lower() or None
+    check_filter = (request.args.get("check") or "").strip() or None
+    entity_filter = (request.args.get("entity_code") or "").strip() or None
+    include_passing = (request.args.get("include_passing") or "").lower() == "true"
+
+    # ─── 1. Pre-fetch in-bulk to avoid N+1 queries ───
+    budgets = Budget.query.filter_by(year=_BY).all()
+    if entity_filter:
+        budgets = [b for b in budgets if b.entity_code == entity_filter]
+    budget_ids = [b.id for b in budgets]
+    bid_to_ec = {b.id: b.entity_code for b in budgets}
+
+    summary_rows_all = (
+        BudgetSummaryRow.query
+        .filter(BudgetSummaryRow.entity_code.in_([b.entity_code for b in budgets]))
+        .filter_by(budget_year=_BY)
+        .all()
+    )
+    rows_by_ec = {}
+    for r in summary_rows_all:
+        rows_by_ec.setdefault(r.entity_code, []).append(r)
+
+    lines_all = BudgetLine.query.filter(BudgetLine.budget_id.in_(budget_ids)).all() if budget_ids else []
+    lines_by_bid = {}
+    for l in lines_all:
+        lines_by_bid.setdefault(l.budget_id, []).append(l)
+
+    audits_all = (
+        AuditUpload.query
+        .filter(AuditUpload.entity_code.in_([b.entity_code for b in budgets]))
+        .all()
+    )
+    audits_by_ec = {}
+    for au in audits_all:
+        audits_by_ec.setdefault(au.entity_code, []).append(au)
+
+    # ─── 2. Build peer-statistics lookup for outlier detection ───
+    # For each summary row label, collect col6 (current budget) values across
+    # all entities. We'll flag values >2σ from peer median.
+    peer_values = {}  # label → [value, ...]
+    for r in summary_rows_all:
+        if r.row_type != "data" or r.col6_approved_budget is None:
+            continue
+        if r.col6_approved_budget <= 0:
+            continue
+        peer_values.setdefault(r.label, []).append(r.col6_approved_budget)
+    peer_stats = {}  # label → {median, stdev, n}
+    for label, vals in peer_values.items():
+        if len(vals) < 5:  # need a meaningful sample
+            continue
+        try:
+            peer_stats[label] = {
+                "median": _median(vals),
+                "stdev": _stdev(vals) if len(vals) > 1 else 0,
+                "n": len(vals),
+            }
+        except Exception:
+            pass
+
+    # ─── 3. Run checks per entity ───
+    issues = []
+
+    def add(severity, check, entity, message, fix=None, details=None):
+        if severity_filter and severity != severity_filter:
+            return
+        if check_filter and check != check_filter:
+            return
+        issues.append({
+            "entity": entity, "check": check, "severity": severity,
+            "message": message,
+            "fix": fix, "details": details or {},
+        })
+
+    for budget in budgets:
+        ec = budget.entity_code
+        bid = budget.id
+        try:
+            assum = _json.loads(budget.assumptions_json or "{}")
+        except Exception:
+            assum = {}
+        rows = rows_by_ec.get(ec, [])
+        lines = lines_by_bid.get(bid, [])
+        audits = audits_by_ec.get(ec, [])
+        is_coop = (budget.building_type or "").lower() in ("coop", "co-op")
+
+        # ── Check: period_not_set (CRITICAL) ──
+        bp = (assum.get("budget_period") or "").strip()
+        if not bp or "/" not in bp:
+            add("critical", "period_not_set", ec,
+                "budget_period is unset; forecasts use default 2-month YTD which produces wrong numbers",
+                fix="Set period via dashboard banner or wizard Step 3")
+
+        # ── Check: building_type_unknown (HIGH) ──
+        if not budget.building_type:
+            add("high", "building_type_unknown", ec,
+                "Budget.building_type is empty; is_coop() heuristic falls back through legacy paths",
+                fix="Backfill from buildings.csv via app startup hook (auto), or set manually")
+
+        # ── Check: afs_not_confirmed (HIGH) ──
+        # Filter audit uploads by status; expected confirmed for BUDGET_YEAR-2 (e.g., 2025 for 2027 cycle)
+        target_year = str(_BY - 2)
+        target_audits = [au for au in audits if str(au.fiscal_year_end or "") == target_year]
+        confirmed = [au for au in target_audits if au.status == "confirmed"]
+        non_confirmed = [au for au in target_audits if au.status != "confirmed"]
+        if target_audits and not confirmed and non_confirmed:
+            au = non_confirmed[0]
+            add("high", "afs_not_confirmed", ec,
+                f"FY{target_year} audit upload (id={au.id}) at status='{au.status}' — needs FA to click Confirm",
+                fix=f"Open /audited-financials, find upload {au.id}, click Review & Confirm",
+                details={"upload_id": au.id, "status": au.status, "filename": au.pdf_filename})
+        elif not target_audits and is_coop:
+            add("medium", "afs_missing", ec,
+                f"No FY{target_year} audit upload found for this coop — Col 2 (BY-2 Actual) will be blank",
+                fix=f"Run POST /api/admin/sync-afs/{ec} to import from SharePoint")
+
+        # ── Check: summary_rows_missing (MEDIUM) ──
+        if not rows:
+            add("medium", "summary_rows_missing", ec,
+                "No BudgetSummaryRow records — approved 2026 budget hasn't been imported yet",
+                fix="Run the approved budget import via the wizard")
+            continue  # downstream checks need rows; skip for empty entity
+
+        # ── Check: row_missing_prefix (HIGH for income/expenses; LOW for non-op) ──
+        for r in rows:
+            if r.row_type != "data":
+                continue
+            if not r.gl_prefixes_json or r.gl_prefixes_json in ("[]", "null"):
+                sev = "high" if r.section in ("Income", "Expenses") else "low"
+                add(sev, "row_missing_prefix", ec,
+                    f"Summary row '{r.label}' has no GL prefix → can't auto-aggregate",
+                    fix=f"Run POST /api/admin/resolve-summary-aliases/{ec}, or add to LABEL_ALIASES if needed",
+                    details={"label": r.label, "section": r.section})
+
+        # ── Check: capital_forecast_extrapolated (HIGH) ──
+        # FA #18: capital lines should not extrapolate. Find Capital lines where
+        # forecast > YTD by more than 1% (i.e., extrapolation happened).
+        for l in lines:
+            if not (l.sheet_name == "Capital" or (l.category or "").lower() == "capital"):
+                continue
+            ytd = float(l.ytd_actual or 0) + float(l.accrual_adj or 0) + float(l.unpaid_bills or 0)
+            prop = float(l.proposed_budget or 0)
+            # If proposed_budget > ytd_total * 2 on a capital line → extrapolation slipped through
+            if abs(ytd) >= 100 and prop > abs(ytd) * 2:
+                add("high", "capital_forecast_extrapolated", ec,
+                    f"Capital line {l.gl_code} has proposed_budget=${prop:,.0f} >> ytd=${ytd:,.0f} — #18 cap may not have applied",
+                    fix=f"Re-run PUT /api/budget-assumptions/{ec} with any non-empty body to trigger recompute",
+                    details={"gl_code": l.gl_code, "ytd": ytd, "proposed": prop})
+
+        # ── Check: negative_forecast_anomaly (HIGH) ──
+        # FA #7 cap should prevent this. Find lines where proposed_budget is negative
+        # but prior_year is positive — should be capped to 0 or YTD.
+        for l in lines:
+            prior = float(l.prior_year or 0)
+            prop = float(l.proposed_budget or 0)
+            if prop < -1000 and prior >= 0:
+                add("high", "negative_forecast_anomaly", ec,
+                    f"Line {l.gl_code} ({l.description}) has proposed=${prop:,.0f} despite prior_year=${prior:,.0f}",
+                    fix=f"Re-run PUT /api/budget-assumptions/{ec} to trigger anomaly cap",
+                    details={"gl_code": l.gl_code, "ytd": float(l.ytd_actual or 0),
+                             "prior": prior, "proposed": prop})
+
+        # ── Check: orphan_dollar_total (MEDIUM) ──
+        # Sum of GLs with non-zero data not claimed by any summary row.
+        matched_gls = set()
+        for r in rows:
+            if r.row_type != "data" or not r.gl_prefixes_json:
+                continue
+            try:
+                pfx = _json.loads(r.gl_prefixes_json)
+            except Exception:
+                continue
+            for l in lines:
+                gl_str = str(l.gl_code or "").strip()
+                gl_base = gl_str.split("-")[0]
+                for p in pfx:
+                    if "-" in str(p):
+                        if gl_str.startswith(str(p)):
+                            matched_gls.add(l.gl_code); break
+                    else:
+                        if gl_base.startswith(str(p)):
+                            matched_gls.add(l.gl_code); break
+        orphan_ytd = 0.0
+        orphan_count = 0
+        for l in lines:
+            if l.gl_code in matched_gls:
+                continue
+            ytd = float(l.ytd_actual or 0)
+            cb = float(l.current_budget or 0)
+            if abs(ytd) >= 100 or abs(cb) >= 100:
+                orphan_ytd += ytd
+                orphan_count += 1
+        if orphan_count >= 3 and abs(orphan_ytd) >= 1000:
+            add("medium", "summary_orphans", ec,
+                f"{orphan_count} GLs with data not claimed by any summary row (YTD total ${orphan_ytd:,.0f})",
+                fix=f"Run GET /api/admin/summary-debug/{ec} to see the orphans, then add aliases or extend prefix lists",
+                details={"orphan_count": orphan_count, "orphan_ytd_total": orphan_ytd})
+
+        # ── Check: peer_outlier (MEDIUM) ──
+        # For each row that has a value, compare to peer median. Flag when delta > 2σ.
+        for r in rows:
+            if r.row_type != "data" or r.col6_approved_budget is None or r.col6_approved_budget <= 0:
+                continue
+            stats = peer_stats.get(r.label)
+            if not stats or stats["stdev"] == 0:
+                continue
+            z = (r.col6_approved_budget - stats["median"]) / stats["stdev"]
+            if abs(z) >= 2.5:
+                pct = (r.col6_approved_budget / stats["median"] - 1) * 100 if stats["median"] else 0
+                add("low", "peer_outlier", ec,
+                    f"'{r.label}' = ${r.col6_approved_budget:,.0f} vs peer median ${stats['median']:,.0f} (σ={z:+.1f}, {pct:+.0f}%)",
+                    fix="Confirm value is real, not a missed import or wrong unit",
+                    details={"label": r.label, "value": r.col6_approved_budget,
+                             "peer_median": stats["median"], "z_score": round(z, 2),
+                             "peer_n": stats["n"]})
+
+        # ── Check: total_imbalance (MEDIUM) ──
+        # Coop budgets should net near zero. Flag entities with Total Income vs
+        # Total Expenses delta > 10% of income.
+        total_inc = next((r.col6_approved_budget or 0 for r in rows
+                          if r.row_type == "subtotal" and "total income" in (r.label or "").lower()), None)
+        total_exp = next((r.col6_approved_budget or 0 for r in rows
+                          if r.row_type == "subtotal" and "total expense" in (r.label or "").lower()
+                          and "non" not in (r.label or "").lower()), None)
+        if total_inc and total_exp:
+            delta = total_inc - total_exp
+            pct = abs(delta) / total_inc * 100 if total_inc else 0
+            if pct > 10:
+                add("medium", "total_imbalance", ec,
+                    f"Total Income ${total_inc:,.0f} vs Total Expenses ${total_exp:,.0f} ({pct:.1f}% off — coops should balance)",
+                    fix="Investigate which categories are over/under-counted",
+                    details={"total_income": total_inc, "total_expenses": total_exp, "delta_pct": round(pct, 1)})
+
+    # ─── 4. Aggregate response ───
+    by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    by_check = {}
+    by_entity = {}
+    for issue in issues:
+        by_severity[issue["severity"]] = by_severity.get(issue["severity"], 0) + 1
+        by_check[issue["check"]] = by_check.get(issue["check"], 0) + 1
+        by_entity[issue["entity"]] = by_entity.get(issue["entity"], 0) + 1
+
+    # Sort issues: critical > high > medium > low; then by entity
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    issues.sort(key=lambda i: (sev_rank.get(i["severity"], 9), i["entity"], i["check"]))
+
+    # If include_passing, list entities with zero issues
+    passing = []
+    if include_passing:
+        all_ec = {b.entity_code for b in budgets}
+        for ec in sorted(all_ec - set(by_entity.keys())):
+            passing.append(ec)
+
+    return jsonify({
+        "scanned_at": _dt.utcnow().isoformat() + "Z",
+        "budget_year": _BY,
+        "entities_scanned": len(budgets),
+        "issues_total": len(issues),
+        "by_severity": by_severity,
+        "by_check": by_check,
+        "by_entity_count": dict(sorted(by_entity.items(), key=lambda x: -x[1])[:20]),
+        "issues": issues,
+        "passing_entities": passing if include_passing else None,
+        "filters_applied": {
+            "severity": severity_filter,
+            "check": check_filter,
+            "entity_code": entity_filter,
+        },
+    })
+
+
 @app.route("/api/admin/sync-afs/all", methods=["POST"])
 def admin_sync_afs_all():
     """ADMIN: Bulk variant of sync-afs — scan SP for every entity that has
