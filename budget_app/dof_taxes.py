@@ -114,17 +114,46 @@ def get_property_tax_config(entity_code: str) -> dict | None:
 def is_coop(entity_code: str, buildings: list[dict] = None) -> bool:
     """Check if a building is a co-op (needs RE Taxes tab).
 
-    Uses the buildings CSV 'type' field. Falls back to PROPERTY_TAX_CONFIG.
+    Resolution order (FA #2 fix, 2026-05-03):
+      1. budgets.building_type column for the current BUDGET_YEAR (preferred —
+         this is the per-entity per-year source of truth, already auto-backfilled
+         from buildings.csv at startup; users can override via the Building Info tab).
+      2. CSV `type` field (when explicitly passed in by caller)
+      3. PROPERTY_TAX_CONFIG fallback (legacy; only ~5 buildings populated)
+
+    Returns False only if NONE of those say it's a coop. Previously, a
+    missing PROPERTY_TAX_CONFIG entry silently flipped real coops to False
+    and hid their RE Tax tab.
     """
+    # 1. Budget.building_type column (preferred — auto-backfilled from CSV).
+    try:
+        from flask import current_app
+        from sqlalchemy import text
+        if current_app and getattr(current_app, "extensions", {}).get("sqlalchemy"):
+            db = current_app.extensions["sqlalchemy"]
+            row = db.session.execute(
+                text("SELECT building_type FROM budgets "
+                     "WHERE entity_code = :ec ORDER BY year DESC LIMIT 1"),
+                {"ec": entity_code},
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0]).lower() in ("coop", "co-op")
+    except Exception:
+        # Outside app context (script, test) — fall through to other sources.
+        pass
+
+    # 2. CSV data passed by caller
     if buildings:
         for b in buildings:
             if b.get("entity_code") == entity_code:
                 btype = (b.get("type") or "").lower()
                 return btype in ("coop", "co-op")
-    # Fallback to config
+
+    # 3. Legacy fallback: PROPERTY_TAX_CONFIG
     cfg = PROPERTY_TAX_CONFIG.get(entity_code)
     if cfg:
         return cfg.get("property_type") == "coop"
+
     return False
 
 
