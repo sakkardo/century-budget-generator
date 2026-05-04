@@ -7749,6 +7749,169 @@ def admin_entity_trace(entity_code):
 
 
 
+@app.route("/api/admin/sync-afs/<entity_code>", methods=["POST"])
+def admin_sync_afs(entity_code):
+    """ADMIN: Scan SharePoint for AFS PDFs for one entity and create
+    AuditUpload rows for any not yet ingested.
+
+    Resolves FA #27b — currently AFS PDFs sit in SharePoint visible to FAs
+    but no automation stages them for the audit-extraction pipeline. After
+    this runs, new AFS PDFs appear in /audited-financials with status
+    "uploaded", waiting for the FA to click "Extract" (existing flow).
+
+    Body (optional):
+      {"dry_run": true}  - report what would be created without writing
+      {"force": true}    - re-upload even if a matching row exists
+
+    Returns: {ok, entity_code, scanned, created, skipped, results: [{filename, year, status, ...}]}
+    """
+    AuditUpload = af_models["AuditUpload"]
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run"))
+    force = bool(body.get("force"))
+    return _do_afs_sync(entity_code, dry_run=dry_run, force=force, AuditUpload=AuditUpload)
+
+
+@app.route("/api/admin/sync-afs/all", methods=["POST"])
+def admin_sync_afs_all():
+    """ADMIN: Bulk variant of sync-afs — scan SP for every entity that has
+    a Budget row this cycle. Per-entity errors are captured but don't
+    abort the rest. Body: same as per-entity endpoint.
+    """
+    Budget = workflow_models["Budget"]
+    AuditUpload = af_models["AuditUpload"]
+    from workflow import BUDGET_YEAR as _BY
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run"))
+    force = bool(body.get("force"))
+
+    entities = [b.entity_code for b in Budget.query.filter_by(year=_BY).all()]
+    summary = {"ok": True, "dry_run": dry_run, "entities_scanned": 0, "total_created": 0, "total_skipped": 0, "results": []}
+    for ec in entities:
+        try:
+            r = _do_afs_sync(ec, dry_run=dry_run, force=force, AuditUpload=AuditUpload, return_dict=True)
+            summary["entities_scanned"] += 1
+            summary["total_created"] += r.get("created", 0)
+            summary["total_skipped"] += r.get("skipped", 0)
+            summary["results"].append({"entity_code": ec, **r})
+        except Exception as e:
+            summary["results"].append({"entity_code": ec, "error": str(e)[:200]})
+    return jsonify(summary)
+
+
+def _do_afs_sync(entity_code, dry_run=False, force=False, AuditUpload=None, return_dict=False):
+    """Shared implementation for sync-afs single + bulk. Scans SharePoint's
+    audit_2025-classified PDFs for the given entity, creates AuditUpload
+    rows for any not already in the DB.
+    """
+    import re as _re
+    import base64 as _base64
+    from pathlib import Path as _Path
+
+    if AuditUpload is None:
+        AuditUpload = af_models["AuditUpload"]
+
+    # 1. Scan SharePoint for AFS PDFs
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code)
+        afs_files = sp.get("by_source_type", {}).get("audit_2025") or []
+    except Exception as e:
+        result = {"ok": False, "error": f"SP scan failed: {str(e)[:200]}", "scanned": 0, "created": 0, "skipped": 0, "results": []}
+        return result if return_dict else jsonify(result)
+
+    # 2. Building name lookup (af_helpers["get_buildings_list"]() shape)
+    try:
+        bldgs = af_helpers["get_buildings_list"]()
+        building_name = next((b["building_name"] for b in bldgs if b["entity_code"] == entity_code), f"Entity {entity_code}")
+    except Exception:
+        building_name = f"Entity {entity_code}"
+
+    # 3. For each AFS PDF, extract fiscal year from filename and process
+    created = 0
+    skipped = 0
+    results = []
+    data_dir = af_helpers["get_data_dir"]()
+
+    for f in afs_files:
+        name = f.get("name", "")
+        # Year detection: prefer the largest 20xx that appears in the filename.
+        years_in_name = [int(m.group(1)) for m in _re.finditer(r"(20\d{2})", name)]
+        fiscal_year_end = str(max(years_in_name)) if years_in_name else ""
+
+        # Idempotency check: AuditUpload keyed by entity + fiscal_year_end + filename
+        existing = AuditUpload.query.filter_by(
+            entity_code=entity_code,
+            fiscal_year_end=fiscal_year_end,
+            pdf_filename=f"{entity_code}_{fiscal_year_end}_{name}",
+        ).first()
+        if existing and not force:
+            skipped += 1
+            results.append({
+                "filename": name, "year": fiscal_year_end,
+                "status": "skipped_exists", "upload_id": existing.id,
+                "current_status": existing.status,
+            })
+            continue
+
+        if dry_run:
+            results.append({"filename": name, "year": fiscal_year_end, "status": "would_create"})
+            created += 1
+            continue
+
+        # 4. Download PDF from SharePoint via item_id
+        try:
+            item_id = f.get("item_id")
+            if not item_id:
+                results.append({"filename": name, "year": fiscal_year_end, "error": "no item_id"})
+                continue
+            _, pdf_bytes = _sharepoint_download_item(item_id)
+        except Exception as e:
+            results.append({"filename": name, "year": fiscal_year_end, "error": f"download_failed: {str(e)[:150]}"})
+            continue
+
+        # 5. Save bytes to local data_dir (mirrors bulk-upload flow)
+        safe_filename = f"{entity_code}_{fiscal_year_end}_{name}"
+        try:
+            with open(str(data_dir / safe_filename), "wb") as fh:
+                fh.write(pdf_bytes)
+        except Exception as e:
+            results.append({"filename": name, "year": fiscal_year_end, "error": f"local_save_failed: {str(e)[:150]}"})
+            continue
+
+        # 6. Create AuditUpload row at "uploaded" status; capture SP web URL
+        try:
+            upload = AuditUpload(
+                entity_code=entity_code,
+                building_name=building_name,
+                fiscal_year_end=fiscal_year_end,
+                pdf_filename=safe_filename,
+                sharepoint_web_url=f.get("web_url"),
+                status="uploaded",
+            )
+            db.session.add(upload)
+            db.session.commit()
+            created += 1
+            results.append({
+                "filename": name, "year": fiscal_year_end,
+                "status": "created", "upload_id": upload.id, "size": f.get("size"),
+            })
+        except Exception as e:
+            db.session.rollback()
+            results.append({"filename": name, "year": fiscal_year_end, "error": f"db_failed: {str(e)[:150]}"})
+
+    out = {
+        "ok": True,
+        "entity_code": entity_code,
+        "scanned": len(afs_files),
+        "created": created,
+        "skipped": skipped,
+        "results": results,
+    }
+    if dry_run:
+        out["dry_run"] = True
+    return out if return_dict else jsonify(out)
+
+
 @app.route("/api/admin/delete-summary-row", methods=["POST"])
 def admin_delete_summary_row():
     """ADMIN: Remove a BudgetSummaryRow by entity + label.
