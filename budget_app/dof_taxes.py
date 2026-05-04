@@ -98,9 +98,127 @@ PROPERTY_TAX_CONFIG = {
 # NYC Open Data SODA API endpoint for property valuation
 SODA_API_URL = "https://data.cityofnewyork.us/resource/8y4t-faws.json"
 
+# NYC Planning Labs free GeoSearch API — turns an address into a BBL.
+# Returns BBL inside addendum.pad.bbl. No API key needed.
+NYC_GEOSEARCH_URL = "https://geosearch.planninglabs.nyc/v2/search"
+
+# FY2025-26 NYC class-2 final tax rate (cooperatives + 3+ unit rentals).
+# Updated annually around June. Used as a fallback for coops not in
+# PROPERTY_TAX_CONFIG. The FA can override per-building via the RE Tax
+# tab UI.
+DEFAULT_TAX_RATE_CLASS_2 = 0.12502
+
 # Path to cached DOF data (persists between app restarts)
 CACHE_DIR = Path(__file__).parent / "data"
 CACHE_FILE = CACHE_DIR / "dof_tax_cache.json"
+# Resolved-BBL cache: address → BBL. Saves repeat GeoSearch calls.
+BBL_CACHE_FILE = CACHE_DIR / "bbl_cache.json"
+
+
+def _load_bbl_cache() -> dict:
+    """Load resolved BBL cache (address-keyed)."""
+    try:
+        if BBL_CACHE_FILE.exists():
+            with open(BBL_CACHE_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_bbl_cache(cache: dict) -> None:
+    """Persist BBL cache."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(BBL_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        logger.warning(f"BBL cache save failed: {e}")
+
+
+def _get_address_from_csv(entity_code: str) -> tuple[str, str] | tuple[None, None]:
+    """Read (address, zip) from buildings.csv for a given entity_code.
+    Returns (None, None) if not found or CSV missing."""
+    try:
+        import csv as _csv
+        # buildings.csv lives one level up at budget_system/
+        csv_path = Path(__file__).parent.parent / "budget_system" / "buildings.csv"
+        if not csv_path.exists():
+            return (None, None)
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for row in _csv.DictReader(f):
+                if str(row.get("entity_code", "")).strip() == str(entity_code).strip():
+                    addr = (row.get("address") or "").strip()
+                    zip_ = (row.get("zip") or "").strip()
+                    return (addr, zip_) if addr else (None, None)
+    except Exception as e:
+        logger.warning(f"buildings.csv read failed for {entity_code}: {e}")
+    return (None, None)
+
+
+def _lookup_bbl_from_address(address: str, zip_code: str = "") -> str | None:
+    """Look up a NYC BBL (10-digit parid) from a street address using
+    the NYC Planning Labs GeoSearch API. Returns None on failure.
+
+    BBL format: borough(1) + block(5) + lot(4) e.g. "1013410044"
+    Used by fetch_dof_data() to support coops not in PROPERTY_TAX_CONFIG.
+    """
+    if not address:
+        return None
+    cache_key = f"{address.lower().strip()}|{(zip_code or '').strip()}"
+    cache = _load_bbl_cache()
+    if cache_key in cache:
+        return cache[cache_key] or None  # cached negative = ""
+    try:
+        import requests
+        text = f"{address} {zip_code} New York NY".strip()
+        resp = requests.get(
+            NYC_GEOSEARCH_URL,
+            params={"text": text, "size": 1},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        feats = data.get("features") or []
+        if not feats:
+            cache[cache_key] = ""
+            _save_bbl_cache(cache)
+            return None
+        props = feats[0].get("properties", {})
+        bbl = ((props.get("addendum") or {}).get("pad") or {}).get("bbl")
+        if bbl and len(str(bbl)) == 10:
+            cache[cache_key] = str(bbl)
+            _save_bbl_cache(cache)
+            logger.info(f"BBL resolved for '{address}': {bbl}")
+            return str(bbl)
+    except Exception as e:
+        logger.warning(f"GeoSearch BBL lookup failed for '{address}': {e}")
+    return None
+
+
+def _bbl_to_parid(bbl: str) -> str | None:
+    """Normalize various BBL formats to a 10-char parid string.
+    Accepts:
+      "1013410044"   → "1013410044"
+      "1-01341-0044" → "1013410044"
+      "1-1341-44"    → pad block to 5, lot to 4 → "1013410044"
+    Returns None if input is unparseable.
+    """
+    if not bbl:
+        return None
+    s = str(bbl).strip()
+    if "-" in s:
+        parts = s.split("-")
+        if len(parts) == 3:
+            boro = parts[0].strip()
+            block = parts[1].strip().zfill(5)
+            lot = parts[2].strip().zfill(4)
+            s = boro + block + lot
+    s = s.replace("-", "").strip()
+    if len(s) == 10 and s.isdigit():
+        return s
+    return None
 
 
 def get_property_tax_config(entity_code: str) -> dict | None:
@@ -160,45 +278,86 @@ def is_coop(entity_code: str, buildings: list[dict] = None) -> bool:
 def fetch_dof_data(entity_code: str) -> dict | None:
     """Fetch current tax assessment data from NYC DOF via SODA API.
 
-    Returns dict with assessed_value, tax_rate, annual_tax or None on failure.
-    Falls back to cached/hardcoded values if API is unreachable.
+    Resolution order (rewritten 2026-05-03 to fix two bugs):
+      1. Resolve a 10-digit parid (BBL):
+         - From PROPERTY_TAX_CONFIG[bbl] when present (legacy hand-keyed).
+         - Else from NYC GeoSearch using the address in buildings.csv.
+      2. Query SODA dataset 8y4t-faws by parid (no leading-zero issues
+         that broke the prior boro/block/lot query for buildings like 148).
+      3. Fill tax_rate from PROPERTY_TAX_CONFIG when present, else use
+         DEFAULT_TAX_RATE_CLASS_2 (FA can override).
+      4. Fall back to cached/hardcoded values if the API is unreachable.
+
+    Returns None only if we can't resolve a BBL at all (truly unknown property).
     """
-    cfg = PROPERTY_TAX_CONFIG.get(entity_code)
-    if not cfg:
+    cfg = PROPERTY_TAX_CONFIG.get(entity_code) or {}
+
+    # Step 1: resolve BBL → parid. Prefer GeoSearch (live, address-based)
+    # over PROPERTY_TAX_CONFIG[bbl] — at least one of the legacy hand-keyed
+    # entries (148) has a wrong BBL, and GeoSearch self-heals that.
+    parid = None
+    address, zip_ = _get_address_from_csv(entity_code)
+    if address:
+        bbl = _lookup_bbl_from_address(address, zip_)
+        if bbl:
+            parid = _bbl_to_parid(bbl)
+    if not parid and cfg.get("bbl"):
+        # Fall back to config BBL only when address lookup fails.
+        parid = _bbl_to_parid(cfg["bbl"])
+    if not parid:
+        # No BBL anywhere — can't query DOF
         return None
 
-    # Try SODA API first
+    # Step 2: query SODA by parid (most reliable identifier; avoids
+    # leading-zero / bad-config mismatches in the boro/block/lot query)
+    tax_rate = cfg.get("tax_rate") or DEFAULT_TAX_RATE_CLASS_2
     try:
         import requests
         params = {
-            "$where": f"boro='{cfg['borough']}' AND block='{cfg['block']}' AND lot='{cfg['lot']}'",
+            "$where": f"parid='{parid}'",
             "$limit": 1,
-            "$order": "year DESC"
+            "$order": "year DESC",
         }
         resp = requests.get(SODA_API_URL, params=params, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if data:
                 record = data[0]
+                # cur* = current roll year, py* = prior year, ten* = tentative.
+                # Some records have empty cur* (e.g., year=2027 not yet certified);
+                # fall back to ten* (tentative) when cur* is missing.
+                def _f(*keys):
+                    for k in keys:
+                        v = record.get(k)
+                        if v not in (None, "", "0"):
+                            try:
+                                return float(v)
+                            except (TypeError, ValueError):
+                                pass
+                    return 0.0
                 result = {
                     "entity_code": entity_code,
-                    "bbl": cfg["bbl"],
-                    # Transitional AV — what NYC actually taxes on for Class 2
-                    "assessed_value": float(record.get("curtrntot", 0)),
-                    "actual_av": float(record.get("curacttot", 0)),
-                    "prior_trans_av": float(record.get("pytrntot", 0)),
-                    "prior_actual_av": float(record.get("pyacttot", 0)),
-                    "market_value": float(record.get("curmkttot", 0)),
-                    "taxable_value": float(record.get("curtxbtot", 0)),
-                    "tax_rate": cfg.get("tax_rate", 0),  # API doesn't have rate; use config
+                    "bbl": parid,
+                    "assessed_value": _f("curtrntot", "tentrntot"),
+                    "actual_av": _f("curacttot", "tenacttot"),
+                    "prior_trans_av": _f("pytrntot"),
+                    "prior_actual_av": _f("pyacttot"),
+                    "market_value": _f("curmkttot", "tenmkttot"),
+                    "taxable_value": _f("curtxbtot", "tentxbtot"),
+                    "tax_rate": tax_rate,
                     "source": "nyc_open_data_api",
-                    "tax_class": cfg["tax_class"],
+                    "tax_class": cfg.get("tax_class") or record.get("curtaxclass") or "2",
                     "year": record.get("year", ""),
                 }
-                # Cache the result
                 _save_cache(entity_code, result)
-                logger.info(f"DOF data fetched from API for {entity_code}: TransAV=${result['assessed_value']:,.0f}, ActualAV=${result['actual_av']:,.0f}")
+                logger.info(
+                    f"DOF data fetched for {entity_code} (parid={parid}): "
+                    f"TransAV=${result['assessed_value']:,.0f}, "
+                    f"ActualAV=${result['actual_av']:,.0f}"
+                )
                 return result
+            else:
+                logger.warning(f"DOF SODA query returned no records for {entity_code} (parid={parid})")
     except Exception as e:
         logger.warning(f"DOF API fetch failed for {entity_code}: {e}")
 
