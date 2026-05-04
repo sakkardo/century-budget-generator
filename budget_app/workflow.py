@@ -2713,18 +2713,31 @@ def create_workflow_blueprint(db):
             except Exception:
                 sources = {}
 
-        return render_template_string(
-            WIZARD_TEMPLATE,
-            entity_code=entity_code or "",
-            budget_year=BUDGET_YEAR,
-            budgets_json=json_mod.dumps(entity_list),
-            portfolio_json=json_mod.dumps(portfolio),
-            building_json=json_mod.dumps(building_overrides),
-            sources_json=json_mod.dumps(sources),
-            fa_users_json=json_mod.dumps(fa_users),
-            assignments_json=json_mod.dumps(assignments),
-            monday_status_json=json_mod.dumps(monday_status),
-        )
+        try:
+            return render_template_string(
+                WIZARD_TEMPLATE,
+                entity_code=entity_code or "",
+                budget_year=BUDGET_YEAR,
+                budgets_json=json_mod.dumps(entity_list),
+                portfolio_json=json_mod.dumps(portfolio),
+                building_json=json_mod.dumps(building_overrides),
+                sources_json=json_mod.dumps(sources),
+                fa_users_json=json_mod.dumps(fa_users),
+                assignments_json=json_mod.dumps(assignments),
+                monday_status_json=json_mod.dumps(monday_status),
+            )
+        except Exception as _wiz_err:
+            # TEMPORARY DEBUG: surface the actual traceback so we can identify
+            # the regression. Remove once the root cause is fixed.
+            import traceback as _tb
+            tb_text = _tb.format_exc()
+            safe_tb = tb_text.replace("<","&lt;").replace(">","&gt;")
+            return (
+                "<!DOCTYPE html><html><body style='font-family:monospace;padding:24px;'>"
+                "<h2>Wizard render error (debug surface)</h2>"
+                f"<pre style='background:#111;color:#0f0;padding:12px;white-space:pre-wrap;font-size:12px;'>{safe_tb}</pre>"
+                "</body></html>"
+            ), 500
 
 
     def _get_sources_dict(entity_code):
