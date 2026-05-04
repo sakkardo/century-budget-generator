@@ -1915,7 +1915,7 @@ async function uploadAll() {
                 }
                 // "+ Add row" footer for revenue — opens a modal with desc + amount + category fields.
                 html += '<tr><td colspan="' + (years.length + 3) + '" style="padding:8px 6px;text-align:left;">'
-                    + '<button type="button" onclick="addMappingRow(\'revenue\', null)" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add Revenue line</button>'
+                    + '<button type="button" onclick="addMappingRow(\\\'revenue\\\', null)" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add Revenue line</button>'
                     + '</td></tr>';
                 html += '</table>';
             }
@@ -1966,7 +1966,7 @@ async function uploadAll() {
                     }
                     // "+ Add row" footer per expense category — places new row at end of this group.
                     html += '<tr><td colspan="' + (years.length + 3) + '" style="padding:8px 6px 8px 20px;text-align:left;">'
-                        + '<button type="button" onclick="addMappingRow(\'expense\', ' + catIdx + ')" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add line in ' + (cat.name || 'Expenses') + '</button>'
+                        + '<button type="button" onclick="addMappingRow(\\\'expense\\\', ' + catIdx + ')" style="border:1px solid var(--blue);background:#eff6ff;color:var(--blue);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">+ Add line in ' + (cat.name || \'Expenses\') + '</button>'
                         + '</td></tr>';
                     catIdx++;
                 }
