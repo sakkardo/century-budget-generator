@@ -12663,12 +12663,25 @@ async function sumDoInsert(secKey) {
   const btn = document.getElementById('sumInsSaveBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
+  // Compute after_label: insert AFTER the last data row in this section,
+  // which means BEFORE the section's subtotal. Without this, the row gets
+  // appended to display_order=max+1, landing AFTER Total Income (or whichever
+  // section's subtotal) and rendering in the wrong bucket.
+  let after_label = null;
+  try {
+    const rows = (window._sumRowMap && Object.values(window._sumRowMap)) || [];
+    const sectionRows = rows
+      .filter(r => r._sk === secKey && r.row_type === 'data' && r.label !== label)
+      .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+    if (sectionRows.length > 0) after_label = sectionRows[sectionRows.length - 1].label;
+  } catch (e) { /* fall back to end-of-table */ }
+
   try {
     // Persist via the existing endpoint
     const resp = await fetch('/api/admin/add-summary-row', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({entity_code: entityCode, label: label, section: serverSection})
+      body: JSON.stringify({entity_code: entityCode, label: label, section: serverSection, after_label: after_label})
     });
     const data = await resp.json();
     if (!resp.ok || data.error) {

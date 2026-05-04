@@ -7703,6 +7703,54 @@ def admin_entity_trace(entity_code):
 
 
 
+@app.route("/api/admin/delete-summary-row", methods=["POST"])
+def admin_delete_summary_row():
+    """ADMIN: Remove a BudgetSummaryRow by entity + label.
+
+    Sister to add-summary-row. Used to undo a mis-added row from the FA's
+    "+ Add Row" flow on the dashboard. Only deletes rows the FA created
+    interactively (row_type=data, no col6_approved_budget — i.e., not from
+    the imported template). Refuses to delete rows that came from the
+    approved 2026 budget yrlycomp import.
+
+    Body: {"entity_code": "168", "label": "Commercial"}
+    """
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    entity_code = (data.get("entity_code") or "").strip()
+    label = (data.get("label") or "").strip()
+    if not entity_code or not label:
+        return jsonify({"error": "entity_code and label required"}), 400
+
+    row = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=_BY, label=label
+    ).first()
+    if not row:
+        return jsonify({"ok": True, "noop": "row not found"})
+
+    # Safety check: refuse to delete rows from the original template import.
+    # Those have col6_approved_budget set (the imported 2026 budget value).
+    # FA-added rows start with col6=None.
+    if row.col6_approved_budget is not None:
+        return jsonify({
+            "error": "Cannot delete a row imported from the approved 2026 budget. "
+                     "This row has historical data (col6 = "
+                     f"${row.col6_approved_budget:,.0f}). Edit its values instead.",
+        }), 403
+    if row.row_type != "data":
+        return jsonify({"error": "Cannot delete subtotal/section_header rows"}), 403
+
+    try:
+        db.session.delete(row)
+        db.session.commit()
+        return jsonify({"ok": True, "deleted": label, "id": row.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @app.route("/api/admin/summary-row-options", methods=["GET"])
 def admin_summary_row_options():
     """Return canonical SUMMARY_ROW_MAP labels grouped by section, used to
