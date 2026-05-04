@@ -4551,7 +4551,7 @@ def create_workflow_blueprint(db):
         results = []
         total_updated = 0
         for ec in entities:
-            rows = BudgetSummaryRow.query.filter_by(entity_code=ec, year=BUDGET_YEAR).all()
+            rows = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=BUDGET_YEAR).all()
             updated = 0
             updated_labels = []
             for row in rows:
@@ -4640,7 +4640,7 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
-        summary_rows = BudgetSummaryRow.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).all()
+        summary_rows = BudgetSummaryRow.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).all()
         budget_lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
         bl_dicts = [l.to_dict() for l in budget_lines]
 
