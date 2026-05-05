@@ -11603,17 +11603,16 @@ function _rePopulatePropertyCard(entityCode, re) {
   const boroEl = document.getElementById('propBorough');
   const blockEl = document.getElementById('propBlock');
   const lotEl = document.getElementById('propLot');
-  if (d) {
-    if (boroEl) boroEl.value = d.borough;
-    if (blockEl) blockEl.value = d.block;
-    if (lotEl) lotEl.value = d.lot;
-    propLocked = !!d.configured;
-  } else {
-    if (boroEl) boroEl.value = '1';
-    if (blockEl) blockEl.value = '';
-    if (lotEl) lotEl.value = '';
-    propLocked = false;
-  }
+  // Prefer hardcoded PROPERTY_DEFAULTS (FA-curated). Fall back to backend
+  // response (re.borough/block/lot are derived from BBL — works for any
+  // building auto-resolved via NYC GeoSearch even without a CONFIG entry).
+  const boro  = (d && d.borough)  || (re && re.borough)  || '1';
+  const block = (d && d.block)    || (re && re.block)    || '';
+  const lot   = (d && d.lot)      || (re && re.lot)      || '';
+  if (boroEl) boroEl.value = boro;
+  if (blockEl) blockEl.value = block;
+  if (lotEl) lotEl.value = lot;
+  propLocked = !!(d && d.configured);
   applyPropLock();
   onPropFieldChange();
 }
