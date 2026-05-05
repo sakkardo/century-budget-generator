@@ -6297,6 +6297,8 @@ def admin_foundation_page():
   <a href="/wizard">Wizard</a>
   <a href="/dashboard">FA Dashboard</a>
   <a href="/audited-financials">Audited Financials</a>
+  <span style="flex:1"></span>
+  <button id="syncBtn" onclick="syncFromMaster()" style="background:#2563eb; color:white; border:none; padding:8px 14px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">↻ Sync from master folder</button>
 </header>
 <main>
   <div class="card">
@@ -6323,6 +6325,39 @@ def admin_foundation_page():
 let _data = null;
 let _filter = "all";
 let _search = "";
+
+function syncFromMaster() {
+  const btn = document.getElementById("syncBtn");
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.style.opacity = "0.6";
+  btn.innerHTML = "Syncing… (~30s for 25-file folder)";
+  fetch("/api/admin/audit-sync/run", {method: "POST"})
+    .then(r => r.json())
+    .then(j => {
+      const sm = j.summary || {};
+      const msg = "Sync complete:\n  copied: " + (sm.copied||0) +
+                  "\n  skipped (already in dest): " + (sm.skipped||0) +
+                  "\n  replaced (source newer): " + (sm.replaced||0) +
+                  "\n  unmatched (filename problems): " + (sm.unmatched||0) +
+                  "\n  errors: " + (sm.error||0) +
+                  "\n\nrun_id: " + (j.run_id || "?");
+      alert(msg);
+      // Refresh the dashboard data
+      fetch("/api/admin/foundation-summary").then(r => r.json()).then(d => {
+        _data = d;
+        renderChips();
+        renderRows();
+      });
+    })
+    .catch(err => alert("Sync failed: " + err.message))
+    .finally(() => {
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.innerHTML = orig;
+    });
+}
+
 
 function badgeApproved(state, count) {
   if (state === "imported") return '<span class="badge badge-ok">\u2713 Imported ' + count + ' rows</span>';
