@@ -9,6 +9,10 @@ URL resolution order:
   2. http://${WEB_PRIVATE_DOMAIN}:${WEB_PRIVATE_PORT}/api/admin/audit-sync/run
      (Railway internal — uses the linked service's private hostname/port)
   3. Public production URL (fallback)
+
+Auth: passes ADMIN_KEY env var as X-Admin-Key header (matches @require_admin
+on the endpoint). Reference Railway main service's ADMIN_KEY in this cron
+service's variables so they stay in sync.
 """
 import json
 import os
@@ -29,11 +33,15 @@ def resolve_url():
 
 def main():
     url = resolve_url()
-    print(f"audit-sync cron: POST {url}", flush=True)
+    admin_key = os.environ.get("ADMIN_KEY", "").strip()
+    print(f"audit-sync cron: POST {url}  (admin_key={'set' if admin_key else 'MISSING'})", flush=True)
+    headers = {"Content-Type": "application/json"}
+    if admin_key:
+        headers["X-Admin-Key"] = admin_key
     req = urllib.request.Request(
         url,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         data=b"{}",
     )
     try:
