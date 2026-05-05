@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Daily cron: trigger audit-sync from master folder to entity folders.
 
-Designed to be the start command of a Railway scheduled service. POSTs to
-/api/admin/audit-sync/run, prints the response summary, exits with status 0
-on success or non-zero on failure.
+Designed as start command of a Railway scheduled service. POSTs to the
+audit-sync endpoint, prints the response summary, exits non-zero on failure.
 
-Configure in Railway:
-  - Start command: python scripts/audit_sync_cron.py
-  - Cron schedule: 0 8 * * *   (daily at 8am UTC ≈ 3am-4am ET)
-
-Override the URL via AUDIT_SYNC_URL env var if needed.
+URL resolution order:
+  1. AUDIT_SYNC_URL env var (explicit override)
+  2. http://${WEB_PRIVATE_DOMAIN}:${WEB_PRIVATE_PORT}/api/admin/audit-sync/run
+     (Railway internal — uses the linked service's private hostname/port)
+  3. Public production URL (fallback)
 """
 import json
 import os
@@ -17,16 +16,22 @@ import sys
 import urllib.request
 
 
-URL = os.environ.get(
-    "AUDIT_SYNC_URL",
-    "https://century-budget-generator-production.up.railway.app/api/admin/audit-sync/run",
-)
+def resolve_url():
+    explicit = os.environ.get("AUDIT_SYNC_URL")
+    if explicit:
+        return explicit
+    private_host = os.environ.get("WEB_PRIVATE_DOMAIN")
+    private_port = os.environ.get("WEB_PRIVATE_PORT", "8080")
+    if private_host:
+        return f"http://{private_host}:{private_port}/api/admin/audit-sync/run"
+    return "https://century-budget-generator-production.up.railway.app/api/admin/audit-sync/run"
 
 
 def main():
-    print(f"audit-sync cron: POST {URL}", flush=True)
+    url = resolve_url()
+    print(f"audit-sync cron: POST {url}", flush=True)
     req = urllib.request.Request(
-        URL,
+        url,
         method="POST",
         headers={"Content-Type": "application/json"},
         data=b"{}",
@@ -52,8 +57,6 @@ def main():
         print(f"  fatal_error={data['fatal_error']}", file=sys.stderr)
         return 2
     if (data.get("summary") or {}).get("error", 0) > 0:
-        # Per-file errors are non-fatal but still surface a non-zero exit so
-        # Railway logs the run as failed for visibility.
         return 3
     return 0
 
