@@ -3985,8 +3985,30 @@ def create_workflow_blueprint(db):
                 or (line.get("category") or "").lower() == "capital")
 
     def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
-        """Sum budget_lines matching GL prefixes. Returns ytd/estimate/forecast/current_budget."""
-        totals = {"ytd_actual": 0.0, "estimate": 0.0, "forecast": 0.0, "current_budget": 0.0, "proposed_budget": 0.0, "count": 0}
+        """Sum budget_lines matching GL prefixes. Returns ytd/estimate/forecast/current_budget.
+
+        FA directive 2026-05-05: COL 3 (YTD) on the Summary tab must show
+        raw posted YTD only — accruals and unpaid bills DO NOT belong in COL 3.
+        Those mid-period adjustments belong in COL 4 (Estimate). The total
+        forecast (COL 5 = COL 3 + COL 4) remains unchanged: it still equals
+        ytd + accrual + unpaid + projection. Three new fields surfaced for
+        the summary endpoint to assign columns correctly:
+          - ytd_only: raw ytd_actual sum (→ COL 3)
+          - accrual_unpaid: sum of accrual + unpaid (→ part of COL 4)
+          - estimate: remaining-months projection (→ part of COL 4)
+        Legacy `ytd_actual` field preserved (= ytd_only + accrual_unpaid)
+        for any caller still expecting the old combined value.
+        """
+        totals = {
+            "ytd_actual": 0.0,        # legacy combined ytd+accrual+unpaid
+            "ytd_only": 0.0,           # NEW: raw YTD only (col 3)
+            "accrual_unpaid": 0.0,     # NEW: accrual + unpaid (part of col 4)
+            "estimate": 0.0,
+            "forecast": 0.0,
+            "current_budget": 0.0,
+            "proposed_budget": 0.0,
+            "count": 0,
+        }
         for line in budget_lines_dicts:
             gl = line.get("gl_code", "")
             if not _gl_matches_prefixes(gl, prefixes):
@@ -4013,7 +4035,9 @@ def create_workflow_blueprint(db):
             else:
                 est = 0
             line_forecast = ytd_total + est
-            totals["ytd_actual"] += ytd_total
+            totals["ytd_actual"] += ytd_total       # legacy
+            totals["ytd_only"] += ytd               # NEW: col 3 source
+            totals["accrual_unpaid"] += accrual + unpaid   # NEW: part of col 4
             totals["estimate"] += est
             totals["forecast"] += line_forecast
             totals["current_budget"] += float(line.get("current_budget", 0) or 0)
@@ -4490,9 +4514,9 @@ def create_workflow_blueprint(db):
 
             # Compute cols 3-5 from budget_lines via GL prefix aggregation
             col2 = col2_lookup.get(row.label) if isinstance(col2_lookup, dict) and "_error" not in col2_lookup else None
-            col3 = None   # 2026 YTD actual
-            col4 = None   # 2026 estimate
-            col5 = None   # 2026 forecast
+            col3 = None   # 2026 YTD actual (raw — no accruals/unpaid)
+            col4 = None   # 2026 estimate (= projection + accruals + unpaid)
+            col5 = None   # 2026 forecast (= col3 + col4)
 
             prefixes = []
             agg_count = 0
@@ -4505,8 +4529,12 @@ def create_workflow_blueprint(db):
                     agg = _aggregate_by_prefix(bl_dicts, prefixes, ytd_months)
                     agg_count = agg.get("count", 0)
                     if agg_count > 0:
-                        col3 = round(agg["ytd_actual"], 2)
-                        col4 = round(agg["estimate"], 2)
+                        # FA directive 2026-05-05:
+                        #   Col 3 (YTD)      = raw ytd only (no accrual/unpaid)
+                        #   Col 4 (Estimate) = accrual + unpaid + remaining-months projection
+                        #   Col 5 (Forecast) = Col 3 + Col 4 = today's forecast (unchanged)
+                        col3 = round(agg["ytd_only"], 2)
+                        col4 = round(agg["accrual_unpaid"] + agg["estimate"], 2)
                         col5 = round(agg["forecast"], 2)
 
             # ── Fixed-forecast GL override ─────────────────────────────
