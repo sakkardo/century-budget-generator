@@ -8494,6 +8494,7 @@ def admin_delete_summary_row():
     """
     BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
     from workflow import BUDGET_YEAR as _BY
+    from datetime import datetime as _dt
 
     data = request.get_json(silent=True) or {}
     entity_code = (data.get("entity_code") or "").strip()
@@ -8539,7 +8540,7 @@ def admin_delete_summary_row():
         target.col1_prior_actual = _add(target.col1_prior_actual, row.col1_prior_actual)
         target.col6_approved_budget = _add(target.col6_approved_budget, row.col6_approved_budget)
         target.col7_proposed_budget = _add(target.col7_proposed_budget, row.col7_proposed_budget)
-        target.updated_at = datetime.utcnow()
+        target.updated_at = _dt.utcnow()
         merge_summary = {
             "target_label": merge_into_label,
             "target_id": target.id,
