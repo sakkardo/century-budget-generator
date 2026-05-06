@@ -4683,15 +4683,91 @@ def create_workflow_blueprint(db):
             if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                 rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
 
+        # ── Duplicate-row warnings ───────────────────────────────────────
+        # FA directive 2026-05-05: rather than auto-collapsing duplicate rows
+        # at import (which could destroy legitimate distinctions like Gas
+        # cooking vs Gas Heating in some buildings), detect duplicates and
+        # surface a warning so the FA can review and decide. Two strong
+        # signals trigger a warning:
+        #   - Same GL prefix list across multiple data rows in the same
+        #     section (guaranteed identical aggregation = duplicate)
+        #   - Identical non-zero col3/col5 values across data rows (weaker
+        #     signal — could be coincidence but worth flagging)
+        warnings = []
+        try:
+            data_rows = [r for r in summary_rows if r.row_type == "data"]
+            # 1) Group by canonicalized gl_prefixes_json (same prefixes = same agg)
+            prefix_groups = {}
+            for row in data_rows:
+                pj = row.gl_prefixes_json or ""
+                if not pj or pj in ("[]", "null"):
+                    continue
+                # Sort the prefix list inside the JSON so order doesn't matter
+                try:
+                    plist = sorted(_json.loads(pj))
+                    key = (row.section or "", _json.dumps(plist))
+                except Exception:
+                    key = (row.section or "", pj)
+                prefix_groups.setdefault(key, []).append(row)
+            for (section, key), rows in prefix_groups.items():
+                if len(rows) > 1:
+                    warnings.append({
+                        "type": "duplicate_prefixes",
+                        "severity": "high",
+                        "section": section,
+                        "labels": [r.label for r in rows],
+                        "shared_prefixes": _json.loads(key) if key.startswith("[") else [],
+                        "message": (
+                            f"{len(rows)} rows in '{section}' share the same GL prefix "
+                            f"list — they aggregate identical data. Consider consolidating "
+                            f"via the merge_into_label admin action, or differentiate the "
+                            f"prefixes if they should track different GLs."
+                        ),
+                    })
+            # 2) Identical non-zero col3 (YTD) across data rows in the same section
+            #    — secondary check that catches near-duplicates the FA may want
+            #    to know about even when prefixes differ.
+            col3_groups = {}
+            for rd in result_rows:
+                if rd.get("row_type") != "data": continue
+                v = rd.get("col3")
+                if v is None or abs(v) < 0.01: continue
+                key = (rd.get("section") or "", round(v, 2))
+                col3_groups.setdefault(key, []).append(rd)
+            for (section, val), rds in col3_groups.items():
+                if len(rds) > 1:
+                    # Skip if already covered by the prefix-duplicate check (avoid noise)
+                    labels = sorted(rd.get("label") for rd in rds)
+                    already_flagged = any(
+                        sorted(w.get("labels") or []) == labels
+                        for w in warnings if w["type"] == "duplicate_prefixes"
+                    )
+                    if not already_flagged:
+                        warnings.append({
+                            "type": "duplicate_values",
+                            "severity": "medium",
+                            "section": section,
+                            "labels": labels,
+                            "value": val,
+                            "message": (
+                                f"{len(rds)} rows in '{section}' show identical YTD "
+                                f"(${val:,.0f}). Could be coincidence, but worth verifying."
+                            ),
+                        })
+        except Exception as _warn_err:
+            logger.warning(f"summary duplicate-warning scan failed for {entity_code}: {_warn_err}")
+
         return jsonify({
             "entity_code": entity_code,
             "budget_year": budget_year,
             "ytd_months": ytd_months,
             "rows": result_rows,
+            "warnings": warnings,
             "stats": {
                 "total_rows": len(result_rows),
                 "data_rows": len([r for r in result_rows if r["row_type"] == "data"]),
                 "has_budget_lines": len(bl_dicts) > 0,
+                "warning_count": len(warnings),
             },
             "_debug_col2": col2_lookup,
         })
@@ -11841,6 +11917,39 @@ async function renderBudgetSummary(contentDiv) {
     if (r.lineage && r.label) window._sumLineage[r.label] = r.lineage;
     if (r.label) window._sumRowMap[r.label] = r;
   });
+
+  // ── Duplicate-row warnings banner ─────────────────────────────────
+  // FA directive 2026-05-05: surface duplicate-row warnings (e.g. Gas +
+  // Gas Heating both pulling from [5250,5251,5252]) so the FA can review
+  // and decide whether to consolidate or differentiate. Banner is dismissed
+  // via the X button; the dismissal is per-page-load only (re-renders on
+  // tab switch). Server returns warnings in sumData.warnings.
+  const warnings = Array.isArray(sumData.warnings) ? sumData.warnings : [];
+  if (warnings.length > 0) {
+    const sevColor = (s) => s === 'high' ? '#b91c1c' : '#92400e';
+    const sevBg    = (s) => s === 'high' ? '#fef2f2' : '#fffbeb';
+    const sevBorder= (s) => s === 'high' ? '#fecaca' : '#fed7aa';
+    let bannerHtml = '<div id="sumWarningsBanner" style="margin:0 0 12px 0;border-radius:8px;overflow:hidden;border:1px solid;padding:0;">';
+    warnings.forEach((w, idx) => {
+      const labels = (w.labels || []).map(l => '<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:3px;font-size:11px;">' + l + '</code>').join(' · ');
+      const detail = w.shared_prefixes && w.shared_prefixes.length
+        ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Shared GL prefixes: ' + w.shared_prefixes.join(', ') + '</div>'
+        : (w.value !== undefined
+            ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Identical YTD: $' + Math.round(w.value).toLocaleString('en-US') + '</div>'
+            : '');
+      bannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;display:flex;align-items:flex-start;gap:10px;">';
+      bannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
+      bannerHtml += '<div style="flex:1;">';
+      bannerHtml += '<div style="font-weight:600;color:' + sevColor(w.severity) + ';font-size:13px;">Duplicate row warning · ' + (w.section || 'Summary') + '</div>';
+      bannerHtml += '<div style="margin-top:4px;color:#374151;font-size:12px;">' + (w.message || '') + '</div>';
+      bannerHtml += '<div style="margin-top:4px;font-size:12px;">Rows: ' + labels + '</div>';
+      bannerHtml += detail;
+      bannerHtml += '</div></div>';
+    });
+    // Strip the trailing border-bottom from the last item by adjusting the wrapper
+    bannerHtml += '</div>';
+    contentDiv.insertAdjacentHTML('afterbegin', bannerHtml);
+  }
 
   // Build section-aware data structure
   const rows = sumData.rows;
