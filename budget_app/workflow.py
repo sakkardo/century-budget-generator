@@ -1262,6 +1262,13 @@ def create_workflow_blueprint(db):
         # FA work product (starts NULL, FA fills in)
         col7_proposed_budget = db.Column(db.Float, nullable=True)    # 2027 Budget
 
+        # FA directive 2026-05-05: editable green-tab overrides.
+        # When set, take precedence over the GL-aggregation computed values
+        # in /api/summary. NULL = use computed. Parallels BudgetLine.estimate_override.
+        col3_override = db.Column(db.Float, nullable=True)           # 2026 YTD override
+        col4_override = db.Column(db.Float, nullable=True)           # 2026 Estimate override
+        col5_override = db.Column(db.Float, nullable=True)           # 2026 Forecast override
+
         # Metadata for the summary engine
         source_tab = db.Column(db.String(50), nullable=True)        # Income, Payroll, Energy, etc.
         gl_prefixes_json = db.Column(db.Text, nullable=True)        # JSON array of GL prefixes
@@ -4580,6 +4587,23 @@ def create_workflow_blueprint(db):
                 col4 = round(col5 - (col3 or 0), 2)
                 fixed_forecast_applied = True
 
+            # ── FA-set overrides (col3/col4/col5) take precedence over computed ──
+            # FA directive 2026-05-05: editable green cells. Stash the computed
+            # value in the response so the UI can show "click to revert to
+            # computed $X" tooltips when an override is active.
+            col3_computed = col3
+            col4_computed = col4
+            col5_computed = col5
+            col3_overridden = row.col3_override is not None
+            col4_overridden = row.col4_override is not None
+            col5_overridden = row.col5_override is not None
+            if col3_overridden:
+                col3 = round(float(row.col3_override), 2)
+            if col4_overridden:
+                col4 = round(float(row.col4_override), 2)
+            if col5_overridden:
+                col5 = round(float(row.col5_override), 2)
+
             # Col 8: % variance = (col7 - col5) / |col5| * 100
             col8 = None
             if col7 is not None and col5 and col5 != 0:
@@ -4634,6 +4658,16 @@ def create_workflow_blueprint(db):
                 "col7": col7, "col8": col8,
                 "source_tab": row.source_tab,
                 "lineage": lineage,
+                # Override metadata: lets UI badge overridden cells and offer
+                # one-click revert by exposing the computed-vs-override delta.
+                "overrides": {
+                    "col3": {"is_overridden": col3_overridden, "computed": col3_computed,
+                             "override": row.col3_override},
+                    "col4": {"is_overridden": col4_overridden, "computed": col4_computed,
+                             "override": row.col4_override},
+                    "col5": {"is_overridden": col5_overridden, "computed": col5_computed,
+                             "override": row.col5_override},
+                },
             }
             result_rows.append(rd)
 
@@ -4987,10 +5021,19 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/summary/<entity_code>", methods=["PUT"])
     def api_summary_edit(entity_code):
-        """FA edits Col 7 (proposed budget) on summary rows.
+        """FA edits cells on summary rows.
 
-        Accepts JSON: {"edits": [{"display_order": N, "col7": value}, ...]}
-        Logs each change to budget_revisions.
+        Accepts JSON: {"edits": [
+            {"display_order": N, "col7": value},          // legacy proposed-budget edit
+            {"display_order": N, "col3_override": value}, // FA-set computed-cell override
+            {"display_order": N, "col4_override": value},
+            {"display_order": N, "col5_override": value},
+            ...
+        ]}
+
+        Each edit object can carry one or more of the editable fields. Pass
+        null to clear an override (revert to computed). Logs each change
+        to budget_revisions for audit trail.
         """
         data = request.get_json()
         if not data or "edits" not in data:
@@ -5002,10 +5045,17 @@ def create_workflow_blueprint(db):
         # Need a budget record for revision logging
         budget = Budget.query.filter_by(entity_code=entity_code, year=budget_year).first()
 
+        # Editable fields: legacy col7 + new col3/4/5 overrides
+        EDITABLE_FIELDS = {
+            "col7": "col7_proposed_budget",
+            "col3_override": "col3_override",
+            "col4_override": "col4_override",
+            "col5_override": "col5_override",
+        }
+
         updated = 0
         for edit in data["edits"]:
             display_order = edit.get("display_order")
-            new_val = edit.get("col7")
             if display_order is None:
                 continue
 
@@ -5017,22 +5067,34 @@ def create_workflow_blueprint(db):
             if not row:
                 continue
 
-            old_val = row.col7_proposed_budget
-            row.col7_proposed_budget = float(new_val) if new_val is not None else None
-            row.updated_at = datetime.utcnow()
-
-            # Log to budget_revisions if budget exists
-            if budget:
-                db.session.add(BudgetRevision(
-                    budget_id=budget.id,
-                    user_id=user_id,
-                    action="summary_edit",
-                    field_name=f"col7:{row.label}",
-                    old_value=str(old_val) if old_val is not None else "",
-                    new_value=str(new_val) if new_val is not None else "",
-                    source="web",
-                ))
-            updated += 1
+            row_changed = False
+            for api_field, db_attr in EDITABLE_FIELDS.items():
+                if api_field not in edit:
+                    continue
+                new_val = edit.get(api_field)
+                old_val = getattr(row, db_attr, None)
+                # Coerce: None passes through (clears override / proposed);
+                # non-None coerces to float.
+                coerced = float(new_val) if new_val is not None else None
+                # Skip no-op writes (avoids spurious revision rows)
+                if (old_val is None and coerced is None) or (old_val == coerced):
+                    continue
+                setattr(row, db_attr, coerced)
+                row_changed = True
+                # Log to budget_revisions if budget exists
+                if budget:
+                    db.session.add(BudgetRevision(
+                        budget_id=budget.id,
+                        user_id=user_id,
+                        action="summary_edit",
+                        field_name=f"{api_field}:{row.label}",
+                        old_value=str(old_val) if old_val is not None else "",
+                        new_value=str(coerced) if coerced is not None else "",
+                        source="web",
+                    ))
+            if row_changed:
+                row.updated_at = datetime.utcnow()
+                updated += 1
 
         db.session.commit()
         return jsonify({"status": "ok", "updated": updated})
@@ -12035,27 +12097,48 @@ async function renderBudgetSummary(contentDiv) {
     '<th style="text-align:left;padding:10px;min-width:170px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
     '</tr></thead><tbody id="sumBody">';
 
-  function makeInput(val, label, col, bg) {
+  function makeInput(val, label, col, bg, overrideInfo) {
     const raw = (val!==null&&val!==undefined&&val!==0) ? Math.round(val) : '';
     const disp = raw!=='' ? raw.toLocaleString('en-US') : '';
     // Cols c2-c5 are computed from sources (audit / GL lines). Mark them as inspectable
     // with a green left-stripe + data-fx flag so sumCellFocus can show the "Inspect" button.
     const isFx = (col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5');
-    // Only Col 7 (proposed budget) persists. c1-c6 are read-only:
-    //   c1, c6 = imported from Excel; c2 = audit; c3-c5 = GL aggregation.
-    const isReadOnly = (col !== 'c7');
+    // FA directive 2026-05-05: c3/c4/c5 are now editable too. Edits land in
+    // dedicated override columns on BudgetSummaryRow; the legacy "computed"
+    // value remains accessible via the overrideInfo so the FA can revert.
+    // c2 (audit) stays read-only \u2014 that data lives in audit_uploads.
+    // c1 / c6 stay read-only \u2014 imported from yrlycomp Excel.
+    const isOverridable = (col === 'c3' || col === 'c4' || col === 'c5');
+    const isReadOnly = !(col === 'c7' || isOverridable);
+    const isOverridden = !!(overrideInfo && overrideInfo.is_overridden);
+    const computedVal = (overrideInfo && overrideInfo.computed != null) ? Math.round(overrideInfo.computed) : '';
     const roAttr = isReadOnly ? ' readonly' : '';
-    const stripe = isFx ? 'box-shadow:inset 3px 0 0 #16a34a;color:#15803d;font-weight:600;' : '';
+    // Visual stripe: green for fx (inspectable), yellow when overridden.
+    let stripe = '';
+    if (isOverridden) {
+      stripe = 'box-shadow:inset 3px 0 0 #d97706;color:#92400e;font-weight:700;';
+    } else if (isFx) {
+      stripe = 'box-shadow:inset 3px 0 0 #16a34a;color:#15803d;font-weight:600;';
+    }
     const fxAttr = isFx ? ' data-fx="1"' : '';
+    const ovrAttr = isOverridable ? (' data-overridden="' + (isOverridden ? '1' : '0') + '" data-computed="' + computedVal + '"') : '';
     // Read-only cells: no border, default cursor, transparent bg (cell bg shows through)
-    // Editable c7: keeps gray border + text cursor so it reads as an input
+    // Editable c7 / c3 / c4 / c5: keeps gray border + text cursor so it reads as an input
+    let editableBg = bg || '#fffbeb';
+    if (isOverridden) editableBg = '#fef3c7'; // amber tint when override active
     const inputStyle = isReadOnly
       ? 'width:100px;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:13px;text-align:right;background:transparent;font-variant-numeric:tabular-nums;font-family:inherit;cursor:default;color:var(--gray-700);'+stripe
-      : 'width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+(bg||'#fffbeb')+';font-variant-numeric:tabular-nums;font-family:inherit;cursor:text;';
-    return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;">' +
-      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+roAttr+' ' +
+      : 'width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+editableBg+';font-variant-numeric:tabular-nums;font-family:inherit;cursor:text;'+stripe;
+    const cellTitle = isOverridden
+      ? 'Override active. Computed value was ' + (computedVal !== '' ? computedVal.toLocaleString('en-US') : '\u2014') + '. Right-click to revert.'
+      : (isOverridable ? 'Click to override the computed value' : '');
+    const titleAttr = cellTitle ? (' title="' + cellTitle.replace(/"/g, '&quot;') + '"') : '';
+    const ovrBadge = isOverridden ? '<span class="sum-ovr-badge" style="position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;">OVR</span>' : '';
+    const ctxAttr = isOverridable ? ' oncontextmenu="return sumCellRevert(event, this)"' : '';
+    return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;position:relative;">' +
+      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+ovrAttr+roAttr+titleAttr+ctxAttr+' ' +
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
-      'style="'+inputStyle+'"></td>';
+      'style="'+inputStyle+'">' + ovrBadge + '</td>';
   }
   const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
@@ -12079,9 +12162,9 @@ async function renderBudgetSummary(contentDiv) {
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
         makeInput(r.col2, r.label, 'c2', '#f9f9f7') +
-        makeInput(r.col3, r.label, 'c3', '#f9f9f7') +
-        makeInput(r.col4, r.label, 'c4', '#f9f9f7') +
-        makeInput(r.col5, r.label, 'c5', '#f9f9f7') +
+        makeInput(r.col3, r.label, 'c3', '#f9f9f7', (r.overrides && r.overrides.col3)) +
+        makeInput(r.col4, r.label, 'c4', '#f9f9f7', (r.overrides && r.overrides.col4)) +
+        makeInput(r.col5, r.label, 'c5', '#f9f9f7', (r.overrides && r.overrides.col5)) +
         makeInput(r.col6, r.label, 'c6', '#fbfaf4') +
         makeInput(r.col7, r.label, 'c7', '#fffbeb') +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);font-variant-numeric:tabular-nums;">\u2014</td>' +
@@ -12807,16 +12890,94 @@ function sumCellBlur(el) {
     try { const r = Function('"use strict"; return (' + el.value.slice(1) + ')')(); el.dataset.raw = r; el.style.background = '#f0fdf4'; el.style.borderColor = '#bbf7d0'; } catch(e) {}
   } else { el.dataset.raw = ''; }
   sumRecalcTotals();
-  // Auto-save col7 edits
-  if (el.dataset.col === 'c7' && el.dataset.raw) {
-    const tr = el.closest('tr');
-    const order = tr ? tr.dataset.order : null;
-    if (order) {
-      fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({edits:[{display_order:parseInt(order), col7:parseFloat(el.dataset.raw)}]})
-      }).catch(()=>{});
+  // Auto-save edits — col7 (proposed) goes to col7; c3/c4/c5 land in *_override
+  // FA directive 2026-05-05: editable green cells.
+  const col = el.dataset.col;
+  const tr = el.closest('tr');
+  const order = tr ? tr.dataset.order : null;
+  if (!order) return;
+  const editable = (col === 'c7') || (col === 'c3') || (col === 'c4') || (col === 'c5');
+  if (!editable) return;
+  // Build the edit payload depending on which column was touched.
+  // Empty input → null (clear override / proposed)
+  const rawNum = (el.dataset.raw === '' || el.dataset.raw === undefined) ? null : parseFloat(el.dataset.raw);
+  const edit = { display_order: parseInt(order) };
+  if (col === 'c7')      edit.col7 = rawNum;
+  else if (col === 'c3') edit.col3_override = rawNum;
+  else if (col === 'c4') edit.col4_override = rawNum;
+  else if (col === 'c5') edit.col5_override = rawNum;
+  fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({edits:[edit]})
+  }).then(r => r.json()).then(data => {
+    // Reflect override state visually after save (no full reload)
+    if (col === 'c3' || col === 'c4' || col === 'c5') {
+      const isNowOverridden = (rawNum !== null && !isNaN(rawNum));
+      el.dataset.overridden = isNowOverridden ? '1' : '0';
+      // Toggle stripe + amber tint
+      if (isNowOverridden) {
+        el.style.background = '#fef3c7';
+        el.style.boxShadow = 'inset 3px 0 0 #d97706';
+        el.style.color = '#92400e';
+        el.style.fontWeight = '700';
+        // Inject OVR badge if not already present
+        const td = el.parentElement;
+        if (td && !td.querySelector('.sum-ovr-badge')) {
+          const badge = document.createElement('span');
+          badge.className = 'sum-ovr-badge';
+          badge.style.cssText = 'position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;';
+          badge.textContent = 'OVR';
+          td.appendChild(badge);
+        }
+        el.title = 'Override active. Right-click to revert.';
+      } else {
+        el.style.background = '#f9f9f7';
+        el.style.boxShadow = 'inset 3px 0 0 #16a34a';
+        el.style.color = '#15803d';
+        el.style.fontWeight = '600';
+        const td = el.parentElement;
+        if (td) { const badge = td.querySelector('.sum-ovr-badge'); if (badge) badge.remove(); }
+        el.title = 'Click to override the computed value';
+      }
     }
-  }
+  }).catch(()=>{});
+}
+
+// FA directive 2026-05-05: right-click on c3/c4/c5 to revert to computed value.
+// Sends {col*_override: null} which clears the override; server returns the
+// row to GL-aggregation behavior on next render.
+function sumCellRevert(event, el) {
+  event.preventDefault();
+  if (el.dataset.overridden !== '1') return false;
+  const col = el.dataset.col;
+  const computed = el.dataset.computed;
+  const tr = el.closest('tr');
+  const order = tr ? tr.dataset.order : null;
+  if (!order) return false;
+  if (!confirm('Revert ' + (el.dataset.label || '') + ' ' + col.toUpperCase() + ' to computed value (' + (computed || '—') + ')?')) return false;
+  const edit = { display_order: parseInt(order) };
+  if (col === 'c3') edit.col3_override = null;
+  else if (col === 'c4') edit.col4_override = null;
+  else if (col === 'c5') edit.col5_override = null;
+  else return false;
+  fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({edits:[edit]})
+  }).then(r => r.json()).then(data => {
+    // Restore computed value display
+    el.dataset.overridden = '0';
+    el.dataset.raw = computed || '';
+    el.value = (computed && computed !== '' && computed !== '0')
+      ? Number(computed).toLocaleString('en-US') : '';
+    el.style.background = '#f9f9f7';
+    el.style.boxShadow = 'inset 3px 0 0 #16a34a';
+    el.style.color = '#15803d';
+    el.style.fontWeight = '600';
+    const td = el.parentElement;
+    if (td) { const badge = td.querySelector('.sum-ovr-badge'); if (badge) badge.remove(); }
+    el.title = 'Click to override the computed value';
+    sumRecalcTotals();
+    showToast('Reverted to computed', 'success');
+  }).catch(e => alert('Revert failed: ' + e.message));
+  return false;
 }
 
 function sumCellKey(e, el) {
@@ -12941,7 +13102,7 @@ async function sumShowInsert(secKey, secLabel) {
     overlay.onclick = sumCloseInsert;
     document.body.appendChild(overlay);
     modal = document.createElement('div'); modal.id = 'sumInsertModal';
-    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:24px;z-index:100;width:440px;';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:24px;z-index:100;width:480px;max-height:85vh;overflow-y:auto;';
     document.body.appendChild(modal);
   }
   overlay.style.display = 'block'; modal.style.display = 'block';
@@ -12958,31 +13119,146 @@ async function sumShowInsert(secKey, secLabel) {
   available.forEach(l => {
     dropdownHtml += '<option value="'+l.replace(/"/g,'&quot;')+'">'+l+'</option>';
   });
-  dropdownHtml += '<option value="__custom__" style="font-style:italic;">Other (custom name)…</option></select>';
+  dropdownHtml += '</select>';
 
+  // Three-mode radio picker (FA directive 2026-05-05):
+  //   1) canonical row (default — uses SUMMARY_ROW_MAP entry)
+  //   2) custom name (one-off, no GL auto-pull)
+  //   3) specific GL (search the building's own GL codes)
   modal.innerHTML = '<h3 style="font-size:15px;font-weight:700;color:var(--blue-dark);margin-bottom:6px;">Add Row to '+secLabel+'</h3>' +
-    '<div style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">Pick from the canonical list. The new row will start pulling data from the matching GL codes automatically.</div>' +
-    '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Row</label>' +
-    dropdownHtml +
-    '<div id="sumInsCustomBlock" style="display:none;margin-top:10px;">' +
+    '<div style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">Choose how to identify the new row. Canonical rows pull GL data automatically; specific GLs let you target a single GL code; custom names are manual-entry.</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:12px;font-size:12px;background:var(--gray-100);padding:4px;border-radius:8px;">' +
+      '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;background:white;font-weight:600;border:1px solid transparent;" id="sumInsModeLbl_canonical"><input type="radio" name="sumInsMode" value="canonical" checked style="margin-right:4px;">Canonical row</label>' +
+      '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid transparent;" id="sumInsModeLbl_gl"><input type="radio" name="sumInsMode" value="gl" style="margin-right:4px;">Specific GL</label>' +
+      '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid transparent;" id="sumInsModeLbl_custom"><input type="radio" name="sumInsMode" value="custom" style="margin-right:4px;">Custom name</label>' +
+    '</div>' +
+    // Mode 1: canonical row dropdown
+    '<div id="sumInsCanonicalBlock">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Canonical row</label>' +
+      dropdownHtml +
+      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">'+available.length+' available canonical labels for this section. New row auto-pulls GL data via the canonical map.</div>' +
+    '</div>' +
+    // Mode 2: specific GL search
+    '<div id="sumInsGLBlock" style="display:none;">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Search GL code or description</label>' +
+      '<input id="sumInsGLSearch" type="text" placeholder="Type 4800, &quot;interest&quot;, etc." autocomplete="off" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
+      '<div id="sumInsGLResults" style="max-height:240px;overflow-y:auto;border:1px solid var(--gray-200);border-radius:6px;margin-top:6px;background:white;display:none;"></div>' +
+      '<div id="sumInsGLPicked" style="margin-top:8px;padding:8px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:12px;display:none;"></div>' +
+      '<div style="font-size:11px;color:var(--gray-500);margin-top:6px;">Picks one GL. The new row aggregates that GL\'s data via its 4-digit prefix.</div>' +
+    '</div>' +
+    // Mode 3: custom name
+    '<div id="sumInsCustomBlock" style="display:none;">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Custom Label</label>' +
       '<input id="sumInsCustomLabel" type="text" placeholder="e.g. Lobby Renovation" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:6px;font-size:13px;font-family:inherit;">' +
-      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Custom rows do not auto-pull GL data — they\'re manual-entry only.</div>' +
+      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Custom rows do not auto-pull GL data — manual-entry only.</div>' +
     '</div>' +
     '<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">' +
     '<button onclick="sumCloseInsert()" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;">Cancel</button>' +
     '<button id="sumInsSaveBtn" onclick="sumDoInsert(\''+secKey+'\')" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--blue);color:white;">Add Row</button></div>';
 
-  // Wire dropdown to show/hide custom block
-  const sel = document.getElementById('sumInsCanonical');
-  if (sel) {
-    sel.addEventListener('change', () => {
-      const cb = document.getElementById('sumInsCustomBlock');
-      if (cb) cb.style.display = sel.value === '__custom__' ? 'block' : 'none';
-      if (sel.value === '__custom__') setTimeout(() => document.getElementById('sumInsCustomLabel').focus(), 30);
+  // Wire mode radios — show/hide each block
+  const radios = document.getElementsByName('sumInsMode');
+  const blocks = {
+    canonical: document.getElementById('sumInsCanonicalBlock'),
+    gl:        document.getElementById('sumInsGLBlock'),
+    custom:    document.getElementById('sumInsCustomBlock'),
+  };
+  const lbls = {
+    canonical: document.getElementById('sumInsModeLbl_canonical'),
+    gl:        document.getElementById('sumInsModeLbl_gl'),
+    custom:    document.getElementById('sumInsModeLbl_custom'),
+  };
+  function _refreshMode() {
+    const mode = Array.from(radios).find(r => r.checked).value;
+    Object.keys(blocks).forEach(k => { if (blocks[k]) blocks[k].style.display = (k === mode ? 'block' : 'none'); });
+    Object.keys(lbls).forEach(k => {
+      if (!lbls[k]) return;
+      if (k === mode) {
+        lbls[k].style.background = 'white';
+        lbls[k].style.fontWeight = '600';
+        lbls[k].style.borderColor = 'var(--gray-200)';
+      } else {
+        lbls[k].style.background = 'transparent';
+        lbls[k].style.fontWeight = '400';
+        lbls[k].style.borderColor = 'transparent';
+      }
+    });
+    if (mode === 'canonical') setTimeout(() => document.getElementById('sumInsCanonical').focus(), 30);
+    if (mode === 'gl')        setTimeout(() => document.getElementById('sumInsGLSearch').focus(), 30);
+    if (mode === 'custom')    setTimeout(() => document.getElementById('sumInsCustomLabel').focus(), 30);
+  }
+  Array.from(radios).forEach(r => r.addEventListener('change', _refreshMode));
+
+  // Wire GL search — typeahead against the building's own budget_lines.
+  // Source = window._data.lines (loaded by loadDetail at dashboard mount).
+  // De-dup by gl_code so each GL appears once even if backend returns dupes.
+  const allLines = (window._data && Array.isArray(window._data.lines)) ? window._data.lines : [];
+  const seenGL = new Set();
+  const glIndex = [];
+  allLines.forEach(l => {
+    const gl = (l.gl_code || '').trim();
+    if (!gl || seenGL.has(gl)) return;
+    seenGL.add(gl);
+    glIndex.push({
+      gl,
+      gl_base: gl.split('-')[0],
+      desc: (l.description || '').trim(),
+      tab: l.sheet_name || '',
+      cat: (l.category || '').toLowerCase(),
+      ytd: l.ytd_actual || 0,
+    });
+  });
+  const searchEl = document.getElementById('sumInsGLSearch');
+  const resultsEl = document.getElementById('sumInsGLResults');
+  const pickedEl = document.getElementById('sumInsGLPicked');
+  function _renderGLResults(q) {
+    q = (q || '').trim().toLowerCase();
+    if (!q) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+    const matches = glIndex.filter(g =>
+      g.gl.toLowerCase().includes(q) || g.desc.toLowerCase().includes(q)
+    ).slice(0, 50);
+    if (matches.length === 0) {
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = '<div style="padding:10px 12px;color:var(--gray-500);font-size:12px;">No matching GLs.</div>';
+      return;
+    }
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = matches.map((g, i) =>
+      '<div class="sum-ins-gl-row" data-gl="' + g.gl.replace(/"/g,'&quot;') + '" data-base="' + g.gl_base + '" data-desc="' + g.desc.replace(/"/g,'&quot;') + '" data-cat="' + g.cat + '" data-tab="' + g.tab + '" style="padding:7px 10px;border-bottom:1px solid var(--gray-100);cursor:pointer;display:flex;align-items:center;gap:10px;font-size:12px;">' +
+      '<span style="font-family:monospace;color:var(--gray-700);font-weight:600;min-width:90px;">' + g.gl + '</span>' +
+      '<span style="flex:1;color:var(--gray-700);">' + (g.desc || '<i style="color:var(--gray-400)">(no description)</i>') + '</span>' +
+      '<span style="font-size:10px;color:var(--gray-500);background:var(--gray-100);padding:1px 6px;border-radius:3px;">' + g.tab + '</span>' +
+      '<span style="font-variant-numeric:tabular-nums;color:var(--gray-500);">YTD: ' + Math.round(g.ytd).toLocaleString('en-US') + '</span>' +
+      '</div>'
+    ).join('');
+    Array.from(resultsEl.querySelectorAll('.sum-ins-gl-row')).forEach(el => {
+      el.onmouseover = () => el.style.background = '#eff6ff';
+      el.onmouseout  = () => el.style.background = 'transparent';
+      el.onclick = () => {
+        // Stash picked GL on the modal for sumDoInsert to read
+        window._sumInsPickedGL = {
+          gl: el.dataset.gl,
+          base: el.dataset.base,
+          desc: el.dataset.desc,
+          cat: el.dataset.cat,
+          tab: el.dataset.tab,
+        };
+        searchEl.value = el.dataset.gl;
+        resultsEl.style.display = 'none';
+        pickedEl.style.display = 'block';
+        pickedEl.innerHTML = '<div><b>Picked: </b><code>' + el.dataset.gl + '</code> · ' + (el.dataset.desc || '(no desc)') + '</div>' +
+          '<div style="margin-top:4px;font-size:11px;color:var(--gray-600);">Row label will be: <input id="sumInsGLPickedLabel" type="text" value="' + (el.dataset.desc || el.dataset.gl).replace(/"/g, '&quot;') + '" style="margin-left:4px;padding:3px 6px;border:1px solid var(--gray-300);border-radius:3px;font-size:12px;width:55%;"></div>' +
+          '<div style="margin-top:4px;font-size:11px;color:var(--gray-600);">Aggregates GL prefix: <code>' + el.dataset.base + '</code> (matches all sub-accounts under ' + el.dataset.base + '-XXXX)</div>';
+      };
     });
   }
-  setTimeout(() => sel && sel.focus(), 50);
+  if (searchEl) {
+    window._sumInsPickedGL = null;
+    searchEl.addEventListener('input', e => _renderGLResults(e.target.value));
+    searchEl.addEventListener('focus', e => { if (e.target.value) _renderGLResults(e.target.value); });
+  }
+
+  _refreshMode();
 }
 
 function sumCloseInsert() {
@@ -12993,21 +13269,34 @@ function sumCloseInsert() {
 }
 
 async function sumDoInsert(secKey) {
-  const sel = document.getElementById('sumInsCanonical');
-  const choice = sel ? sel.value : '';
+  // Mode-aware: read the active radio + the corresponding input
+  const radios = document.getElementsByName('sumInsMode');
+  const mode = (Array.from(radios).find(r => r.checked) || {}).value || 'canonical';
   let label = '';
   let isCanonical = false;
-  if (choice && choice !== '__custom__') {
+  let gl_prefixes = null;
+  if (mode === 'canonical') {
+    const sel = document.getElementById('sumInsCanonical');
+    const choice = sel ? sel.value : '';
+    if (!choice) { alert('Pick a canonical row from the dropdown.'); return; }
     label = choice;
     isCanonical = true;
-  } else if (choice === '__custom__') {
+  } else if (mode === 'gl') {
+    const picked = window._sumInsPickedGL;
+    if (!picked) { alert('Search and select a GL from the results.'); return; }
+    // FA can rename the auto-suggested label
+    const labelEl = document.getElementById('sumInsGLPickedLabel');
+    label = (labelEl && labelEl.value.trim()) || picked.desc || picked.gl;
+    // Use the 4-digit GL base as the prefix so all sub-accounts under it
+    // (e.g., 4800-0000, 4800-0010) flow into the new row.
+    gl_prefixes = [picked.base];
+  } else if (mode === 'custom') {
     const ci = document.getElementById('sumInsCustomLabel');
     label = (ci ? ci.value : '').trim();
+    if (!label) { alert('Enter a custom row name.'); return; }
   }
-  if (!label) {
-    alert('Pick a row from the dropdown or enter a custom name.');
-    return;
-  }
+  if (!label) { alert('Provide a label for the new row.'); return; }
+
   const serverSection = _secKeyToServerSection(secKey);
   const btn = document.getElementById('sumInsSaveBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
@@ -13026,11 +13315,14 @@ async function sumDoInsert(secKey) {
   } catch (e) { /* fall back to end-of-table */ }
 
   try {
-    // Persist via the existing endpoint
+    // Persist via the existing endpoint. gl_prefixes is only sent for GL mode;
+    // canonical mode lets alias-resolve attach prefixes server-side.
+    const body = {entity_code: entityCode, label: label, section: serverSection, after_label: after_label};
+    if (gl_prefixes && gl_prefixes.length) body.gl_prefixes = gl_prefixes;
     const resp = await fetch('/api/admin/add-summary-row', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({entity_code: entityCode, label: label, section: serverSection, after_label: after_label})
+      body: JSON.stringify(body),
     });
     const data = await resp.json();
     if (!resp.ok || data.error) {
@@ -13039,7 +13331,8 @@ async function sumDoInsert(secKey) {
       return;
     }
 
-    // For canonical labels, attach gl_prefixes via alias-resolve
+    // For canonical labels, attach gl_prefixes via alias-resolve. For GL mode,
+    // the prefix was already attached server-side at insert time.
     if (isCanonical) {
       try {
         await fetch('/api/admin/resolve-summary-aliases/' + entityCode,

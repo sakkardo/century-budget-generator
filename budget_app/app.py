@@ -175,6 +175,13 @@ def _run_idempotent_migrations():
         "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS foundation_confirmed_by INTEGER",
         "ALTER TABLE budgets ADD COLUMN IF NOT EXISTS foundation_no_prior_budget BOOLEAN DEFAULT FALSE NOT NULL",
         "CREATE INDEX IF NOT EXISTS ix_budgets_foundation_confirmed_at ON budgets (foundation_confirmed_at)",
+        # FA directive 2026-05-05: editable green-tab cells on summary row.
+        # Override fields parallel BudgetLine.estimate_override / forecast_override.
+        # When set, they take precedence over the live-computed value in
+        # /api/summary; when NULL, the row falls back to GL aggregation.
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col3_override DOUBLE PRECISION",
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col4_override DOUBLE PRECISION",
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col5_override DOUBLE PRECISION",
     ]
     with app.app_context():
         for stmt in statements:
@@ -8631,10 +8638,15 @@ def admin_add_summary_row():
         "entity_code": "148",
         "label": "Supplies",
         "section": "Expenses"|"Income"|"Non-Operating Income"|"Non-Operating Expenses"|null,
-        "after_label": "Repairs & Maintenance"  # optional — placement hint
+        "after_label": "Repairs & Maintenance",  # optional — placement hint
+        "gl_prefixes": ["4800"],  # optional — pre-attach GL prefix list to the new
+                                  # row (used by the "Specific GL" Add Row mode so
+                                  # the row pulls col3/4/5 data immediately without
+                                  # needing a separate alias-resolve pass)
     }
     Returns the new row's display_order + label.
     """
+    import json as _json
     BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
     from workflow import BUDGET_YEAR as _BY
 
@@ -8643,6 +8655,12 @@ def admin_add_summary_row():
     label = (data.get("label") or "").strip()
     section = (data.get("section") or "Expenses").strip() or None
     after_label = (data.get("after_label") or "").strip() or None
+    raw_prefixes = data.get("gl_prefixes")
+    gl_prefixes_json = None
+    if isinstance(raw_prefixes, list):
+        cleaned = [str(p).strip() for p in raw_prefixes if str(p or "").strip()]
+        if cleaned:
+            gl_prefixes_json = _json.dumps(cleaned)
 
     if not entity_code or not label:
         return jsonify({"error": "entity_code and label required"}), 400
@@ -8699,12 +8717,14 @@ def admin_add_summary_row():
             label=label,
             section=section,
             row_type="data",
+            gl_prefixes_json=gl_prefixes_json,
         )
         db.session.add(row)
         db.session.commit()
         return jsonify({
             "ok": True, "id": row.id, "label": row.label,
             "display_order": row.display_order, "section": row.section,
+            "gl_prefixes": _json.loads(gl_prefixes_json) if gl_prefixes_json else [],
         })
     except Exception as e:
         db.session.rollback()
