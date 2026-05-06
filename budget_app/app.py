@@ -8481,7 +8481,16 @@ def admin_delete_summary_row():
     the imported template). Refuses to delete rows that came from the
     approved 2026 budget yrlycomp import.
 
-    Body: {"entity_code": "168", "label": "Commercial"}
+    Body: {
+        "entity_code": "168",
+        "label": "Commercial",
+        "merge_into_label": "Other Income",  // optional: sum col1/col6/col7
+                                              // into target row before delete
+                                              // (used to consolidate duplicate
+                                              // rows like Gas / Gas Heating
+                                              // without losing imported budget
+                                              // values)
+    }
     """
     BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
     from workflow import BUDGET_YEAR as _BY
@@ -8489,6 +8498,7 @@ def admin_delete_summary_row():
     data = request.get_json(silent=True) or {}
     entity_code = (data.get("entity_code") or "").strip()
     label = (data.get("label") or "").strip()
+    merge_into_label = (data.get("merge_into_label") or "").strip()
     if not entity_code or not label:
         return jsonify({"error": "entity_code and label required"}), 400
 
@@ -8498,22 +8508,71 @@ def admin_delete_summary_row():
     if not row:
         return jsonify({"ok": True, "noop": "row not found"})
 
-    # Safety check: refuse to delete rows from the original template import.
-    # Those have col6_approved_budget set (the imported 2026 budget value).
-    # FA-added rows start with col6=None.
-    if row.col6_approved_budget is not None:
-        return jsonify({
-            "error": "Cannot delete a row imported from the approved 2026 budget. "
-                     "This row has historical data (col6 = "
-                     f"${row.col6_approved_budget:,.0f}). Edit its values instead.",
-        }), 403
     if row.row_type != "data":
         return jsonify({"error": "Cannot delete subtotal/section_header rows"}), 403
 
+    # Two paths depending on whether the caller wants to merge first:
+    #   - merge_into_label set → sum col1/col6/col7 into the target row, then delete
+    #     (target must exist; preserves budget data when consolidating duplicates)
+    #   - merge_into_label unset → refuse to delete if col6 is set, to prevent
+    #     accidentally losing imported budget values (legacy safety behavior)
+    merge_summary = None
+    if merge_into_label:
+        target = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=_BY, label=merge_into_label
+        ).first()
+        if not target:
+            return jsonify({
+                "error": f"merge_into_label '{merge_into_label}' not found for entity {entity_code}"
+            }), 404
+        # Sum the imported/FA-entered numeric columns into the target.
+        # NULL handling: treat NULL as 0 for the addition; keep target NULL
+        # if both are NULL (don't introduce a 0 where there was no data).
+        def _add(a, b):
+            if a is None and b is None: return None
+            return (a or 0) + (b or 0)
+        old_target = {
+            "col1": target.col1_prior_actual,
+            "col6": target.col6_approved_budget,
+            "col7": target.col7_proposed_budget,
+        }
+        target.col1_prior_actual = _add(target.col1_prior_actual, row.col1_prior_actual)
+        target.col6_approved_budget = _add(target.col6_approved_budget, row.col6_approved_budget)
+        target.col7_proposed_budget = _add(target.col7_proposed_budget, row.col7_proposed_budget)
+        target.updated_at = datetime.utcnow()
+        merge_summary = {
+            "target_label": merge_into_label,
+            "target_id": target.id,
+            "before": old_target,
+            "after": {
+                "col1": target.col1_prior_actual,
+                "col6": target.col6_approved_budget,
+                "col7": target.col7_proposed_budget,
+            },
+            "added_from_source": {
+                "col1": row.col1_prior_actual,
+                "col6": row.col6_approved_budget,
+                "col7": row.col7_proposed_budget,
+            },
+        }
+    else:
+        # Legacy safety: refuse to delete imported rows without explicit merge.
+        if row.col6_approved_budget is not None:
+            return jsonify({
+                "error": "Cannot delete a row imported from the approved 2026 budget. "
+                         f"This row has historical data (col6 = ${row.col6_approved_budget:,.0f}). "
+                         "Pass merge_into_label to consolidate values into another row, "
+                         "or edit the row's values instead.",
+            }), 403
+
     try:
+        deleted_id = row.id
         db.session.delete(row)
         db.session.commit()
-        return jsonify({"ok": True, "deleted": label, "id": row.id})
+        resp = {"ok": True, "deleted": label, "id": deleted_id}
+        if merge_summary:
+            resp["merged_into"] = merge_summary
+        return jsonify(resp)
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)[:300]}), 500
