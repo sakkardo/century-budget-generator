@@ -6297,8 +6297,6 @@ def admin_foundation_page():
   <a href="/wizard">Wizard</a>
   <a href="/dashboard">FA Dashboard</a>
   <a href="/audited-financials">Audited Financials</a>
-  <span style="flex:1"></span>
-  <button id="syncBtn" onclick="syncFromMaster()" style="background:#2563eb; color:white; border:none; padding:8px 14px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">↻ Sync from master folder</button>
 </header>
 <main>
   <div class="card">
@@ -6325,39 +6323,6 @@ def admin_foundation_page():
 let _data = null;
 let _filter = "all";
 let _search = "";
-
-function syncFromMaster() {
-  const btn = document.getElementById("syncBtn");
-  const orig = btn.innerHTML;
-  btn.disabled = true;
-  btn.style.opacity = "0.6";
-  btn.innerHTML = "Syncing… (~30s for 25-file folder)";
-  fetch("/api/admin/audit-sync/run", {method: "POST"})
-    .then(r => r.json())
-    .then(j => {
-      const sm = j.summary || {};
-      const msg = "Sync complete:\n  copied: " + (sm.copied||0) +
-                  "\n  skipped (already in dest): " + (sm.skipped||0) +
-                  "\n  replaced (source newer): " + (sm.replaced||0) +
-                  "\n  unmatched (filename problems): " + (sm.unmatched||0) +
-                  "\n  errors: " + (sm.error||0) +
-                  "\n\nrun_id: " + (j.run_id || "?");
-      alert(msg);
-      // Refresh the dashboard data
-      fetch("/api/admin/foundation-summary").then(r => r.json()).then(d => {
-        _data = d;
-        renderChips();
-        renderRows();
-      });
-    })
-    .catch(err => alert("Sync failed: " + err.message))
-    .finally(() => {
-      btn.disabled = false;
-      btn.style.opacity = "1";
-      btn.innerHTML = orig;
-    });
-}
-
 
 function badgeApproved(state, count) {
   if (state === "imported") return '<span class="badge badge-ok">\u2713 Imported ' + count + ' rows</span>';
@@ -8432,6 +8397,77 @@ def _do_afs_sync(entity_code, dry_run=False, force=False, AuditUpload=None, retu
     if dry_run:
         out["dry_run"] = True
     return out if return_dict else jsonify(out)
+
+
+@app.route("/api/admin/set-summary-row-prefixes", methods=["POST"])
+@require_admin
+def admin_set_summary_row_prefixes():
+    """ADMIN: Surgically set gl_prefixes_json for a single (entity, label) row.
+
+    Use case: targeted prefix correction (e.g. removing a wrongly-included GL
+    range from an Income row) without running the full resolve-summary-aliases
+    flow which would touch every label-matched row on the entity. Lets us test
+    a prefix change on one building before rolling out portfolio-wide.
+
+    Body: {
+        "entity_code": "168",
+        "label": "Tax Benefit Credits (Abatement, Star,etc)",
+        "prefixes": ["4105", "4106", ..., "4125"],
+        "section": "income"  # optional — adds extra filter to disambiguate
+                              # rows when same label appears in multiple sections
+    }
+
+    Returns the old & new prefix values per matched row. If multiple rows match
+    (rare — usually means duplicate display_order or same label across
+    Income+Expense sections), all matched rows are updated; the response shows
+    each one so the caller can audit.
+    """
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json() or {}
+    ec = (data.get("entity_code") or "").strip()
+    label = (data.get("label") or "").strip()
+    prefixes = data.get("prefixes")
+    section_filter = (data.get("section") or "").strip() or None
+
+    if not ec or not label:
+        return jsonify({"error": "entity_code and label required"}), 400
+    if not isinstance(prefixes, list) or not all(isinstance(p, str) for p in prefixes):
+        return jsonify({"error": "prefixes must be a list of strings"}), 400
+
+    q = BudgetSummaryRow.query.filter_by(
+        entity_code=ec, budget_year=_BY, label=label
+    )
+    if section_filter:
+        q = q.filter_by(section=section_filter)
+    rows = q.all()
+    if not rows:
+        return jsonify({
+            "error": f"No row found for entity={ec} label={label!r} section={section_filter!r}"
+        }), 404
+
+    new_pj = json.dumps(prefixes)
+    diffs = []
+    for row in rows:
+        try:
+            old = json.loads(row.gl_prefixes_json) if row.gl_prefixes_json else []
+        except Exception:
+            old = []
+        diffs.append({
+            "id": row.id,
+            "display_order": row.display_order,
+            "section": row.section,
+            "old_prefixes": old,
+            "new_prefixes": prefixes,
+        })
+        row.gl_prefixes_json = new_pj
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "rows_updated": len(rows),
+        "diffs": diffs,
+    })
 
 
 @app.route("/api/admin/delete-summary-row", methods=["POST"])

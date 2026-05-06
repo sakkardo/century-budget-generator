@@ -38,6 +38,14 @@ LABEL_ALIASES = {
     "Real Estate Taxes/Supers Unit": "Real Estate Taxes",
     "RE Taxes": "Real Estate Taxes",
     "Real Estate Tax": "Real Estate Taxes",
+    # Tax Benefit Credits (Income side) — variants seen across yrlycomps.
+    # Each maps to the canonical "Tax Benefit Credits (Abatement, Star,etc)" row
+    # which uses GL prefixes 4105–4125 (income side only).
+    "Tax Benefit Credits": "Tax Benefit Credits (Abatement, Star,etc)",
+    "Tax Benefit Credits (Abatement, STAR, etc.)": "Tax Benefit Credits (Abatement, Star,etc)",
+    "Tax Benefit Credits (Abatement, STAR, etc)": "Tax Benefit Credits (Abatement, Star,etc)",
+    "Tax Abatement Credits": "Tax Benefit Credits (Abatement, Star,etc)",
+    "Tax Abatements": "Tax Benefit Credits (Abatement, Star,etc)",
     # Non-operating variants
     "Transfer to Reserve": "Transfer to Reserve",       # condo-specific, keep as-is with config below
     "Reserve Funding": "Reserve Funding",               # condo-specific
@@ -104,15 +112,21 @@ SUMMARY_ROW_MAP = {
     },
     "Tax Benefit Credits (Abatement, Star,etc)": {
         "sheet": "RE Taxes",
-        # 168 has data on 4105-0000 (Real Estate Tax Abatement), 4110-0000
-        # (STAR Exemption), 4115-0000 (Veterans Exemption) — orphans before.
-        # 6315 is the expense-side credit (used for re_taxes_credits special).
-        "gl_prefix": ["4105", "4110", "4115", "6315"],
+        # FA directive 2026-05-05: this Income-section row pulls ONLY income-side
+        # tax credit GLs in range 4105-4125 (full integer range). Previous version
+        # also included 6315, but 6315 is expense-side (Real Estate Tax) and was
+        # polluting Income with $361k of expense data on 168 (and $1.1M on 148).
+        # Expense-side credits live separately under "Real Estate Tax Benefit Credits".
+        # Standard GLs in this range: 4105 (RE Tax Abatement), 4110 (STAR),
+        # 4115 (Veterans), 4120 (SCRIE), 4125 (SCHE). Full range covers any
+        # non-standard sub-codes future buildings might use.
+        "gl_prefix": [str(n) for n in range(4105, 4126)],
         "section": "income",
         "special": "re_taxes_credits",  # Pull from dof_taxes.total_exemptions_budget, negate
         "notes": "Computed by RE Taxes tab. Show as negative. "
-                 "Income-side: GL 4105 (RE Tax Abatement), 4110 (STAR), 4115 (Veterans). "
-                 "Expense-side: GL 6315-0010/0020/0025/0035."
+                 "Income-side ONLY: GLs 4105–4125 (4105 RE Tax Abatement, 4110 STAR, "
+                 "4115 Veterans, 4120 SCRIE, 4125 SCHE). "
+                 "Expense-side credits go under 'Real Estate Tax Benefit Credits' (6315)."
     },
     "Commercial": {
         "sheet": "Income",
