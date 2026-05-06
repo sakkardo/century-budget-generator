@@ -1877,6 +1877,14 @@ def create_workflow_blueprint(db):
             if sn not in sheets:
                 sheets[sn] = []
             sheets[sn].append(l.to_dict())
+        # FA directive 2026-05-05 (#10): sort each sheet's lines by GL code
+        # ascending so the Income/Energy/etc tabs render in deterministic
+        # GL order (was previously DB-insertion order, which looked random).
+        # Sheets that group by sub-category (R&S, Gen&Admin) still respect
+        # their grouping because the catConfig.groups iterator runs first
+        # in the JS render — within each group, the lines are now sorted.
+        for _sn in sheets:
+            sheets[_sn].sort(key=lambda d: d.get("gl_code") or "")
 
         # Ordered sheet tab names
         sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Capital", "Unmapped"]
