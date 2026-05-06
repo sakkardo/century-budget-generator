@@ -4023,7 +4023,11 @@ def create_workflow_blueprint(db):
             # One-time fee rule: once YTD posted, no more projection
             if gl in ONE_TIME_FEE_GLS and abs(ytd_total) > 0.01:
                 est = 0
-            # FA #18: Capital — no forecast extrapolation, no proposed.
+            # FA #18 + 2026-05-05 directive: Capital — no forecast extrapolation,
+            # no proposed budget, and forecast formula flips the accrual sign.
+            #   forecast = ytd - accrual + unpaid  (NOT ytd + accrual + unpaid)
+            #   estimate = 0
+            #   proposed = 0 always (overrides any FA-entered value)
             elif is_capital:
                 est = 0
             # FA #7 anomaly cap: negative YTD against non-negative prior
@@ -4034,16 +4038,30 @@ def create_workflow_blueprint(db):
                 est = (ytd_total / ytd_months) * remaining
             else:
                 est = 0
-            line_forecast = ytd_total + est
+
+            # Capital uses a different forecast formula (FA directive 2026-05-05).
+            # Keep accrual_unpaid contribution consistent: col4 = ytd_total - col3,
+            # so the forecast arithmetic ties out (col5 = col3 + col4).
+            if is_capital:
+                line_forecast = ytd - accrual + unpaid
+                # col 4 contribution for capital = forecast − ytd_only = -accrual + unpaid
+                accrual_unpaid_contrib = -accrual + unpaid
+            else:
+                line_forecast = ytd_total + est
+                accrual_unpaid_contrib = accrual + unpaid
+
             totals["ytd_actual"] += ytd_total       # legacy
-            totals["ytd_only"] += ytd               # NEW: col 3 source
-            totals["accrual_unpaid"] += accrual + unpaid   # NEW: part of col 4
+            totals["ytd_only"] += ytd               # col 3 source
+            totals["accrual_unpaid"] += accrual_unpaid_contrib   # part of col 4
             totals["estimate"] += est
             totals["forecast"] += line_forecast
             totals["current_budget"] += float(line.get("current_budget", 0) or 0)
-            # FA #18: Capital lines never auto-fill proposed_budget
+            # FA directive 2026-05-05: Capital lines have NO proposed budget.
+            # Always 0 — even an FA-entered value is ignored at the aggregator
+            # level. (The line-level value remains stored for safety; we just
+            # don't roll it up into the summary tab's COL 7.)
             if is_capital:
-                proposed = float(line.get("proposed_budget", 0) or 0)  # only what FA explicitly set
+                proposed = 0
             else:
                 proposed = float(line.get("proposed_budget", 0) or 0)
                 if proposed == 0 and line_forecast > 0:
@@ -4474,14 +4492,19 @@ def create_workflow_blueprint(db):
                 unpaid = float(line.get("unpaid_bills", 0) or 0)
                 prior = float(line.get("prior_year", 0) or 0)
                 ytd_total = ytd + accrual + unpaid
-                # FA #18: Capital — never extrapolate
-                if _is_capital_line(line):
+                is_cap = _is_capital_line(line)
+                # FA #18 + 2026-05-05 directive: Capital — never extrapolate;
+                # forecast formula flips the accrual sign (see _aggregate_by_prefix).
+                if is_cap:
                     est = 0
+                    line_forecast = ytd - accrual + unpaid
                 # FA #7 anomaly cap: don't extrapolate one-time refund/credit
                 elif ytd_total < 0 and prior >= 0:
                     est = 0
+                    line_forecast = ytd_total + est
                 else:
                     est = (ytd_total / ytd_months) * remaining if ytd_months > 0 else 0
+                    line_forecast = ytd_total + est
                 out.append({
                     "gl": gl,
                     "desc": line.get("description") or line.get("gl_description") or "",
@@ -4489,7 +4512,7 @@ def create_workflow_blueprint(db):
                     "accrual": round(accrual, 2),
                     "unpaid": round(unpaid, 2),
                     "estimate": round(est, 2),
-                    "forecast": round(ytd_total + est, 2),
+                    "forecast": round(line_forecast, 2),
                 })
             return out
 
@@ -7419,7 +7442,11 @@ function openBoardPresentation() {
       if (Math.abs(val) < 0.05) return '';
       return (isExp ? val > 0 : val < 0) ? 'bp-chg-bad' : 'bp-chg-good';
     }
-    function getProposed(l) { return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))); }
+    function getProposed(l) {
+      // FA directive 2026-05-05: Capital — no proposed budget, ever.
+      if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
+      return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
+    }
 
     // Category defs for expandable detail
     const CATS = {
@@ -9712,6 +9739,10 @@ function faIsOneTimeFeeBilled(l) {
   return Math.abs(billed) > 0.01;
 }
 
+function faIsCapital(l) {
+  return l && (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
+}
+
 function faComputeEstimate(l) {
   // Use override if FA set one
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
@@ -9722,6 +9753,8 @@ function faComputeEstimate(l) {
   }
   // One-time fees with a YTD posted: no more projection
   if (faIsOneTimeFeeBilled(l)) return 0;
+  // FA #18 + 2026-05-05 directive: Capital — no estimate at all.
+  if (faIsCapital(l)) return 0;
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
@@ -9736,6 +9769,10 @@ function faComputeForecast(l) {
   if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   if (faIsFixedToBudget(l)) {
     return l.current_budget || 0;
+  }
+  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  if (faIsCapital(l)) {
+    return (l.ytd_actual || 0) - (l.accrual_adj || 0) + (l.unpaid_bills || 0);
   }
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
@@ -9756,6 +9793,9 @@ function faGetFormulaTooltip(l, field) {
     if (faIsOneTimeFeeBilled(l)) {
       return '= 0  (one-time fee rule, GL ' + (l.gl_code || '') + ' — already billed YTD)';
     }
+    if (faIsCapital(l)) {
+      return '= 0  (Capital — no estimate)';
+    }
     if (YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
     return '=0';
   }
@@ -9767,10 +9807,16 @@ function faGetFormulaTooltip(l, field) {
     if (faIsOneTimeFeeBilled(l)) {
       return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no additional projection)';
     }
+    if (faIsCapital(l)) {
+      return '=' + ytd + '−(' + accrual + ')+(' + unpaid + ')  (Capital — YTD less accrual, plus unpaid)';
+    }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   }
   if (field === 'proposed') {
+    if (faIsCapital(l)) {
+      return '= 0  (Capital — no proposed budget)';
+    }
     if (l.proposed_formula) return l.proposed_formula;
     const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
     return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
@@ -15069,7 +15115,9 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
       t.budget += l.current_budget || 0;
-      t.proposed += l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0)));
+      // FA directive 2026-05-05: Capital — no proposed budget.
+      const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
+      t.proposed += isCap ? 0 : (l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0))));
     });
     return t;
   }
@@ -15188,8 +15236,10 @@ function computeForecast(l) {
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
   const ytdTotal = ytdActual + accrualAdj + unpaidBills;
-  // FA #18: Capital — no extrapolation, just YTD as-is
-  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return ytdTotal;
+  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
+    return ytdActual - accrualAdj + unpaidBills;
+  }
   // FA #7 anomaly cap: negative YTD against non-negative prior year is a
   // one-time refund/credit; don't extrapolate.
   const prior = l.prior_year || 0;
@@ -16202,14 +16252,18 @@ function computeForecast(line) {
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
+    // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid.
+    if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
+        return ytd - accrual + unpaid;
+    }
     return ytd + accrual + unpaid + computeEstimate(line);
 }
 
 function computeProposed(line) {
-    // FA #18: Capital lines never auto-fill a proposed budget.
-    // Show the FA-entered proposed_budget if any, otherwise blank/0.
+    // FA directive 2026-05-05: Capital lines have NO proposed budget. Always 0.
+    // (Was: returned FA-entered proposed_budget if set. Now hard-zero.)
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
-        return line.proposed_budget || 0;
+        return 0;
     }
     const forecast = computeForecast(line);
     return forecast * (1 + (line.increase_pct || 0));
@@ -17643,6 +17697,10 @@ function computeEstimate(l) {
 function computeForecast(l) {
   if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   if (isFixedToBudgetLine(l)) return l.current_budget || 0;
+  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
+    return (l.ytd_actual || 0) - (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+  }
   // Payroll: Forecast = YTD + Estimate (no accrual/unpaid). Other tabs unchanged.
   const isPayroll = l.sheet_name === 'Payroll';
   const accrual = isPayroll ? 0 : (l.accrual_adj || 0);
@@ -17687,7 +17745,9 @@ function sumLines(lines) {
     t.estimate += computeEstimate(l);
     t.forecast += computeForecast(l);
     t.budget += l.current_budget || 0;
-    t.proposed += l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
+    // FA directive 2026-05-05: Capital — no proposed budget.
+    const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
+    t.proposed += isCap ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))));
   });
   return t;
 }
@@ -17731,7 +17791,11 @@ function _buildSumFormula(cellId) {
     return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
   }
   if (field === 'proposed') {
-    const vals = lines.map(l => Math.round(l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
+    // FA directive 2026-05-05: Capital — no proposed budget.
+    const vals = lines.map(l => {
+      const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
+      return Math.round(isCap ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
+    });
     if (vals.length <= 8) return '= ' + vals.join(' + ');
     return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
   }
