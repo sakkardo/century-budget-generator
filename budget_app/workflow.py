@@ -12388,20 +12388,55 @@ function sumRenderDrillPanel(label, col) {
       const totalUnp = lines.reduce((s,l) => s + l.unpaid, 0);
       const totalEst = lines.reduce((s,l) => s + l.estimate, 0);
       const totalFc  = lines.reduce((s,l) => s + l.forecast, 0);
+      // COL 4 (Estimate) as displayed on the summary tab = accrual + unpaid + remaining-months projection.
+      // (Per FA directive 2026-05-05: COL 3 is raw YTD; accrual/unpaid + projection live in COL 4.)
+      const totalCol4 = totalAcc + totalUnp + totalEst;
+      // Helper: render a signed term as " + 5,073" or " \u2212 5,073" so accruals
+      // (which are stored as negatives in the DB) read like the FA's mental model:
+      //   "ytd minus accrual, plus unpaid"  (with accrual < 0, becomes a subtraction)
+      const fmtTerm = (n) => {
+        const v = Number(n) || 0;
+        if (v < 0) return ' \u2212 ' + Math.abs(Math.round(v)).toLocaleString('en-US');
+        return ' + ' + Math.round(v).toLocaleString('en-US');
+      };
       html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px;margin-bottom:10px;">' +
         '<div style="color:var(--gray-500);">Source:</div><div><b>Budget Lines</b> (GL aggregation)</div>' +
         '<div style="color:var(--gray-500);">GL prefixes:</div><div><code style="background:var(--gray-100);padding:1px 6px;border-radius:3px;">' + (gl.prefixes || []).join(', ') + '</code></div>' +
         '<div style="color:var(--gray-500);">YTD period:</div><div>' + ytdM + ' months actual + ' + remM + ' months projected</div>' +
         '</div>';
-      // Math box
-      const mathLabel = col === 'c3' ? 'YTD Actual' : col === 'c4' ? 'Estimate (remaining ' + remM + ' months)' : 'Forecast (YTD + Estimate)';
-      const mathFormula = col === 'c3' ? '\u03a3 ytd_actual' :
-                          col === 'c4' ? '(\u03a3 ytd / ' + ytdM + ') \u00d7 ' + remM :
-                          '\u03a3 (ytd + accrual + unpaid + estimate)';
-      const mathTotal   = col === 'c3' ? totalYtd : col === 'c4' ? totalEst : totalFc;
+      // Math box \u2014 show the actual formula with proper signs
+      let mathLabel, mathBody, mathTotal;
+      if (col === 'c3') {
+        mathLabel = 'COL 3 \u00b7 YTD Actual (raw posted; no accrual/unpaid)';
+        mathBody  = '<b>\u03a3 ytd = ' + fmt(totalYtd) + '</b>';
+        mathTotal = totalYtd;
+      } else if (col === 'c4') {
+        // Step-by-step breakdown so it's clear where each number comes from.
+        const projBase = totalYtd + totalAcc + totalUnp;
+        const baseExpr = fmt(totalYtd) + fmtTerm(totalAcc) + fmtTerm(totalUnp);
+        const projExpr = (ytdM > 0)
+          ? '(' + baseExpr + ') \u00f7 ' + ytdM + ' \u00d7 ' + remM
+          : '0';
+        const adjExpr  = fmtTerm(totalAcc).trim() + fmtTerm(totalUnp);
+        mathLabel = 'COL 4 \u00b7 Estimate = projection (remaining ' + remM + ' mo) + accrual/unpaid adjustment';
+        mathBody = ''
+          + '<div>Projection base = ytd + accrual + unpaid = ' + baseExpr + ' = ' + fmt(projBase) + '</div>'
+          + '<div>Projection (' + remM + ' months) = ' + projExpr + ' = <b>' + fmt(totalEst) + '</b></div>'
+          + '<div>Accrual + Unpaid adjustment = ' + adjExpr + ' = <b>' + fmt(totalAcc + totalUnp) + '</b></div>'
+          + '<div style="margin-top:4px;border-top:1px solid #bbf7d0;padding-top:4px;"><b>COL 4 = ' + fmt(totalEst) + fmtTerm(totalAcc + totalUnp) + ' = ' + fmt(totalCol4) + '</b></div>';
+        mathTotal = totalCol4;
+      } else {
+        // c5 = Forecast = COL 3 + COL 4
+        mathLabel = 'COL 5 \u00b7 Forecast = YTD + Estimate (= COL 3 + COL 4)';
+        mathBody = ''
+          + '<div>YTD (COL 3) = ' + fmt(totalYtd) + '</div>'
+          + '<div>Estimate (COL 4) = ' + fmt(totalCol4) + '</div>'
+          + '<div style="margin-top:4px;border-top:1px solid #bbf7d0;padding-top:4px;"><b>COL 5 = ' + fmt(totalYtd) + fmtTerm(totalCol4) + ' = ' + fmt(totalFc) + '</b></div>';
+        mathTotal = totalFc;
+      }
       html += '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:10px 12px;border-radius:6px;font-family:monospace;font-size:13px;margin-bottom:10px;">' +
-        '<div style="color:var(--gray-500);font-size:11px;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;">' + mathLabel + '</div>' +
-        '<b>' + mathFormula + ' = ' + fmt(mathTotal) + '</b>' +
+        '<div style="color:var(--gray-500);font-size:11px;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:6px;">' + mathLabel + '</div>' +
+        mathBody +
         '</div>';
       // Per-line table
       html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
