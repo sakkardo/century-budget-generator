@@ -869,6 +869,24 @@ def create_workflow_blueprint(db):
         # JSON text: [{"label":"Perf","amount":0.02,"basis":"pct_wages"}, ...]
         # basis one of: 'per_emp' | 'lump' | 'pct_wages'
         extra_bonuses_json = db.Column(db.Text, nullable=True)
+        # FA directive 2026-05-05: per-position benefit adjustments. Lets the FA
+        # express "N of M employees in this position have an extra rate × periods
+        # block on welfare/pension/supp_retirement/legal/training/profit_sharing".
+        # Math is additive to the building default. NULL = no adjustment.
+        # Shape:
+        #   {
+        #     "adjusted_count": 1,                  // 1 ≤ count ≤ employee_count
+        #     "label": "Tenure exception",          // optional
+        #     "benefits": {
+        #       "welfare":         {"rate": 100.0,  "periods": 6,  "label": "..."} | null,
+        #       "pension":         {"rate": 82.50, "periods": 30, "label": "Tenure"} | null,
+        #       "supp_retirement": {...} | null,
+        #       "legal":           {...} | null,
+        #       "training":        {...} | null,
+        #       "profit_sharing":  {...} | null
+        #     }
+        #   }
+        benefit_adjustments_json = db.Column(db.Text, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -880,6 +898,12 @@ def create_workflow_blueprint(db):
                     extras = []
             except Exception:
                 extras = []
+            try:
+                adj = json.loads(self.benefit_adjustments_json) if self.benefit_adjustments_json else None
+                if adj is not None and not isinstance(adj, dict):
+                    adj = None
+            except Exception:
+                adj = None
             return {
                 "id": self.id, "entity_code": self.entity_code,
                 "budget_year": self.budget_year,
@@ -891,6 +915,7 @@ def create_workflow_blueprint(db):
                 "wage_increase_mode": self.wage_increase_mode,
                 "wage_increase_value": float(self.wage_increase_value) if self.wage_increase_value is not None else None,
                 "extra_bonuses": extras,
+                "benefit_adjustments": adj,
                 "sort_order": self.sort_order
             }
 
@@ -3789,6 +3814,52 @@ def create_workflow_blueprint(db):
                         "basis": basis,
                     })
             extras_json = json.dumps(clean_extras) if clean_extras else None
+            # FA directive 2026-05-05: benefit_adjustments — validate + serialize.
+            # Shape: {adjusted_count, label?, benefits: {<key>:{rate,periods,label?}|null}}
+            # Allowed benefit keys (must match the 6 the FA can adjust on the building).
+            ALLOWED_BENEFIT_KEYS = {
+                "welfare", "pension", "supp_retirement",
+                "legal", "training", "profit_sharing",
+            }
+            raw_adj = p.get("benefit_adjustments")
+            adj_json = None
+            if isinstance(raw_adj, dict):
+                emp_count = int(p.get("employee_count", 0) or 0)
+                try:
+                    adj_count = int(raw_adj.get("adjusted_count") or 0)
+                except (TypeError, ValueError):
+                    adj_count = 0
+                # Clamp adjusted_count to [0, employee_count]; 0 disables the adjustment.
+                if adj_count < 0:
+                    adj_count = 0
+                if adj_count > emp_count:
+                    adj_count = emp_count
+                clean_benefits = {}
+                raw_benefits = raw_adj.get("benefits") or {}
+                if isinstance(raw_benefits, dict):
+                    for key, val in raw_benefits.items():
+                        if key not in ALLOWED_BENEFIT_KEYS or not isinstance(val, dict):
+                            continue
+                        try:
+                            r = float(val.get("rate") or 0)
+                            pp = float(val.get("periods") or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        # Treat zero rate/periods as "no adjustment" — drop the entry.
+                        if abs(r) < 1e-9 or abs(pp) < 1e-9:
+                            continue
+                        clean_benefits[key] = {
+                            "rate": r,
+                            "periods": pp,
+                            "label": str(val.get("label") or "").strip()[:80],
+                        }
+                # Persist only when the adjustment actually does something.
+                if adj_count > 0 and clean_benefits:
+                    adj_json = json.dumps({
+                        "adjusted_count": adj_count,
+                        "label": str(raw_adj.get("label") or "").strip()[:120],
+                        "benefits": clean_benefits,
+                    })
             pos = PayrollPosition(
                 entity_code=entity_code,
                 budget_year=BUDGET_YEAR,
@@ -3800,6 +3871,7 @@ def create_workflow_blueprint(db):
                 wage_increase_mode=wi_mode,
                 wage_increase_value=wi_val,
                 extra_bonuses_json=extras_json,
+                benefit_adjustments_json=adj_json,
                 sort_order=i
             )
             db.session.add(pos)
@@ -14309,7 +14381,7 @@ async function savePayrollPositions() {
 }
 
 function addPayrollPosition() {
-  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, wage_increase_mode: null, wage_increase_value: null, extra_bonuses: [], sort_order: _payrollPositions.length});
+  _payrollPositions.push({position_name: '', employee_count: 0, hourly_rate: 0, bonus_per_employee: 0, effective_week_override: null, wage_increase_mode: null, wage_increase_value: null, extra_bonuses: [], benefit_adjustments: null, sort_order: _payrollPositions.length});
   renderPayrollRoster();
   recalcPayroll();
 }
@@ -14403,13 +14475,54 @@ function recalcPayroll() {
   const totalPayrollTax = ficaAmt + suiAmt + fuiAmt + mtaAmt + nysDisAmt + pflAmt;
   const wcAmt = (a.workers_comp || 0) * grossWages;
 
-  const welfareAmt = (a.welfare_monthly || 0) * totalEmployees * 12;
-  const pensionAmt = (a.pension_weekly || 0) * totalEmployees * 52;
-  const suppRetAmt = (a.supp_retirement_weekly || 0) * totalEmployees * 52;
-  const legalAmt = (a.legal_monthly || 0) * totalEmployees * 12;
-  const trainingAmt = (a.training_monthly || 0) * totalEmployees * 12;
-  const profitShareAmt = (a.profit_sharing_quarterly || 0) * totalEmployees * 4;
+  // FA directive 2026-05-05: per-position benefit adjustments stack on top
+  // of the building defaults. Each position can flag "N of M employees have
+  // an extra rate × periods on welfare/pension/etc." Math is additive.
+  // Example: 6 doormen, default pension = $82.50 × 52 = $4,290 each = $25,740.
+  // 1 of 6 has +$82.50 × 30 wks. Adjustment total = $82.50 × 30 × 1 = $2,475.
+  // Position pension total = $25,740 + $2,475 = $28,215.
+  let adjWelfare = 0, adjPension = 0, adjSuppRet = 0,
+      adjLegal = 0,   adjTraining = 0, adjProfitShare = 0;
+  let adjPositionsCount = 0;
+  for (const p of _payrollPositions) {
+    const adj = p.benefit_adjustments;
+    if (!adj || !adj.benefits) continue;
+    // Clamp adjusted_count to position's employee_count.
+    const cnt = Math.min(
+      Math.max(parseInt(adj.adjusted_count || 0, 10) || 0, 0),
+      parseInt(p.employee_count || 0, 10) || 0
+    );
+    if (cnt <= 0) continue;
+    adjPositionsCount++;
+    const b = adj.benefits || {};
+    const addBlock = (block) => {
+      if (!block) return 0;
+      const r = parseFloat(block.rate) || 0;
+      const pp = parseFloat(block.periods) || 0;
+      return r * pp * cnt;
+    };
+    adjWelfare     += addBlock(b.welfare);
+    adjPension     += addBlock(b.pension);
+    adjSuppRet     += addBlock(b.supp_retirement);
+    adjLegal       += addBlock(b.legal);
+    adjTraining    += addBlock(b.training);
+    adjProfitShare += addBlock(b.profit_sharing);
+  }
+
+  const welfareAmt = (a.welfare_monthly || 0) * totalEmployees * 12 + adjWelfare;
+  const pensionAmt = (a.pension_weekly || 0) * totalEmployees * 52 + adjPension;
+  const suppRetAmt = (a.supp_retirement_weekly || 0) * totalEmployees * 52 + adjSuppRet;
+  const legalAmt = (a.legal_monthly || 0) * totalEmployees * 12 + adjLegal;
+  const trainingAmt = (a.training_monthly || 0) * totalEmployees * 12 + adjTraining;
+  const profitShareAmt = (a.profit_sharing_quarterly || 0) * totalEmployees * 4 + adjProfitShare;
   const totalUnion = welfareAmt + pensionAmt + suppRetAmt + legalAmt + trainingAmt + profitShareAmt;
+  // Stash adjustment totals so the UI can display them in the badge tooltip
+  // and (later) in a "what changed vs default" panel.
+  window._payrollAdjustments = {
+    welfare: adjWelfare, pension: adjPension, supp_retirement: adjSuppRet,
+    legal: adjLegal, training: adjTraining, profit_sharing: adjProfitShare,
+    positions_with_adjustments: adjPositionsCount,
+  };
 
   const totalLaborCalc = grossWages + totalPayrollTax + wcAmt + totalUnion;
 
@@ -14756,7 +14869,9 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       rosterFx('pr_rost_ot_'+i, 'ot', c.ot||0, fOT, i) +
       rosterFx('pr_rost_vsh_'+i, 'vsh', c.vsh||0, fVSH, i) +
       rosterFx('pr_rost_comp_'+i, 'comp', c.comp||0, fComp, i, 'color:#1e40af;', 'font-weight:800;') +
-      '<td style="padding:7px 4px; border-bottom:1px solid #f3f4f6;"><button onclick="removePayrollPosition(' + i + ')" style="padding:2px 6px; font-size:10px; cursor:pointer; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; border-radius:4px;">✕</button></td>' +
+      // Per-position adjust + remove buttons. Adjust opens the benefit-adjustments
+      // modal; the gear shows an amber badge "N/M" when an adjustment is active.
+      _renderPayrollAdjustCell(p, i) +
       '</tr>';
   });
   body.innerHTML = rows;
@@ -14794,6 +14909,228 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
 
   // Auto-size all roster inputs to their content width
   if (typeof prAutoSizeAll === 'function') prAutoSizeAll();
+}
+
+// ── Per-Position Benefit Adjustments (FA directive 2026-05-05) ────────────
+// Lets the FA flag "N of M employees in this position have an extra rate ×
+// periods block on welfare/pension/supp_retirement/legal/training/profit_sharing".
+// Math is additive to the building default; e.g. 6 doormen with 1 getting
+// +$82.50 × 30 wks of pension on top of the standard $82.50 × 52.
+
+const PR_ADJ_BENEFITS = [
+  {key: 'welfare',         label: 'Welfare',          unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'welfare_monthly'},
+  {key: 'pension',         label: 'Pension',          unit: '$/wk',  periodLabel: 'wk',  periodsPerYear: 52, defaultKey: 'pension_weekly'},
+  {key: 'supp_retirement', label: 'Supp Retirement',  unit: '$/wk',  periodLabel: 'wk',  periodsPerYear: 52, defaultKey: 'supp_retirement_weekly'},
+  {key: 'legal',           label: 'Legal',            unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'legal_monthly'},
+  {key: 'training',        label: 'Training',         unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'training_monthly'},
+  {key: 'profit_sharing',  label: 'Profit Sharing',   unit: '$/qtr', periodLabel: 'qtr', periodsPerYear: 4,  defaultKey: 'profit_sharing_quarterly'},
+];
+
+// Render the trailing actions cell for a roster row: amber badge when an
+// adjustment is active + ⚙️ Adjust button + ✕ remove button.
+function _renderPayrollAdjustCell(p, i) {
+  const adj = p && p.benefit_adjustments;
+  const cnt = adj && adj.adjusted_count ? Math.max(parseInt(adj.adjusted_count, 10) || 0, 0) : 0;
+  const hasAdj = (cnt > 0 && adj && adj.benefits && Object.keys(adj.benefits).length > 0);
+  const empCount = parseInt(p.employee_count || 0, 10) || 0;
+  const tdStyle = 'padding:7px 4px; border-bottom:1px solid #f3f4f6; white-space:nowrap;';
+  const badgeStyle = 'display:inline-block;font-size:9px;font-weight:700;color:#92400e;background:#fde68a;padding:2px 5px;border-radius:3px;letter-spacing:0.3px;margin-right:4px;';
+  let badge = '';
+  if (hasAdj) {
+    const tooltip = _payrollAdjTooltip(p);
+    badge = '<span style="' + badgeStyle + '" title="' + tooltip.replace(/"/g, '&quot;') + '">' + cnt + '/' + empCount + '</span>';
+  }
+  const adjBtn = '<button onclick="prShowAdjustModal(' + i + ')" title="Per-employee benefit adjustments (e.g. double pension for 1 of N)" style="padding:2px 6px;font-size:10px;cursor:pointer;background:' + (hasAdj ? '#fef3c7' : '#f9fafb') + ';color:#92400e;border:1px solid ' + (hasAdj ? '#fde68a' : '#e5e7eb') + ';border-radius:4px;margin-right:3px;">⚙️</button>';
+  const remBtn = '<button onclick="removePayrollPosition(' + i + ')" style="padding:2px 6px;font-size:10px;cursor:pointer;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:4px;">✕</button>';
+  return '<td style="' + tdStyle + '">' + badge + adjBtn + remBtn + '</td>';
+}
+
+// Build a tooltip describing the active benefit adjustments on a position.
+function _payrollAdjTooltip(p) {
+  const adj = p && p.benefit_adjustments;
+  if (!adj || !adj.benefits) return '';
+  const cnt = adj.adjusted_count || 0;
+  const lines = [adj.label ? ('— ' + adj.label) : ('Adjustment for ' + cnt + ' of ' + (p.employee_count || 0) + ' employees')];
+  PR_ADJ_BENEFITS.forEach(b => {
+    const v = adj.benefits[b.key];
+    if (v && v.rate && v.periods) {
+      const sign = v.rate >= 0 ? '+' : '';
+      lines.push('  ' + b.label + ': ' + sign + v.rate.toFixed(2) + ' ' + b.unit + ' × ' + v.periods + ' ' + b.periodLabel + (v.label ? ' (' + v.label + ')' : ''));
+    }
+  });
+  return lines.join('\n');
+}
+
+// Open the per-position adjustment modal. Reads the building's payroll
+// assumption defaults from window._payrollAssumptions for "Default" display.
+function prShowAdjustModal(idx) {
+  const p = _payrollPositions[idx];
+  if (!p) return;
+  const a = (typeof _payrollAssumptions !== 'undefined' && _payrollAssumptions) ? _payrollAssumptions : {};
+  const empCount = parseInt(p.employee_count || 0, 10) || 0;
+  const adj = p.benefit_adjustments || {};
+  const benefits = adj.benefits || {};
+  const adjustedCount = Math.min(parseInt(adj.adjusted_count || 0, 10) || 0, empCount);
+
+  let modal = document.getElementById('prAdjustModal');
+  let overlay = document.getElementById('prAdjustOverlay');
+  if (!modal) {
+    overlay = document.createElement('div');
+    overlay.id = 'prAdjustOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:120;';
+    overlay.onclick = prCloseAdjustModal;
+    document.body.appendChild(overlay);
+    modal = document.createElement('div');
+    modal.id = 'prAdjustModal';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.25);padding:0;z-index:121;width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;';
+    document.body.appendChild(modal);
+  }
+  overlay.style.display = 'block';
+  modal.style.display = 'flex';
+
+  let html = '';
+  // Header
+  html += '<div style="padding:18px 20px;border-bottom:1px solid var(--gray-200);">';
+  html += '<div style="font-size:15px;font-weight:700;color:var(--blue-dark);">⚙️ Adjust Benefits — ' + (p.position_name || '(unnamed position)') + '</div>';
+  html += '<div style="font-size:12px;color:var(--gray-500);margin-top:4px;">Position has <b>' + empCount + '</b> employee' + (empCount === 1 ? '' : 's') + '. Use this when only some of them need a different benefit (e.g. one tenured doorman gets double pension). Adjustment math: <i>rate × periods × adjusted_count</i> stacks on top of the building default.</div>';
+  html += '</div>';
+  // Body (scrollable)
+  html += '<div style="padding:14px 20px;overflow-y:auto;flex:1;">';
+  // Adjusted count + label
+  html += '<div style="display:flex;gap:14px;align-items:flex-end;margin-bottom:14px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">';
+  html += '<div><label style="display:block;font-size:11px;font-weight:600;color:var(--gray-600);margin-bottom:3px;">How many employees adjusted?</label>';
+  html += '<input id="prAdjCount" type="number" min="0" max="' + empCount + '" value="' + adjustedCount + '" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;width:80px;text-align:right;"> <span style="color:var(--gray-500);font-size:12px;margin-left:4px;">of ' + empCount + '</span></div>';
+  html += '<div style="flex:1;"><label style="display:block;font-size:11px;font-weight:600;color:var(--gray-600);margin-bottom:3px;">Label (optional)</label>';
+  html += '<input id="prAdjLabel" type="text" placeholder="e.g. Tenure exception" value="' + (adj.label || '').replace(/"/g, '&quot;') + '" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;width:100%;"></div>';
+  html += '</div>';
+
+  // Per-benefit rows
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  html += '<thead><tr style="background:var(--gray-100);color:var(--gray-700);text-align:left;">' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);">Benefit</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Building Default</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Adj Rate</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Adj Periods</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);">Label</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Δ / yr / employee</th>' +
+    '</tr></thead><tbody>';
+  PR_ADJ_BENEFITS.forEach(b => {
+    const def = parseFloat(a[b.defaultKey] || 0) || 0;
+    const defAnnual = def * b.periodsPerYear;
+    const cur = benefits[b.key] || {};
+    const curRate = cur.rate != null ? cur.rate : '';
+    const curPeriods = cur.periods != null ? cur.periods : '';
+    const curLabel = (cur.label || '').replace(/"/g, '&quot;');
+    html += '<tr>';
+    html += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);font-weight:600;">' + b.label + ' <span style="color:var(--gray-500);font-weight:400;">(' + b.unit + ')</span></td>';
+    html += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;color:var(--gray-500);font-variant-numeric:tabular-nums;">' + def.toFixed(2) + ' × ' + b.periodsPerYear + ' = $' + defAnnual.toFixed(2) + '</td>';
+    html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);text-align:right;"><input class="pr-adj-rate" data-key="' + b.key + '" type="text" value="' + curRate + '" placeholder="—" oninput="prAdjRecalc()" style="width:80px;padding:4px 6px;border:1px solid var(--gray-300);border-radius:4px;font-size:12px;text-align:right;"></td>';
+    html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);text-align:right;"><input class="pr-adj-periods" data-key="' + b.key + '" type="text" value="' + curPeriods + '" placeholder="' + b.periodLabel + '" oninput="prAdjRecalc()" style="width:60px;padding:4px 6px;border:1px solid var(--gray-300);border-radius:4px;font-size:12px;text-align:right;"></td>';
+    html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);"><input class="pr-adj-label" data-key="' + b.key + '" type="text" value="' + curLabel + '" placeholder="(optional)" style="width:100%;padding:4px 6px;border:1px solid var(--gray-300);border-radius:4px;font-size:12px;"></td>';
+    html += '<td id="pr-adj-delta-' + b.key + '" style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#92400e;">$0.00</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  // Total impact
+  html += '<div style="margin-top:14px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;display:flex;justify-content:space-between;align-items:center;">';
+  html += '<span style="font-weight:600;color:#15803d;">Total adjustment impact (this row)</span>';
+  html += '<span id="prAdjTotalImpact" style="font-weight:700;color:#15803d;font-size:14px;font-variant-numeric:tabular-nums;">$0.00 / yr</span>';
+  html += '</div>';
+  html += '</div>';
+  // Footer
+  html += '<div style="padding:12px 20px;border-top:1px solid var(--gray-200);display:flex;justify-content:space-between;align-items:center;background:var(--gray-50);">';
+  html += '<button onclick="prClearAdjustment(' + idx + ')" style="padding:7px 14px;border:1px solid var(--gray-300);background:white;color:var(--red);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Clear adjustment</button>';
+  html += '<div style="display:flex;gap:8px;">';
+  html += '<button onclick="prCloseAdjustModal()" style="padding:7px 14px;border:1px solid var(--gray-300);background:white;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Cancel</button>';
+  html += '<button onclick="prSaveAdjustment(' + idx + ')" style="padding:7px 16px;border:none;background:var(--blue);color:white;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Save Adjustment</button>';
+  html += '</div></div>';
+
+  modal.innerHTML = html;
+  prAdjRecalc();
+}
+
+function prCloseAdjustModal() {
+  const m = document.getElementById('prAdjustModal');
+  const o = document.getElementById('prAdjustOverlay');
+  if (m) m.style.display = 'none';
+  if (o) o.style.display = 'none';
+}
+
+// Live total/per-row impact calc as the FA types.
+function prAdjRecalc() {
+  const cntEl = document.getElementById('prAdjCount');
+  const cnt = parseInt((cntEl && cntEl.value) || 0, 10) || 0;
+  let total = 0;
+  PR_ADJ_BENEFITS.forEach(b => {
+    const rateEl = document.querySelector('.pr-adj-rate[data-key="' + b.key + '"]');
+    const periodsEl = document.querySelector('.pr-adj-periods[data-key="' + b.key + '"]');
+    const r = parseFloat((rateEl && rateEl.value) || '') || 0;
+    const pp = parseFloat((periodsEl && periodsEl.value) || '') || 0;
+    const delta = r * pp * cnt;
+    total += delta;
+    const td = document.getElementById('pr-adj-delta-' + b.key);
+    if (td) {
+      const sign = delta >= 0 ? '+' : '−';
+      td.textContent = (delta === 0) ? '$0.00' : (sign + '$' + Math.abs(delta).toFixed(2));
+      td.style.color = delta >= 0 ? '#92400e' : '#15803d';
+    }
+  });
+  const totEl = document.getElementById('prAdjTotalImpact');
+  if (totEl) {
+    const sign = total >= 0 ? '+' : '−';
+    totEl.textContent = (total === 0) ? '$0.00 / yr' : (sign + '$' + Math.abs(total).toFixed(2) + ' / yr');
+  }
+}
+
+// Save the adjustment back to the position object + persist + recalc payroll.
+function prSaveAdjustment(idx) {
+  const p = _payrollPositions[idx];
+  if (!p) return;
+  const empCount = parseInt(p.employee_count || 0, 10) || 0;
+  const cntEl = document.getElementById('prAdjCount');
+  let cnt = parseInt((cntEl && cntEl.value) || 0, 10) || 0;
+  if (cnt < 0) cnt = 0;
+  if (cnt > empCount) cnt = empCount;
+  const labelEl = document.getElementById('prAdjLabel');
+  const adjLabel = (labelEl && labelEl.value || '').trim();
+
+  const benefits = {};
+  PR_ADJ_BENEFITS.forEach(b => {
+    const rateEl = document.querySelector('.pr-adj-rate[data-key="' + b.key + '"]');
+    const periodsEl = document.querySelector('.pr-adj-periods[data-key="' + b.key + '"]');
+    const labelE = document.querySelector('.pr-adj-label[data-key="' + b.key + '"]');
+    const r = parseFloat((rateEl && rateEl.value) || '') || 0;
+    const pp = parseFloat((periodsEl && periodsEl.value) || '') || 0;
+    if (Math.abs(r) > 1e-9 && Math.abs(pp) > 1e-9) {
+      benefits[b.key] = { rate: r, periods: pp, label: ((labelE && labelE.value) || '').trim().slice(0, 80) };
+    }
+  });
+
+  // Persist only if there's something meaningful; else clear.
+  if (cnt > 0 && Object.keys(benefits).length > 0) {
+    p.benefit_adjustments = { adjusted_count: cnt, label: adjLabel.slice(0, 120), benefits: benefits };
+  } else {
+    p.benefit_adjustments = null;
+  }
+  prCloseAdjustModal();
+  renderPayrollRoster(); // re-render to update the badge
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 400);
+}
+
+// Wipe the adjustment for this row.
+function prClearAdjustment(idx) {
+  const p = _payrollPositions[idx];
+  if (!p) return;
+  if (!p.benefit_adjustments) { prCloseAdjustModal(); return; }
+  if (!confirm('Clear the benefit adjustment on this position?')) return;
+  p.benefit_adjustments = null;
+  prCloseAdjustModal();
+  renderPayrollRoster();
+  recalcPayroll();
+  clearTimeout(_prRosterSaveTimer);
+  _prRosterSaveTimer = setTimeout(savePayrollPositions, 400);
 }
 
 // ── Render Taxes/Benefits Table ───────────────────────────────────────────

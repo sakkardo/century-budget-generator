@@ -182,6 +182,13 @@ def _run_idempotent_migrations():
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col3_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col4_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col5_override DOUBLE PRECISION",
+        # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
+        # Lets the FA flag "N of M employees in this position have an extra
+        # rate × periods adjustment on welfare/pension/etc". Math is additive
+        # to the building default. JSON shape:
+        #   {"adjusted_count": int, "label": str?, "benefits": {
+        #       "welfare":{"rate":float,"periods":float,"label":str?}, ...}}
+        "ALTER TABLE payroll_positions ADD COLUMN IF NOT EXISTS benefit_adjustments_json TEXT",
     ]
     with app.app_context():
         for stmt in statements:
