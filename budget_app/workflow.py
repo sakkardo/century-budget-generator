@@ -2818,6 +2818,13 @@ def create_workflow_blueprint(db):
             except Exception:
                 history = []
 
+        # FA directive 2026-05-05: surface notable orphan-GL situations as
+        # wizard sidebar notes. Currently scoped to Interest Income (GL 4800)
+        # per FA spec — when 4800 has actual data on the building but no
+        # summary row aggregates it, the FA needs to know to either add a
+        # row or override a related row's COL 3.
+        notes = _wizard_notes_for_entity(entity_code, budget)
+
         return jsonify({
             "entity_code": entity_code,
             "wizard_step": budget.wizard_step if budget else 0,
@@ -2827,7 +2834,84 @@ def create_workflow_blueprint(db):
             "sources": sources,
             "assumptions_version": len(history),
             "assumptions_history": history,
+            "notes": notes,
         })
+
+
+    def _wizard_notes_for_entity(entity_code, budget):
+        """Detect notable budget-state issues that the FA should see in the
+        wizard sidebar (right-side panel on the dashboard). Returns a list of
+        note dicts {type, severity, title, message, ...}.
+
+        Currently checks:
+          - **orphan_interest_income**: GL 4800-XXXX has non-zero ytd or
+            current_budget on this building, but no summary row's
+            gl_prefixes_json aggregates the 4800 family. Without this note,
+            interest income is silently missing from COL 3 (YTD).
+
+        Designed to be additive — drop in more checks here as portfolio-wide
+        invariants emerge. Falls back to empty list on any error so the
+        wizard sidebar always renders.
+        """
+        notes = []
+        if not budget:
+            return notes
+        try:
+            lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+            summary_rows = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR
+            ).all()
+
+            # Build set of prefixes covered by any summary row
+            covered_prefixes = set()
+            for row in summary_rows:
+                if not row.gl_prefixes_json:
+                    continue
+                try:
+                    for p in (json.loads(row.gl_prefixes_json) or []):
+                        s = str(p).strip()
+                        if s:
+                            covered_prefixes.add(s)
+                except Exception:
+                    pass
+
+            # Check Interest Income (4800-XXXX)
+            interest_lines = [l for l in lines if (l.gl_code or "").startswith("4800")]
+            interest_with_data = [
+                l for l in interest_lines
+                if (l.ytd_actual or 0) != 0 or (l.current_budget or 0) != 0
+            ]
+            if interest_with_data:
+                # 4800 is covered if any summary prefix matches: bare "4800",
+                # the full sub-account "4800-0000", etc.
+                is_covered = (
+                    "4800" in covered_prefixes
+                    or any(p == "4800" or p.startswith("4800-") for p in covered_prefixes)
+                )
+                if not is_covered:
+                    total_ytd = sum((l.ytd_actual or 0) for l in interest_lines)
+                    total_cb = sum((l.current_budget or 0) for l in interest_lines)
+                    gl_codes = sorted({l.gl_code for l in interest_with_data})
+                    notes.append({
+                        "type": "orphan_interest_income",
+                        "severity": "high",
+                        "title": "Interest Income not in summary",
+                        "message": (
+                            "GL 4800 has data (YTD ${ytd:,.0f}, "
+                            "Current Budget ${cb:,.0f}) but no summary row "
+                            "aggregates it. Add a row via the summary tab "
+                            "(+ Add Row → Specific GL → search 4800) or "
+                            "override a related row's COL 3."
+                        ).format(ytd=total_ytd, cb=total_cb),
+                        "gl_codes": gl_codes,
+                        "totals": {
+                            "ytd": round(total_ytd, 2),
+                            "current_budget": round(total_cb, 2),
+                        },
+                    })
+        except Exception as _err:
+            logger.warning(f"_wizard_notes_for_entity failed for {entity_code}: {_err}")
+        return notes
 
 
     @bp.route("/api/wizard/<entity_code>/step", methods=["POST"])
@@ -6591,6 +6675,36 @@ const BY1 = BY - 1, BY2 = BY - 2, BY3 = BY - 3;
 
       if (ver > 0) {
         html += `<div style="margin-top:10px;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;font-size:9px;background:#f3e8ff;color:#7c3aed;font-weight:600;">Assumptions v${ver}</div>`;
+      }
+
+      // FA directive 2026-05-05: surface notable issues (e.g. orphaned
+      // Interest Income GL 4800 with data but no summary row) as a Notes
+      // section in the wizard sidebar so the FA sees them on every page load.
+      const notes = Array.isArray(data.notes) ? data.notes : [];
+      if (notes.length > 0) {
+        html += `<div style="margin-top:12px;border-top:1px solid var(--gray-200);padding-top:10px;">`;
+        html += `<div style="font-size:9px;font-weight:700;color:#92400e;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">⚠️ Notes (${notes.length})</div>`;
+        notes.forEach(n => {
+          const titleEsc = (n.title || '').replace(/</g, '&lt;');
+          const msgEsc = (n.message || '').replace(/</g, '&lt;');
+          // Severity color mapping. Default to amber (medium) — most notes are
+          // FA-actionable not error-state.
+          const sev = n.severity || 'medium';
+          const bg = sev === 'high' ? '#fef3c7' : '#fffbeb';
+          const border = sev === 'high' ? '#fde68a' : '#fef3c7';
+          const titleColor = sev === 'high' ? '#92400e' : '#a16207';
+          const bodyColor = sev === 'high' ? '#78350f' : '#854d0e';
+          html += `<div style="font-size:10px;background:${bg};border:1px solid ${border};padding:7px 9px;border-radius:5px;margin-bottom:6px;line-height:1.35;">`;
+          html += `<div style="font-weight:700;color:${titleColor};margin-bottom:3px;">${titleEsc}</div>`;
+          html += `<div style="color:${bodyColor};">${msgEsc}</div>`;
+          // GL code chip list (when present) helps the FA find the GL fast
+          if (Array.isArray(n.gl_codes) && n.gl_codes.length) {
+            const chips = n.gl_codes.map(g => `<code style="background:rgba(0,0,0,0.05);padding:1px 4px;border-radius:3px;font-size:9px;">${g}</code>`).join(' ');
+            html += `<div style="margin-top:4px;">${chips}</div>`;
+          }
+          html += `</div>`;
+        });
+        html += `</div>`;
       }
 
       html += `<div style="margin-top:12px;"><button onclick="document.getElementById(\'wizardSidebar\').style.transform=\'translateX(180px)\'" style="font-size:9px;border:none;background:var(--gray-100);color:var(--gray-500);padding:4px 8px;border-radius:4px;cursor:pointer;width:100%;">Collapse</button></div>`;
