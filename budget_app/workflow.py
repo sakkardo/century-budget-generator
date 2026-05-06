@@ -11921,34 +11921,34 @@ async function renderBudgetSummary(contentDiv) {
   // ── Duplicate-row warnings banner ─────────────────────────────────
   // FA directive 2026-05-05: surface duplicate-row warnings (e.g. Gas +
   // Gas Heating both pulling from [5250,5251,5252]) so the FA can review
-  // and decide whether to consolidate or differentiate. Banner is dismissed
-  // via the X button; the dismissal is per-page-load only (re-renders on
-  // tab switch). Server returns warnings in sumData.warnings.
+  // and decide whether to consolidate or differentiate. The banner string
+  // is prepended to the rendered html below (NOT inserted via DOM mutation)
+  // because contentDiv.innerHTML is overwritten later in this function.
+  // Server returns warnings in sumData.warnings.
   const warnings = Array.isArray(sumData.warnings) ? sumData.warnings : [];
+  let warningsBannerHtml = '';
   if (warnings.length > 0) {
     const sevColor = (s) => s === 'high' ? '#b91c1c' : '#92400e';
     const sevBg    = (s) => s === 'high' ? '#fef2f2' : '#fffbeb';
     const sevBorder= (s) => s === 'high' ? '#fecaca' : '#fed7aa';
-    let bannerHtml = '<div id="sumWarningsBanner" style="margin:0 0 12px 0;border-radius:8px;overflow:hidden;border:1px solid;padding:0;">';
-    warnings.forEach((w, idx) => {
+    warningsBannerHtml = '<div id="sumWarningsBanner" style="margin:0 0 12px 0;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">';
+    warnings.forEach((w) => {
       const labels = (w.labels || []).map(l => '<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:3px;font-size:11px;">' + l + '</code>').join(' · ');
-      const detail = w.shared_prefixes && w.shared_prefixes.length
+      const detail = (w.shared_prefixes && w.shared_prefixes.length)
         ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Shared GL prefixes: ' + w.shared_prefixes.join(', ') + '</div>'
         : (w.value !== undefined
             ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Identical YTD: $' + Math.round(w.value).toLocaleString('en-US') + '</div>'
             : '');
-      bannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;display:flex;align-items:flex-start;gap:10px;">';
-      bannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
-      bannerHtml += '<div style="flex:1;">';
-      bannerHtml += '<div style="font-weight:600;color:' + sevColor(w.severity) + ';font-size:13px;">Duplicate row warning · ' + (w.section || 'Summary') + '</div>';
-      bannerHtml += '<div style="margin-top:4px;color:#374151;font-size:12px;">' + (w.message || '') + '</div>';
-      bannerHtml += '<div style="margin-top:4px;font-size:12px;">Rows: ' + labels + '</div>';
-      bannerHtml += detail;
-      bannerHtml += '</div></div>';
+      warningsBannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;display:flex;align-items:flex-start;gap:10px;">';
+      warningsBannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
+      warningsBannerHtml += '<div style="flex:1;">';
+      warningsBannerHtml += '<div style="font-weight:600;color:' + sevColor(w.severity) + ';font-size:13px;">Duplicate row warning · ' + (w.section || 'Summary') + '</div>';
+      warningsBannerHtml += '<div style="margin-top:4px;color:#374151;font-size:12px;">' + (w.message || '') + '</div>';
+      warningsBannerHtml += '<div style="margin-top:4px;font-size:12px;">Rows: ' + labels + '</div>';
+      warningsBannerHtml += detail;
+      warningsBannerHtml += '</div></div>';
     });
-    // Strip the trailing border-bottom from the last item by adjusting the wrapper
-    bannerHtml += '</div>';
-    contentDiv.insertAdjacentHTML('afterbegin', bannerHtml);
+    warningsBannerHtml += '</div>';
   }
 
   // Build section-aware data structure
@@ -12102,7 +12102,9 @@ async function renderBudgetSummary(contentDiv) {
   });
 
   html += '</tbody></table></div>';
-  contentDiv.innerHTML = html;
+  // Prepend duplicate-row warnings banner (built above) so it survives the
+  // innerHTML overwrite and renders above the workbook table.
+  contentDiv.innerHTML = warningsBannerHtml + html;
 
   // Recalculate totals
   sumRecalcTotals();
