@@ -4132,16 +4132,32 @@ def create_workflow_blueprint(db):
         ).all()
         lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
 
-        # Audit uploads — get the latest one (any year).
+        # Audit uploads — query via raw SQL (same pattern as the dashboard
+        # endpoint above). Avoids cross-module model-registry coupling.
+        audit_rows = []
         try:
-            AuditUpload = af_models["AuditUpload"]
-            audit_rows = (
-                AuditUpload.query
-                .filter_by(entity_code=entity_code)
-                .order_by(AuditUpload.updated_at.desc())
-                .all()
-            )
-        except Exception:
+            rows_au = db.session.execute(db.text(
+                "SELECT id, fiscal_year_end, status, confirmed_at, confirmed_by, "
+                "       updated_at, pdf_filename "
+                "FROM audit_uploads "
+                "WHERE entity_code = :ec "
+                "ORDER BY (CASE status WHEN 'confirmed' THEN 4 WHEN 'mapped' THEN 3 "
+                "                       WHEN 'extracted' THEN 2 WHEN 'uploaded' THEN 1 ELSE 0 END) DESC, "
+                "         updated_at DESC NULLS LAST"
+            ), {"ec": entity_code}).fetchall()
+            # Wrap rows into a small object exposing the fields we use below
+            class _AuRow:
+                def __init__(self, r):
+                    self.id = r[0]
+                    self.fiscal_year_end = r[1]
+                    self.status = r[2]
+                    self.confirmed_at = r[3]
+                    self.confirmed_by = r[4]
+                    self.updated_at = r[5]
+                    self.pdf_filename = r[6]
+            audit_rows = [_AuRow(r) for r in rows_au]
+        except Exception as _au_err:
+            logger.warning(f"readiness audit lookup failed for {entity_code}: {_au_err}")
             audit_rows = []
 
         # Payroll positions.
