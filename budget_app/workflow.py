@@ -1948,6 +1948,36 @@ def create_workflow_blueprint(db):
             import logging
             logging.getLogger(__name__).warning(f"RE Taxes fetch failed for {entity_code}: {e}")
 
+        # FA directive 2026-05-05: audit-status chip on dashboard. Surface the
+        # latest AuditUpload for this entity so the dashboard can render a
+        # progression chip (Uploaded → Extracted → Mapped → Confirmed) without
+        # an extra round-trip. Empty when no audit row exists for this entity.
+        audit_summary = None
+        try:
+            row_au = db.session.execute(db.text(
+                "SELECT id, fiscal_year_end, status, confirmed_at, confirmed_by, "
+                "       updated_at, pdf_filename "
+                "FROM audit_uploads "
+                "WHERE entity_code = :ec "
+                "ORDER BY (CASE status WHEN 'confirmed' THEN 4 WHEN 'mapped' THEN 3 "
+                "                       WHEN 'extracted' THEN 2 WHEN 'uploaded' THEN 1 ELSE 0 END) DESC, "
+                "         updated_at DESC NULLS LAST "
+                "LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row_au:
+                audit_summary = {
+                    "id": row_au[0],
+                    "fiscal_year_end": row_au[1],
+                    "status": row_au[2],
+                    "confirmed_at": row_au[3].isoformat() if row_au[3] else None,
+                    "confirmed_by": row_au[4] or "",
+                    "updated_at": row_au[5].isoformat() if row_au[5] else None,
+                    "pdf_filename": row_au[6] or "",
+                    "review_url": f"/audited-financials/review/{row_au[0]}",
+                }
+        except Exception as _au_err:
+            logger.warning(f"audit_summary lookup failed for {entity_code}: {_au_err}")
+
         return jsonify({
             "budget": budget.to_dict(),
             "lines": [l.to_dict() for l in lines],
@@ -1956,6 +1986,7 @@ def create_workflow_blueprint(db):
             "assignments": {"fa": fa_name, "pm": pm_name},
             "expenses": expense_data,
             "audit": audit_data,
+            "audit_summary": audit_summary,
             "assumptions": assumptions,
             "ytd_months": ytd_months,
             "remaining_months": remaining_months,
@@ -3978,23 +4009,40 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/building-info/<entity_code>", methods=["GET"])
     def get_building_info(entity_code):
-        """Fetch reference/illustrative building data (maint history, amort schedule params)."""
+        """Fetch reference/illustrative building data (maint history, amort schedule params).
+
+        Also surfaces Budget.building_type so the FA can edit the coop/condo
+        flag from the Building Info card (replaces the legacy is_coop heuristic).
+        """
         info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+        # Pull the building_type from the Budget record (per-year SoT for is_coop()).
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        building_type = (budget.building_type or "") if budget else ""
         if not info:
             return jsonify({
                 "entity_code": entity_code,
                 "maintenance_history": None,
                 "common_charges_history": None,
                 "amort_config": None,
+                "building_type": building_type,
+                "building_name": (budget.building_name or "") if budget else "",
                 "updated_at": None,
                 "updated_by": None,
             })
-        return jsonify(info.to_dict())
+        d = info.to_dict()
+        d["building_type"] = building_type
+        d["building_name"] = (budget.building_name or "") if budget else ""
+        return jsonify(d)
 
 
     @bp.route("/api/building-info/<entity_code>", methods=["PUT"])
     def update_building_info(entity_code):
-        """Upsert reference/illustrative building data. Body: {section: value}."""
+        """Upsert reference/illustrative building data. Body: {section: value}.
+
+        Also accepts `building_type` ("coop" | "condo" | "" / null) which writes
+        to Budget.building_type for the current BUDGET_YEAR — the source of
+        truth used by is_coop() to decide whether to render the RE Tax tab.
+        """
         try:
             body = request.get_json(force=True) or {}
         except Exception:
@@ -4016,6 +4064,20 @@ def create_workflow_blueprint(db):
         if "amort_config" in body:
             ac = body.get("amort_config")
             info.amort_config_json = json.dumps(ac) if ac is not None else None
+
+        # FA directive 2026-05-05: building_type editable on Building Info card.
+        # Validates to known values; empty string clears it.
+        if "building_type" in body:
+            raw_bt = body.get("building_type")
+            bt = (str(raw_bt).strip().lower() if raw_bt is not None else "")
+            if bt and bt not in ("coop", "co-op", "condo", "rental", "mixed", "other"):
+                return jsonify({"error": f"Invalid building_type: {bt!r}"}), 400
+            # Normalize "co-op" → "coop" for consistency with is_coop().
+            if bt == "co-op":
+                bt = "coop"
+            budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+            if budget:
+                budget.building_type = bt or ""
 
         try:
             user = current_user if hasattr(current_user, "is_authenticated") and current_user.is_authenticated else None
@@ -4952,6 +5014,84 @@ def create_workflow_blueprint(db):
                                 f"(${val:,.0f}). Could be coincidence, but worth verifying."
                             ),
                         })
+
+            # 3) Orphan GLs — lines with data but no summary row aggregates them.
+            #    FA directive 2026-05-05: surface these with auto-suggested labels
+            #    (= GL description) and a one-click "Add Row" hint so the FA
+            #    can fix immediately.
+            try:
+                # Build set of GLs covered by any summary row's prefix list.
+                matched_gls = set()
+                for r in summary_rows:
+                    if not r.gl_prefixes_json:
+                        continue
+                    try:
+                        prefs = _json.loads(r.gl_prefixes_json) or []
+                    except Exception:
+                        continue
+                    for line in bl_dicts:
+                        gl = line.get("gl_code", "")
+                        if not gl:
+                            continue
+                        if _gl_matches_prefixes(gl, prefs):
+                            matched_gls.add(gl)
+
+                # Section guess from line.category — drives the Add Row modal's
+                # default section pick so the new row lands in the right place.
+                def _section_for_category(cat):
+                    c = (cat or "").lower()
+                    if c == "income":
+                        return "Income"
+                    if c == "capital":
+                        return "Non-Operating Expense"
+                    return "Expenses"
+
+                seen_orphans = set()
+                orphan_warnings = []
+                for line in bl_dicts:
+                    gl = line.get("gl_code", "")
+                    if not gl or gl in seen_orphans or gl in matched_gls:
+                        continue
+                    desc = (line.get("description") or "").strip()
+                    # Skip placeholder GLs where description == gl_code or
+                    # description is empty/null (these are typically balance-
+                    # sheet or untagged Yardi codes, not budget items).
+                    if not desc or desc == gl:
+                        continue
+                    ytd = float(line.get("ytd_actual", 0) or 0)
+                    cb = float(line.get("current_budget", 0) or 0)
+                    if abs(ytd) < 0.01 and abs(cb) < 0.01:
+                        continue
+                    seen_orphans.add(gl)
+                    gl_base = gl.split("-")[0]
+                    orphan_warnings.append({
+                        "gl_code": gl,
+                        "gl_base": gl_base,
+                        "description": desc,
+                        "category": line.get("category"),
+                        "sheet_name": line.get("sheet_name"),
+                        "ytd": round(ytd, 2),
+                        "current_budget": round(cb, 2),
+                        "suggested_label": desc,         # auto-suggest from description
+                        "suggested_section": _section_for_category(line.get("category")),
+                        "suggested_prefix": gl_base,
+                    })
+
+                if orphan_warnings:
+                    warnings.append({
+                        "type": "orphan_gls",
+                        "severity": "medium",
+                        "count": len(orphan_warnings),
+                        "title": f"{len(orphan_warnings)} unmapped GL{'s' if len(orphan_warnings) > 1 else ''} with data",
+                        "message": (
+                            "These GL codes have data on this building but no summary "
+                            "row aggregates them. Click 'Add Row' on any to create the "
+                            "row — the GL description is pre-filled as the label."
+                        ),
+                        "orphans": orphan_warnings,
+                    })
+            except Exception as _orph_err:
+                logger.warning(f"orphan-GL scan failed for {entity_code}: {_orph_err}")
         except Exception as _warn_err:
             logger.warning(f"summary duplicate-warning scan failed for {entity_code}: {_warn_err}")
 
@@ -6701,6 +6841,8 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
     <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
     <div id="periodBanner" style="display:none; padding:10px 24px; font-size:13px; border-bottom:1px solid var(--gray-200);"></div>
+    <!-- Audit-status banner: shows uploaded → extracted → mapped → confirmed for the latest AuditUpload. FA directive 2026-05-05. -->
+    <div id="auditStatusBanner" style="display:none; padding:8px 24px; font-size:12px; border-bottom:1px solid var(--gray-200);"></div>
     <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap; padding:0 24px; background:var(--gray-50);"></div>
     <div id="sheetContent" style="padding:0 24px;"></div>
     <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px; padding:0 24px 12px;"></div>
@@ -7086,6 +7228,83 @@ function estimateLabel() {
   return MONTH_ABBR[YTD_MONTHS] + '-Dec';
 }
 
+// FA directive 2026-05-05: render the audit-status banner. Shows the latest
+// AuditUpload's progression through Uploaded → Extracted → Mapped → Confirmed.
+// Severity:
+//   - confirmed: green chip with confirmed_at + by
+//   - mapped: amber chip "needs FA confirmation"
+//   - extracted: amber chip "needs review/mapping"
+//   - uploaded: amber chip "extraction pending"
+//   - missing audit_summary: muted "No audit on file" prompt
+function renderAuditStatusBanner(data) {
+  const banner = document.getElementById('auditStatusBanner');
+  if (!banner) return;
+  const a = (data && data.audit_summary) ? data.audit_summary : null;
+  // Render four-step progression dots for visual scanability.
+  const steps = [
+    {key: 'uploaded',  label: 'Uploaded'},
+    {key: 'extracted', label: 'Extracted'},
+    {key: 'mapped',    label: 'Mapped'},
+    {key: 'confirmed', label: 'Confirmed'},
+  ];
+  const stepIdx = (s) => steps.findIndex(x => x.key === s);
+  if (!a) {
+    banner.style.display = '';
+    banner.style.background = '#f9fafb';
+    banner.style.color = 'var(--gray-500)';
+    banner.innerHTML =
+      '<span style="font-weight:600;">📄 Audit:</span> no audited financial uploaded yet for this entity. ' +
+      '<a href="/audited-financials/bulk-upload" style="color:var(--blue);text-decoration:none;font-weight:600;margin-left:6px;">Upload now →</a>';
+    return;
+  }
+  const status = (a.status || '').toLowerCase();
+  const idx = stepIdx(status);
+  const isConfirmed = (status === 'confirmed');
+  const fy = a.fiscal_year_end ? ('FY' + a.fiscal_year_end) : 'Audit';
+  banner.style.display = '';
+  banner.style.background = isConfirmed ? '#f0fdf4' : '#fffbeb';
+  banner.style.color = isConfirmed ? '#166534' : '#92400e';
+  banner.style.borderBottom = '1px solid ' + (isConfirmed ? '#bbf7d0' : '#fde68a');
+
+  // Build dot row showing progression
+  let dotsHtml = '<span style="display:inline-flex;align-items:center;gap:4px;">';
+  steps.forEach((s, i) => {
+    const reached = i <= idx;
+    const isCurrent = (i === idx);
+    const dotColor = reached ? (isConfirmed ? '#16a34a' : (isCurrent ? '#d97706' : '#16a34a')) : '#d1d5db';
+    const labelColor = reached ? (isConfirmed ? '#166534' : (isCurrent ? '#92400e' : '#15803d')) : 'var(--gray-400)';
+    dotsHtml += '<span style="display:inline-flex;align-items:center;gap:4px;">';
+    dotsHtml += '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';' + (isCurrent ? 'box-shadow:0 0 0 2px rgba(217,119,6,0.18);' : '') + '"></span>';
+    dotsHtml += '<span style="font-size:11px;font-weight:600;color:' + labelColor + ';">' + s.label + '</span>';
+    if (i < steps.length - 1) {
+      dotsHtml += '<span style="color:var(--gray-300);font-size:10px;margin:0 2px;">→</span>';
+    }
+    dotsHtml += '</span>';
+  });
+  dotsHtml += '</span>';
+
+  let actionHtml = '';
+  if (isConfirmed) {
+    const when = a.confirmed_at ? a.confirmed_at.slice(0, 10) : '';
+    const by = a.confirmed_by ? (' by ' + a.confirmed_by) : '';
+    actionHtml = '<span style="margin-left:10px;color:#15803d;">✓ Confirmed' + (when ? ' on ' + when : '') + by + '</span>';
+    if (a.review_url) {
+      actionHtml += ' &nbsp; <a href="' + a.review_url + '" style="color:var(--blue);text-decoration:none;font-size:11px;font-weight:600;">View →</a>';
+    }
+  } else {
+    let cta = 'Open audit';
+    if (status === 'uploaded')  cta = 'Run extraction';
+    if (status === 'extracted') cta = 'Map + Confirm';
+    if (status === 'mapped')    cta = 'Confirm';
+    if (a.review_url) {
+      actionHtml = ' &nbsp; <a href="' + a.review_url + '" style="color:#92400e;text-decoration:none;font-weight:700;font-size:11px;">' + cta + ' →</a>';
+    }
+  }
+
+  banner.innerHTML =
+    '<span style="font-weight:600;">📄 ' + fy + ' Audit:</span> &nbsp; ' + dotsHtml + actionHtml;
+}
+
 // Render the period banner above the workbook tabs. Reads
 // data.assumptions.budget_period ("MM/YYYY") and shows either:
 //   - red "Period not set" warning + dropdown to set it, OR
@@ -7237,6 +7456,10 @@ function renderDetail(data) {
   // Period banner — shows "Actuals: Jan-Apr 2026 · Estimate: May-Dec 2026"
   // or a red warning if the period was never set in the wizard.
   renderPeriodBanner(data);
+  // Audit-status banner — shows where the latest AuditUpload is in the
+  // extraction/mapping/confirm pipeline, with click-through to /audited-financials.
+  // FA directive 2026-05-05 — uploaded → extracted → mapped → confirmed.
+  renderAuditStatusBanner(data);
 
   // Header + breadcrumb
   document.getElementById('buildingName').textContent = b.building_name;
@@ -8490,11 +8713,73 @@ function _biRenderAll(container) {
         '<button onclick="_biCloseAndReturn()" style="padding:6px 14px; font-size:12px; font-weight:600; background:var(--blue-light, #f5efe7); color:var(--blue, #5a4a3f); border:1px solid var(--blue, #5a4a3f); border-radius:6px; cursor:pointer;">\u2190 Back to Summary</button>' +
         '<span id="biSaveIndicator" style="font-size:11px; color:var(--gray-500);"></span>' +
       '</div>' +
+      _biRenderType() +
       _biRenderMaint() +
       (showCC ? _biRenderCommonCharges() : '') +
       _biRenderAmort() +
     '</div>';
   _biRecalcAmort();
+}
+
+// Building Type card \u2014 coop/condo/rental/mixed/other. Source of truth for
+// is_coop() across the app. FA directive 2026-05-05.
+function _biRenderType() {
+  const bt = (_biData && _biData.building_type) ? String(_biData.building_type).toLowerCase() : '';
+  const opts = [
+    {v: '',       label: '\u2014 Not set \u2014'},
+    {v: 'coop',   label: 'Co-op'},
+    {v: 'condo',  label: 'Condo'},
+    {v: 'rental', label: 'Rental'},
+    {v: 'mixed',  label: 'Mixed-use'},
+    {v: 'other',  label: 'Other'},
+  ];
+  let optHtml = '';
+  opts.forEach(o => {
+    const sel = (o.v === bt) ? ' selected' : '';
+    optHtml += '<option value="' + o.v + '"' + sel + '>' + o.label + '</option>';
+  });
+  return ''
+    + '<div class="bi-card">'
+    +   '<div class="bi-card-header">'
+    +     '<h2>Building Type</h2>'
+    +   '</div>'
+    +   '<div class="bi-card-body">'
+    +     '<div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">'
+    +       '<label style="font-size:13px; font-weight:600; color:var(--gray-700);">Type:</label>'
+    +       '<select id="biBuildingType" onchange="_biTypeUpd(this.value)" style="padding:6px 10px; font-size:13px; border:1px solid var(--gray-300); border-radius:6px; min-width:180px;">'
+    +         optHtml
+    +       '</select>'
+    +       '<span id="biTypeStatus" style="font-size:11px; color:var(--gray-500);"></span>'
+    +     '</div>'
+    +     '<div class="bi-note">Drives Common Charges vs. Maintenance, summary-row math, and other coop/condo-specific behavior. Saved immediately.</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+async function _biTypeUpd(val) {
+  const v = (val || '').toLowerCase();
+  if (!_biData) return;
+  _biData.building_type = v;
+  const status = document.getElementById('biTypeStatus');
+  if (status) status.textContent = 'Saving\u2026';
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ building_type: v }),
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      if (status) status.textContent = 'Save failed: ' + (j.error || resp.status);
+      return;
+    }
+    if (status) {
+      status.textContent = 'Saved \u2713';
+      setTimeout(() => { if (status) status.textContent = ''; }, 1800);
+    }
+  } catch (err) {
+    if (status) status.textContent = 'Save failed: ' + err.message;
+  }
 }
 
 // Common Charges History \u2014 condo equivalent of Maintenance History. Same
@@ -12187,8 +12472,50 @@ async function renderBudgetSummary(contentDiv) {
     const sevColor = (s) => s === 'high' ? '#b91c1c' : '#92400e';
     const sevBg    = (s) => s === 'high' ? '#fef2f2' : '#fffbeb';
     const sevBorder= (s) => s === 'high' ? '#fecaca' : '#fed7aa';
+    // Stash orphan list on window so the "Add Row" buttons can read details
+    // without round-tripping markup. Indexed by gl_code.
+    window._sumOrphans = {};
     warningsBannerHtml = '<div id="sumWarningsBanner" style="margin:0 0 12px 0;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">';
     warnings.forEach((w) => {
+      // ── Orphan-GL banner ────────────────────────────────────
+      // FA directive 2026-05-05: list each unmapped GL with its description
+      // as the suggested label and a one-click "Add Row" button.
+      if (w.type === 'orphan_gls') {
+        const orphans = Array.isArray(w.orphans) ? w.orphans : [];
+        warningsBannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;">';
+        warningsBannerHtml += '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;">';
+        warningsBannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
+        warningsBannerHtml += '<div style="flex:1;">';
+        warningsBannerHtml += '<div style="font-weight:600;color:' + sevColor(w.severity) + ';font-size:13px;">' + (w.title || 'Unmapped GLs') + '</div>';
+        warningsBannerHtml += '<div style="margin-top:2px;color:#374151;font-size:12px;">' + (w.message || '') + '</div>';
+        warningsBannerHtml += '</div></div>';
+        warningsBannerHtml += '<div style="background:white;border:1px solid var(--gray-200);border-radius:6px;overflow:hidden;">';
+        warningsBannerHtml += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+        warningsBannerHtml += '<thead><tr style="background:var(--gray-50);color:var(--gray-700);text-align:left;">';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);">GL</th>';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);">Suggested Label</th>';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);text-align:right;">YTD</th>';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);text-align:right;">Current Bud</th>';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);">Section</th>';
+        warningsBannerHtml += '<th style="padding:6px 8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--gray-500);border-bottom:1px solid var(--gray-200);text-align:right;">Action</th>';
+        warningsBannerHtml += '</tr></thead><tbody>';
+        orphans.forEach((o, oi) => {
+          window._sumOrphans[o.gl_code] = o;
+          const ytdStr = (o.ytd === null || o.ytd === undefined || o.ytd === 0) ? '—' : '$' + Math.round(o.ytd).toLocaleString('en-US');
+          const cbStr = (o.current_budget === null || o.current_budget === undefined || o.current_budget === 0) ? '—' : '$' + Math.round(o.current_budget).toLocaleString('en-US');
+          warningsBannerHtml += '<tr>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);font-family:monospace;font-weight:600;color:var(--gray-700);">' + (o.gl_code || '') + '</td>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);">' + (o.suggested_label || o.description || '') + '</td>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;font-variant-numeric:tabular-nums;color:var(--gray-700);">' + ytdStr + '</td>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;font-variant-numeric:tabular-nums;color:var(--gray-700);">' + cbStr + '</td>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);"><span style="font-size:10px;color:var(--gray-500);background:var(--gray-100);padding:1px 6px;border-radius:3px;">' + (o.suggested_section || '—') + '</span></td>';
+          warningsBannerHtml += '<td style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;"><button onclick="sumAddOrphanRow(\'' + (o.gl_code || '').replace(/'/g, "\\'") + '\')" style="padding:3px 10px;background:var(--blue);color:white;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">+ Add Row</button></td>';
+          warningsBannerHtml += '</tr>';
+        });
+        warningsBannerHtml += '</tbody></table></div></div>';
+        return;
+      }
+      // ── Existing duplicate-row banner (unchanged) ────────────
       const labels = (w.labels || []).map(l => '<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:3px;font-size:11px;">' + l + '</code>').join(' · ');
       const detail = (w.shared_prefixes && w.shared_prefixes.length)
         ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Shared GL prefixes: ' + w.shared_prefixes.join(', ') + '</div>'
@@ -13452,6 +13779,55 @@ function sumCloseInsert() {
   const o = document.getElementById('sumInsertOverlay');
   if (m) m.style.display = 'none';
   if (o) o.style.display = 'none';
+}
+
+// FA directive 2026-05-05: one-click "Add Row" for an orphan GL surfaced in
+// the warnings banner. Pre-fills label = description, prefix = GL 4-digit
+// base, section = inferred from category. Skips the modal entirely.
+async function sumAddOrphanRow(glCode) {
+  const orphan = (window._sumOrphans || {})[glCode];
+  if (!orphan) { alert('Could not find GL data for ' + glCode); return; }
+  const label = (orphan.suggested_label || orphan.description || glCode).slice(0, 100);
+  const section = orphan.suggested_section || 'Expenses';
+  const prefix = orphan.suggested_prefix || (glCode.split('-')[0]);
+  if (!confirm('Add summary row "' + label + '" aggregating GL prefix ' + prefix + '?')) return;
+
+  // Compute after_label so the new row lands BEFORE the section's subtotal.
+  let after_label = null;
+  try {
+    const rows = (window._sumRowMap && Object.values(window._sumRowMap)) || [];
+    const sectionRows = rows
+      .filter(r => r.section === section && r.row_type === 'data' && r.label !== label)
+      .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+    if (sectionRows.length > 0) after_label = sectionRows[sectionRows.length - 1].label;
+  } catch (e) { /* fall back to end */ }
+
+  try {
+    const resp = await fetch('/api/admin/add-summary-row', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        entity_code: entityCode,
+        label: label,
+        section: section,
+        after_label: after_label,
+        gl_prefixes: [prefix],
+      })
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      alert('Add Row failed: ' + (data.error || 'unknown'));
+      return;
+    }
+    showToast('Added: ' + label, 'success');
+    // Reload the summary tab — orphan should disappear from warnings on next render.
+    const sheetContent = document.getElementById('sheetContent');
+    if (sheetContent && typeof renderBudgetSummary === 'function') {
+      renderBudgetSummary(sheetContent);
+    }
+  } catch (e) {
+    alert('Add Row failed: ' + (e.message || e));
+  }
 }
 
 async function sumDoInsert(secKey) {
