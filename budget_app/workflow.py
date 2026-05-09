@@ -4094,6 +4094,356 @@ def create_workflow_blueprint(db):
         return jsonify({"ok": True, **info.to_dict()})
 
 
+    # ─── Readiness Inspector ─────────────────────────────────────────────
+    # FA directive 2026-05-09: a single consolidated "what's left on this
+    # building" panel at the top of the dashboard. Each gate already has a
+    # signal somewhere in the app (audit chip, period banner, orphan
+    # warnings, etc.); this endpoint just unifies them into one structured
+    # response so the FA can scan in 5 seconds instead of clicking through
+    # 8 places.
+    @bp.route("/api/readiness/<entity_code>", methods=["GET"])
+    def api_readiness(entity_code):
+        """Per-building readiness inspector. Returns 8 gates with status +
+        click-through actions. Read-only. Safe to call on every dashboard
+        load.
+
+        Response shape:
+          {
+            "entity_code": "168",
+            "summary": {"ok": 6, "warn": 1, "fail": 1, "total": 8, "ready": false},
+            "gates": [
+              {key, label, status, detail, action_url, action_label}, ...
+            ]
+          }
+        Status values: "ok" (green), "warn" (amber, soft issue), "fail"
+        (red, hard blocker), "skip" (n/a for this building).
+        """
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        # Pre-fetch everything we need in one go to avoid N+1 queries.
+        try:
+            assum = json.loads(budget.assumptions_json or "{}")
+        except Exception:
+            assum = {}
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+
+        # Audit uploads — get the latest one (any year).
+        try:
+            AuditUpload = af_models["AuditUpload"]
+            audit_rows = (
+                AuditUpload.query
+                .filter_by(entity_code=entity_code)
+                .order_by(AuditUpload.updated_at.desc())
+                .all()
+            )
+        except Exception:
+            audit_rows = []
+
+        # Payroll positions.
+        try:
+            PayrollPosition = workflow_models.get("PayrollPosition")
+            positions = (
+                PayrollPosition.query.filter_by(entity_code=entity_code).all()
+                if PayrollPosition else []
+            )
+        except Exception:
+            positions = []
+
+        gates = []
+
+        # ── Gate 1: Source files / Audit upload exists ──
+        if audit_rows:
+            au = audit_rows[0]
+            fy = au.fiscal_year_end or "?"
+            gates.append({
+                "key": "source_files",
+                "label": "Source files found",
+                "status": "ok",
+                "detail": f"FY{fy} audit uploaded",
+                "action_url": "/audited-financials",
+                "action_label": "View",
+            })
+        else:
+            gates.append({
+                "key": "source_files",
+                "label": "Source files found",
+                "status": "fail",
+                "detail": "No audit uploaded for this entity",
+                "action_url": f"/audited-financials/bulk-upload?entity={entity_code}",
+                "action_label": "Upload",
+            })
+
+        # ── Gate 2: Audit confirmed ──
+        confirmed = [au for au in audit_rows if (au.status or "") == "confirmed"]
+        latest = audit_rows[0] if audit_rows else None
+        if confirmed:
+            au = confirmed[0]
+            fy = au.fiscal_year_end or "?"
+            gates.append({
+                "key": "audit_confirmed",
+                "label": "Audit confirmed",
+                "status": "ok",
+                "detail": f"FY{fy} confirmed",
+                "action_url": f"/audited-financials/review/{au.id}",
+                "action_label": "View",
+            })
+        elif latest:
+            status_label = (latest.status or "uploaded").lower()
+            cta = "Run extraction"
+            if status_label == "extracted": cta = "Map + Confirm"
+            elif status_label == "mapped": cta = "Confirm"
+            gates.append({
+                "key": "audit_confirmed",
+                "label": "Audit confirmed",
+                "status": "warn",
+                "detail": f"Audit at status '{status_label}' — needs FA action",
+                "action_url": f"/audited-financials/review/{latest.id}",
+                "action_label": cta,
+            })
+        else:
+            gates.append({
+                "key": "audit_confirmed",
+                "label": "Audit confirmed",
+                "status": "fail",
+                "detail": "No audit to confirm",
+                "action_url": "/audited-financials/bulk-upload",
+                "action_label": "Upload",
+            })
+
+        # ── Gate 3: Period set ──
+        bp_str = (assum.get("budget_period") or "").strip()
+        if bp_str and "/" in bp_str:
+            try:
+                m_int = int(bp_str.split("/")[0])
+                month_names = ["Jan","Feb","Mar","Apr","May","Jun",
+                               "Jul","Aug","Sep","Oct","Nov","Dec"]
+                actuals_end = month_names[m_int - 1] if 1 <= m_int <= 12 else "?"
+                est_start   = month_names[m_int]      if 1 <= m_int <= 11 else "?"
+                gates.append({
+                    "key": "period_set",
+                    "label": "Period set",
+                    "status": "ok",
+                    "detail": f"Actuals: Jan–{actuals_end} · Estimate: {est_start}–Dec",
+                    "action_url": None,
+                    "action_label": None,
+                })
+            except Exception:
+                gates.append({
+                    "key": "period_set",
+                    "label": "Period set",
+                    "status": "warn",
+                    "detail": f"Period stored as '{bp_str}' (could not parse)",
+                    "action_url": None,
+                    "action_label": "Fix",
+                })
+        else:
+            gates.append({
+                "key": "period_set",
+                "label": "Period set",
+                "status": "fail",
+                "detail": "Forecast will use default 2-month YTD until set",
+                "action_url": None,
+                "action_label": "Set period",
+            })
+
+        # ── Gate 4: Building type set ──
+        bt = (budget.building_type or "").strip().lower()
+        if bt:
+            type_label = {"coop": "Co-op", "condo": "Condo", "rental": "Rental",
+                          "mixed": "Mixed-use", "other": "Other"}.get(bt, bt.title())
+            gates.append({
+                "key": "building_type_set",
+                "label": "Building type set",
+                "status": "ok",
+                "detail": type_label,
+                "action_url": None,
+                "action_label": None,
+            })
+        else:
+            gates.append({
+                "key": "building_type_set",
+                "label": "Building type set",
+                "status": "warn",
+                "detail": "Affects coop/condo math + RE Tax tab visibility",
+                "action_url": "#building-info",
+                "action_label": "Set type",
+            })
+
+        # ── Gate 5: Orphan GLs (cap at high-severity bar) ──
+        # Reuse the orphan detection logic from /api/summary — count GLs
+        # with non-trivial data (|ytd|>=100 or |current_budget|>=100)
+        # not claimed by any summary row.
+        matched_gls = set()
+        for r in rows:
+            if r.row_type != "data" or not r.gl_prefixes_json:
+                continue
+            try:
+                pfx = json.loads(r.gl_prefixes_json)
+            except Exception:
+                continue
+            for ln in lines:
+                gl_str = str(ln.gl_code or "").strip()
+                gl_base = gl_str.split("-")[0]
+                for p in pfx:
+                    if "-" in str(p):
+                        if gl_str.startswith(str(p)):
+                            matched_gls.add(ln.gl_code); break
+                    else:
+                        if gl_base.startswith(str(p)):
+                            matched_gls.add(ln.gl_code); break
+        orphan_count = 0
+        for ln in lines:
+            if ln.gl_code in matched_gls:
+                continue
+            ytd = float(ln.ytd_actual or 0)
+            cb = float(ln.current_budget or 0)
+            if abs(ytd) >= 100 or abs(cb) >= 100:
+                # Skip placeholder GLs where description == gl_code (stub rows)
+                if (ln.description or "").strip() == (ln.gl_code or "").strip():
+                    continue
+                orphan_count += 1
+        if orphan_count == 0:
+            gates.append({
+                "key": "no_orphans",
+                "label": "No orphan GLs",
+                "status": "ok",
+                "detail": "All GLs aggregated into a summary row",
+                "action_url": None,
+                "action_label": None,
+            })
+        else:
+            gates.append({
+                "key": "no_orphans",
+                "label": "No orphan GLs",
+                "status": "warn",
+                "detail": f"{orphan_count} GL{'s' if orphan_count != 1 else ''} with data not aggregated",
+                "action_url": "#tab=Summary",
+                "action_label": "Review",
+            })
+
+        # ── Gate 6: No duplicate-row alerts ──
+        # Two summary rows pulling from the same gl_prefixes_json is a
+        # guaranteed duplicate. Same as /api/summary warnings detection.
+        prefix_to_labels = {}
+        for r in rows:
+            if r.row_type != "data" or not r.gl_prefixes_json:
+                continue
+            key = r.gl_prefixes_json.strip()
+            if key in ("[]", "null", ""):
+                continue
+            prefix_to_labels.setdefault(key, []).append(r.label or "?")
+        dup_groups = [labels for labels in prefix_to_labels.values() if len(labels) > 1]
+        if not dup_groups:
+            gates.append({
+                "key": "no_duplicates",
+                "label": "No duplicate rows",
+                "status": "ok",
+                "detail": "Each GL prefix maps to one row",
+                "action_url": None,
+                "action_label": None,
+            })
+        else:
+            n = sum(len(g) for g in dup_groups)
+            gates.append({
+                "key": "no_duplicates",
+                "label": "No duplicate rows",
+                "status": "warn",
+                "detail": f"{len(dup_groups)} duplicate set{'s' if len(dup_groups) != 1 else ''} ({n} rows)",
+                "action_url": "#tab=Summary",
+                "action_label": "Review",
+            })
+
+        # ── Gate 7: Payroll reviewed ──
+        if positions:
+            # Count positions with non-zero employee_count and rate.
+            valid = sum(
+                1 for p in positions
+                if (p.employee_count or 0) > 0 and (p.hourly_rate or 0) > 0
+            )
+            if valid >= 1:
+                gates.append({
+                    "key": "payroll_reviewed",
+                    "label": "Payroll reviewed",
+                    "status": "ok",
+                    "detail": f"{valid} position{'s' if valid != 1 else ''} configured",
+                    "action_url": "#tab=Payroll",
+                    "action_label": "View",
+                })
+            else:
+                gates.append({
+                    "key": "payroll_reviewed",
+                    "label": "Payroll reviewed",
+                    "status": "warn",
+                    "detail": f"{len(positions)} position{'s' if len(positions) != 1 else ''} present but missing rate/count",
+                    "action_url": "#tab=Payroll",
+                    "action_label": "Fix",
+                })
+        else:
+            # No payroll at all — could be a building with no staff (small
+            # condos sometimes), so flag amber not red.
+            gates.append({
+                "key": "payroll_reviewed",
+                "label": "Payroll reviewed",
+                "status": "warn",
+                "detail": "No payroll positions configured",
+                "action_url": "#tab=Payroll",
+                "action_label": "Add",
+            })
+
+        # ── Gate 8: Generated ──
+        bstatus = (budget.status or "").lower()
+        if bstatus == "generated":
+            gates.append({
+                "key": "generated",
+                "label": "Budget generated",
+                "status": "ok",
+                "detail": "Ready to send to FA / export",
+                "action_url": None,
+                "action_label": None,
+            })
+        else:
+            # Only block (fail) if all upstream gates are green; otherwise warn.
+            upstream_ok = all(
+                g["status"] == "ok"
+                for g in gates
+                if g["key"] in ("source_files", "audit_confirmed", "period_set")
+            )
+            gates.append({
+                "key": "generated",
+                "label": "Budget generated",
+                "status": "warn",
+                "detail": (
+                    "Ready to generate" if upstream_ok
+                    else "Generate when upstream gates are green"
+                ),
+                "action_url": "#generate",
+                "action_label": "Generate" if upstream_ok else None,
+            })
+
+        # ── Summary tally ──
+        ok_n   = sum(1 for g in gates if g["status"] == "ok")
+        warn_n = sum(1 for g in gates if g["status"] == "warn")
+        fail_n = sum(1 for g in gates if g["status"] == "fail")
+
+        return jsonify({
+            "entity_code": entity_code,
+            "budget_year": BUDGET_YEAR,
+            "summary": {
+                "ok": ok_n,
+                "warn": warn_n,
+                "fail": fail_n,
+                "total": len(gates),
+                "ready": (fail_n == 0 and warn_n == 0),
+            },
+            "gates": gates,
+        })
+
+
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
     def download_budget(entity_code):
         """Regenerate and download budget Excel from DB data."""
@@ -6839,6 +7189,8 @@ BUILDING_DETAIL_TEMPLATE = r"""
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
+    <!-- Readiness Inspector: 8-gate checklist showing the FA exactly what's left on this building. FA directive 2026-05-09. -->
+    <div id="readinessInspector" style="display:none;"></div>
     <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
     <div id="periodBanner" style="display:none; padding:10px 24px; font-size:13px; border-bottom:1px solid var(--gray-200);"></div>
     <!-- Audit-status banner: shows uploaded → extracted → mapped → confirmed for the latest AuditUpload. FA directive 2026-05-05. -->
@@ -7305,6 +7657,165 @@ function renderAuditStatusBanner(data) {
     '<span style="font-weight:600;">📄 ' + fy + ' Audit:</span> &nbsp; ' + dotsHtml + actionHtml;
 }
 
+// ─── Readiness Inspector ──────────────────────────────────────────────
+// FA directive 2026-05-09. Shows an at-a-glance 8-gate checklist at the
+// top of every building's dashboard: Source files / Audit confirmed /
+// Period set / Building type / No orphan GLs / No duplicate rows /
+// Payroll reviewed / Generated. Each row is a colored dot + 1-line
+// detail + click-through action button. Collapses to a single header
+// line when all 8 are green.
+async function renderReadinessInspector() {
+  const el = document.getElementById('readinessInspector');
+  if (!el) return;
+  let data;
+  try {
+    const resp = await fetch('/api/readiness/' + entityCode);
+    if (!resp.ok) { el.style.display = 'none'; return; }
+    data = await resp.json();
+  } catch (err) {
+    el.style.display = 'none';
+    return;
+  }
+  if (!data || !data.gates) { el.style.display = 'none'; return; }
+  const gates = data.gates;
+  const s = data.summary || {};
+  const okCount = s.ok || 0;
+  const total = s.total || gates.length;
+  const allGreen = (s.fail === 0 && s.warn === 0);
+
+  // Color mapping per status
+  const statusColor = (st) => ({
+    ok:   '#16a34a',
+    warn: '#d97706',
+    fail: '#dc2626',
+    skip: '#9ca3af',
+  })[st] || '#9ca3af';
+  const statusBg = (st) => ({
+    ok:   '#f0fdf4',
+    warn: '#fffbeb',
+    fail: '#fef2f2',
+    skip: '#f9fafb',
+  })[st] || '#f9fafb';
+  const statusIcon = (st) => ({
+    ok:   '✓',
+    warn: '⚠',
+    fail: '✕',
+    skip: '–',
+  })[st] || '·';
+
+  // Default to expanded when not all green; collapsed when all green.
+  const stateKey = '_readinessExpanded_' + entityCode;
+  let expanded = sessionStorage.getItem(stateKey);
+  if (expanded === null) expanded = allGreen ? '0' : '1';
+  expanded = (expanded === '1');
+
+  // Header
+  const headerBg = allGreen ? '#f0fdf4' : (s.fail > 0 ? '#fef2f2' : '#fffbeb');
+  const headerColor = allGreen ? '#166534' : (s.fail > 0 ? '#991b1b' : '#92400e');
+  const headerIcon = allGreen ? '✅' : (s.fail > 0 ? '🛑' : '⚠️');
+  const headerText = allGreen
+    ? 'Building ready — all ' + total + ' gates green'
+    : okCount + ' of ' + total + ' ready · ' +
+      [
+        s.fail > 0 ? (s.fail + ' blocker' + (s.fail !== 1 ? 's' : '')) : null,
+        s.warn > 0 ? (s.warn + ' warning' + (s.warn !== 1 ? 's' : '')) : null,
+      ].filter(Boolean).join(' · ');
+
+  let html = '';
+  html += '<div style="background:' + headerBg + '; border-bottom:1px solid var(--gray-200);">';
+  html += '<div onclick="readinessToggle()" style="display:flex; align-items:center; justify-content:space-between; padding:10px 24px; cursor:pointer; user-select:none;">';
+  html += '<div style="display:flex; align-items:center; gap:10px;">';
+  html += '<span style="font-size:16px;">' + headerIcon + '</span>';
+  html += '<span style="font-size:14px; font-weight:700; color:' + headerColor + ';">Readiness</span>';
+  html += '<span style="font-size:13px; color:' + headerColor + ';">' + headerText + '</span>';
+  html += '</div>';
+  html += '<span id="readinessChevron" style="font-size:12px; color:' + headerColor + '; transition:transform 0.2s;">' + (expanded ? '▼' : '▶') + '</span>';
+  html += '</div>';
+
+  // Body
+  if (expanded) {
+    html += '<div style="padding:4px 24px 14px;">';
+    html += '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+    gates.forEach((g, i) => {
+      const color = statusColor(g.status);
+      const bg = statusBg(g.status);
+      const icon = statusIcon(g.status);
+      const isLast = (i === gates.length - 1);
+      html += '<tr style="' + (isLast ? '' : 'border-bottom:1px solid rgba(0,0,0,0.04);') + '">';
+      // dot + icon
+      html += '<td style="padding:8px 8px 8px 0; width:28px; vertical-align:top;">';
+      html += '<span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:' + bg + '; color:' + color + '; font-weight:700; font-size:13px; border:1.5px solid ' + color + ';">' + icon + '</span>';
+      html += '</td>';
+      // label
+      html += '<td style="padding:8px 12px; vertical-align:top; min-width:170px;">';
+      html += '<div style="font-weight:600; color:var(--gray-700); font-size:13px;">' + (g.label || '') + '</div>';
+      html += '</td>';
+      // detail
+      html += '<td style="padding:8px 12px; vertical-align:top; color:var(--gray-600); font-size:12px;">';
+      html += (g.detail || '');
+      html += '</td>';
+      // action
+      html += '<td style="padding:8px 0 8px 12px; vertical-align:top; text-align:right; white-space:nowrap;">';
+      if (g.action_url && g.action_label) {
+        const isHash = g.action_url.startsWith('#');
+        if (isHash) {
+          html += '<button onclick="readinessAction(\'' + g.action_url.replace(/\'/g, "\\'") + '\')" style="padding:4px 10px; font-size:11px; font-weight:600; background:transparent; color:' + color + '; border:1px solid ' + color + '; border-radius:4px; cursor:pointer;">' + g.action_label + ' →</button>';
+        } else {
+          html += '<a href="' + g.action_url + '" style="padding:4px 10px; font-size:11px; font-weight:600; background:transparent; color:' + color + '; border:1px solid ' + color + '; border-radius:4px; text-decoration:none; display:inline-block;">' + g.action_label + ' →</a>';
+        }
+      } else if (g.action_label) {
+        // Action label without URL — soft hint, no link.
+        html += '<span style="font-size:11px; color:' + color + '; font-weight:600;">' + g.action_label + '</span>';
+      }
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+  el.style.display = '';
+}
+
+function readinessToggle() {
+  const stateKey = '_readinessExpanded_' + entityCode;
+  const cur = sessionStorage.getItem(stateKey);
+  // If not yet stored, this is the first toggle from an auto-default, so flip
+  // to the opposite of what's currently rendered.
+  const chev = document.getElementById('readinessChevron');
+  const wasExpanded = (chev && chev.textContent === '▼');
+  sessionStorage.setItem(stateKey, wasExpanded ? '0' : '1');
+  renderReadinessInspector();
+}
+
+// Handle hash-based action click-throughs from readiness inspector.
+// Supported: '#tab=Summary', '#tab=Payroll', '#building-info', '#generate'.
+function readinessAction(target) {
+  if (!target) return;
+  if (target === '#building-info') {
+    if (typeof openBuildingInfo === 'function') openBuildingInfo();
+    return;
+  }
+  if (target === '#generate') {
+    const btn = document.getElementById('generateBudgetBtn');
+    if (btn) { btn.scrollIntoView({behavior:'smooth', block:'center'}); btn.click(); }
+    return;
+  }
+  if (target.indexOf('#tab=') === 0) {
+    const sheetName = target.slice(5);
+    const tab = document.querySelector('.sheet-tab[data-sheet="' + sheetName + '"]');
+    if (tab) {
+      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      if (typeof renderSheet === 'function') renderSheet(sheetName, null, tab);
+      tab.scrollIntoView({behavior:'smooth', block:'center'});
+    }
+    return;
+  }
+}
+
 // Render the period banner above the workbook tabs. Reads
 // data.assumptions.budget_period ("MM/YYYY") and shows either:
 //   - red "Period not set" warning + dropdown to set it, OR
@@ -7453,6 +7964,10 @@ function renderDetail(data) {
   YTD_MONTHS = data.ytd_months || 2;
   REMAINING_MONTHS = data.remaining_months || 10;
 
+  // Readiness inspector — single consolidated 8-gate checklist at the top
+  // of every building's dashboard. FA directive 2026-05-09. Reads from
+  // /api/readiness/<entity>; auto-collapses when all gates green.
+  renderReadinessInspector();
   // Period banner — shows "Actuals: Jan-Apr 2026 · Estimate: May-Dec 2026"
   // or a red warning if the period was never set in the wizard.
   renderPeriodBanner(data);
