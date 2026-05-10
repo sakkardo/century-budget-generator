@@ -7776,6 +7776,35 @@ const entityCode = '{{ entity_code }}';
 const BY = {{ budget_year }};  // Budget year from server config
 const BY1 = BY - 1, BY2 = BY - 2, BY3 = BY - 3;
 
+// ─── Universal change-detection for auto-save handlers ─────────────────
+// FA directive 2026-05-10: clicking into a cell to inspect it must NOT
+// trigger an auto-save. Sites with onblur/onchange handlers that fire
+// fetch/PUT calls were saving on every blur, even when the FA didn't
+// change anything — flipping cells to "edited" / "OVR" state and
+// polluting budget_revisions with no-op rows.
+//
+// Fix: a document-level focusin listener snapshots every input/textarea/
+// select's value when it gains focus. Handlers call _isUnchangedInput(el)
+// (or _isUnchangedValue(el, currentVal)) to short-circuit before saving.
+// One helper, ~18 sites use it (cellBlur, pctCellBlur, savePrGLNote,
+// savePrGLIncrease, _biCcUpd, _biMhUpd, _biAmUpd, assumAutoSave,
+// payrollAssumptionChanged, wageIncreaseChanged, prRosterWageIncrChanged,
+// updateBonusExtraField, updateBonusExtraAmount, ancUpdLine, prRosterChanged).
+document.addEventListener('focusin', (e) => {
+  const t = e.target;
+  if (t && t.matches && t.matches('input, textarea, select')) {
+    const v = t.value;
+    t.dataset.focusedVal = (v === undefined || v === null) ? '' : String(v);
+  }
+}, true);
+
+function _isUnchangedInput(el) {
+  if (!el || !el.dataset) return false;
+  const focused = el.dataset.focusedVal;
+  if (focused === undefined) return false;  // no snapshot — assume changed
+  return String(el.value || '') === String(focused);
+}
+
 // ─── Wizard Sidebar (re-entry mode) ─────────────────────────────────────────
 (function initWizardSidebar() {
   fetch(`/api/wizard/${entityCode}/status`)
@@ -9653,7 +9682,10 @@ function openAssumptions() {
 
 // ── Assumptions Tab ──
 let _assumSaveTimer = null;
-function assumAutoSave(section, field, value) {
+function assumAutoSave(section, field, value, el) {
+  // FA directive 2026-05-10: el is the input element. Skip when value
+  // didn't change. Backwards-compatible: callers without el still work.
+  if (el && _isUnchangedInput(el)) return;
   clearTimeout(_assumSaveTimer);
   const indicator = document.getElementById('faSaveIndicator');
   indicator.textContent = 'Saving assumptions...';
@@ -9733,19 +9765,19 @@ function renderAssumptionsTab(assumptions, contentDiv) {
   // Input helpers — preserve exact assumAutoSave field names & save semantics
   function pctF(section, key, val) {
     return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + pctVal(val) +
-      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100)"><span class="asm-unit">%</span></div>';
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100, this)"><span class="asm-unit">%</span></div>';
   }
   function pctRawF(section, key, valStr) {
     return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + valStr +
-      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100)"><span class="asm-unit">%</span></div>';
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value/100, this)"><span class="asm-unit">%</span></div>';
   }
   function numF(section, key, val, unit) {
     return '<div class="asm-input-wrap"><input class="asm-input" type="number" step="any" value="' + numVal(val) +
-      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', parseFloat(this.value)||0)"><span class="asm-unit">' + (unit || '') + '</span></div>';
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', parseFloat(this.value)||0, this)"><span class="asm-unit">' + (unit || '') + '</span></div>';
   }
   function txtF(section, key, val) {
     return '<div class="asm-input-wrap"><input class="asm-input" type="text" value="' + (val || '') +
-      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value)"><span class="asm-unit"></span></div>';
+      '" onchange="assumAutoSave(\'' + section + '\',\'' + key + '\', this.value, this)"><span class="asm-unit"></span></div>';
   }
 
   function row(label, inputHtml) {
@@ -10158,6 +10190,9 @@ function _biRenderCommonCharges() {
 function _biCcUpd(i, field, val) {
   const n = _biNum(val);
   if (!_biData.common_charges_history || !_biData.common_charges_history[i]) return;
+  // FA directive 2026-05-10: short-circuit when the value didn't change.
+  // Prevents click-in/click-out from triggering re-render + save.
+  if (_biData.common_charges_history[i][field] === n) return;
   _biData.common_charges_history[i][field] = n;
   // Re-render in place \u2014 find the Common Charges card by its header text.
   const cards = document.querySelectorAll('.bi-page .bi-card');
@@ -10237,6 +10272,8 @@ function _biRenderMaint() {
 
 function _biMhUpd(i, field, val) {
   const n = _biNum(val);
+  // FA directive 2026-05-10: short-circuit when value didn't change.
+  if (_biData.maintenance_history[i][field] === n) return;
   _biData.maintenance_history[i][field] = n;
   // Re-render just the maintenance card in place
   const card = document.querySelector('.bi-page .bi-card');
@@ -10307,12 +10344,24 @@ function _biRenderAmort() {
 
 function _biAmUpd() {
   const a = _biData.amort_config || (_biData.amort_config = _biDefaultAmort());
-  a.label     = document.getElementById('biAmLabel').value || '';
-  a.principal = _biNum(document.getElementById('biAmPrincipal').value);
-  a.rate      = _biNum(document.getElementById('biAmRate').value);
-  a.term      = _biNum(document.getElementById('biAmTerm').value);
-  a.start     = document.getElementById('biAmStart').value || '';
-  a.freq      = parseInt(document.getElementById('biAmFreq').value, 10) || 12;
+  // FA directive 2026-05-10: read the candidate values from the DOM, then
+  // short-circuit if nothing changed. Avoids re-render + save when the FA
+  // tabs through fields without editing.
+  const cand = {
+    label:     document.getElementById('biAmLabel').value || '',
+    principal: _biNum(document.getElementById('biAmPrincipal').value),
+    rate:      _biNum(document.getElementById('biAmRate').value),
+    term:      _biNum(document.getElementById('biAmTerm').value),
+    start:     document.getElementById('biAmStart').value || '',
+    freq:      parseInt(document.getElementById('biAmFreq').value, 10) || 12,
+  };
+  if (a.label === cand.label && a.principal === cand.principal &&
+      a.rate === cand.rate && a.term === cand.term &&
+      a.start === cand.start && a.freq === cand.freq) {
+    return;
+  }
+  a.label = cand.label; a.principal = cand.principal; a.rate = cand.rate;
+  a.term = cand.term; a.start = cand.start; a.freq = cand.freq;
   _biRecalcAmort();
   _biSaveSoon();
 }
@@ -10414,6 +10463,9 @@ function parseDollar(s) {
 
 // cellBlur: user finished editing a regular dollar cell — reformat and save
 function cellBlur(el) {
+  // FA directive 2026-05-10: skip save when the FA only clicked in/out
+  // without changing anything. Prevents stamping "edited" state + revision rows.
+  if (_isUnchangedInput(el)) return;
   const raw = parseDollar(el.value);
   el.dataset.raw = Math.round(raw);
   el.value = fmt(raw);
@@ -10877,6 +10929,8 @@ function formulaBarKeydown(e) {
 
 // pctCellBlur: user finished editing a percentage cell — reformat and save
 function pctCellBlur(el) {
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const raw = parseFloat(el.value) || 0;
   el.dataset.raw = raw.toFixed(1);
   el.value = raw.toFixed(1) + '%';
@@ -11261,7 +11315,10 @@ function ancRenderDrawer(gl) {
 function ancUpdLine(gl, idx, field, value, numeric) {
   const items = _ancGetBackup(gl);
   if (!items[idx]) return;
-  items[idx][field] = numeric ? _ancParseNum(value) : value;
+  // FA directive 2026-05-10: skip when value didn't change.
+  const newVal = numeric ? _ancParseNum(value) : value;
+  if (items[idx][field] === newVal) return;
+  items[idx][field] = newVal;
   faAutoSave(gl, 'backup_json', items);
   // Only update derived cells — DO NOT rewrite the input the user is typing in,
   // otherwise value gets re-formatted (e.g. "1" → "1.00") and backspace breaks.
@@ -15947,6 +16004,8 @@ function prBlendedHourlyRate() {
 // Handler for the global dual-cell wage increase. Updates mode + value in state,
 // refreshes the other cell in place, triggers recalc, and debounces save.
 function wageIncreaseChanged(el, editedMode) {
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const raw = parseFloat((el.value || '').replace(/[^0-9.\-]/g, '')) || 0;
   _payrollAssumptions.wage_increase_mode = editedMode;
   _payrollAssumptions.wage_increase_value = (editedMode === 'pct') ? (raw / 100) : raw;
@@ -15995,6 +16054,8 @@ function togglePayrollSection(id) {
 
 let _prAssumpSaveTimer = null;
 function payrollAssumptionChanged(el) {
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const key = el.dataset.key;
   let val = el.value.trim();
 
@@ -16035,7 +16096,11 @@ async function savePayrollAssumptions() {
 
 // ── Roster change & save ──────────────────────────────────────────────────
 
-function prRosterChanged() {
+function prRosterChanged(el) {
+  // FA directive 2026-05-10: skip when value didn't change. el is the
+  // input element from the onchange handler; backwards-compatible if
+  // called with no arg (re-renders + saves unconditionally).
+  if (el && _isUnchangedInput(el)) return;
   // Snapshot the prior _payrollPositions so we can preserve per-row overrides
   // (wage_increase_mode / wage_increase_value) which live in state but not in
   // easily-readable form on the main roster inputs.
@@ -16074,6 +16139,8 @@ function prRosterChanged() {
 // Editing either cell sets the mode and value; clearing both reverts to global.
 function prRosterWageIncrChanged(el, idx, mode) {
   if (!_payrollPositions[idx]) return;
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const raw = (el.value || '').trim();
   if (raw === '') {
     // Check the sibling cell — if it's also empty, clear the override entirely.
@@ -16330,7 +16397,7 @@ function prBonusCellHTML(p, idx, c) {
     ? '<span style="font-size:9px; font-weight:700; color:#2563eb; background:#eff6ff; border:1px solid #bfdbfe; border-radius:3px; padding:0 3px; margin-right:2px;">+' + extras.length + '</span>'
     : '';
   return '<span class="pr-bonus-cell" title="' + tooltip + '" style="display:inline-flex; align-items:center; gap:3px; padding:1px 2px 1px 6px; border:1px solid ' + cellBorder + '; border-radius:4px; background:' + cellBg + ';">' +
-    '<input class="pr-pos-bonus" type="text" value="' + base + '" onchange="prRosterChanged()" ' +
+    '<input class="pr-pos-bonus" type="text" value="' + base + '" onchange="prRosterChanged(this)" ' +
     'style="border:none; outline:none; background:transparent; width:62px; padding:2px 0; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; font-family:inherit;">' +
     badge +
     '<button type="button" onclick="openBonusPopover(event,' + idx + ')" title="Add additional bonus lines" ' +
@@ -16484,6 +16551,8 @@ function removeBonusExtra(idx, ei) {
 function updateBonusExtraField(idx, ei, field, value) {
   const p = _payrollPositions[idx];
   if (!p || !p.extra_bonuses || !p.extra_bonuses[ei]) return;
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (p.extra_bonuses[ei][field] === value) return;
   p.extra_bonuses[ei][field] = value;
   refreshBonusPopover();
   recalcPayroll();
@@ -16497,7 +16566,10 @@ function updateBonusExtraAmount(idx, ei, raw) {
   const num = parseFloat((raw || '').replace(/[^0-9.\-]/g, '')) || 0;
   const e = p.extra_bonuses[ei];
   // For pct_wages, user enters a whole-percent (2 for 2%), store as decimal (0.02)
-  e.amount = (e.basis === 'pct_wages') ? (num / 100) : num;
+  const newAmount = (e.basis === 'pct_wages') ? (num / 100) : num;
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (e.amount === newAmount) return;
+  e.amount = newAmount;
   refreshBonusPopover();
   recalcPayroll();
   clearTimeout(_prRosterSaveTimer);
@@ -16581,11 +16653,11 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     const overrideIs = 'padding:4px 8px; border:1px solid ' + (posHasOverride ? '#60a5fa' : '#d1d5db') + '; border-radius:4px; font-size:12px; text-align:right; background:' + (posHasOverride ? '#eff6ff' : '#fbfaf4') + '; box-sizing:content-box;';
 
     rows += '<tr>' +
-      '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged()" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; box-sizing:content-box;"></td>' +
-      '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged()" style="' + is + '" min="0"></td>' +
-      '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged()" style="' + is + '"></td>' +
+      '<td style="' + cs + '"><input class="pr-pos-name" type="text" value="' + (p.position_name || '') + '" onchange="prRosterChanged(this)" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; box-sizing:content-box;"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-count" type="number" value="' + (p.employee_count || 0) + '" onchange="prRosterChanged(this)" style="' + is + '" min="0"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-rate" type="text" value="' + (p.hourly_rate || 0) + '" onchange="prRosterChanged(this)" style="' + is + '"></td>' +
       '<td style="' + ns + '">' + prBonusCellHTML(p, i, c) + '</td>' +
-      '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged()" title="Override global Effective Week for this position only" style="' + is + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged(this)" title="Override global Effective Week for this position only" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-wage-incr-pct" type="text" placeholder="—" value="' + incrPctDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'pct\')" title="Override wage increase % for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-wage-incr-dollar" type="text" placeholder="—" value="' + incrDollarDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'dollar\')" title="Override wage increase $/hr for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
       rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
@@ -17432,6 +17504,8 @@ async function prOverrideLinkedGL(input) {
 // ── GL Note & Increase Save Helpers ───────────────────────────────────────
 
 async function savePrGLNote(el) {
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const glCode = el.dataset.gl;
   const note = el.value;
   const ec = entityCode;
@@ -17445,6 +17519,8 @@ async function savePrGLNote(el) {
 }
 
 async function savePrGLIncrease(el) {
+  // FA directive 2026-05-10: skip when value didn't change.
+  if (_isUnchangedInput(el)) return;
   const glCode = el.dataset.gl;
   const pctStr = el.value.replace('%', '').trim();
   const pct = parseFloat(pctStr) / 100 || 0;
