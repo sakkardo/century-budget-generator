@@ -1419,7 +1419,7 @@ async function uploadAll() {
         except Exception as _rp_err:
             import traceback
             tb = traceback.format_exc()
-            print(f"[review_page ERROR] upload_id={upload_id}: {_rp_err}\n{tb}")
+            logger.exception("[review_page ERROR] upload_id=%s: %s", upload_id, _rp_err)
             safe_tb = (tb or "").replace("<", "&lt;").replace(">", "&gt;")
             return (
                 "<h2>Review page error</h2>"
@@ -1459,8 +1459,8 @@ async function uploadAll() {
                     if not isinstance(unmapped, list):
                         unmapped = []
                 except Exception as _amr_err:
-                    import traceback
-                    print(f"[review_page] apply_mapping_rules failed for upload {upload_id}: {_amr_err}\n{traceback.format_exc()}")
+                    logger.exception("[review_page] apply_mapping_rules failed for upload %s: %s",
+                                     upload_id, _amr_err)
                     unmapped = []
 
         html = """

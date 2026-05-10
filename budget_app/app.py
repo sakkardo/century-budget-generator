@@ -5816,9 +5816,21 @@ def _classify_sharepoint_filename(name):
     return None
 
 
-def _sharepoint_list_entity_sources(entity_code):
+# FA directive 2026-05-10: cache SharePoint folder listings for 5 min per
+# entity. Each wizard page load + readiness inspector call hit Graph live;
+# at 150 buildings × multiple FA visits per day, that's wasted requests
+# and added latency. Process-local dict keyed by entity_code, value is
+# (timestamp_unix, result_dict). Auto-bypass via `?refresh=1` query
+# parameter on the /api/sharepoint/list-entity-sources endpoint.
+_SP_LIST_CACHE = {}
+_SP_LIST_TTL = 300  # 5 minutes
+
+def _sharepoint_list_entity_sources(entity_code, force_refresh=False):
     """Read-only: list files in <entity>/Supporting Documents/ and classify
     each by source type using SHAREPOINT_SOURCE_PATTERNS.
+
+    FA directive 2026-05-10: result is cached for 5 minutes per entity.
+    Pass force_refresh=True to bypass.
 
     Returns dict:
       {
@@ -5835,6 +5847,12 @@ def _sharepoint_list_entity_sources(entity_code):
       }
     Never raises — returns folder_exists=False on any error.
     """
+    import time as _time
+    if not force_refresh:
+        cached = _SP_LIST_CACHE.get(entity_code)
+        if cached and (_time.time() - cached[0]) < _SP_LIST_TTL:
+            return cached[1]
+
     import urllib.parse
     result = {
         "entity_code": str(entity_code),
@@ -5904,6 +5922,9 @@ def _sharepoint_list_entity_sources(entity_code):
         if "404" not in str(e):
             # Don't fail the whole request if top folder scan errors; just record it.
             result["top_folder_error"] = str(e)
+    # Cache for 5 min (FA directive 2026-05-10).
+    import time as _time
+    _SP_LIST_CACHE[entity_code] = (_time.time(), result)
     return result
 
 
@@ -7786,9 +7807,13 @@ def wizard_sharepoint_sources(entity_code):
     """Read-only: return what's in this entity\'s SharePoint Supporting
     Documents folder, classified by source type. Used by Step 2 to show
     the FA which sources are pre-staged in SharePoint.
+
+    FA directive 2026-05-10: results cached 5 min per entity.
+    Pass `?refresh=1` to bypass.
     """
     try:
-        return jsonify(_sharepoint_list_entity_sources(entity_code))
+        force = (request.args.get("refresh") or "").lower() in ("1", "true", "yes")
+        return jsonify(_sharepoint_list_entity_sources(entity_code, force_refresh=force))
     except Exception as e:
         logger.error(f"wizard_sharepoint_sources({entity_code}) failed: {e}")
         return jsonify({"error": str(e)}), 500

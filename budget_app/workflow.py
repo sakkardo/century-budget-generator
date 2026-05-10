@@ -3539,25 +3539,29 @@ def create_workflow_blueprint(db):
         """Update R&M lines for a building (PM data entry)."""
         data = request.get_json()
 
-        # DIAG: log incoming notes
+        # FA directive 2026-05-10: structured logging instead of print().
         try:
             _incoming_lines = (data or {}).get("lines", []) or []
             _notes_in = [(l.get("gl_code"), l.get("notes")) for l in _incoming_lines if (l.get("notes") or "").strip()]
-            print(f"[update_lines] entity={entity_code} total_lines={len(_incoming_lines)} with_notes={len(_notes_in)} sample={_notes_in[:5]}", flush=True)
+            logger.info(
+                "[update_lines] entity=%s total_lines=%d with_notes=%d sample=%s",
+                entity_code, len(_incoming_lines), len(_notes_in), _notes_in[:5],
+            )
         except Exception as _diag_err:
-            print(f"[update_lines] diag err: {_diag_err}", flush=True)
+            logger.warning("[update_lines] diag err: %s", _diag_err)
 
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
-            print(f"[update_lines] entity={entity_code} NOT FOUND for year {BUDGET_YEAR}", flush=True)
+            logger.warning("[update_lines] entity=%s NOT FOUND for year %s", entity_code, BUDGET_YEAR)
             return jsonify({"error": "Budget not found"}), 404
 
-        print(f"[update_lines] entity={entity_code} budget.id={budget.id} status={budget.status}", flush=True)
+        logger.info("[update_lines] entity=%s budget.id=%s status=%s",
+                    entity_code, budget.id, budget.status)
 
         # Check if PM can edit
         # fa_review is allowed so the PM can re-enter and save edits after submit.
         if budget.status not in ["pm_pending", "pm_in_progress", "returned", "fa_review"]:
-            print(f"[update_lines] REJECTED — status {budget.status} not editable", flush=True)
+            logger.info("[update_lines] REJECTED — status %s not editable", budget.status)
             return jsonify({"error": "Budget is not in editable status"}), 400
 
         # Mark as in progress
@@ -3595,7 +3599,8 @@ def create_workflow_blueprint(db):
                 new_val = line_data.get("notes", "")
                 if (line.notes or "") != new_val:
                     changes.append(("notes", line.notes or "", new_val))
-                    print(f"[update_lines] notes change gl={line.gl_code} '{line.notes or ''}' -> '{new_val}'", flush=True)
+                    logger.info("[update_lines] notes change gl=%s '%s' -> '%s'",
+                                line.gl_code, line.notes or '', new_val)
                 line.notes = new_val
 
             # Category
@@ -4647,19 +4652,38 @@ def create_workflow_blueprint(db):
     # strip until something new changes. Wired to beforeunload via
     # navigator.sendBeacon.
 
+    def _fa_signer():
+        """Build the itsdangerous signer for the century_fa_id cookie.
+        Salts the SECRET_KEY so this signer's tokens can't be confused
+        with any other token type (e.g. session, CSRF) signed by Flask."""
+        from itsdangerous import URLSafeSerializer
+        from flask import current_app
+        return URLSafeSerializer(
+            current_app.config.get("SECRET_KEY", "century-budget-dev-key"),
+            salt="century-fa-id",
+        )
+
     def _read_fa_id_from_cookie():
         """Resolve the current FA's user_id from the century_fa_id cookie.
-        Returns None when missing or invalid (deleted user, wrong role)."""
+        Returns None when missing, invalid signature, or unknown user.
+
+        FA directive 2026-05-10: cookie is signed via itsdangerous to
+        prevent trivial impersonation. Pre-signing legacy cookies (raw
+        integer values) are silently rejected — the user just re-picks
+        from the FA modal and gets a freshly-signed cookie.
+        """
+        from itsdangerous import BadSignature
         try:
             raw = request.cookies.get("century_fa_id")
             if not raw:
                 return None
-            uid = int(raw)
+            try:
+                uid = int(_fa_signer().loads(raw))
+            except (BadSignature, ValueError, TypeError):
+                return None
             user = User.query.filter_by(id=uid).first()
             if not user:
                 return None
-            # Allow any non-empty role to identify (fa/pm/admin); restrict
-            # later if we need to.
             return uid
         except Exception:
             return None
@@ -4801,13 +4825,16 @@ def create_workflow_blueprint(db):
             "name": user.name,
             "role": getattr(user, "role", None) or "",
         })
-        # 90-day cookie. samesite=Lax to allow normal navigation.
+        # 90-day cookie, SIGNED via itsdangerous (FA directive 2026-05-10).
+        # samesite=Lax to allow normal navigation. JS-readable so the chip
+        # can refresh live, but the value is opaque (no longer the raw uid).
+        signed = _fa_signer().dumps(user.id)
         resp.set_cookie(
-            "century_fa_id", str(user.id),
+            "century_fa_id", signed,
             max_age=90 * 24 * 3600,
             samesite="Lax",
-            httponly=False,  # JS-readable so we can update the chip live
-            secure=False,    # set True in prod-https; Flask handles in dev
+            httponly=False,
+            secure=False,
         )
         return resp
 
@@ -12726,47 +12753,13 @@ function bblUrl(bbl) {
   return 'https://propertyinformationportal.nyc.gov/parcels/parcel/' + clean;
 }
 
-// ─── 212 EXCEL CANONICAL VALUES (for diff panel) ─────────────────
-const EXCEL_TRUTH_212 = {
-  i11: 1338918.3576,
-  i17: 1436113.0078,
-  i19: 2775031.3654,
-  g17: 23090489.7149,
-  d18: 0.004928,
-  f26: 1155.38, g26: 1178.4876, h26: 1202.0574,
-  f27: 16665.51, g27: 16998.8202, h27: 17338.7966,
-  f28: 15547.75, g28: 15858.705, h28: 16175.8791,
-  f29: 355307.04, g29: 362413.1808, h29: 369661.4444,
-  f30: 388675.68, g30: 396449.1936, h30: 404378.1775,
-  h40: 2775031.37, h41: -366037.31, h42: -16017.29,
-  h43: -1190.27, h44: 0, h45: -17168.81, h46: 0,
-  h47: 2374617.68,
-  d47: 1705150.56, e47: 570261.89, f47: 2275412.45,
-  g47: 2266274
-};
-
-// ─── 212 YTD / PRIOR-BUDGET DEFAULTS (for eyeballing against Excel) ───
-// In the real integration: YTD comes from YSL, Prior Budget comes from upload
-const DEFAULTS_212 = {
-  ytd: { // D column — Jan-Sep actual from Yardi
-    '6315-0000': 1995197.55,
-    '6315-0010': -263774.17,
-    '6315-0020': -11461.63,
-    '6315-0025': -577.68,
-    '6315-0030': 817.59,
-    '6315-0035': -15051.10,
-    '6315-0040': 0
-  },
-  priorBudget: { // G column — prior year budget from upload
-    '6315-0000': 2674144,
-    '6315-0010': -363824,
-    '6315-0020': -20181,
-    '6315-0025': -1183.5,
-    '6315-0030': 0,
-    '6315-0035': -22681.5,
-    '6315-0040': 0
-  }
-};
+// FA directive 2026-05-10: dropped EXCEL_TRUTH_212 (~17 lines of 212-only
+// canonical Excel values used by the legacy diff panel) and DEFAULTS_212
+// (~22 lines of 212-only YTD/prior-budget hardcoded values used as a
+// fallback before _reLookupGlData was wired). Both shipped to every
+// browser session for every coop and were entity-212-specific debug aids.
+// Now: real per-entity data flows via window._data.lines; missing data
+// falls back to 0 cleanly. Net JS payload reduction: ~700 bytes per page.
 
 const GL_ROWS = [
   { gl: '6315-0000', label: 'Real Estate Tax' },
@@ -13046,12 +13039,12 @@ function buildGlRows() {
     const fId   = 'f_'   + glKey;
     const hId   = 'h_'   + glKey;
     // Pull live data from this entity's budget_lines (FA directive 2026-05-10).
-    // Falls back to DEFAULTS_212 only when window._data is unavailable
-    // (e.g., RE Tax tab opened in isolation before dashboard loads).
+    // Pre-2026-05-10 we fell back to DEFAULTS_212 hardcoded values when
+    // window._data was unavailable; that's been removed (it was 212-only
+    // debug data shipped to every coop). Now: 0 when no data.
     const live = _reLookupGlData(glKey);
-    const haveLive = (window._data && Array.isArray(window._data.lines));
-    const ytdDefault = haveLive ? live.ytd        : (DEFAULTS_212.ytd[glKey] ?? 0);
-    const pbDefault  = haveLive ? live.priorBudget: (DEFAULTS_212.priorBudget[glKey] ?? 0);
+    const ytdDefault = live.ytd;
+    const pbDefault  = live.priorBudget;
     html += `<tr>
       <td class="gl-code">${glKey}</td>
       <td>${r.label}</td>
