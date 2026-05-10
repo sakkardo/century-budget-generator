@@ -207,6 +207,55 @@ def _run_idempotent_migrations():
         """,
         "CREATE INDEX IF NOT EXISTS ix_building_visits_user_entity_visited "
         "ON building_visits (user_id, entity_code, visited_at DESC)",
+        # FA directive 2026-05-10: wizard event log. One row per wizard
+        # click/action so when a building gets stuck on entity #47 we can
+        # grep one table and see exact step, payload, and any error
+        # instead of wading through Railway logs. Plan agent recommendation.
+        """
+        CREATE TABLE IF NOT EXISTS wizard_events (
+            id SERIAL PRIMARY KEY,
+            entity_code VARCHAR(50) NOT NULL,
+            user_id INTEGER NULL,
+            step VARCHAR(50) NOT NULL,
+            action VARCHAR(100) NOT NULL,
+            ok BOOLEAN NOT NULL DEFAULT TRUE,
+            error_text TEXT NULL,
+            payload_json TEXT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wizard_events_entity_created "
+        "ON wizard_events (entity_code, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_wizard_events_created "
+        "ON wizard_events (created_at DESC)",
+        # FA directive 2026-05-10 (Plan agent recommendation): replace
+        # PROPERTY_TAX_CONFIG (5 buildings hand-keyed in dof_taxes.py)
+        # with a per-property DB table. Seeded at startup from the
+        # PROPERTY_TAX_CONFIG dict (auto-upsert) so we never lose
+        # canonical tax data, but new properties can be added live via
+        # POST /api/admin/properties/<ec> without code edits. Each row
+        # is the source of truth for that property's BBL, AV, rate, etc.
+        """
+        CREATE TABLE IF NOT EXISTS properties (
+            entity_code VARCHAR(50) PRIMARY KEY,
+            building_name VARCHAR(255) DEFAULT '',
+            address VARCHAR(500) DEFAULT '',
+            bbl VARCHAR(20) DEFAULT '',
+            borough VARCHAR(2) DEFAULT '',
+            block VARCHAR(10) DEFAULT '',
+            lot VARCHAR(10) DEFAULT '',
+            tax_class VARCHAR(10) DEFAULT '2',
+            property_type VARCHAR(20) DEFAULT '',
+            units INTEGER DEFAULT 0,
+            assessed_value DOUBLE PRECISION DEFAULT 0,
+            actual_av DOUBLE PRECISION DEFAULT 0,
+            prior_trans_av DOUBLE PRECISION DEFAULT 0,
+            prior_actual_av DOUBLE PRECISION DEFAULT 0,
+            annual_tax DOUBLE PRECISION DEFAULT 0,
+            tax_rate DOUBLE PRECISION DEFAULT 0,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
     ]
     with app.app_context():
         for stmt in statements:
@@ -221,6 +270,69 @@ try:
     _run_idempotent_migrations()
 except Exception as e:
     logger.warning(f"Idempotent migration runner errored (non-fatal): {e}")
+
+
+# FA directive 2026-05-10: seed properties table from PROPERTY_TAX_CONFIG.
+# Idempotent — uses INSERT ... ON CONFLICT DO UPDATE so re-runs preserve
+# any DB-side edits made via /api/admin/properties/<ec>. Loose coupling:
+# if the import fails (e.g., during early-boot), we skip silently —
+# get_property_tax_config still falls back to the dict.
+def _seed_properties_table():
+    try:
+        from dof_taxes import PROPERTY_TAX_CONFIG
+        with app.app_context():
+            for ec, cfg in PROPERTY_TAX_CONFIG.items():
+                try:
+                    db.session.execute(db.text(
+                        "INSERT INTO properties "
+                        "  (entity_code, building_name, address, bbl, borough, block, lot, "
+                        "   tax_class, property_type, units, assessed_value, actual_av, "
+                        "   prior_trans_av, prior_actual_av, annual_tax, tax_rate) "
+                        "VALUES "
+                        "  (:ec, :bn, :addr, :bbl, :boro, :blk, :lot, :tc, :pt, :u, "
+                        "   :av, :aav, :ptav, :paav, :at, :rate) "
+                        "ON CONFLICT (entity_code) DO UPDATE SET "
+                        "  building_name = EXCLUDED.building_name, "
+                        "  address = EXCLUDED.address, "
+                        "  bbl = EXCLUDED.bbl, "
+                        "  borough = EXCLUDED.borough, "
+                        "  block = EXCLUDED.block, "
+                        "  lot = EXCLUDED.lot, "
+                        "  tax_class = EXCLUDED.tax_class, "
+                        "  property_type = EXCLUDED.property_type, "
+                        "  units = EXCLUDED.units, "
+                        "  tax_rate = EXCLUDED.tax_rate, "
+                        "  updated_at = CURRENT_TIMESTAMP"
+                    ), {
+                        "ec": ec,
+                        "bn": cfg.get("building_name", ""),
+                        "addr": cfg.get("address", ""),
+                        "bbl": cfg.get("bbl", ""),
+                        "boro": cfg.get("borough", ""),
+                        "blk": cfg.get("block", ""),
+                        "lot": cfg.get("lot", ""),
+                        "tc": cfg.get("tax_class", "2"),
+                        "pt": cfg.get("property_type", ""),
+                        "u": cfg.get("units", 0),
+                        "av": cfg.get("assessed_value", 0),
+                        "aav": cfg.get("actual_av", 0),
+                        "ptav": cfg.get("prior_trans_av", 0),
+                        "paav": cfg.get("prior_actual_av", 0),
+                        "at": cfg.get("annual_tax", 0),
+                        "rate": cfg.get("tax_rate", 0),
+                    })
+                    db.session.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                    logger.warning("properties seed failed for %s: %s", ec, _e)
+    except Exception as e:
+        logger.warning("properties seeder errored: %s", e)
+
+try:
+    _seed_properties_table()
+except Exception as _e:
+    logger.warning("Properties table seed runner errored: %s", _e)
+
 
 app.register_blueprint(workflow_bp)
 
@@ -5583,8 +5695,40 @@ renderDefaultsPanel();
 
 # ─── SharePoint / Microsoft Graph integration ────────────────────────────
 # App-only auth (client credentials flow). Permissions: Sites.ReadWrite.All.
-SHAREPOINT_SITE_ID = "centurynyc.sharepoint.com,beafa175-6707-4aa1-a349-85d1cf02eb39,f6ca63b2-9cdc-4a28-b23d-047ab7e715f4"
-SHAREPOINT_2027_FOLDER_PATH = "01 - Accounting General/Budgets/Budgets - FAs only/2027 Budget"
+#
+# FA directive 2026-05-10: site ID + folder path are externalized to
+# environment variables so they don't require code edits at year rollover
+# (e.g., when the active budget cycle moves from 2027 → 2028). Defaults
+# preserve the historical hardcoded values for backward compatibility.
+SHAREPOINT_SITE_ID = os.environ.get(
+    "SHAREPOINT_SITE_ID",
+    "centurynyc.sharepoint.com,beafa175-6707-4aa1-a349-85d1cf02eb39,f6ca63b2-9cdc-4a28-b23d-047ab7e715f4",
+)
+# The folder path may use {budget_year} for substitution (default uses
+# BUDGET_YEAR from workflow.py module attribute, fetched lazily).
+def _sharepoint_folder_path():
+    """Resolve the active SharePoint budget-cycle folder path.
+
+    Order:
+      1. SHAREPOINT_FOLDER_PATH env var (full literal path, takes precedence)
+      2. SHAREPOINT_FOLDER_PATH_TEMPLATE env var with {budget_year} placeholder
+      3. Hardcoded default with current BUDGET_YEAR
+    """
+    explicit = os.environ.get("SHAREPOINT_FOLDER_PATH")
+    if explicit:
+        return explicit
+    template = os.environ.get(
+        "SHAREPOINT_FOLDER_PATH_TEMPLATE",
+        "01 - Accounting General/Budgets/Budgets - FAs only/{budget_year} Budget",
+    )
+    try:
+        from workflow import BUDGET_YEAR as _by
+    except Exception:
+        _by = 2027
+    return template.format(budget_year=_by)
+
+# Backwards-compat alias for code that imports the constant directly.
+SHAREPOINT_2027_FOLDER_PATH = _sharepoint_folder_path()
 
 _GRAPH_TOKEN_CACHE = {"token": None, "expires_at": 0}
 
@@ -5810,28 +5954,72 @@ def sharepoint_create_folders():
 
 
 # Source-type filename patterns for SharePoint Supporting Documents.
-# Case-insensitive substring match. First match wins (in order).
+# FA directive 2026-05-10 (Plan agent recommendation): replaced first-match
+# substring matching with anchored regex. The old patterns had a real
+# defect — `audit_2025` needles included `.pdf` which would match ANY PDF
+# (e.g., `Approved_Budget_FS_audit_v2.pdf` got classified as audit_2025
+# even though it's the budget file). At 6 buildings we got lucky; at 50
+# we'd debug "audit slot ate the budget file" weekly.
+#
+# New rules:
+#   1. Each entry has a list of REGEX patterns (case-insensitive). The
+#      filename must match at least one pattern in full.
+#   2. Anchored to specific naming tokens we publish to PMs (YSL_,
+#      ExpenseDistribution_, APAging_, ADHOC_AMP_, etc.).
+#   3. Audit/AFS still permits free-form variation (PMs name these
+#      inconsistently) but uses word-boundary matching on the audit
+#      keyword to avoid bare-".pdf" false positives.
+#   4. First-match wins still — but with regex precision the ordering
+#      mostly stops mattering.
+import re as _re
 SHAREPOINT_SOURCE_PATTERNS = [
-    # (source_type, [substrings to match — any one matches])
-    # Order matters: first-match wins. Audit patterns checked first because audit
-    # PDFs in Supporting Documents are now expected (placed there by audit-sync admin).
-    ("audit_2025",            ["audit", "financial statement", "afs", " fs ", ".pdf"]),
-    ("approved_2026",         ["approved"]),
-    ("ysl",                   ["ysl"]),
-    ("expense_distribution",  ["expensedistribution"]),
-    ("ap_aging",              ["apaging", "payablesaging"]),
-    ("maint_proof",           ["adhoc_amp", "amp_"]),
+    # (source_type, [compiled regex, ...])
+    # YSL: filename starts with YSL_ or contains _YSL_ as a token.
+    ("ysl", [
+        _re.compile(r"(^|[_\-])ysl([_\-]|\.|$)", _re.I),
+    ]),
+    # Expense Distribution
+    ("expense_distribution", [
+        _re.compile(r"expense[_\- ]?distribution", _re.I),
+        _re.compile(r"(^|[_\-])expdist([_\-]|\.|$)", _re.I),
+    ]),
+    # AP Aging
+    ("ap_aging", [
+        _re.compile(r"ap[_\- ]?aging", _re.I),
+        _re.compile(r"payables[_\- ]?aging", _re.I),
+    ]),
+    # Maintenance Proof
+    ("maint_proof", [
+        _re.compile(r"adhoc[_\- ]?amp", _re.I),
+        _re.compile(r"(^|[_\-])amp[_\-]", _re.I),
+        _re.compile(r"maint(enance)?[_\- ]?proof", _re.I),
+    ]),
+    # Approved Budget — looks for "approved" as a word, must also be xlsx-ish.
+    ("approved_2026", [
+        _re.compile(r"\bapproved\b", _re.I),
+    ]),
+    # Audit / AFS — must have one of the audit keywords as a WORD, not
+    # just match any PDF. The old `.pdf` needle is gone.
+    ("audit_2025", [
+        _re.compile(r"\baudit(?:ed)?\b", _re.I),
+        _re.compile(r"\bfinancial[_\- ]?statement(s)?\b", _re.I),
+        _re.compile(r"\bafs\b", _re.I),
+        _re.compile(r"\bfy20\d{2}\b", _re.I),  # "FY2025"
+    ]),
 ]
 
 
 def _classify_sharepoint_filename(name):
-    """Return source_type ('ysl', 'expense_dist', etc.) or None."""
+    """Return source_type ('ysl', 'expense_dist', etc.) or None.
+
+    FA directive 2026-05-10: regex-anchored matching. See
+    SHAREPOINT_SOURCE_PATTERNS comment block for rationale.
+    """
     if not name:
         return None
-    low = name.lower()
-    for source_type, needles in SHAREPOINT_SOURCE_PATTERNS:
-        for n in needles:
-            if n in low:
+    for source_type, patterns in SHAREPOINT_SOURCE_PATTERNS:
+        for pat in patterns:
+            if pat.search(name):
                 return source_type
     return None
 
@@ -5947,6 +6135,55 @@ def _sharepoint_list_entity_sources(entity_code, force_refresh=False):
     _SP_LIST_CACHE[entity_code] = (_time.time(), result)
     return result
 
+
+
+# FA directive 2026-05-10: wizard event log helper. Insert one row per
+# wizard step transition or action. Never raises — failures to log are
+# swallowed (logging failures must NOT break user-facing flows).
+def _log_wizard_event(entity_code, step, action, ok=True, error_text=None,
+                      payload=None, user_id=None):
+    """Insert a row into wizard_events. Safe to call from any wizard route.
+
+    Args:
+        entity_code: building entity code (required)
+        step: high-level step name e.g. 'foundation', 'sources', 'audit',
+              'period', 'assumptions', 'generate'
+        action: specific action e.g. 'use_sp_source', 'apply_audit',
+                'set_period', 'build_budget', 'commit'
+        ok: True on success path, False on error path
+        error_text: optional error message (only set when ok=False)
+        payload: dict to store as JSON (will be stringified, capped to 4KB)
+        user_id: optional FA user id (read from cookie via _read_fa_id_from_cookie)
+    """
+    try:
+        import json as _json
+        payload_str = None
+        if payload is not None:
+            try:
+                payload_str = _json.dumps(payload, default=str)[:4096]
+            except Exception:
+                payload_str = str(payload)[:4096]
+        db.session.execute(db.text(
+            "INSERT INTO wizard_events "
+            "(entity_code, user_id, step, action, ok, error_text, payload_json) "
+            "VALUES (:ec, :uid, :step, :action, :ok, :err, :payload)"
+        ), {
+            "ec": str(entity_code),
+            "uid": user_id,
+            "step": str(step)[:50],
+            "action": str(action)[:100],
+            "ok": bool(ok),
+            "err": (str(error_text)[:2000] if error_text else None),
+            "payload": payload_str,
+        })
+        db.session.commit()
+    except Exception as _e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.warning("wizard_events log failed for %s/%s/%s: %s",
+                       entity_code, step, action, _e)
 
 
 def _sharepoint_download_item(item_id):
@@ -6072,6 +6309,13 @@ def _wizard_record_selection(entity_code, source_label_default=None):
         budget.wizard_selections_json = json.dumps(current_after_rb)
         db.session.commit()
         parse_error = str(e)[:1000]
+        # FA directive 2026-05-10: log wizard event so we can grep one
+        # table when "stuck on entity #47" instead of digging through Railway logs.
+        _log_wizard_event(
+            entity_code, step="sources", action="use_sp_source",
+            ok=False, error_text=parse_error,
+            payload={"source_type": source_type, "filename": filename, "item_id": item_id},
+        )
         return jsonify({
             "ok": False,
             "entity_code": entity_code,
@@ -6081,6 +6325,11 @@ def _wizard_record_selection(entity_code, source_label_default=None):
         }), 500
 
     db.session.commit()
+    _log_wizard_event(
+        entity_code, step="sources", action="use_sp_source",
+        ok=True,
+        payload={"source_type": source_type, "filename": filename, "item_id": item_id},
+    )
     resp = {"ok": True, "entity_code": entity_code, "selections": current}
     if parse_result:
         resp["parse_result"] = parse_result
@@ -6160,7 +6409,13 @@ def wizard_save_assumptions(entity_code):
 
 
 
-SHAREPOINT_APPROVED_BUDGETS_PATH = SHAREPOINT_2027_FOLDER_PATH + "/2026 budget approved budgets only"
+# FA directive 2026-05-10: externalized for year rollover.
+# Override via SHAREPOINT_APPROVED_BUDGETS_SUBPATH env var when the
+# "2026 budget approved budgets only" subfolder name changes.
+SHAREPOINT_APPROVED_BUDGETS_PATH = (
+    SHAREPOINT_2027_FOLDER_PATH + "/" +
+    os.environ.get("SHAREPOINT_APPROVED_BUDGETS_SUBPATH", "2026 budget approved budgets only")
+)
 
 
 def _sharepoint_list_approved_budgets(entity_code):
@@ -8024,6 +8279,154 @@ def admin_sync_afs(entity_code):
     dry_run = bool(body.get("dry_run"))
     force = bool(body.get("force"))
     return _do_afs_sync(entity_code, dry_run=dry_run, force=force, AuditUpload=AuditUpload)
+
+
+@app.route("/api/admin/properties/<entity_code>", methods=["GET", "POST"])
+@require_admin
+def admin_properties(entity_code):
+    """ADMIN: Read or upsert a per-property record.
+
+    GET  /api/admin/properties/<ec> — return the row (or 404).
+    POST /api/admin/properties/<ec> — upsert. Body: any subset of:
+        building_name, address, bbl, borough, block, lot, tax_class,
+        property_type, units, assessed_value, actual_av, prior_trans_av,
+        prior_actual_av, annual_tax, tax_rate
+
+    FA directive 2026-05-10: the per-property data was hand-keyed in
+    PROPERTY_TAX_CONFIG (Python dict, 5 buildings only) — replaced with
+    a DB table that survives code edits and supports portfolio-wide
+    growth without hand-merging Python dicts. The dict is still seeded
+    on every boot (idempotent) for backward compatibility.
+    """
+    if request.method == "GET":
+        try:
+            row = db.session.execute(db.text(
+                "SELECT entity_code, building_name, address, bbl, borough, block, lot, "
+                "       tax_class, property_type, units, assessed_value, actual_av, "
+                "       prior_trans_av, prior_actual_av, annual_tax, tax_rate, updated_at "
+                "FROM properties WHERE entity_code = :ec"
+            ), {"ec": entity_code}).fetchone()
+            if not row:
+                return jsonify({"error": "Property not found"}), 404
+            return jsonify({
+                "entity_code": row[0], "building_name": row[1], "address": row[2],
+                "bbl": row[3], "borough": row[4], "block": row[5], "lot": row[6],
+                "tax_class": row[7], "property_type": row[8], "units": row[9],
+                "assessed_value": float(row[10]) if row[10] else 0,
+                "actual_av": float(row[11]) if row[11] else 0,
+                "prior_trans_av": float(row[12]) if row[12] else 0,
+                "prior_actual_av": float(row[13]) if row[13] else 0,
+                "annual_tax": float(row[14]) if row[14] else 0,
+                "tax_rate": float(row[15]) if row[15] else 0,
+                "updated_at": row[16].isoformat() if row[16] else None,
+            })
+        except Exception as e:
+            logger.exception("admin_properties GET failed")
+            return jsonify({"error": str(e)}), 500
+
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Body must be a dict"}), 400
+
+    # Whitelist of editable fields with their type coercers.
+    allowed = {
+        "building_name": str, "address": str, "bbl": str, "borough": str,
+        "block": str, "lot": str, "tax_class": str, "property_type": str,
+        "units": int,
+        "assessed_value": float, "actual_av": float,
+        "prior_trans_av": float, "prior_actual_av": float,
+        "annual_tax": float, "tax_rate": float,
+    }
+    fields = {}
+    for k, coerce in allowed.items():
+        if k in body:
+            try:
+                v = body[k]
+                fields[k] = coerce(v) if v is not None else None
+            except Exception:
+                return jsonify({"error": f"Invalid value for {k}"}), 400
+
+    try:
+        # Try update first; if zero rows, insert.
+        if fields:
+            set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+            params = dict(fields, ec=entity_code)
+            res = db.session.execute(db.text(
+                f"UPDATE properties SET {set_clause}, "
+                f"  updated_at = CURRENT_TIMESTAMP "
+                f"WHERE entity_code = :ec"
+            ), params)
+            if res.rowcount == 0:
+                # Insert with provided fields + defaults
+                cols = ", ".join(["entity_code"] + list(fields.keys()))
+                placeholders = ", ".join([":ec"] + [f":{k}" for k in fields])
+                db.session.execute(db.text(
+                    f"INSERT INTO properties ({cols}) VALUES ({placeholders})"
+                ), params)
+        db.session.commit()
+        return jsonify({"ok": True, "entity_code": entity_code, "updated": list(fields.keys())})
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("admin_properties POST failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/wizard-events", methods=["GET"])
+@require_admin
+def admin_wizard_events():
+    """ADMIN: Read recent wizard_events. FA directive 2026-05-10.
+
+    Query params:
+      entity_code=<ec>   — filter to one entity
+      step=<step>        — filter to one step (foundation, sources, etc.)
+      ok=true|false      — filter to success or error rows only
+      since=<iso>        — filter to events after this timestamp
+      limit=N            — default 100, max 500
+
+    Returns:
+      {"count": N, "events": [{id, entity_code, user_id, step, action,
+                                ok, error_text, payload_json, created_at}, ...]}
+    """
+    entity_code = (request.args.get("entity_code") or "").strip() or None
+    step = (request.args.get("step") or "").strip() or None
+    ok_filter = (request.args.get("ok") or "").strip().lower()
+    since = (request.args.get("since") or "").strip() or None
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 100), 500))
+    except Exception:
+        limit = 100
+
+    sql = ("SELECT id, entity_code, user_id, step, action, ok, error_text, "
+           "       payload_json, created_at "
+           "FROM wizard_events WHERE 1=1")
+    params = {}
+    if entity_code:
+        sql += " AND entity_code = :ec"
+        params["ec"] = entity_code
+    if step:
+        sql += " AND step = :step"
+        params["step"] = step
+    if ok_filter in ("true", "false"):
+        sql += " AND ok = :ok"
+        params["ok"] = (ok_filter == "true")
+    if since:
+        sql += " AND created_at > :since"
+        params["since"] = since
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+    params["limit"] = limit
+
+    try:
+        rows = db.session.execute(db.text(sql), params).fetchall()
+        events = [{
+            "id": r[0], "entity_code": r[1], "user_id": r[2],
+            "step": r[3], "action": r[4], "ok": bool(r[5]),
+            "error_text": r[6], "payload_json": r[7],
+            "created_at": r[8].isoformat() if r[8] else None,
+        } for r in rows]
+        return jsonify({"count": len(events), "events": events})
+    except Exception as e:
+        logger.exception("admin_wizard_events failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/portfolio-health", methods=["GET"])

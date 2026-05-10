@@ -244,8 +244,50 @@ def _bbl_to_parid(bbl: str) -> str | None:
 def get_property_tax_config(entity_code: str) -> dict | None:
     """Get the tax configuration for a property by entity code.
 
-    Returns None if the property is not a co-op or not in the config.
+    FA directive 2026-05-10: DB-first lookup. The properties table is
+    seeded from PROPERTY_TAX_CONFIG at startup, but FAs can add/edit
+    properties via POST /api/admin/properties/<ec> without code changes.
+    Falls back to the in-memory dict on DB error or when running outside
+    the Flask app context (e.g., during tests / import-time queries).
+
+    Returns None if the property isn't found anywhere.
     """
+    # Try DB first when running inside a Flask app context.
+    try:
+        from flask import current_app
+        from sqlalchemy import text
+        if current_app and getattr(current_app, "extensions", {}).get("sqlalchemy"):
+            db = current_app.extensions["sqlalchemy"]
+            row = db.session.execute(text(
+                "SELECT building_name, address, bbl, borough, block, lot, "
+                "       tax_class, property_type, units, "
+                "       assessed_value, actual_av, prior_trans_av, "
+                "       prior_actual_av, annual_tax, tax_rate "
+                "FROM properties WHERE entity_code = :ec"
+            ), {"ec": entity_code}).fetchone()
+            if row:
+                # Reconstruct the dict shape that callers expect.
+                return {
+                    "building_name": row[0] or "",
+                    "address": row[1] or "",
+                    "bbl": row[2] or "",
+                    "borough": row[3] or "",
+                    "block": row[4] or "",
+                    "lot": row[5] or "",
+                    "tax_class": row[6] or "2",
+                    "property_type": row[7] or "",
+                    "units": int(row[8] or 0),
+                    "assessed_value": float(row[9] or 0),
+                    "actual_av": float(row[10] or 0),
+                    "prior_trans_av": float(row[11] or 0),
+                    "prior_actual_av": float(row[12] or 0),
+                    "annual_tax": float(row[13] or 0),
+                    "tax_rate": float(row[14] or 0),
+                }
+    except Exception:
+        # Outside app context, or DB error — fall through to in-memory dict.
+        pass
+    # Fallback for tests, scripts, and pre-seed boot.
     return PROPERTY_TAX_CONFIG.get(entity_code)
 
 
