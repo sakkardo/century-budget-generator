@@ -7859,14 +7859,23 @@ BUILDING_DETAIL_TEMPLATE = r"""
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
-    <!-- Diff Strip: "what changed since last visit" — renders only when last visit >24h AND there's a delta. FA directive 2026-05-10. -->
-    <div id="diffStrip" style="display:none;"></div>
-    <!-- Readiness Inspector: 8-gate checklist showing the FA exactly what's left on this building. FA directive 2026-05-09. -->
-    <div id="readinessInspector" style="display:none;"></div>
-    <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
-    <div id="periodBanner" style="display:none; padding:10px 24px; font-size:13px; border-bottom:1px solid var(--gray-200);"></div>
-    <!-- Audit-status banner: shows uploaded → extracted → mapped → confirmed for the latest AuditUpload. FA directive 2026-05-05. -->
-    <div id="auditStatusBanner" style="display:none; padding:8px 24px; font-size:12px; border-bottom:1px solid var(--gray-200);"></div>
+    <!-- ─── Unified Status Block (FA directive 2026-05-10) ──────────────
+         Wraps the 4 status signals (diff strip / readiness / period /
+         audit) in a single bordered container so they read as one
+         coherent block instead of 4 separate visual stripes. Each child
+         keeps its own render function (no logic rewrites — those are
+         proven), the wrapper just provides shared visual language.
+         Hidden entirely when all 4 children are hidden. -->
+    <div id="unifiedStatusBlock" style="background:var(--blue-light); border-bottom:1px solid var(--gray-200); margin:0;">
+      <!-- Diff Strip: "what changed since last visit" — renders only when last visit >24h AND there's a delta. -->
+      <div id="diffStrip" style="display:none;"></div>
+      <!-- Readiness Inspector: 8-gate checklist showing the FA exactly what's left on this building. -->
+      <div id="readinessInspector" style="display:none;"></div>
+      <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
+      <div id="periodBanner" style="display:none; padding:10px 24px; font-size:13px; border-top:1px solid rgba(0,0,0,0.06);"></div>
+      <!-- Audit-status banner: shows uploaded → extracted → mapped → confirmed for the latest AuditUpload. -->
+      <div id="auditStatusBanner" style="display:none; padding:8px 24px; font-size:12px; border-top:1px solid rgba(0,0,0,0.06);"></div>
+    </div>
     <div id="sheetTabs" style="display:flex; gap:4px; border-bottom:2px solid var(--gray-200); margin-bottom:0; flex-wrap:wrap; padding:0 24px; background:var(--gray-50);"></div>
     <div id="sheetContent" style="padding:0 24px;"></div>
     <div id="faSaveIndicator" style="font-size:12px; color:var(--green); margin-top:8px; padding:0 24px 12px;"></div>
@@ -8603,6 +8612,24 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
+// FA directive 2026-05-10: Unified Status Block — show/hide the wrapper
+// container based on whether any of its 4 children (diff strip,
+// readiness, period, audit) are visible. Avoids a stray colored stripe
+// when the building has nothing status-worthy to show.
+function _refreshUnifiedStatusBlock() {
+  const wrap = document.getElementById('unifiedStatusBlock');
+  if (!wrap) return;
+  const children = ['diffStrip', 'readinessInspector', 'periodBanner', 'auditStatusBanner'];
+  let anyVisible = false;
+  for (const id of children) {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== 'none' && el.offsetParent !== null) {
+      anyVisible = true; break;
+    }
+  }
+  wrap.style.display = anyVisible ? '' : 'none';
+}
+
 async function renderReadinessInspector() {
   const el = document.getElementById('readinessInspector');
   if (!el) return;
@@ -8911,6 +8938,7 @@ function renderDetail(data) {
   faIdentityLoad().then(() => {
     faIdentityRenderChip();
     renderDiffStrip();
+    _refreshUnifiedStatusBlock();
   });
   // Readiness inspector — single consolidated 8-gate checklist at the top
   // of every building's dashboard. FA directive 2026-05-09. Reads from
@@ -8923,6 +8951,8 @@ function renderDetail(data) {
   // extraction/mapping/confirm pipeline, with click-through to /audited-financials.
   // FA directive 2026-05-05 — uploaded → extracted → mapped → confirmed.
   renderAuditStatusBanner(data);
+  // FA directive 2026-05-10: hide the unified wrapper if no children visible.
+  _refreshUnifiedStatusBlock();
 
   // Header + breadcrumb
   document.getElementById('buildingName').textContent = b.building_name;
