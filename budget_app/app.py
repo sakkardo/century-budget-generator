@@ -6186,6 +6186,292 @@ def _log_wizard_event(entity_code, step, action, ok=True, error_text=None,
                        entity_code, step, action, _e)
 
 
+# ─── Teams notifications for PM↔FA handoffs (FA directive 2026-05-10) ────
+# Posts an Adaptive Card to a Teams Incoming Webhook on two key transitions:
+#   1. draft → pm_pending           (FA sends budget to PM)
+#   2. pm_in_progress → fa_review    (PM submits review back to FA)
+#
+# Setup (one-time, ~5 min, no code changes):
+#   1. In Teams: open the channel for budget activity (or create one)
+#   2. Click ··· next to channel name → Connectors → Incoming Webhook → Configure
+#   3. Name "Century Budget App", Create, copy the webhook URL
+#   4. Paste URL into Railway env var: TEAMS_WEBHOOK_URL
+#
+# Behavior:
+#   - When TEAMS_WEBHOOK_URL is unset, every notification is logged to
+#     wizard_events with action='teams_skipped' (the workflow continues
+#     normally; this is opt-in).
+#   - Failures (HTTP errors, malformed responses) are logged + swallowed.
+#     A notification failure must NEVER break the budget status change.
+
+TEAMS_HANDOFF_TIMEOUT_S = 8   # short timeout — never block the user
+
+def _post_teams_handoff(event_type, entity_code, sender_user, receiver_users,
+                        building_name=None, dashboard_url=None,
+                        notes=None, period_label=None):
+    """POST an Adaptive Card to TEAMS_WEBHOOK_URL announcing a handoff.
+
+    Args:
+        event_type: 'fa_to_pm' (FA sent to PM) or 'pm_to_fa' (PM submitted to FA)
+        entity_code: building entity code
+        sender_user: dict with {name, email} of the FA/PM sending the budget
+        receiver_users: list of dicts with {name, email} of the recipients
+        building_name: e.g. "310 East 49th Owners Corp."
+        dashboard_url: deep link back to /dashboard/<entity_code>
+        notes: optional notes (PM's submission notes, or FA's return notes)
+        period_label: optional "Jan-Apr actual / May-Dec estimate" string
+
+    Returns:
+        dict {ok: bool, reason: str} — for logging/debugging only.
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    webhook_url = (os.environ.get("TEAMS_WEBHOOK_URL") or "").strip()
+    if not webhook_url:
+        # Log but don't fail. Notification is opt-in via env var.
+        try:
+            _log_wizard_event(
+                entity_code, step="handoff", action="teams_skipped",
+                ok=True, payload={"reason": "TEAMS_WEBHOOK_URL not set",
+                                  "event_type": event_type},
+            )
+        except Exception:
+            pass
+        return {"ok": False, "reason": "no_webhook_url"}
+
+    # Build the card content per event type.
+    if event_type == "fa_to_pm":
+        title = "📬 Budget sent to PM"
+        sender_label = "FA"
+        receiver_label = "PM"
+        action_label = "PM, please review"
+    elif event_type == "pm_to_fa":
+        title = "✅ PM submitted budget for FA review"
+        sender_label = "PM"
+        receiver_label = "FA"
+        action_label = "FA, please review"
+    else:
+        title = f"Budget handoff: {event_type}"
+        sender_label = "Sender"
+        receiver_label = "Receiver"
+        action_label = "Review"
+
+    # Adaptive Card v1.4 — works in Teams Incoming Webhook.
+    # Mentions go in msteams.entities; the body references them via
+    # <at>Display Name</at> tokens.
+    receiver_names = [r.get("name", "?") for r in receiver_users if r.get("name")]
+    receiver_emails = [r.get("email", "") for r in receiver_users if r.get("email")]
+    sender_name = (sender_user or {}).get("name", "Unknown")
+
+    # @mentions: each receiver email becomes an entity in msteams.entities.
+    mention_entities = []
+    receiver_text_parts = []
+    for r in receiver_users:
+        rname = r.get("name") or "?"
+        remail = (r.get("email") or "").strip()
+        if remail:
+            mention_entities.append({
+                "type": "mention",
+                "text": f"<at>{rname}</at>",
+                "mentioned": {"id": remail, "name": rname},
+            })
+            receiver_text_parts.append(f"<at>{rname}</at>")
+        else:
+            # No email = no @mention; just include the name as plain text.
+            receiver_text_parts.append(rname)
+    receiver_at_text = ", ".join(receiver_text_parts) if receiver_text_parts else "(no recipient on file)"
+
+    facts = [
+        {"title": "Building", "value": f"{entity_code} — {building_name or '(name unknown)'}"},
+        {"title": f"From ({sender_label})", "value": sender_name},
+        {"title": f"To ({receiver_label})", "value": receiver_at_text},
+    ]
+    if period_label:
+        facts.append({"title": "Period", "value": period_label})
+    if notes:
+        # Trim long notes for the card.
+        n = str(notes).strip()
+        if len(n) > 400:
+            n = n[:400] + "…"
+        facts.append({"title": "Notes", "value": n})
+
+    body_blocks = [
+        {
+            "type": "TextBlock",
+            "text": title,
+            "weight": "Bolder",
+            "size": "Large",
+            "wrap": True,
+        },
+        {
+            "type": "FactSet",
+            "facts": facts,
+        },
+        {
+            "type": "TextBlock",
+            "text": action_label,
+            "isSubtle": True,
+            "wrap": True,
+        },
+    ]
+
+    actions = []
+    if dashboard_url:
+        actions.append({
+            "type": "Action.OpenUrl",
+            "title": "Open building →",
+            "url": dashboard_url,
+        })
+
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body_blocks,
+        "actions": actions,
+        "msteams": {
+            "width": "Full",
+            "entities": mention_entities,
+        },
+    }
+
+    payload = {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": card,
+            }
+        ],
+    }
+
+    body = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TEAMS_HANDOFF_TIMEOUT_S) as resp:
+            status = resp.status
+            resp_text = resp.read().decode("utf-8", errors="replace")[:500]
+        ok = 200 <= status < 300
+        try:
+            _log_wizard_event(
+                entity_code, step="handoff",
+                action=("teams_sent" if ok else "teams_failed"),
+                ok=ok, error_text=(None if ok else f"HTTP {status}: {resp_text}"),
+                payload={
+                    "event_type": event_type,
+                    "sender": sender_name,
+                    "receivers": receiver_names,
+                    "emails": receiver_emails,
+                },
+            )
+        except Exception:
+            pass
+        return {"ok": ok, "reason": f"http_{status}"}
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        try:
+            _log_wizard_event(
+                entity_code, step="handoff", action="teams_failed",
+                ok=False, error_text=f"HTTPError {e.code}: {body_text}",
+                payload={"event_type": event_type},
+            )
+        except Exception:
+            pass
+        logger.warning("Teams notify failed (HTTPError %s): %s", e.code, body_text)
+        return {"ok": False, "reason": f"http_{e.code}"}
+    except Exception as e:
+        try:
+            _log_wizard_event(
+                entity_code, step="handoff", action="teams_failed",
+                ok=False, error_text=str(e)[:500],
+                payload={"event_type": event_type},
+            )
+        except Exception:
+            pass
+        logger.warning("Teams notify failed: %s", e)
+        return {"ok": False, "reason": "exception"}
+
+
+def _resolve_handoff_actors(entity_code, sender_role, receiver_role):
+    """Look up sender + receiver users for a handoff event.
+
+    Sender is the user identified by the century_fa_id cookie (the human
+    who clicked the status-change button). Receivers are all users with
+    the target role assigned to this entity (per BuildingAssignment).
+
+    Returns: (sender_dict, [receiver_dicts]) — each dict has {id, name, email}.
+    """
+    from workflow import _read_fa_id_from_cookie  # may not always be importable
+    User = workflow_models.get("User")
+    BuildingAssignment = workflow_models.get("BuildingAssignment")
+    sender = {"name": "Unknown", "email": ""}
+    receivers = []
+    try:
+        # Sender: from cookie (resolved by workflow.py helper, which is in scope
+        # for routes registered there). Fallback to the request body if absent.
+        try:
+            from flask import request as _req
+            uid = _req.cookies.get("century_fa_id")
+            # In our signed-cookie scheme, raw cookie value isn't an int — but
+            # this function runs from app.py, not from workflow.py's blueprint
+            # closure. So we re-decode here using the same itsdangerous setup.
+            if uid:
+                from itsdangerous import URLSafeSerializer, BadSignature
+                signer = URLSafeSerializer(
+                    app.config.get("SECRET_KEY", "century-budget-dev-key"),
+                    salt="century-fa-id",
+                )
+                try:
+                    uid_int = int(signer.loads(uid))
+                except (BadSignature, ValueError, TypeError):
+                    uid_int = None
+                if uid_int and User:
+                    su = User.query.filter_by(id=uid_int).first()
+                    if su:
+                        sender = {
+                            "id": su.id,
+                            "name": su.name or "?",
+                            "email": getattr(su, "email", "") or "",
+                        }
+        except Exception:
+            pass
+
+        if BuildingAssignment and User:
+            assigns = BuildingAssignment.query.filter_by(
+                entity_code=entity_code, role=receiver_role
+            ).all()
+            seen_ids = set()
+            for a in assigns:
+                if not a.user_id or a.user_id in seen_ids:
+                    continue
+                seen_ids.add(a.user_id)
+                u = User.query.filter_by(id=a.user_id).first()
+                if not u:
+                    continue
+                # Skip joint-assignment pseudo-users (Monday.com artifact).
+                if "," in (u.name or ""):
+                    continue
+                receivers.append({
+                    "id": u.id,
+                    "name": u.name or "?",
+                    "email": getattr(u, "email", "") or "",
+                })
+    except Exception as e:
+        logger.warning("_resolve_handoff_actors failed: %s", e)
+    return sender, receivers
+
+
 def _sharepoint_download_item(item_id):
     """Download a SharePoint file by drive item id. Returns (filename, bytes)."""
     import urllib.request
@@ -8279,6 +8565,83 @@ def admin_sync_afs(entity_code):
     dry_run = bool(body.get("dry_run"))
     force = bool(body.get("force"))
     return _do_afs_sync(entity_code, dry_run=dry_run, force=force, AuditUpload=AuditUpload)
+
+
+@app.route("/api/admin/teams-test", methods=["POST"])
+@require_admin
+def admin_teams_test():
+    """ADMIN: fire a sample Teams handoff card to verify the webhook setup.
+
+    FA directive 2026-05-10. Lets the user verify that:
+      1. TEAMS_WEBHOOK_URL is set correctly in Railway
+      2. The card renders nicely in the target Teams channel
+      3. The right people get @-mentioned
+
+    Body (all optional):
+      event_type:    'fa_to_pm' (default) or 'pm_to_fa'
+      entity_code:   default '168'
+      notes:         optional notes string to embed in the card
+
+    Response: {ok, reason, payload_preview}
+    """
+    body = request.get_json(silent=True) or {}
+    event_type = body.get("event_type", "fa_to_pm")
+    entity_code = body.get("entity_code", "168")
+    notes = body.get("notes")
+
+    sender_role, receiver_role = ("fa", "pm") if event_type == "fa_to_pm" else ("pm", "fa")
+    sender, receivers = _resolve_handoff_actors(entity_code, sender_role, receiver_role)
+
+    # Pull building name + period from Budget for a realistic card preview.
+    building_name = None
+    period_label = None
+    try:
+        Budget = workflow_models["Budget"]
+        from workflow import BUDGET_YEAR as _BY
+        b = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+        if b:
+            building_name = b.building_name
+            try:
+                import json as _j
+                assum = _j.loads(b.assumptions_json or "{}")
+                bp = (assum.get("budget_period") or "").strip()
+                if bp and "/" in bp:
+                    m = int(bp.split("/")[0])
+                    names = ["Jan","Feb","Mar","Apr","May","Jun",
+                             "Jul","Aug","Sep","Oct","Nov","Dec"]
+                    if 1 <= m <= 11:
+                        period_label = f"Jan-{names[m-1]} actual / {names[m]}-Dec estimate"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        base = request.host_url.rstrip("/")
+    except Exception:
+        base = ""
+    dashboard_url = f"{base}/dashboard/{entity_code}" if base else None
+
+    result = _post_teams_handoff(
+        event_type=event_type,
+        entity_code=entity_code,
+        sender_user=sender,
+        receiver_users=receivers,
+        building_name=building_name,
+        dashboard_url=dashboard_url,
+        notes=notes or "(test from admin endpoint)",
+        period_label=period_label,
+    )
+
+    return jsonify({
+        "ok": result.get("ok", False),
+        "reason": result.get("reason"),
+        "webhook_configured": bool(os.environ.get("TEAMS_WEBHOOK_URL")),
+        "sender_resolved": sender,
+        "receivers_resolved": receivers,
+        "building_name": building_name,
+        "period_label": period_label,
+    })
 
 
 @app.route("/api/admin/properties/<entity_code>", methods=["GET", "POST"])

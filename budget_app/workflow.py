@@ -1840,6 +1840,75 @@ def create_workflow_blueprint(db):
         ))
         db.session.commit()
 
+        # FA directive 2026-05-10: Teams notification on PM↔FA handoffs.
+        # Two trigger points:
+        #   draft → pm_pending          (FA → PM)
+        #   pm_in_progress → fa_review  (PM → FA)
+        # Lazy import to avoid circular dependency (app.py imports workflow).
+        # All notification logic lives in app.py and never raises.
+        try:
+            handoff_event = None
+            sender_role, receiver_role = None, None
+            if old_status != new_status:
+                if new_status == "pm_pending":
+                    handoff_event = "fa_to_pm"
+                    sender_role, receiver_role = "fa", "pm"
+                elif new_status == "fa_review":
+                    handoff_event = "pm_to_fa"
+                    sender_role, receiver_role = "pm", "fa"
+            if handoff_event:
+                # Determine the period label for the card if available.
+                period_label = None
+                try:
+                    assum = json.loads(budget.assumptions_json or "{}")
+                    bp = (assum.get("budget_period") or "").strip()
+                    if bp and "/" in bp:
+                        m_int = int(bp.split("/")[0])
+                        names = ["Jan","Feb","Mar","Apr","May","Jun",
+                                 "Jul","Aug","Sep","Oct","Nov","Dec"]
+                        if 1 <= m_int <= 11:
+                            period_label = (
+                                f"Jan-{names[m_int-1]} actual / "
+                                f"{names[m_int]}-Dec estimate"
+                            )
+                except Exception:
+                    pass
+
+                # Lazy import — app.py owns these helpers; we don't want a
+                # circular import at module load time.
+                try:
+                    from app import _post_teams_handoff, _resolve_handoff_actors
+                except ImportError:
+                    from budget_app.app import _post_teams_handoff, _resolve_handoff_actors
+
+                sender, receivers = _resolve_handoff_actors(
+                    entity_code, sender_role, receiver_role
+                )
+                # Build dashboard URL from request host.
+                try:
+                    base = request.host_url.rstrip("/")
+                except Exception:
+                    base = ""
+                dashboard_url = f"{base}/dashboard/{entity_code}" if base else None
+
+                _post_teams_handoff(
+                    event_type=handoff_event,
+                    entity_code=entity_code,
+                    sender_user=sender,
+                    receiver_users=receivers,
+                    building_name=budget.building_name,
+                    dashboard_url=dashboard_url,
+                    notes=data.get("notes"),
+                    period_label=period_label,
+                )
+        except Exception as _hf_err:
+            # Notifications must never break a status change.
+            try:
+                logger.warning("Teams handoff notify failed for %s: %s",
+                               entity_code, _hf_err)
+            except Exception:
+                pass
+
         return jsonify(budget.to_dict())
 
 
