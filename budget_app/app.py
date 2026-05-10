@@ -6412,7 +6412,9 @@ def _resolve_handoff_actors(entity_code, sender_role, receiver_role):
 
     Returns: (sender_dict, [receiver_dicts]) — each dict has {id, name, email}.
     """
-    from workflow import _read_fa_id_from_cookie  # may not always be importable
+    # Note: the cookie-decoding logic is inlined below (we don't import
+    # workflow's _read_fa_id_from_cookie because it's defined inside the
+    # register_routes() closure, not at module level).
     User = workflow_models.get("User")
     BuildingAssignment = workflow_models.get("BuildingAssignment")
     sender = {"name": "Unknown", "email": ""}
