@@ -12551,7 +12551,7 @@ const RE_TAXES_TAB_HTML = `<style>
       <div class="card">
         <h2>3. GL Budget Lines → Gen & Admin Tab</h2>
         <div class="note" style="margin-bottom:8px;">
-          <span class="ysl-badge">YSL</span> YTD Actual comes from Yardi Select Ledger (manual in this preview).
+          <span class="ysl-badge">YSL</span> YTD Actual is pulled from this building's Yardi Select Ledger postings.
           <span class="upload-badge">UPLOAD</span> Prior Year Budget comes from the imported approved budget.
         </div>
         <table>
