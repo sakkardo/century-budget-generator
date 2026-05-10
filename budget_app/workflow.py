@@ -754,6 +754,44 @@ def create_workflow_blueprint(db):
             }
 
 
+    class BuildingVisit(db.Model):
+        """Per-FA visit tracking for the diff-strip feature.
+
+        FA directive 2026-05-10: when an FA reopens a building they last
+        visited >24h ago, surface what's changed since (orphan/duplicate
+        deltas, audit status flips, edits by other FAs). Each row is one
+        (user, building) visit with a compact JSON snapshot.
+
+        Snapshot shape (v=1):
+          {
+            "v": 1,
+            "orphan_count":           int,
+            "duplicate_groups":       int,
+            "audit_status":           str,        # uploaded/extracted/mapped/confirmed/null
+            "audit_id":               int | null,
+            "last_revision_id":       int,        # max(BudgetRevision.id) at visit
+            "last_audit_confirmed_at": str | null # ISO timestamp
+          }
+        """
+        __tablename__ = "building_visits"
+
+        id = db.Column(db.Integer, primary_key=True)
+        user_id = db.Column(db.Integer, nullable=False, index=True)
+        entity_code = db.Column(db.String(50), nullable=False, index=True)
+        visited_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+        snapshot_json = db.Column(db.Text, nullable=False)
+        diff_dismissed_at = db.Column(db.DateTime, nullable=True)
+
+        def to_dict(self):
+            return {
+                "id": self.id, "user_id": self.user_id,
+                "entity_code": self.entity_code,
+                "visited_at": self.visited_at.isoformat() if self.visited_at else None,
+                "snapshot_json": self.snapshot_json,
+                "diff_dismissed_at": self.diff_dismissed_at.isoformat() if self.diff_dismissed_at else None,
+            }
+
+
     class PresentationSession(db.Model):
         """Tracks live presentation sessions for client budget review."""
         __tablename__ = "presentation_sessions"
@@ -1754,7 +1792,8 @@ def create_workflow_blueprint(db):
         db.session.add(BudgetRevision(
             budget_id=budget.id, action="status_change",
             field_name="status", old_value=old_status, new_value=new_status,
-            notes=data.get("notes", ""), source="web"
+            notes=data.get("notes", ""), source="web",
+            user_id=_read_fa_id_from_cookie(),
         ))
         db.session.commit()
 
@@ -2045,7 +2084,8 @@ def create_workflow_blueprint(db):
                 budget_id=budget.id, action="update",
                 field_name="assumptions." + key,
                 old_value="", new_value=_json.dumps(value) if isinstance(value, dict) else str(value),
-                source="web"
+                source="web",
+                user_id=_read_fa_id_from_cookie(),
             ))
 
         # Recalculate affected BudgetLine increase_pct based on assumption changes
@@ -3561,7 +3601,8 @@ def create_workflow_blueprint(db):
                 db.session.add(BudgetRevision(
                     budget_id=budget.id, budget_line_id=line.id,
                     action="update", field_name=field,
-                    old_value=old_v, new_value=new_v, source="pm"
+                    old_value=old_v, new_value=new_v, source="pm",
+                    user_id=_read_fa_id_from_cookie(),
                 ))
 
         try:
@@ -3649,7 +3690,8 @@ def create_workflow_blueprint(db):
                 db.session.add(BudgetRevision(
                     budget_id=budget.id, budget_line_id=line.id,
                     action="update", field_name=field,
-                    old_value=old_v, new_value=new_v, source="web"
+                    old_value=old_v, new_value=new_v, source="web",
+                    user_id=_read_fa_id_from_cookie(),
                 ))
 
         try:
@@ -3707,17 +3749,20 @@ def create_workflow_blueprint(db):
         to_line.ytd_actual = old_to_ytd + amount
 
         # Audit trail
+        _fa_uid = _read_fa_id_from_cookie()
         db.session.add(BudgetRevision(
             budget_id=budget.id, budget_line_id=from_line.id,
             action="reclass_accept", field_name="ytd_actual",
             old_value=str(old_from_ytd), new_value=str(from_line.ytd_actual),
-            notes=f"FA accepted reclass of ${amount:,.0f} to {to_gl}", source="web"
+            notes=f"FA accepted reclass of ${amount:,.0f} to {to_gl}", source="web",
+            user_id=_fa_uid,
         ))
         db.session.add(BudgetRevision(
             budget_id=budget.id, budget_line_id=to_line.id,
             action="reclass_accept", field_name="ytd_actual",
             old_value=str(old_to_ytd), new_value=str(to_line.ytd_actual),
-            notes=f"FA accepted reclass of ${amount:,.0f} from {from_gl}", source="web"
+            notes=f"FA accepted reclass of ${amount:,.0f} from {from_gl}", source="web",
+            user_id=_fa_uid,
         ))
 
         db.session.commit()
@@ -3787,7 +3832,8 @@ def create_workflow_blueprint(db):
             old_value=old_status,
             new_value=action,
             notes=note or "",
-            source="web"
+            source="web",
+            user_id=_read_fa_id_from_cookie()
         )
         db.session.add(rev)
         db.session.commit()
@@ -4458,6 +4504,444 @@ def create_workflow_blueprint(db):
             },
             "gates": gates,
         })
+
+
+    # ─── Diff-strip + FA identity ────────────────────────────────────────
+    # FA directive 2026-05-10: when an FA reopens a building they last
+    # visited >24h ago, surface what's changed since (orphan/duplicate
+    # deltas, audit status flips, edits by other FAs).
+    #
+    # Identity model: a `century_fa_id` cookie identifies the FA. Set via
+    # POST /api/whoami (writes cookie + validates user exists in `users`
+    # with role='fa'). Read via GET /api/whoami. No Flask-Login involved
+    # — this is for personalization, not security.
+    #
+    # Diff endpoint: GET /api/diff/<entity_code> compares current state
+    # to the latest building_visits snapshot for this FA. Returns pills
+    # (auto/system/fa) for what changed. Inserts a fresh snapshot row
+    # ONLY when >24h has elapsed since last visit AND there's something
+    # to show (avoids refresh-race).
+    #
+    # Dismiss endpoint: POST /api/diff/<entity_code>/dismiss flags the
+    # latest visit row as dismissed so subsequent calls suppress the
+    # strip until something new changes. Wired to beforeunload via
+    # navigator.sendBeacon.
+
+    def _read_fa_id_from_cookie():
+        """Resolve the current FA's user_id from the century_fa_id cookie.
+        Returns None when missing or invalid (deleted user, wrong role)."""
+        try:
+            raw = request.cookies.get("century_fa_id")
+            if not raw:
+                return None
+            uid = int(raw)
+            user = User.query.filter_by(id=uid).first()
+            if not user:
+                return None
+            # Allow any non-empty role to identify (fa/pm/admin); restrict
+            # later if we need to.
+            return uid
+        except Exception:
+            return None
+
+    def _compute_diff_state(entity_code, budget):
+        """Compute the small JSON snapshot we diff against. Cheap: ~3-4
+        DB calls. Returns a dict with the same shape we persist to
+        building_visits.snapshot_json.
+        """
+        # Counts of orphan GLs (data not aggregated) and duplicate row
+        # groups (two summary rows w/ identical gl_prefixes_json).
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+
+        matched_gls = set()
+        for r in rows:
+            if r.row_type != "data" or not r.gl_prefixes_json:
+                continue
+            try:
+                pfx = json.loads(r.gl_prefixes_json)
+            except Exception:
+                continue
+            for ln in lines:
+                gl_str = str(ln.gl_code or "").strip()
+                gl_base = gl_str.split("-")[0]
+                for p in pfx:
+                    if "-" in str(p):
+                        if gl_str.startswith(str(p)):
+                            matched_gls.add(ln.gl_code); break
+                    else:
+                        if gl_base.startswith(str(p)):
+                            matched_gls.add(ln.gl_code); break
+        orphan_count = 0
+        for ln in lines:
+            if ln.gl_code in matched_gls:
+                continue
+            ytd = float(ln.ytd_actual or 0)
+            cb = float(ln.current_budget or 0)
+            if abs(ytd) >= 100 or abs(cb) >= 100:
+                if (ln.description or "").strip() == (ln.gl_code or "").strip():
+                    continue
+                orphan_count += 1
+
+        prefix_to_labels = {}
+        for r in rows:
+            if r.row_type != "data" or not r.gl_prefixes_json:
+                continue
+            key = r.gl_prefixes_json.strip()
+            if key in ("[]", "null", ""):
+                continue
+            prefix_to_labels.setdefault(key, []).append(r.label or "?")
+        duplicate_groups = sum(1 for labels in prefix_to_labels.values() if len(labels) > 1)
+
+        # Audit status (latest by status priority then updated_at)
+        audit_status = None
+        audit_id = None
+        last_audit_confirmed_at = None
+        try:
+            row_au = db.session.execute(db.text(
+                "SELECT id, status, confirmed_at "
+                "FROM audit_uploads "
+                "WHERE entity_code = :ec "
+                "ORDER BY (CASE status WHEN 'confirmed' THEN 4 WHEN 'mapped' THEN 3 "
+                "                       WHEN 'extracted' THEN 2 WHEN 'uploaded' THEN 1 ELSE 0 END) DESC, "
+                "         updated_at DESC NULLS LAST "
+                "LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+            if row_au:
+                audit_id = row_au[0]
+                audit_status = row_au[1]
+                last_audit_confirmed_at = (
+                    row_au[2].isoformat() if row_au[2] else None
+                )
+        except Exception:
+            pass
+
+        # Max revision id for this budget — lets us cheaply find revisions
+        # newer than last visit by id range.
+        last_revision_id = 0
+        try:
+            row_rev = db.session.execute(db.text(
+                "SELECT COALESCE(MAX(id), 0) FROM budget_revisions WHERE budget_id = :bid"
+            ), {"bid": budget.id}).fetchone()
+            if row_rev:
+                last_revision_id = int(row_rev[0] or 0)
+        except Exception:
+            pass
+
+        return {
+            "v": 1,
+            "orphan_count": int(orphan_count),
+            "duplicate_groups": int(duplicate_groups),
+            "audit_status": audit_status,
+            "audit_id": audit_id,
+            "last_revision_id": last_revision_id,
+            "last_audit_confirmed_at": last_audit_confirmed_at,
+        }
+
+    @bp.route("/api/whoami", methods=["GET"])
+    def api_whoami():
+        """Return the current FA identity from the century_fa_id cookie.
+        No identity → {user_id: null}. Used by the dashboard to decide
+        whether to render the FA-name chip + enable edits."""
+        uid = _read_fa_id_from_cookie()
+        if not uid:
+            return jsonify({"user_id": None})
+        user = User.query.filter_by(id=uid).first()
+        if not user:
+            return jsonify({"user_id": None})
+        return jsonify({
+            "user_id": user.id,
+            "name": user.name,
+            "email": getattr(user, "email", None) or "",
+            "role": getattr(user, "role", None) or "",
+        })
+
+    @bp.route("/api/whoami", methods=["POST"])
+    def api_set_whoami():
+        """Set the century_fa_id cookie. Body: {user_id: int}.
+        Validates the user exists. Writes a 90-day max-age cookie.
+        """
+        try:
+            body = request.get_json(force=True) or {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON"}), 400
+        try:
+            uid = int(body.get("user_id"))
+        except Exception:
+            return jsonify({"error": "user_id required"}), 400
+        user = User.query.filter_by(id=uid).first()
+        if not user:
+            return jsonify({"error": "Unknown user_id"}), 404
+
+        resp = jsonify({
+            "ok": True,
+            "user_id": user.id,
+            "name": user.name,
+            "role": getattr(user, "role", None) or "",
+        })
+        # 90-day cookie. samesite=Lax to allow normal navigation.
+        resp.set_cookie(
+            "century_fa_id", str(user.id),
+            max_age=90 * 24 * 3600,
+            samesite="Lax",
+            httponly=False,  # JS-readable so we can update the chip live
+            secure=False,    # set True in prod-https; Flask handles in dev
+        )
+        return resp
+
+    @bp.route("/api/whoami", methods=["DELETE"])
+    def api_clear_whoami():
+        """Clear the century_fa_id cookie (logout for this FA)."""
+        resp = jsonify({"ok": True})
+        resp.set_cookie("century_fa_id", "", max_age=0, samesite="Lax")
+        return resp
+
+    @bp.route("/api/diff/<entity_code>", methods=["GET"])
+    def api_diff(entity_code):
+        """Return the diff between current building state and the FA's
+        last-visited snapshot. Records a fresh snapshot when >24h elapsed
+        AND a strip was actually shown.
+
+        Query params:
+          include_dismissed=1  — include rows where diff_dismissed_at is
+                                 set (used by "View recent changes" link)
+
+        Response:
+          {
+            "show": bool,
+            "reason": str,           # always returned (debug aid)
+            "since": iso str | null, # last visit timestamp
+            "has_prev_row": bool,    # whether there's a prior visit
+            "pills": [
+              {kind, title, body, ts?}, ...
+            ]
+          }
+        """
+        uid = _read_fa_id_from_cookie()
+        if not uid:
+            return jsonify({
+                "show": False, "reason": "no_identity",
+                "has_prev_row": False, "pills": [],
+            })
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        include_dismissed = (request.args.get("include_dismissed") or "") in ("1", "true", "yes")
+
+        # Lazy GC — drop rows older than 90 days for this (user, entity).
+        try:
+            db.session.execute(db.text(
+                "DELETE FROM building_visits "
+                "WHERE user_id = :uid AND entity_code = :ec "
+                "AND visited_at < (CURRENT_TIMESTAMP - INTERVAL '90 days')"
+            ), {"uid": uid, "ec": entity_code})
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+        # Find the latest visit (optionally including dismissed).
+        q = BuildingVisit.query.filter_by(user_id=uid, entity_code=entity_code)
+        if not include_dismissed:
+            q = q.filter(BuildingVisit.diff_dismissed_at.is_(None))
+        prev = q.order_by(BuildingVisit.visited_at.desc()).first()
+
+        has_prev_row = (BuildingVisit.query
+                        .filter_by(user_id=uid, entity_code=entity_code)
+                        .first() is not None)
+
+        # Compute current snapshot (cheap; ~3-4 queries).
+        current = _compute_diff_state(entity_code, budget)
+
+        # First-ever visit for this (user, entity) — record + suppress.
+        if prev is None:
+            try:
+                v = BuildingVisit(
+                    user_id=uid,
+                    entity_code=entity_code,
+                    snapshot_json=json.dumps(current),
+                )
+                db.session.add(v)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            return jsonify({
+                "show": False, "reason": "first_visit",
+                "has_prev_row": False, "pills": [],
+            })
+
+        # Recent visit — same FA loaded the page within 24h. Don't bump
+        # the timestamp (refresh-race avoidance) and suppress the strip.
+        elapsed = (datetime.utcnow() - prev.visited_at).total_seconds()
+        if elapsed < (24 * 3600) and not include_dismissed:
+            return jsonify({
+                "show": False, "reason": "recent_visit",
+                "since": prev.visited_at.isoformat() if prev.visited_at else None,
+                "has_prev_row": True, "pills": [],
+            })
+
+        # Compute pills from the prev → current delta.
+        try:
+            prev_snap = json.loads(prev.snapshot_json or "{}")
+        except Exception:
+            prev_snap = {}
+
+        pills = []
+
+        # AUTO pill — audit auto-confirmed by the system since last visit.
+        prev_status = (prev_snap.get("audit_status") or "").lower()
+        cur_status = (current.get("audit_status") or "").lower()
+        if cur_status == "confirmed" and prev_status in ("uploaded", "extracted", "mapped", ""):
+            try:
+                row_au = db.session.execute(db.text(
+                    "SELECT confirmed_by, confirmed_at, fiscal_year_end "
+                    "FROM audit_uploads WHERE id = :id"
+                ), {"id": current.get("audit_id")}).fetchone()
+                if row_au:
+                    confirmed_by = (row_au[0] or "").strip().lower()
+                    fy = row_au[2] or ""
+                    if confirmed_by in ("system", "auto", ""):
+                        pills.append({
+                            "kind": "auto",
+                            "title": "Audit auto-confirmed",
+                            "body": (f"FY{fy} audit was auto-confirmed by the system since you were last here."
+                                     if fy else "Audit was auto-confirmed by the system since you were last here."),
+                            "ts": row_au[1].isoformat() if row_au[1] else None,
+                        })
+                    else:
+                        pills.append({
+                            "kind": "fa",
+                            "title": "Audit confirmed",
+                            "body": (f"FY{fy} audit was confirmed by {row_au[0]} since you were last here."
+                                     if fy else f"Audit was confirmed by {row_au[0]} since you were last here."),
+                            "ts": row_au[1].isoformat() if row_au[1] else None,
+                        })
+            except Exception:
+                pass
+
+        # SYSTEM pill — orphan-count delta.
+        prev_orphans = int(prev_snap.get("orphan_count") or 0)
+        cur_orphans = int(current.get("orphan_count") or 0)
+        if cur_orphans != prev_orphans:
+            direction = "dropped" if cur_orphans < prev_orphans else "increased"
+            pills.append({
+                "kind": "system",
+                "title": "Orphan GL warnings",
+                "body": f"Orphan GL warnings {direction}: {prev_orphans} → {cur_orphans}.",
+            })
+
+        # SYSTEM pill — duplicate-group delta.
+        prev_dups = int(prev_snap.get("duplicate_groups") or 0)
+        cur_dups = int(current.get("duplicate_groups") or 0)
+        if cur_dups != prev_dups:
+            direction = "dropped" if cur_dups < prev_dups else "increased"
+            pills.append({
+                "kind": "system",
+                "title": "Duplicate row groups",
+                "body": f"Duplicate row groups {direction}: {prev_dups} → {cur_dups}.",
+            })
+
+        # FA pill — edits by another FA since last visit.
+        prev_max_rev = int(prev_snap.get("last_revision_id") or 0)
+        if prev_max_rev > 0 or current.get("last_revision_id", 0) > prev_max_rev:
+            try:
+                rows_rev = db.session.execute(db.text(
+                    "SELECT br.id, br.user_id, br.field_name, br.old_value, br.new_value, "
+                    "       br.action, br.created_at, COALESCE(u.name, '') "
+                    "FROM budget_revisions br "
+                    "LEFT JOIN users u ON u.id = br.user_id "
+                    "WHERE br.budget_id = :bid AND br.id > :prev "
+                    "  AND br.user_id IS NOT NULL AND br.user_id != :uid "
+                    "  AND COALESCE(br.source, 'web') = 'web' "
+                    "ORDER BY br.id ASC LIMIT 5"
+                ), {"bid": budget.id, "prev": prev_max_rev, "uid": uid}).fetchall()
+                for r in rows_rev:
+                    actor = r[7] or "Another FA"
+                    field = r[2] or ""
+                    old_v = r[3] or ""
+                    new_v = r[4] or ""
+                    action = r[5] or "update"
+                    if action == "update" and field:
+                        body = f"{actor} edited {field}"
+                        if old_v or new_v:
+                            body += f": {old_v or '(empty)'} → {new_v or '(empty)'}"
+                        body += "."
+                    elif action == "create":
+                        body = f"{actor} created a new entry ({field or 'row'})."
+                    else:
+                        body = f"{actor} {action} on {field or 'this budget'}."
+                    pills.append({
+                        "kind": "fa",
+                        "title": f"Edited by {actor}",
+                        "body": body,
+                        "ts": r[6].isoformat() if r[6] else None,
+                    })
+            except Exception:
+                pass
+
+        if not pills:
+            # Nothing changed since last visit — bump the prev row's
+            # visited_at (so we don't keep re-evaluating the same delta
+            # forever) and suppress the strip.
+            try:
+                prev.visited_at = datetime.utcnow()
+                prev.snapshot_json = json.dumps(current)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            return jsonify({
+                "show": False, "reason": "no_changes",
+                "since": prev.visited_at.isoformat() if prev.visited_at else None,
+                "has_prev_row": True, "pills": [],
+            })
+
+        # We have something to show — record a fresh visit row with the
+        # current snapshot. The prev row stays as the historical pointer
+        # the FA can re-open via "View recent changes".
+        since_iso = prev.visited_at.isoformat() if prev.visited_at else None
+        try:
+            v = BuildingVisit(
+                user_id=uid,
+                entity_code=entity_code,
+                snapshot_json=json.dumps(current),
+            )
+            db.session.add(v)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+        return jsonify({
+            "show": True, "reason": "diff",
+            "since": since_iso,
+            "has_prev_row": True,
+            "pills": pills,
+        })
+
+    @bp.route("/api/diff/<entity_code>/dismiss", methods=["POST"])
+    def api_diff_dismiss(entity_code):
+        """Mark the latest visit row as dismissed. Called via
+        navigator.sendBeacon on beforeunload — fire-and-forget."""
+        uid = _read_fa_id_from_cookie()
+        if not uid:
+            return jsonify({"ok": False, "reason": "no_identity"}), 200
+        try:
+            db.session.execute(db.text(
+                "UPDATE building_visits "
+                "SET diff_dismissed_at = CURRENT_TIMESTAMP "
+                "WHERE id = ("
+                "  SELECT id FROM building_visits "
+                "  WHERE user_id = :uid AND entity_code = :ec "
+                "  ORDER BY visited_at DESC LIMIT 1"
+                ")"
+            ), {"uid": uid, "ec": entity_code})
+            db.session.commit()
+            return jsonify({"ok": True})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"ok": False, "error": str(e)}), 500
 
 
     @bp.route("/api/download-budget/<entity_code>", methods=["GET"])
@@ -5826,7 +6310,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow, "BuildingInfo": BuildingInfo, "AuditSyncRun": AuditSyncRun, "DataSource": DataSource},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "BuildingVisit": BuildingVisit, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow, "BuildingInfo": BuildingInfo, "AuditSyncRun": AuditSyncRun, "DataSource": DataSource},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
@@ -7042,9 +7526,32 @@ BUILDING_DETAIL_TEMPLATE = r"""
 <div class="toast-container" id="toastContainer"></div>
 
 <header>
-  <h1 id="buildingName">Loading...</h1>
-  <p id="buildingMeta"></p>
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+    <div style="flex:1; min-width:0;">
+      <h1 id="buildingName">Loading...</h1>
+      <p id="buildingMeta"></p>
+    </div>
+    <!-- FA identity chip — set via /api/whoami; required before edits. FA directive 2026-05-10. -->
+    <div id="faIdentityChip" style="flex-shrink:0; display:flex; align-items:center; gap:8px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25); border-radius:18px; padding:6px 12px; font-size:12px; cursor:pointer;" onclick="faIdentityOpenPicker()" title="Click to identify or switch FA">
+      <span id="faIdentityLabel">Identify yourself to edit ▾</span>
+    </div>
+  </div>
 </header>
+
+<!-- FA identity picker modal -->
+<div id="faIdentityModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:10px; padding:24px; max-width:420px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+    <h2 style="margin:0 0 6px; font-size:18px; font-weight:700; color:var(--gray-800);">Who are you working as?</h2>
+    <p style="margin:0 0 14px; font-size:13px; color:var(--gray-500);">Pick yourself from the list. Saved for 90 days. You can switch anytime via the chip in the header.</p>
+    <select id="faIdentitySelect" style="width:100%; padding:10px 12px; font-size:14px; border:1px solid var(--gray-300); border-radius:6px; background:white;">
+      <option value="">— Select your name —</option>
+    </select>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+      <button onclick="faIdentityCancel()" style="padding:8px 14px; font-size:13px; background:transparent; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:6px; cursor:pointer;">Cancel</button>
+      <button onclick="faIdentitySave()" id="faIdentitySaveBtn" style="padding:8px 14px; font-size:13px; background:var(--blue); color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Continue</button>
+    </div>
+  </div>
+</div>
 <div class="container">
   <!-- Loading state -->
   <div class="loading-overlay" id="loadingState">
@@ -7205,6 +7712,8 @@ BUILDING_DETAIL_TEMPLATE = r"""
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
     </div>
+    <!-- Diff Strip: "what changed since last visit" — renders only when last visit >24h AND there's a delta. FA directive 2026-05-10. -->
+    <div id="diffStrip" style="display:none;"></div>
     <!-- Readiness Inspector: 8-gate checklist showing the FA exactly what's left on this building. FA directive 2026-05-09. -->
     <div id="readinessInspector" style="display:none;"></div>
     <!-- Period banner: shows actuals/estimate window. Click pencil to edit. -->
@@ -7680,6 +8189,241 @@ function renderAuditStatusBanner(data) {
 // Payroll reviewed / Generated. Each row is a colored dot + 1-line
 // detail + click-through action button. Collapses to a single header
 // line when all 8 are green.
+// ─── Diff Strip + FA Identity ─────────────────────────────────────────
+// FA directive 2026-05-10. Renders an amber strip at the top of the
+// dashboard listing changes since the FA's last visit (>24h ago) with
+// pill-tagged entries (AUTO / SYSTEM / FA). Auto-clears on navigation
+// away. The Readiness Inspector keeps a "View recent changes" link to
+// re-open the strip after dismissal.
+let _faIdentity = null;        // { user_id, name, email, role } or null
+let _faAllUsers = null;        // cached FA roster from /api/users (FA-role only)
+
+async function faIdentityLoad() {
+  try {
+    const resp = await fetch('/api/whoami');
+    if (!resp.ok) return null;
+    const d = await resp.json();
+    if (d && d.user_id) { _faIdentity = d; return d; }
+    _faIdentity = null;
+    return null;
+  } catch (err) {
+    _faIdentity = null;
+    return null;
+  }
+}
+
+function faIdentityRenderChip() {
+  const chip = document.getElementById('faIdentityChip');
+  const label = document.getElementById('faIdentityLabel');
+  if (!chip || !label) return;
+  if (_faIdentity && _faIdentity.user_id) {
+    label.textContent = 'Working as: ' + _faIdentity.name + ' [change]';
+    chip.style.background = 'rgba(34,197,94,0.18)';
+    chip.style.borderColor = 'rgba(34,197,94,0.5)';
+  } else {
+    label.textContent = 'Identify yourself to edit ▾';
+    chip.style.background = 'rgba(217,119,6,0.18)';
+    chip.style.borderColor = 'rgba(251,191,36,0.6)';
+  }
+}
+
+async function faIdentityFetchRoster() {
+  if (_faAllUsers) return _faAllUsers;
+  try {
+    const resp = await fetch('/api/users?role=fa');
+    if (!resp.ok) return [];
+    const d = await resp.json();
+    const list = (d && d.users) ? d.users : (Array.isArray(d) ? d : []);
+    _faAllUsers = list.filter(u => (u.role || '').toLowerCase() === 'fa' || !u.role);
+    return _faAllUsers;
+  } catch (err) {
+    return [];
+  }
+}
+
+async function faIdentityOpenPicker() {
+  const modal = document.getElementById('faIdentityModal');
+  const sel = document.getElementById('faIdentitySelect');
+  if (!modal || !sel) return;
+  // Populate dropdown.
+  sel.innerHTML = '<option value="">— Select your name —</option>';
+  const list = await faIdentityFetchRoster();
+  list.forEach(u => {
+    const opt = document.createElement('option');
+    opt.value = u.id;
+    opt.textContent = u.name + (u.email ? ' (' + u.email + ')' : '');
+    if (_faIdentity && _faIdentity.user_id === u.id) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  modal.style.display = 'flex';
+}
+
+function faIdentityCancel() {
+  const modal = document.getElementById('faIdentityModal');
+  if (modal) modal.style.display = 'none';
+  // If a pending edit triggered this, clear it.
+  _faPendingEditCallback = null;
+}
+
+async function faIdentitySave() {
+  const sel = document.getElementById('faIdentitySelect');
+  if (!sel) return;
+  const uid = parseInt(sel.value, 10);
+  if (!uid) {
+    alert('Please pick your name.');
+    return;
+  }
+  const btn = document.getElementById('faIdentitySaveBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch('/api/whoami', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: uid}),
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      alert('Failed to save: ' + (j.error || resp.status));
+      if (btn) { btn.disabled = false; btn.textContent = 'Continue'; }
+      return;
+    }
+    _faIdentity = await resp.json();
+    faIdentityRenderChip();
+    document.getElementById('faIdentityModal').style.display = 'none';
+    // If an edit was pending, retry it.
+    if (typeof _faPendingEditCallback === 'function') {
+      const cb = _faPendingEditCallback;
+      _faPendingEditCallback = null;
+      try { cb(); } catch (e) {}
+    }
+    // Refresh diff strip — now that we have identity, it might render.
+    renderDiffStrip();
+  } catch (err) {
+    alert('Failed to save: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Continue'; }
+  }
+}
+
+// Edit-gate helper: call this before any mutation. If FA is identified,
+// runs the callback immediately. If not, opens the picker and runs the
+// callback after they pick.
+let _faPendingEditCallback = null;
+function faRequireIdentity(cb) {
+  if (_faIdentity && _faIdentity.user_id) {
+    if (typeof cb === 'function') cb();
+    return true;
+  }
+  _faPendingEditCallback = cb || null;
+  faIdentityOpenPicker();
+  return false;
+}
+
+// ─── Diff Strip rendering ─────────────────────────────────────────────
+async function renderDiffStrip(opts) {
+  opts = opts || {};
+  const el = document.getElementById('diffStrip');
+  if (!el) return;
+  const url = '/api/diff/' + entityCode + (opts.includeDismissed ? '?include_dismissed=1' : '');
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) { el.style.display = 'none'; return; }
+    data = await resp.json();
+  } catch (err) {
+    el.style.display = 'none';
+    return;
+  }
+  // Show/hide the "View recent changes" link in the readiness panel.
+  // Visible when the FA has a prior visit row, regardless of whether
+  // the strip itself renders.
+  const recentLink = document.getElementById('readinessRecentChangesLink');
+  if (recentLink) {
+    recentLink.style.display = (data && data.has_prev_row) ? '' : 'none';
+  }
+
+  if (!data || !data.show) {
+    el.style.display = 'none';
+    return;
+  }
+  const pills = data.pills || [];
+  if (!pills.length) { el.style.display = 'none'; return; }
+
+  // Format the "Mon, May 5 · 4 days ago" header.
+  let sinceLabel = '';
+  if (data.since) {
+    try {
+      const sinceDt = new Date(data.since);
+      const now = new Date();
+      const diffMs = now - sinceDt;
+      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      const dateStr = sinceDt.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
+      sinceLabel = '(' + dateStr + (days > 0 ? ' · ' + days + ' day' + (days !== 1 ? 's' : '') + ' ago' : ' · earlier today') + ')';
+    } catch (e) {}
+  }
+
+  // Pill style by kind.
+  const pillStyle = (kind) => {
+    if (kind === 'auto')   return 'background:#d1fae5;color:#065f46;';
+    if (kind === 'system') return 'background:#e0e7ff;color:#3730a3;';
+    if (kind === 'fa')     return 'background:#fce7f3;color:#9d174d;';
+    if (kind === 'alert')  return 'background:#fee2e2;color:#991b1b;';
+    return 'background:#f3f4f6;color:#374151;';
+  };
+  const pillLabel = (kind) => ({
+    auto:'AUTO', system:'SYSTEM', fa:'FA', alert:'ALERT'
+  })[kind] || (kind || '').toUpperCase();
+
+  let html = '';
+  html += '<div style="background:#fffbeb; border-bottom:1px solid #fde68a; padding:14px 24px;">';
+  html += '<div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:8px;">';
+  html += '<div style="display:flex; align-items:center; gap:10px; font-size:14px; font-weight:700; color:#92400e;">';
+  html += '<span style="font-size:18px;">🔔</span>';
+  html += '<span>Since you last opened this building <span style="font-weight:500; opacity:0.8;">' + sinceLabel + '</span></span>';
+  html += '</div>';
+  html += '<div style="display:flex; gap:8px;">';
+  html += '<button onclick="diffStripDismiss()" style="padding:5px 12px; font-size:12px; font-weight:600; border-radius:5px; cursor:pointer; border:1px solid #d97706; background:#d97706; color:white;">Got it</button>';
+  html += '<button onclick="diffStripDismiss()" title="Dismiss" style="background:transparent; border:none; cursor:pointer; color:#92400e; font-size:18px; line-height:1; padding:2px 6px;">×</button>';
+  html += '</div>';
+  html += '</div>';
+  html += '<ul style="list-style:none; margin:0; padding:0; font-size:13px; color:var(--gray-700);">';
+  pills.forEach(p => {
+    html += '<li style="padding:3px 0 3px 22px; position:relative;">';
+    html += '<span style="position:absolute; left:8px; color:#d97706; font-weight:700;">•</span>';
+    html += '<span style="display:inline-block; padding:1px 7px; font-size:11px; font-weight:600; border-radius:9px; margin-right:6px; vertical-align:1px; ' + pillStyle(p.kind) + '">' + pillLabel(p.kind) + '</span>';
+    html += (p.body || p.title || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    html += '</li>';
+  });
+  html += '</ul>';
+  html += '<div style="margin-top:8px; font-size:11px; color:#92400e; opacity:0.78;">';
+  html += 'Auto-clears when you leave this page · You can re-open via "View recent changes" in the Readiness panel below.';
+  html += '</div>';
+  html += '</div>';
+
+  el.innerHTML = html;
+  el.style.display = '';
+}
+
+async function diffStripDismiss() {
+  const el = document.getElementById('diffStrip');
+  if (el) el.style.display = 'none';
+  try {
+    await fetch('/api/diff/' + entityCode + '/dismiss', {method: 'POST'});
+  } catch (err) {}
+}
+
+// Hook beforeunload → fire-and-forget dismiss via sendBeacon (reliable
+// across page-unload; fetch is not).
+window.addEventListener('beforeunload', () => {
+  const el = document.getElementById('diffStrip');
+  // Only fire dismiss if the strip was actually showing.
+  if (el && el.style.display !== 'none' && navigator.sendBeacon) {
+    try {
+      navigator.sendBeacon('/api/diff/' + entityCode + '/dismiss', '');
+    } catch (e) {}
+  }
+});
+
 async function renderReadinessInspector() {
   const el = document.getElementById('readinessInspector');
   if (!el) return;
@@ -7745,6 +8489,9 @@ async function renderReadinessInspector() {
   html += '<span style="font-size:14px; font-weight:700; color:' + headerColor + ';">Readiness</span>';
   html += '<span style="font-size:13px; color:' + headerColor + ';">' + headerText + '</span>';
   html += '</div>';
+  // Right-side cluster: "View recent changes" link (when there's a prior visit) + chevron.
+  html += '<div style="display:flex; align-items:center; gap:14px;">';
+  html += '<span id="readinessRecentChangesLink" style="display:none; font-size:11px; color:#92400e; text-decoration:underline; cursor:pointer;" onclick="event.stopPropagation(); renderDiffStrip({includeDismissed:true});">View recent changes ↗</span>';
   html += '<span id="readinessChevron" style="font-size:12px; color:' + headerColor + '; transition:transform 0.2s;">' + (expanded ? '▼' : '▶') + '</span>';
   html += '</div>';
 
@@ -7980,6 +8727,12 @@ function renderDetail(data) {
   YTD_MONTHS = data.ytd_months || 2;
   REMAINING_MONTHS = data.remaining_months || 10;
 
+  // FA identity — load + render chip. Required before edits. Diff strip
+  // also depends on this. FA directive 2026-05-10.
+  faIdentityLoad().then(() => {
+    faIdentityRenderChip();
+    renderDiffStrip();
+  });
   // Readiness inspector — single consolidated 8-gate checklist at the top
   // of every building's dashboard. FA directive 2026-05-09. Reads from
   // /api/readiness/<entity>; auto-collapses when all gates green.

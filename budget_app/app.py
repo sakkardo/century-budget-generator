@@ -189,6 +189,24 @@ def _run_idempotent_migrations():
         #   {"adjusted_count": int, "label": str?, "benefits": {
         #       "welfare":{"rate":float,"periods":float,"label":str?}, ...}}
         "ALTER TABLE payroll_positions ADD COLUMN IF NOT EXISTS benefit_adjustments_json TEXT",
+        # FA directive 2026-05-10: per-FA visit tracking for the diff-strip
+        # feature. Each row = one (user, building) visit with a small JSON
+        # snapshot of the building's state. Diff endpoint compares the
+        # latest row to current state to surface "what changed since you
+        # were last here". Lazy-GC: rows older than 90 days are deleted on
+        # next diff call for the same (user, entity).
+        """
+        CREATE TABLE IF NOT EXISTS building_visits (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            entity_code VARCHAR(50) NOT NULL,
+            visited_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            snapshot_json TEXT NOT NULL,
+            diff_dismissed_at TIMESTAMP NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_building_visits_user_entity_visited "
+        "ON building_visits (user_id, entity_code, visited_at DESC)",
     ]
     with app.app_context():
         for stmt in statements:
