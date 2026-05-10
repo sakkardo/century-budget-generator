@@ -1572,6 +1572,11 @@ def create_workflow_blueprint(db):
             if not active_user_ids:
                 return jsonify([])
             q = q.filter(User.id.in_(active_user_ids))
+            # FA directive 2026-05-10: Monday's people-column creates pseudo
+            # users for joint assignments (e.g., "Jennifer Murman, Giovanni
+            # Lizarazo"). Real FA names never contain ", ". Exclude these
+            # pseudo-users from the picker.
+            q = q.filter(~User.name.like('%, %'))
 
         users = q.order_by(User.name).all()
         return jsonify([u.to_dict() for u in users])
