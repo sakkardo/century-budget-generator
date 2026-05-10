@@ -433,24 +433,37 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
     prior_trans_av = dof.get("prior_trans_av", 0)         # pytrntot
     actual_av = dof.get("actual_av", 0)                   # curacttot
 
-    # Allow user overrides
-    rate = overrides.get("tax_rate", dof.get("tax_rate", 0))
-    est_rate = overrides.get("est_tax_rate", rate)
+    # FA directive 2026-05-10: defensive override handling for AV/rate fields.
+    # These fields can NEVER legitimately be 0 (a property always has a tax
+    # rate and AV). A 0 in the override JSON is always damage from the
+    # autosave-on-blur bug class (commit 3dda027). Treat 0 as "unset" so
+    # we fall through to live DOF data instead of crashing the math to zero.
+    # Exemption fields (veteran/sche/star/abatement) are treated literally
+    # because 0 is a valid "no exemption" value there.
+    def _override_or(key, default):
+        v = overrides.get(key)
+        return v if (v is not None and v != 0) else default
+
+    rate = _override_or("tax_rate", dof.get("tax_rate", 0))
+    est_rate = _override_or("est_tax_rate", rate)
 
     # Auto-calculate transitional AV increase from DOF data
     if prior_trans_av > 0 and current_trans_av > 0:
         auto_trans_increase = (current_trans_av / prior_trans_av) - 1
     else:
         auto_trans_increase = 0.0
-    # User can override the increase %
+    # User can override the increase %. 0 here is treated literally because
+    # the FA might legitimately want a flat-rate year (no AV growth).
     trans_increase = overrides.get("transitional_av_increase", auto_trans_increase)
+    if trans_increase is None:
+        trans_increase = auto_trans_increase
 
     # 1st Half (Jul-Dec): prior year transitional AV × rate
-    first_half_av = overrides.get("first_half_av", prior_trans_av or current_trans_av)
+    first_half_av = _override_or("first_half_av", prior_trans_av or current_trans_av)
     first_half_tax = first_half_av * rate / 2
 
     # 2nd Half (Jan-Jun): current transitional AV × estimated rate
-    second_half_av = overrides.get("second_half_av", current_trans_av)
+    second_half_av = _override_or("second_half_av", current_trans_av)
     second_half_tax = second_half_av * est_rate / 2
 
     gross_tax = first_half_tax + second_half_tax

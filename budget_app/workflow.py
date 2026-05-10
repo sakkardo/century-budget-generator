@@ -12893,16 +12893,33 @@ function cellRaw(id) {
 }
 
 // ─── BUILD GL ROWS ───────────────────────────────────────────────
+// Tax-benefit GLs that should always show YTD = 0 (FA directive 2026-05-10).
+// These credits/abatements are typically posted as one annual entry near
+// year-end, NOT mid-year. Any small Yardi YTD postings on these GLs are
+// noise (rounding, misposting) that confuse the FA. Display 0 instead.
+// 6315-0000 (Real Estate Tax expense) is NOT in this list — it has real
+// quarterly activity and YTD should reflect actual Yardi data.
+const _RE_NO_YTD_GLS = new Set([
+  '6315-0010',  // Real Estate Tax Abatement
+  '6315-0020',  // STAR Exemption
+  '6315-0025',  // Veteran Exemption
+  '6315-0030',  // SCRIE Credit
+  '6315-0035',  // SCHE Credit
+  '6315-0040',  // J-51 Credit
+]);
+
 // Look up YTD + Prior Year Budget for a given GL prefix from this
 // entity's actual budget_lines (loaded into window._data on dashboard
 // mount). FA directive 2026-05-10:
-//   • YTD column = real Jan-(actual_end) actual posted to this GL family
+//   • YTD column = real Jan-(actual_end) actual posted to this GL family,
+//     EXCEPT for tax-benefit GLs (6315-0010..0040) which always show 0.
+//     The FA explicitly said: "incorrect tax benefits are pulling into
+//     the YTD column. There are currently no YTD figures for this category."
 //   • Prior Year Budget = current_budget on this entity's BudgetLine
-//   • Tax-benefit GLs (6315-0010, 0020, 0025, 0030, 0035, 0040) typically
-//     have no YTD activity — those credits post once per year. So this
-//     lookup naturally returns 0 for them when the FA's books reflect
-//     reality. Replaces the hardcoded DEFAULTS_212 values that polluted
-//     every other coop's RE Tax tab with entity 212's numbers.
+//     (still real per-entity data — these credits ARE budgeted annually,
+//     just not posted to YTD until year-end).
+//   • Replaces the hardcoded DEFAULTS_212 values that polluted every other
+//     coop's RE Tax tab with entity 212's numbers.
 function _reLookupGlData(glPrefix) {
   const lines = (window._data && Array.isArray(window._data.lines))
     ? window._data.lines : [];
@@ -12915,6 +12932,11 @@ function _reLookupGlData(glPrefix) {
       ytd += Number(ln.ytd_actual || 0);
       priorBudget += Number(ln.current_budget || 0);
     }
+  }
+  // FA directive: force 0 YTD for tax-benefit GLs even if Yardi has small
+  // postings. Prior Year Budget stays as the real budgeted credit amount.
+  if (_RE_NO_YTD_GLS.has(glPrefix)) {
+    ytd = 0;
   }
   return { ytd, priorBudget };
 }
