@@ -4860,14 +4860,24 @@ ASSUMPTIONS_BUILDINGS_TEMPLATE = """
             debouncedSave();
         }
 
+        // FA directive 2026-05-10: skip save when the payload hasn't
+        // actually changed (FAs frequently click into fields to inspect
+        // values without editing). Same fix pattern as commit 3dda027.
+        let _lastSavedPayloadJson = null;
+
         function debouncedSave() {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
+                const payload = JSON.stringify(buildingData);
+                if (payload === _lastSavedPayloadJson) return;
                 fetch(`/api/building-assumptions/${currentBuilding}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildingData)
-                }).then(() => showToast('Saved'));
+                    body: payload
+                }).then(() => {
+                    _lastSavedPayloadJson = payload;
+                    showToast('Saved');
+                });
             }, 500);
         }
 
@@ -5535,13 +5545,23 @@ function resetOverrides() {
   toast('Overrides reset');
 }
 
+// FA directive 2026-05-10: snapshot the last-saved payload so we can
+// short-circuit when the user clicks through without actually changing
+// anything. Same bug class as commit 3dda027 (auto-save-on-blur).
+let _lastSavedPayloadJson = null;
+
 function debouncedSave() {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
+    const payload = JSON.stringify(currentBldgData);
+    if (payload === _lastSavedPayloadJson) return;  // nothing actually changed
     fetch('/api/building-assumptions/' + currentView, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(currentBldgData)
-    }).then(() => { toast('Saved'); updateOverrideCount(); });
+      body: payload
+    }).then(() => {
+      _lastSavedPayloadJson = payload;
+      toast('Saved'); updateOverrideCount();
+    });
   }, 500);
 }
 

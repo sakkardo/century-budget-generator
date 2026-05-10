@@ -12024,19 +12024,25 @@ function renderRETaxesTab(contentDiv) {
 
 const RE_TAXES_TAB_HTML = `<style>
 
-:root {
-    --bg: #f8fafc;
+/* FA directive 2026-05-10: reskinned to match the dashboard palette.
+   The original Excel-port used a cold blue/gray scheme (#f8fafc /
+   #cbd5e1 / #2563eb) that felt like a different product from the rest
+   of the app. These vars are scoped to .re-taxes-wrap so they don't
+   leak to other tabs; the values now reference the dashboard's warm
+   palette (--blue: #5a4a3f / --blue-light: #f5efe7) when available. */
+.re-taxes-wrap {
+    --bg: var(--gray-50, #f9fafb);
     --card: #ffffff;
-    --border: #e2e8f0;
-    --text: #0f172a;
-    --muted: #64748b;
-    --accent: #2563eb;
-    --accent-light: #dbeafe;
-    --good: #16a34a;
-    --bad: #dc2626;
-    --warn: #f59e0b;
-    --computed-bg: #f1f5f9;
-    --input-bg: #fffbeb;
+    --border: var(--gray-200, #e5e7eb);
+    --text: var(--gray-800, #1f2937);
+    --muted: var(--gray-500, #6b7280);
+    --accent: var(--blue, #5a4a3f);
+    --accent-light: var(--blue-light, #f5efe7);
+    --good: var(--green, #16a34a);
+    --bad: var(--red, #dc2626);
+    --warn: var(--amber, #d97706);
+    --computed-bg: var(--gray-100, #f3f4f6);
+    --input-bg: var(--blue-light, #f5efe7);
   }
 .re-taxes-wrap * { box-sizing: border-box; }
 .re-taxes-wrap {
@@ -12111,7 +12117,7 @@ const RE_TAXES_TAB_HTML = `<style>
 .re-taxes-wrap tr.total td {
     border-top: 2px solid var(--text);
     font-weight: 700;
-    background: #f8fafc;
+    background: var(--bg);
   }
 .re-taxes-wrap input[type="text"], .re-taxes-wrap input[type="number"] {
     width: 100%;
@@ -12139,7 +12145,7 @@ const RE_TAXES_TAB_HTML = `<style>
     border: 1px solid transparent;
   }
 .re-taxes-wrap .computed.formula-clickable { cursor: pointer; transition: all 0.1s; }
-.re-taxes-wrap .computed.formula-clickable:hover { background: #e0e7ff; border-color: var(--accent); }
+.re-taxes-wrap .computed.formula-clickable:hover { background: var(--accent-light); border-color: var(--accent); }
 .re-taxes-wrap #formulaPopover {
     position: fixed;
     z-index: 1000;
@@ -12194,7 +12200,7 @@ const RE_TAXES_TAB_HTML = `<style>
 .re-taxes-wrap .dollar-input { max-width: 120px; }
 .re-taxes-wrap .gl-code { font-family: "SF Mono", Consolas, monospace; font-size: 12px; color: var(--muted); }
 .re-taxes-wrap .gross-banner {
-    background: linear-gradient(135deg, #1e40af, #2563eb);
+    background: linear-gradient(135deg, var(--blue-dark, #3d322a), var(--blue, #5a4a3f));
     color: white;
     padding: 12px 16px;
     border-radius: 6px;
@@ -12329,7 +12335,7 @@ const RE_TAXES_TAB_HTML = `<style>
     box-shadow: 0 0 0 2px var(--accent-light);
   }
 .re-taxes-wrap .formula-bar input.fx-input:disabled {
-    background: #f8fafc;
+    background: var(--bg);
     color: var(--muted);
   }
 .re-taxes-wrap .formula-bar .fx-result {
@@ -12453,14 +12459,14 @@ const RE_TAXES_TAB_HTML = `<style>
     border-radius: 4px;
     font-size: 13px;
     line-height: 18px;
-    background: #f8fafc;
+    background: var(--bg);
     color: var(--text);
     font-family: inherit;
     display: flex;
     align-items: center;
   }
 .re-taxes-wrap .prop-card .prop-input[disabled] {
-    background: #f1f5f9;
+    background: var(--computed-bg);
     color: var(--muted);
     cursor: not-allowed;
   }
