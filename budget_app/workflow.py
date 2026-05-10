@@ -14248,6 +14248,10 @@ function sumCellFocus(el) {
   // Clear any subtotal highlight
   if (_activeSumSubtotal) { _activeSumSubtotal.style.outline = ''; _activeSumSubtotal = null; }
   _sumActiveCell = el;
+  // Snapshot the value at focus so we can detect whether the FA actually
+  // changed anything before saving on blur. FA directive 2026-05-10:
+  // clicking into a cell without editing must NOT create an override.
+  el.dataset.focusedRaw = (el.dataset.raw === undefined) ? '' : String(el.dataset.raw);
   const bar = document.getElementById('sumFBar');
   if (bar) bar.style.borderColor = 'var(--blue)';
   const COL_NAMES = {c1:'Col 1 \u00b7 '+BY3+' Actual',c2:'Col 2 \u00b7 '+BY2+' Actual',c3:'Col 3 \u00b7 '+BY1+' YTD',
@@ -14741,6 +14745,23 @@ function sumCellBlur(el) {
   if (!order) return;
   const editable = (col === 'c7') || (col === 'c3') || (col === 'c4') || (col === 'c5');
   if (!editable) return;
+  // FA directive 2026-05-10: short-circuit when the FA didn't actually
+  // change the value during this focus session. Without this guard, just
+  // clicking into a cell and clicking out would write an "override" equal
+  // to the computed value — flipping the cell to OVR with no real change.
+  // Compare numerically so display-formatting drift doesn't matter
+  // (e.g., "60112" vs "60,112" parse to the same number).
+  const focusedRawStr = (el.dataset.focusedRaw === undefined) ? '' : String(el.dataset.focusedRaw);
+  const currentRawStr = (el.dataset.raw === undefined) ? '' : String(el.dataset.raw);
+  const focusedNumNorm = (focusedRawStr === '' || focusedRawStr === 'null') ? null : parseFloat(focusedRawStr);
+  const currentNumNorm = (currentRawStr === '' || currentRawStr === 'null') ? null : parseFloat(currentRawStr);
+  const unchanged = (
+    (focusedNumNorm === null && currentNumNorm === null) ||
+    (focusedNumNorm !== null && currentNumNorm !== null &&
+     !isNaN(focusedNumNorm) && !isNaN(currentNumNorm) &&
+     focusedNumNorm === currentNumNorm)
+  );
+  if (unchanged) return;
   // Build the edit payload depending on which column was touched.
   // Empty input → null (clear override / proposed)
   const rawNum = (el.dataset.raw === '' || el.dataset.raw === undefined) ? null : parseFloat(el.dataset.raw);
