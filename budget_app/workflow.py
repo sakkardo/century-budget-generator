@@ -1534,8 +1534,46 @@ def create_workflow_blueprint(db):
 
     @bp.route("/api/users", methods=["GET"])
     def list_users():
-        """List all users."""
-        users = User.query.all()
+        """List users.
+
+        Query params:
+          role=fa|pm|admin   — filter to one role
+          active=1           — only users with at least one BuildingAssignment
+                               on a current-year Budget. Excludes Lemle alumni
+                               and other stale FAs from pre-filter Monday syncs.
+                               Mirrors the wizard's FA-dropdown filter logic.
+        """
+        role = (request.args.get("role") or "").strip().lower()
+        active_only = (request.args.get("active") or "").strip() in ("1", "true", "yes")
+
+        q = User.query
+        if role:
+            q = q.filter_by(role=role)
+
+        if active_only:
+            # Resolve the set of currently-active entity_codes (those with a
+            # Budget row for the current year — same population the wizard uses).
+            active_entity_codes = {
+                b.entity_code for b in
+                Budget.query.with_entities(Budget.entity_code)
+                            .filter_by(year=BUDGET_YEAR).all()
+            }
+            if not active_entity_codes:
+                return jsonify([])
+            # Find user_ids that have at least one assignment in those entities.
+            assign_q = (
+                BuildingAssignment.query
+                .with_entities(BuildingAssignment.user_id)
+                .filter(BuildingAssignment.entity_code.in_(active_entity_codes))
+            )
+            if role:
+                assign_q = assign_q.filter_by(role=role)
+            active_user_ids = {row[0] for row in assign_q.all()}
+            if not active_user_ids:
+                return jsonify([])
+            q = q.filter(User.id.in_(active_user_ids))
+
+        users = q.order_by(User.name).all()
         return jsonify([u.to_dict() for u in users])
 
 
@@ -8230,11 +8268,14 @@ function faIdentityRenderChip() {
 async function faIdentityFetchRoster() {
   if (_faAllUsers) return _faAllUsers;
   try {
-    const resp = await fetch('/api/users?role=fa');
+    // active=1 excludes Lemle alumni and other stale FAs (only FAs with
+    // BuildingAssignment rows on current-year budgets). Same filter the
+    // wizard uses for its FA dropdown.
+    const resp = await fetch('/api/users?role=fa&active=1');
     if (!resp.ok) return [];
     const d = await resp.json();
     const list = (d && d.users) ? d.users : (Array.isArray(d) ? d : []);
-    _faAllUsers = list.filter(u => (u.role || '').toLowerCase() === 'fa' || !u.role);
+    _faAllUsers = list;
     return _faAllUsers;
   } catch (err) {
     return [];
