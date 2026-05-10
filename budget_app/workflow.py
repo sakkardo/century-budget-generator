@@ -4121,6 +4121,49 @@ def create_workflow_blueprint(db):
         d = info.to_dict()
         d["building_type"] = building_type
         d["building_name"] = (budget.building_name or "") if budget else ""
+        # FA directive 2026-05-10: dedup maintenance/common-charges history
+        # by year on read. Auto-heals data damaged by old append paths
+        # (168 had 24 maintenance rows for 14 unique years). Helper inlined
+        # here because the named helper lives inside the PUT closure.
+        def _dedup_inline(rows):
+            if not isinstance(rows, list):
+                return rows
+            seen = {}
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                y = r.get("year")
+                if y is None:
+                    continue
+                cur = seen.get(y)
+                if cur is None:
+                    seen[y] = r
+                    continue
+                cur_a = float(cur.get("annual") or 0)
+                new_a = float(r.get("annual") or 0)
+                if abs(new_a) > abs(cur_a):
+                    seen[y] = r
+            return [seen[y] for y in sorted(seen.keys())]
+
+        if d.get("maintenance_history"):
+            cleaned_mh = _dedup_inline(d["maintenance_history"])
+            if len(cleaned_mh) != len(d["maintenance_history"]):
+                # Persist the cleaned version so it stays clean on next save.
+                info.maintenance_history_json = json.dumps(cleaned_mh)
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+            d["maintenance_history"] = cleaned_mh
+        if d.get("common_charges_history"):
+            cleaned_cc = _dedup_inline(d["common_charges_history"])
+            if len(cleaned_cc) != len(d["common_charges_history"]):
+                info.common_charges_history_json = json.dumps(cleaned_cc)
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+            d["common_charges_history"] = cleaned_cc
         return jsonify(d)
 
 
@@ -4142,13 +4185,47 @@ def create_workflow_blueprint(db):
             info = BuildingInfo(entity_code=entity_code)
             db.session.add(info)
 
+        # FA directive 2026-05-10: dedup maintenance_history and
+        # common_charges_history by year. Past versions of the parser
+        # / append paths produced duplicate-by-year rows (168 had 24
+        # rows for 14 years). When we see two rows for the same year,
+        # prefer the one with non-zero `annual` (the computed/illustrative
+        # value), falling back to non-zero `monthly` * 12, then to whichever
+        # comes first.
+        def _dedup_by_year(rows):
+            if not isinstance(rows, list):
+                return rows
+            seen = {}
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                y = r.get("year")
+                if y is None:
+                    continue
+                cur = seen.get(y)
+                if cur is None:
+                    seen[y] = r
+                    continue
+                # Prefer the one with the more informative `annual`
+                cur_annual = float(cur.get("annual") or 0)
+                new_annual = float(r.get("annual") or 0)
+                if abs(new_annual) > abs(cur_annual):
+                    seen[y] = r
+                # Else keep cur (already more informative or equally so)
+            # Return sorted by year
+            return [seen[y] for y in sorted(seen.keys())]
+
         # Known section fields — silently ignore unknown keys so future sections
         # can be added without breaking existing clients.
         if "maintenance_history" in body:
             mh = body.get("maintenance_history")
+            if mh is not None:
+                mh = _dedup_by_year(mh)
             info.maintenance_history_json = json.dumps(mh) if mh is not None else None
         if "common_charges_history" in body:
             cc = body.get("common_charges_history")
+            if cc is not None:
+                cc = _dedup_by_year(cc)
             info.common_charges_history_json = json.dumps(cc) if cc is not None else None
         if "amort_config" in body:
             ac = body.get("amort_config")
@@ -10275,11 +10352,18 @@ function _biMhUpd(i, field, val) {
   // FA directive 2026-05-10: short-circuit when value didn't change.
   if (_biData.maintenance_history[i][field] === n) return;
   _biData.maintenance_history[i][field] = n;
-  // Re-render just the maintenance card in place
-  const card = document.querySelector('.bi-page .bi-card');
-  if (card) {
-    card.outerHTML = _biRenderMaint();
-  }
+  // Re-render just the Maintenance card. Find it by header text — using
+  // querySelector('.bi-page .bi-card') would grab the FIRST card on the
+  // page, which is now the Building Type card (added 2026-05-09). That
+  // bug caused the Building Type card to be replaced with a duplicate
+  // Maintenance card on every edit.
+  const cards = document.querySelectorAll('.bi-page .bi-card');
+  cards.forEach(card => {
+    const h = card.querySelector('h2');
+    if (h && h.textContent.indexOf('Maintenance History') >= 0) {
+      card.outerHTML = _biRenderMaint();
+    }
+  });
   _biSaveSoon();
 }
 
@@ -10376,7 +10460,17 @@ function _biRecalcAmort() {
   const freq = parseInt(a.freq, 10) || 12;
   const startStr = a.start || '';
   if (!principal || !annualRate || !termYears || !freq || !startStr) {
-    body.innerHTML = '<tr><td colspan="7" class="bi-empty">Enter principal, rate, term, and start date to generate the schedule.</td></tr>';
+    // FA directive 2026-05-10: tell the FA exactly which fields are missing
+    // instead of the generic "Enter principal, rate, term, and start date".
+    const missing = [];
+    if (!principal)  missing.push('Original Principal');
+    if (!annualRate) missing.push('Interest Rate');
+    if (!termYears)  missing.push('Term (years)');
+    if (!startStr)   missing.push('Start Date');
+    const msg = (missing.length === 1)
+      ? 'Enter <strong>' + missing[0] + '</strong> to generate the schedule.'
+      : 'Enter <strong>' + missing.slice(0, -1).join('</strong>, <strong>') + '</strong> and <strong>' + missing[missing.length - 1] + '</strong> to generate the schedule.';
+    body.innerHTML = '<tr><td colspan="7" class="bi-empty">' + msg + '</td></tr>';
     document.getElementById('biSumPmt').textContent    = '\u2014';
     document.getElementById('biSumAnnual').textContent = '\u2014';
     document.getElementById('biSumInt').textContent    = '\u2014';
