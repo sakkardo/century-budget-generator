@@ -165,14 +165,14 @@ def run_all():
     for name, fn in CHECKS:
         try:
             detail = fn()
-            print(f"  ✓ {name:32s}  {detail or ''}")
+            print(f"  [OK]{name:32s}  {detail or ''}")
             passed += 1
         except AssertionError as e:
-            print(f"  ✗ {name:32s}  FAIL: {e}")
+            print(f"  [FAIL]{name:32s}  FAIL: {e}")
             failed += 1
             fail_details.append((name, str(e)))
         except Exception as e:
-            print(f"  ✗ {name:32s}  ERROR: {e}")
+            print(f"  [FAIL]{name:32s}  ERROR: {e}")
             failed += 1
             fail_details.append((name, f"unexpected {type(e).__name__}: {e}"))
     return passed, failed, fail_details
