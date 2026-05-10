@@ -12431,7 +12431,7 @@ const RE_TAXES_TAB_HTML = `<style>
       <div class="card">
         <h2>1. Tax Liability Computation</h2>
 
-        <div class="section-label">Prior Year — 2025/2026 Assessed Valuation (Actual, July 2025)</div>
+        <div class="section-label">Current Year — 2026/2027 Assessed Valuation (Actual, July 2026)</div>
         <table class="right-col-layout">
           <tr>
             <td>Transitional AV</td>
@@ -12459,7 +12459,7 @@ const RE_TAXES_TAB_HTML = `<style>
           </tr>
         </table>
 
-        <div class="section-label">Current Year — 2026/2027 Assessed Valuation (Estimated)</div>
+        <div class="section-label">Next Year — 2027/2028 Assessed Valuation (Estimated)</div>
         <table class="right-col-layout">
           <tr>
             <td>Transitional AV — Estimated Increase %</td>
@@ -12501,10 +12501,10 @@ const RE_TAXES_TAB_HTML = `<style>
           <thead>
             <tr>
               <th>Exemption</th>
-              <th class="num">Base (2024/2025)</th>
+              <th class="num">Base (2025/2026)</th>
               <th class="num">Growth %</th>
-              <th class="num">2025/2026</th>
               <th class="num">2026/2027</th>
+              <th class="num">2027/2028</th>
             </tr>
           </thead>
           <tbody>
@@ -12559,8 +12559,8 @@ const RE_TAXES_TAB_HTML = `<style>
             <tr>
               <th>GL Code</th>
               <th>Label</th>
-              <th class="num">Jan–Sep Actual <span class="ysl-badge">YSL</span></th>
-              <th class="num">Oct–Dec Est</th>
+              <th class="num"><span id="reYtdHdr">YTD Actual</span> <span class="ysl-badge">YSL</span></th>
+              <th class="num"><span id="reEstHdr">Estimate</span></th>
               <th class="num">12 Mo Forecast</th>
               <th class="num">Prior Year Budget <span class="upload-badge">UPLOAD</span></th>
               <th class="num">Current Year Budget</th>
@@ -12739,7 +12739,7 @@ function setComputed(id, n, mode) {
 // formula; overriding pins it to a hard number.
 const CELL_META = {
   // Section 1 — Tax Liability
-  g11: { label: 'Transitional AV (prior year)',    type: 'input',    format: 'dollar', excel: null },
+  g11: { label: 'Transitional AV (current year, 26/27)', type: 'input',    format: 'dollar', excel: null },
   g12: { label: 'Tax Rate — Actual',               type: 'input',    format: 'pct',    excel: null },
   g13: { label: 'Tax Rate — Adjustment',           type: 'input',    format: 'pct',    excel: null },
   i15: { label: 'Less: J-51',                      type: 'input',    format: 'dollar', excel: null },
@@ -12751,49 +12751,99 @@ const CELL_META = {
   i17: { label: '2nd Half Tax',                    type: 'computed', format: 'dollar', excel: '=G17*G18/2' },
   d18: { label: 'Tax Rate Est Increase',           type: 'computed', format: 'pct',    excel: '=(G18-G12)/G12' },
   i19: { label: 'Full Year Tax Liability (Gross)', type: 'computed', format: 'dollar', excel: '=I11+I13+I15+I17' },
-  // Section 2 — Exemptions (4 rows × F/GP/G/H)
-  f26: { label: 'Veteran — Base 24/25',            type: 'input',    format: 'dollar', excel: null },
+  // Section 2 — Exemptions (4 rows × F/GP/G/H). FA directive 2026-05-10:
+  // labels advanced one fiscal year. Math unchanged: F = base, G = F×(1+growth), H = G×(1+growth).
+  f26: { label: 'Veteran — Base 25/26',            type: 'input',    format: 'dollar', excel: null },
   gp26:{ label: 'Veteran — Growth %',              type: 'input',    format: 'pct',    excel: null },
-  g26: { label: 'Veteran — 25/26',                 type: 'computed', format: 'dollar', excel: '=F26*(1+GP26)' },
-  h26: { label: 'Veteran — 26/27',                 type: 'computed', format: 'dollar', excel: '=G26*(1+GP26)' },
-  f27: { label: 'SCHE — Base 24/25',               type: 'input',    format: 'dollar', excel: null },
+  g26: { label: 'Veteran — 26/27',                 type: 'computed', format: 'dollar', excel: '=F26*(1+GP26)' },
+  h26: { label: 'Veteran — 27/28',                 type: 'computed', format: 'dollar', excel: '=G26*(1+GP26)' },
+  f27: { label: 'SCHE — Base 25/26',               type: 'input',    format: 'dollar', excel: null },
   gp27:{ label: 'SCHE — Growth %',                 type: 'input',    format: 'pct',    excel: null },
-  g27: { label: 'SCHE — 25/26',                    type: 'computed', format: 'dollar', excel: '=F27*(1+GP27)' },
-  h27: { label: 'SCHE — 26/27',                    type: 'computed', format: 'dollar', excel: '=G27*(1+GP27)' },
-  f28: { label: 'STAR — Base 24/25',               type: 'input',    format: 'dollar', excel: null },
+  g27: { label: 'SCHE — 26/27',                    type: 'computed', format: 'dollar', excel: '=F27*(1+GP27)' },
+  h27: { label: 'SCHE — 27/28',                    type: 'computed', format: 'dollar', excel: '=G27*(1+GP27)' },
+  f28: { label: 'STAR — Base 25/26',               type: 'input',    format: 'dollar', excel: null },
   gp28:{ label: 'STAR — Growth %',                 type: 'input',    format: 'pct',    excel: null },
-  g28: { label: 'STAR — 25/26',                    type: 'computed', format: 'dollar', excel: '=F28*(1+GP28)' },
-  h28: { label: 'STAR — 26/27',                    type: 'computed', format: 'dollar', excel: '=G28*(1+GP28)' },
-  f29: { label: 'Co-op Abatement — Base 24/25',    type: 'input',    format: 'dollar', excel: null },
+  g28: { label: 'STAR — 26/27',                    type: 'computed', format: 'dollar', excel: '=F28*(1+GP28)' },
+  h28: { label: 'STAR — 27/28',                    type: 'computed', format: 'dollar', excel: '=G28*(1+GP28)' },
+  f29: { label: 'Co-op Abatement — Base 25/26',    type: 'input',    format: 'dollar', excel: null },
   gp29:{ label: 'Co-op Abatement — Growth %',      type: 'input',    format: 'pct',    excel: null },
-  g29: { label: 'Co-op Abatement — 25/26',         type: 'computed', format: 'dollar', excel: '=F29*(1+GP29)' },
-  h29: { label: 'Co-op Abatement — 26/27',         type: 'computed', format: 'dollar', excel: '=G29*(1+GP29)' },
-  f30: { label: 'Exemptions Total — 24/25',        type: 'computed', format: 'dollar', excel: '=SUM(F26:F29)' },
-  g30: { label: 'Exemptions Total — 25/26',        type: 'computed', format: 'dollar', excel: '=SUM(G26:G29)' },
-  h30: { label: 'Exemptions Total — 26/27',        type: 'computed', format: 'dollar', excel: '=SUM(H26:H29)' },
-  // Totals row 47
-  d47: { label: 'Total Jan–Sep Actual',            type: 'computed', format: 'dollar', excel: '=SUM(D40:D46)' },
-  e47: { label: 'Total Oct–Dec Estimate',          type: 'computed', format: 'dollar', excel: '=SUM(E40:E46)' },
+  g29: { label: 'Co-op Abatement — 26/27',         type: 'computed', format: 'dollar', excel: '=F29*(1+GP29)' },
+  h29: { label: 'Co-op Abatement — 27/28',         type: 'computed', format: 'dollar', excel: '=G29*(1+GP29)' },
+  f30: { label: 'Exemptions Total — 25/26',        type: 'computed', format: 'dollar', excel: '=SUM(F26:F29)' },
+  g30: { label: 'Exemptions Total — 26/27',        type: 'computed', format: 'dollar', excel: '=SUM(G26:G29)' },
+  h30: { label: 'Exemptions Total — 27/28',        type: 'computed', format: 'dollar', excel: '=SUM(H26:H29)' },
+  // Totals row 47. FA directive 2026-05-10: labels are dynamic — built
+  // from YTD_MONTHS at render time so they read "Jan-Apr Actual" /
+  // "May-Dec Estimate" for a building with budget_period=04, etc.
+  d47: { label: 'Total YTD Actual',                type: 'computed', format: 'dollar', excel: '=SUM(D40:D46)' },
+  e47: { label: 'Total Estimate',                  type: 'computed', format: 'dollar', excel: '=SUM(E40:E46)' },
   f47: { label: 'Total 12 Month Forecast',         type: 'computed', format: 'dollar', excel: '=SUM(F40:F46)' },
   g47: { label: 'Total Prior Year Budget',         type: 'computed', format: 'dollar', excel: '=SUM(G40:G46)' },
   h47: { label: 'Total Current Year Budget',       type: 'computed', format: 'dollar', excel: '=SUM(H40:H46)' }
 };
 // Section 3 per-GL cells — meta registered after GL_ROWS is defined below.
-// Excel formulas for each per-GL computed cell (matches recalc()'s glFormulas)
+// Excel formulas for each per-GL computed cell.
+// FA directive 2026-05-10: estimate column is now period-independent —
+// it's simply (Current Year Budget − YTD Actual). 12-month forecast = YTD + Estimate
+// = Current Year Budget. Mathematically clean: as the FA enters real YTD,
+// the estimate auto-adjusts so the full-year forecast hits budget. Replaces
+// the old quarter-based math (=I11/2, =-G29/4, etc.) which baked in the
+// Jul-Sep / Oct-Dec calendar of entity 212 only and broke for other periods.
+// H column (Current Year Budget) formulas unchanged — they remain the
+// "anchor" derived from sections 1+2 (gross tax minus exemptions).
 const GL_EXCEL_FORMULAS = {
-  '6315-0000': { e: '=I11/2',    h: '=+I19' },
-  '6315-0010': { e: '=-G29/4',   h: '=-G29/2 + -H29/2' },
-  '6315-0020': { e: '=-G28/4',   h: '=-G28/2 + -H28/2' },
-  '6315-0025': { e: '=-G26/4',   h: '=-G26/2 + -H26/2' },
-  '6315-0030': { e: '0',         h: '0' },
-  '6315-0035': { e: '=-H27/4',   h: '=-G27/2 + -H27/2' },
-  '6315-0040': { e: '0',         h: '0' }
+  '6315-0000': { e: '=H_6315_0000 - YTD_6315_0000', h: '=+I19' },
+  '6315-0010': { e: '=H_6315_0010 - YTD_6315_0010', h: '=-G29/2 + -H29/2' },
+  '6315-0020': { e: '=H_6315_0020 - YTD_6315_0020', h: '=-G28/2 + -H28/2' },
+  '6315-0025': { e: '=H_6315_0025 - YTD_6315_0025', h: '=-G26/2 + -H26/2' },
+  '6315-0030': { e: '=H_6315_0030 - YTD_6315_0030', h: '0' },
+  '6315-0035': { e: '=H_6315_0035 - YTD_6315_0035', h: '=-G27/2 + -H27/2' },
+  '6315-0040': { e: '=H_6315_0040 - YTD_6315_0040', h: '0' }
 };
-function registerGlCellMeta() {
+// Helper: build period-aware labels for the GL Budget Lines period split.
+// FA directive 2026-05-10: labels follow YTD_MONTHS (driven by budget_period).
+// Examples: YTD_MONTHS=4 → "Jan-Apr Actual" / "May-Dec Estimate"
+//           YTD_MONTHS=2 → "Jan-Feb Actual" / "Mar-Dec Estimate"
+//           YTD_MONTHS=0 → "YTD Actual" / "Estimate" (degenerate fallback)
+function _rePeriodLabels() {
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const m = (typeof YTD_MONTHS !== 'undefined' && YTD_MONTHS > 0) ? YTD_MONTHS : 0;
+  if (m <= 0 || m >= 12) {
+    return { actual: 'YTD Actual', estimate: 'Estimate' };
+  }
+  const actualEnd = M[m - 1];        // last actual month
+  const estimateStart = M[m];        // first estimate month
+  return {
+    actual:   'Jan-' + actualEnd + ' Actual',
+    estimate: estimateStart + '-Dec Estimate',
+  };
+}
+
+function _reUpdatePeriodHeaders() {
+  const lbl = _rePeriodLabels();
+  const ytdHdr = document.getElementById('reYtdHdr');
+  const estHdr = document.getElementById('reEstHdr');
+  if (ytdHdr) ytdHdr.textContent = lbl.actual;
+  if (estHdr) estHdr.textContent = lbl.estimate;
+  // Also refresh CELL_META so the formula bar reads the dynamic labels.
   GL_ROWS.forEach(r => {
-    CELL_META['ytd_' + r.gl] = { label: r.label + ' · Jan–Sep Actual (YSL)', type: 'input',    format: 'dollar', excel: null };
+    if (CELL_META['ytd_' + r.gl]) {
+      CELL_META['ytd_' + r.gl].label = r.label + ' · ' + lbl.actual + ' (YSL)';
+    }
+    if (CELL_META['e_' + r.gl]) {
+      CELL_META['e_' + r.gl].label = r.label + ' · ' + lbl.estimate;
+    }
+  });
+  if (CELL_META.d47) CELL_META.d47.label = 'Total ' + lbl.actual;
+  if (CELL_META.e47) CELL_META.e47.label = 'Total ' + lbl.estimate;
+}
+
+function registerGlCellMeta() {
+  const lbl = _rePeriodLabels();
+  GL_ROWS.forEach(r => {
+    CELL_META['ytd_' + r.gl] = { label: r.label + ' · ' + lbl.actual + ' (YSL)', type: 'input',    format: 'dollar', excel: null };
     CELL_META['pb_'  + r.gl] = { label: r.label + ' · Prior Year Budget',    type: 'input',    format: 'dollar', excel: null };
-    CELL_META['e_'   + r.gl] = { label: r.label + ' · Oct–Dec Estimate',     type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].e };
+    CELL_META['e_'   + r.gl] = { label: r.label + ' · ' + lbl.estimate,      type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].e };
     CELL_META['f_'   + r.gl] = { label: r.label + ' · 12 Month Forecast',    type: 'computed', format: 'dollar', excel: '=SUM(D:E)' };
     CELL_META['h_'   + r.gl] = { label: r.label + ' · Current Year Budget',  type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].h };
     ['ytd_','pb_','e_','f_','h_'].forEach(prefix => {
@@ -12843,6 +12893,32 @@ function cellRaw(id) {
 }
 
 // ─── BUILD GL ROWS ───────────────────────────────────────────────
+// Look up YTD + Prior Year Budget for a given GL prefix from this
+// entity's actual budget_lines (loaded into window._data on dashboard
+// mount). FA directive 2026-05-10:
+//   • YTD column = real Jan-(actual_end) actual posted to this GL family
+//   • Prior Year Budget = current_budget on this entity's BudgetLine
+//   • Tax-benefit GLs (6315-0010, 0020, 0025, 0030, 0035, 0040) typically
+//     have no YTD activity — those credits post once per year. So this
+//     lookup naturally returns 0 for them when the FA's books reflect
+//     reality. Replaces the hardcoded DEFAULTS_212 values that polluted
+//     every other coop's RE Tax tab with entity 212's numbers.
+function _reLookupGlData(glPrefix) {
+  const lines = (window._data && Array.isArray(window._data.lines))
+    ? window._data.lines : [];
+  let ytd = 0, priorBudget = 0;
+  for (const ln of lines) {
+    const gl = String(ln.gl_code || '').trim();
+    if (!gl) continue;
+    // Match either exact (6315-0000) or prefix (6315-0010 matches 6315-0010-001 etc.)
+    if (gl === glPrefix || gl.startsWith(glPrefix + '-') || gl.startsWith(glPrefix + '.')) {
+      ytd += Number(ln.ytd_actual || 0);
+      priorBudget += Number(ln.current_budget || 0);
+    }
+  }
+  return { ytd, priorBudget };
+}
+
 function buildGlRows() {
   const tbody = document.getElementById('glRows');
   let html = '';
@@ -12853,8 +12929,13 @@ function buildGlRows() {
     const eId   = 'e_'   + glKey;
     const fId   = 'f_'   + glKey;
     const hId   = 'h_'   + glKey;
-    const ytdDefault = DEFAULTS_212.ytd[glKey] ?? 0;
-    const pbDefault = DEFAULTS_212.priorBudget[glKey] ?? 0;
+    // Pull live data from this entity's budget_lines (FA directive 2026-05-10).
+    // Falls back to DEFAULTS_212 only when window._data is unavailable
+    // (e.g., RE Tax tab opened in isolation before dashboard loads).
+    const live = _reLookupGlData(glKey);
+    const haveLive = (window._data && Array.isArray(window._data.lines));
+    const ytdDefault = haveLive ? live.ytd        : (DEFAULTS_212.ytd[glKey] ?? 0);
+    const pbDefault  = haveLive ? live.priorBudget: (DEFAULTS_212.priorBudget[glKey] ?? 0);
     html += `<tr>
       <td class="gl-code">${glKey}</td>
       <td>${r.label}</td>
@@ -12950,29 +13031,35 @@ function recalc() {
   setComputed('g30', G30);
   setComputed('h30', H30);
 
-  // Section 3 — GL lines
-  // E column (Oct-Dec Est) — mirrors Excel exactly, including SCHE using H27 not G27
-  const glFormulas = {
-    '6315-0000': { e: I11 / 2,       h: I19 },                           // E=I11/2, H=I19
-    '6315-0010': { e: -ex.g29 / 4,   h: -ex.g29 / 2 - ex.h29 / 2 },      // E=-G29/4, H=-(G29+H29)/2
-    '6315-0020': { e: -ex.g28 / 4,   h: -ex.g28 / 2 - ex.h28 / 2 },      // E=-G28/4, H=-(G28+H28)/2  (Excel: G28*-0.5 + H28/2*-1, same result)
-    '6315-0025': { e: -ex.g26 / 4,   h: -ex.g26 / 2 - ex.h26 / 2 },      // E=-G26/4, H=-(G26+H26)/2
-    '6315-0030': { e: 0,             h: 0 },                              // SCRIE — always 0 in 212
-    '6315-0035': { e: -ex.h27 / 4,   h: -ex.g27 / 2 - ex.h27 / 2 },      // E=-H27/4 (Excel quirk!), H=-(G27+H27)/2
-    '6315-0040': { e: 0,             h: 0 }                               // J-51 — always 0
+  // Section 3 — GL lines.
+  // FA directive 2026-05-10: H column (Current Year Budget) is the anchor
+  // computed from sections 1+2. E column (Estimate) is period-independent
+  // and equals H - YTD — meaning "the remaining months will close the gap
+  // between what's posted and the full-year budget". F column (12-Mo
+  // Forecast) = YTD + E = H. Old quarter-based formulas (=I11/2, =-G29/4)
+  // were wired to entity 212's Jul-Sep / Oct-Dec calendar only and gave
+  // wrong numbers for any other budget_period.
+  const glHFormulas = {
+    '6315-0000': I19,                                     // H = +I19 (gross)
+    '6315-0010': -ex.g29 / 2 - ex.h29 / 2,                // H = -(G29+H29)/2
+    '6315-0020': -ex.g28 / 2 - ex.h28 / 2,                // H = -(G28+H28)/2
+    '6315-0025': -ex.g26 / 2 - ex.h26 / 2,                // H = -(G26+H26)/2
+    '6315-0030': 0,                                       // SCRIE — always 0
+    '6315-0035': -ex.g27 / 2 - ex.h27 / 2,                // H = -(G27+H27)/2
+    '6315-0040': 0                                        // J-51 — always 0
   };
 
   let D47 = 0, E47 = 0, F47 = 0, G47 = 0, H47 = 0;
   STATE.rows = {};
   GL_ROWS.forEach(r => {
     const glKey = r.gl;
-    const D = cellRaw('ytd_' + glKey);            // input (Jan-Sep Actual from YSL)
+    const D = cellRaw('ytd_' + glKey);            // input (YTD Actual from YSL)
     const G = cellRaw('pb_'  + glKey);            // input (Prior Year Budget)
     CELL_STATE['ytd_' + glKey].value = D;
     CELL_STATE['pb_'  + glKey].value = G;
-    const E = computedOrOverride('e_' + glKey, glFormulas[glKey].e);  // computed
-    const F = computedOrOverride('f_' + glKey, D + E);                 // computed
-    const H = computedOrOverride('h_' + glKey, glFormulas[glKey].h);   // computed
+    const H = computedOrOverride('h_' + glKey, glHFormulas[glKey]);    // computed first
+    const E = computedOrOverride('e_' + glKey, H - D);                 // estimate = budget - actual
+    const F = computedOrOverride('f_' + glKey, D + E);                 // forecast = ytd + estimate
     setComputed('e_' + glKey, E);
     setComputed('f_' + glKey, F);
     setComputed('h_' + glKey, H);
@@ -13034,70 +13121,42 @@ function recalc() {
     f28: ex.f28, g28: ex.g28, h28: ex.h28,
     f29: ex.f29, g29: ex.g29, h29: ex.h29,
     f30: F30, g30: G30, h30: H30,
-    h40: glFormulas['6315-0000'].h,
-    h41: glFormulas['6315-0010'].h,
-    h42: glFormulas['6315-0020'].h,
-    h43: glFormulas['6315-0025'].h,
-    h44: glFormulas['6315-0030'].h,
-    h45: glFormulas['6315-0035'].h,
-    h46: glFormulas['6315-0040'].h,
+    h40: glHFormulas['6315-0000'],
+    h41: glHFormulas['6315-0010'],
+    h42: glHFormulas['6315-0020'],
+    h43: glHFormulas['6315-0025'],
+    h44: glHFormulas['6315-0030'],
+    h45: glHFormulas['6315-0035'],
+    h46: glHFormulas['6315-0040'],
     h47: H47, d47: D47, e47: E47, f47: F47, g47: G47
   });
 }
 
 // ─── FORMULA POPOVER (click on a Section 3 computed cell) ─────────
+// FA directive 2026-05-10: estimate column is now period-independent —
+// estimate = Current Year Budget - YTD Actual. The popover note explains
+// it the same way for every GL.
+function _reEstFormulaEntry(glCode, label) {
+  const lbl = _rePeriodLabels();
+  const row = STATE.rows && STATE.rows[glCode] ? STATE.rows[glCode] : { D: 0, H: 0, E: 0 };
+  return {
+    title: glCode + ' ' + label + ' · ' + lbl.estimate,
+    excel: '= H - YTD',
+    expanded: '= ' + fmtDollar(row.H) + ' - ' + fmtDollar(row.D),
+    result: row.E,
+    note: 'Current Year Budget (H) minus YTD Actual = remaining months’ expected activity. Period-independent: as actuals roll in, the estimate auto-shrinks so 12-Mo Forecast still hits budget.',
+  };
+}
+
 const FORMULA_DEFS = {
-  // Each entry returns { excel, expanded, result, note }
-  // E column — Oct-Dec Estimate
-  'e_6315-0000': () => ({
-    title: '6315-0000 Real Estate Tax · Oct–Dec Est',
-    excel: '=I11/2',
-    expanded: `= ${fmtDollar(STATE.I11)} / 2`,
-    result: STATE.rows['6315-0000'].E,
-    note: '1st Half Tax (I11) ÷ 2 = quarterly portion (Oct–Dec)'
-  }),
-  'e_6315-0010': () => ({
-    title: '6315-0010 Real Estate Tax Abatement · Oct–Dec Est',
-    excel: '=-G29/4',
-    expanded: `= -${fmtDollar(STATE.G29)} / 4`,
-    result: STATE.rows['6315-0010'].E,
-    note: 'Negative ¼ of current-year (25/26) Co-op Abatement = one quarter of annual benefit'
-  }),
-  'e_6315-0020': () => ({
-    title: '6315-0020 STAR Exemption · Oct–Dec Est',
-    excel: '=-G28/4',
-    expanded: `= -${fmtDollar(STATE.G28)} / 4`,
-    result: STATE.rows['6315-0020'].E,
-    note: 'Negative ¼ of current-year (25/26) STAR'
-  }),
-  'e_6315-0025': () => ({
-    title: '6315-0025 Veteran Exemption · Oct–Dec Est',
-    excel: '=-G26/4',
-    expanded: `= -${fmtDollar(STATE.G26)} / 4`,
-    result: STATE.rows['6315-0025'].E,
-    note: 'Negative ¼ of current-year (25/26) Veteran'
-  }),
-  'e_6315-0030': () => ({
-    title: '6315-0030 SCRIE Credit · Oct–Dec Est',
-    excel: '0',
-    expanded: '0',
-    result: 0,
-    note: 'Always 0 in 212 Excel; manually edit YTD if SCRIE applies'
-  }),
-  'e_6315-0035': () => ({
-    title: '6315-0035 SCHE Credit · Oct–Dec Est',
-    excel: '=-H27/4',
-    expanded: `= -${fmtDollar(STATE.H27)} / 4`,
-    result: STATE.rows['6315-0035'].E,
-    note: 'Excel quirk: uses next-year (26/27) value H27, not G27 like the others'
-  }),
-  'e_6315-0040': () => ({
-    title: '6315-0040 J-51 Credit · Oct–Dec Est',
-    excel: '0',
-    expanded: '0',
-    result: 0,
-    note: 'Always 0 in 212 Excel'
-  }),
+  // E column — Estimate (= H - YTD, period-independent)
+  'e_6315-0000': () => _reEstFormulaEntry('6315-0000', 'Real Estate Tax'),
+  'e_6315-0010': () => _reEstFormulaEntry('6315-0010', 'Real Estate Tax Abatement'),
+  'e_6315-0020': () => _reEstFormulaEntry('6315-0020', 'STAR Exemption'),
+  'e_6315-0025': () => _reEstFormulaEntry('6315-0025', 'Veteran Exemption'),
+  'e_6315-0030': () => _reEstFormulaEntry('6315-0030', 'SCRIE Credit'),
+  'e_6315-0035': () => _reEstFormulaEntry('6315-0035', 'SCHE Credit'),
+  'e_6315-0040': () => _reEstFormulaEntry('6315-0040', 'J-51 Credit'),
   // F column — 12 Month Forecast
   'f_6315-0000': () => fcastFormula('6315-0000'),
   'f_6315-0010': () => fcastFormula('6315-0010'),
@@ -13156,22 +13215,23 @@ const FORMULA_DEFS = {
     result: 0,
     note: 'Always 0 in 212 Excel'
   }),
-  // Totals row
-  'd47': () => totalFormula('D', 'Jan–Sep Actual', STATE.D47),
-  'e47': () => totalFormula('E', 'Oct–Dec Estimate', STATE.E47),
-  'f47': () => totalFormula('F', '12 Month Forecast', STATE.F47),
-  'g47': () => totalFormula('G', 'Prior Year Budget', STATE.G47),
-  'h47': () => totalFormula('H', 'Current Year Budget', STATE.H47)
+  // Totals row — period labels are dynamic (FA directive 2026-05-10).
+  'd47': () => totalFormula('D', _rePeriodLabels().actual,    STATE.D47),
+  'e47': () => totalFormula('E', _rePeriodLabels().estimate,  STATE.E47),
+  'f47': () => totalFormula('F', '12 Month Forecast',          STATE.F47),
+  'g47': () => totalFormula('G', 'Prior Year Budget',          STATE.G47),
+  'h47': () => totalFormula('H', 'Current Year Budget',        STATE.H47)
 };
 
 function fcastFormula(glKey) {
   const r = STATE.rows[glKey];
+  const lbl = _rePeriodLabels();
   return {
     title: `${glKey} ${r.label} · 12 Month Forecast`,
-    excel: '=SUM(D:E)',
+    excel: '=YTD + Estimate',
     expanded: `= ${fmtDollar(r.D)} + ${fmtDollar(r.E)}`,
     result: r.F,
-    note: 'YTD Actual (from YSL) + Oct–Dec Estimate'
+    note: lbl.actual + ' (from YSL) + ' + lbl.estimate
   };
 }
 
@@ -13572,6 +13632,7 @@ function paintOverrideIndicators() {
 function initReTaxesTab() {
   buildGlRows();
   registerGlCellMeta();        // add Section 3 cells to CELL_META/CELL_STATE
+  _reUpdatePeriodHeaders();    // FA directive 2026-05-10: dynamic period labels
   wireCellSelection();         // click any cell → formula bar
 
   // Input cells: recalc on edit + trigger debounced autosave
