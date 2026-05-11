@@ -189,6 +189,10 @@ def _run_idempotent_migrations():
         #   {"adjusted_count": int, "label": str?, "benefits": {
         #       "welfare":{"rate":float,"periods":float,"label":str?}, ...}}
         "ALTER TABLE payroll_positions ADD COLUMN IF NOT EXISTS benefit_adjustments_json TEXT",
+        # FA directive 2026-05-11: PM can enter EITHER % OR $ increase on
+        # the PM Edit grid. New column stores the $ alternative; either-or
+        # enforced at save time. NULL when PM is using the % path.
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS increase_dollar DOUBLE PRECISION",
         # FA directive 2026-05-10: per-FA visit tracking for the diff-strip
         # feature. Each row = one (user, building) visit with a small JSON
         # snapshot of the building's state. Diff endpoint compares the

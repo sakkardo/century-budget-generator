@@ -598,6 +598,11 @@ def create_workflow_blueprint(db):
         accrual_adj = db.Column(db.Float, default=0.0)
         unpaid_bills = db.Column(db.Float, default=0.0)
         increase_pct = db.Column(db.Float, default=0.0)
+        # FA directive 2026-05-11: PM can now enter EITHER a % increase
+        # (`increase_pct`) OR a flat $ amount (`increase_dollar`). Either-or:
+        # setting one clears the other at save time. NULL = unset; 0 is a
+        # legitimate "no change" entry (treated as unset for proposed math).
+        increase_dollar = db.Column(db.Float, nullable=True)
         notes = db.Column(db.Text, default="")
         pm_editable = db.Column(db.Boolean, default=False)
 
@@ -644,6 +649,7 @@ def create_workflow_blueprint(db):
                 "accrual_adj": float(self.accrual_adj or 0),
                 "unpaid_bills": float(self.unpaid_bills or 0),
                 "increase_pct": float(self.increase_pct or 0),
+                "increase_dollar": (float(self.increase_dollar) if self.increase_dollar is not None else None),
                 "notes": self.notes,
                 "pm_editable": self.pm_editable,
                 "reclass_to_gl": self.reclass_to_gl,
@@ -1287,9 +1293,23 @@ def create_workflow_blueprint(db):
         return 'Annualized'
 
 
-    def compute_proposed_budget(forecast, increase_pct):
-        """Compute proposed budget = forecast * (1 + increase_pct)"""
-        return forecast * (1 + increase_pct)
+    def compute_proposed_budget(forecast, increase_pct, increase_dollar=None):
+        """Compute proposed budget.
+
+        FA directive 2026-05-11: PM can enter EITHER a % increase OR a $
+        amount. $ wins when both are set (defensive — either-or is also
+        enforced at save time). When both unset, proposed = forecast.
+
+          $ set:      proposed = forecast + $
+          % set:      proposed = forecast × (1 + %)
+          both NULL:  proposed = forecast
+        """
+        if increase_dollar is not None:
+            try:
+                return float(forecast or 0) + float(increase_dollar)
+            except (TypeError, ValueError):
+                pass
+        return float(forecast or 0) * (1 + float(increase_pct or 0))
 
 
     # ─── Budget Summary Table ───────────────────────────────────────────────
@@ -3662,6 +3682,37 @@ def create_workflow_blueprint(db):
                     if old_val != new_val:
                         changes.append((fname, str(old_val), str(new_val)))
                     setattr(line, fname, new_val)
+
+            # FA directive 2026-05-11: PM can now enter EITHER an % increase
+            # OR a $ amount (`increase_dollar`). Either-or enforced HERE at
+            # save time — setting one clears the other. NULL = unset.
+            # The frontend's pmCellBlur also clears the sibling in-memory
+            # so the UI stays consistent without a round-trip.
+            if "increase_dollar" in line_data:
+                raw = line_data.get("increase_dollar")
+                if raw is None or raw == "":
+                    new_val = None
+                else:
+                    try:
+                        new_val = float(raw)
+                    except (TypeError, ValueError):
+                        new_val = None
+                old_val = line.increase_dollar
+                if old_val != new_val:
+                    changes.append(("increase_dollar", str(old_val), str(new_val)))
+                line.increase_dollar = new_val
+                # When the PM enters a $ amount, clear the % so either-or
+                # is enforced even if the FE didn't (defense in depth).
+                if new_val is not None and (line.increase_pct or 0) != 0:
+                    changes.append(("increase_pct", str(line.increase_pct), "0 (cleared by $-entry)"))
+                    line.increase_pct = 0.0
+            # Symmetric: if FE explicitly sent a non-zero % AND the row
+            # currently has a $ amount set, clear the $.
+            if ("increase_pct" in line_data
+                    and float(line_data.get("increase_pct") or 0) != 0
+                    and line.increase_dollar is not None):
+                changes.append(("increase_dollar", str(line.increase_dollar), "NULL (cleared by %-entry)"))
+                line.increase_dollar = None
 
             # Notes
             if "notes" in line_data:
@@ -19017,7 +19068,8 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">Current<br>Budget</th>
-            <th class="number">Increase<br>%</th>
+            <th class="number" title="Enter % OR $ — either, not both">Increase<br>%</th>
+            <th class="number" title="Enter $ OR % — either, not both" style="background:#d1fae5; color:#065f46;">Increase<br>$</th>
             <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
             <th class="number">$<br>Variance</th>
             <th class="number">%<br>Change</th>
@@ -19237,11 +19289,16 @@ function computeForecast(line) {
 
 function computeProposed(line) {
     // FA directive 2026-05-05: Capital lines have NO proposed budget. Always 0.
-    // (Was: returned FA-entered proposed_budget if set. Now hard-zero.)
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
         return 0;
     }
     const forecast = computeForecast(line);
+    // FA directive 2026-05-11: either-or. If $ amount is set (not null/undefined),
+    // proposed = forecast + $. Otherwise the % path. When the PM types in one,
+    // pmCellBlur clears the other in memory so this branches cleanly.
+    if (line.increase_dollar !== null && line.increase_dollar !== undefined && line.increase_dollar !== '') {
+        return forecast + (parseFloat(line.increase_dollar) || 0);
+    }
     return forecast * (1 + (line.increase_pct || 0));
 }
 
@@ -19251,7 +19308,10 @@ let _pmEditMode = false;
 let _pmOriginalFormula = '';
 let _pmFormulaBarUndo = null;
 
-// Editable $cell: formats value on blur, triggers cascade on change
+// Editable $cell: formats value on blur, triggers cascade on change.
+// FA directive 2026-05-11: handles the new `increase_dollar` field and
+// enforces either-or with `increase_pct` — typing in one auto-clears the
+// sibling both in memory (LINES array) and in the DOM (the other cell).
 function pmCellBlur(el) {
     const gl = el.dataset.gl;
     const field = el.dataset.field;
@@ -19259,11 +19319,48 @@ function pmCellBlur(el) {
     if (!line) return;
 
     if (field === 'increase_pct') {
-        const pctVal = parseFloat(el.value) || 0;
-        el.dataset.raw = pctVal.toFixed(1);
-        el.value = pctVal.toFixed(1) + '%';
-        if (line.increase_pct === pctVal / 100) return;
-        line.increase_pct = pctVal / 100;
+        const raw = (el.value || '').trim();
+        if (raw === '' || raw === '—') {
+            // Blank entry — clear %.
+            el.dataset.raw = '';
+            el.value = '';
+            if (line.increase_pct === 0 || line.increase_pct === null) return;
+            line.increase_pct = 0;
+        } else {
+            const pctVal = parseFloat(raw) || 0;
+            el.dataset.raw = pctVal.toFixed(1);
+            el.value = pctVal.toFixed(1) + '%';
+            if (line.increase_pct === pctVal / 100 && (line.increase_dollar === null || line.increase_dollar === undefined)) return;
+            line.increase_pct = pctVal / 100;
+            // Either-or: clear $ sibling if the PM entered a non-zero %.
+            if (pctVal !== 0 && line.increase_dollar !== null && line.increase_dollar !== undefined) {
+                line.increase_dollar = null;
+                const dEl = document.getElementById('pm_incd_' + gl);
+                if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; }
+            }
+        }
+    } else if (field === 'increase_dollar') {
+        const raw = (el.value || '').trim();
+        if (raw === '' || raw === '—') {
+            // Blank entry — clear $.
+            el.dataset.raw = '';
+            el.value = '';
+            if (line.increase_dollar === null || line.increase_dollar === undefined) return;
+            line.increase_dollar = null;
+        } else {
+            const val = parseDollar(raw);  // handles "$1,500", "-500", etc.
+            el.dataset.raw = Math.round(val);
+            el.value = fmtDollar(val);
+            const wasSame = (line.increase_dollar !== null && line.increase_dollar !== undefined && Math.round(line.increase_dollar) === Math.round(val));
+            if (wasSame && (line.increase_pct === 0 || line.increase_pct === null)) return;
+            line.increase_dollar = val;
+            // Either-or: clear % sibling.
+            if (line.increase_pct && line.increase_pct !== 0) {
+                line.increase_pct = 0;
+                const pEl = document.getElementById('pm_inc_' + gl);
+                if (pEl) { pEl.value = ''; pEl.dataset.raw = ''; }
+            }
+        }
     } else {
         const val = parseDollar(el.value);
         el.dataset.raw = Math.round(val);
@@ -19272,6 +19369,16 @@ function pmCellBlur(el) {
         line[field] = val;
     }
     pmLineChanged(gl, field, null);
+}
+
+// Format a dollar value like "$1,500" with comma + dollar sign.
+// Negative values render as "-$500". Used by Increase $ column.
+function fmtDollar(v) {
+    if (v === null || v === undefined || v === '' || isNaN(v)) return '';
+    const n = Math.round(v);
+    if (n === 0) return '$0';
+    const abs = Math.abs(n).toLocaleString();
+    return (n < 0 ? '-$' : '$') + abs;
 }
 
 // Formula cell focus: opens formula bar for editing (if editable) or read-only display
@@ -19786,13 +19893,16 @@ function renderTable() {
             const fcstFormula = pmGetFormulaTooltip(line, 'forecast');
             const propFormula = pmGetFormulaTooltip(line, 'proposed');
 
+            // FA directive 2026-05-11: lock all cells except Increase % / Increase $ / Notes.
+            // Even if CAN_EDIT is true, these 5 cells now ship `disabled`. Notes stays
+            // editable so the PM can explain why they're proposing a change.
             tr.innerHTML = `
                 <td class="frozen frozen-gl"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:var(--blue); text-decoration:none; font-variant-numeric:tabular-nums;" title="Click to view invoices">${gl}</a>${reclassBadge}</td>
                 <td class="frozen frozen-desc"><a href="#" onclick="toggleInvoices('${gl}', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">${line.description} <span class="drill-arrow" style="font-size:10px; color:var(--gray-400); transition:transform 0.2s;">▶</span></a></td>
-                <td class="number"><input id="pm_pr_${gl}" class="pm-cell" type="text" value="${fmt(line.prior_year)}" data-raw="${Math.round(line.prior_year || 0)}" data-gl="${gl}" data-field="prior_year" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input id="pm_acc_${gl}" class="pm-cell" type="text" value="${fmt(line.accrual_adj)}" data-raw="${Math.round(line.accrual_adj || 0)}" data-gl="${gl}" data-field="accrual_adj" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input id="pm_unp_${gl}" class="pm-cell" type="text" value="${fmt(line.unpaid_bills)}" data-raw="${Math.round(line.unpaid_bills || 0)}" data-gl="${gl}" data-field="unpaid_bills" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_pr_${gl}" class="pm-cell" type="text" value="${fmt(line.prior_year)}" data-raw="${Math.round(line.prior_year || 0)}" data-gl="${gl}" data-field="prior_year" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
+                <td class="number"><input id="pm_ytd_${gl}" class="pm-cell" type="text" value="${fmt(line.ytd_actual)}" data-raw="${Math.round(line.ytd_actual || 0)}" data-gl="${gl}" data-field="ytd_actual" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
+                <td class="number"><input id="pm_acc_${gl}" class="pm-cell" type="text" value="${fmt(line.accrual_adj)}" data-raw="${Math.round(line.accrual_adj || 0)}" data-gl="${gl}" data-field="accrual_adj" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
+                <td class="number"><input id="pm_unp_${gl}" class="pm-cell" type="text" value="${fmt(line.unpaid_bills)}" data-raw="${Math.round(line.unpaid_bills || 0)}" data-gl="${gl}" data-field="unpaid_bills" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
                 <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_est_${gl}'))">
                     <span class="pm-fx">fx</span>
                     <input id="pm_est_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(estimate)}" data-raw="${Math.round(estimate)}" data-formula="${estFormula}" data-gl="${gl}" data-field="estimate" style="cursor:pointer; pointer-events:none;">
@@ -19801,8 +19911,9 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_fc_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(forecast)}" data-raw="${Math.round(forecast)}" data-formula="${fcstFormula}" data-gl="${gl}" data-field="forecast" style="cursor:pointer; pointer-events:none;">
                 </td>
-                <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
-                <td class="number"><input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${((line.increase_pct || 0) * 100).toFixed(1)}%" data-raw="${((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'}></td>
+                <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
+                <td class="number"><input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1) + '%'}" data-raw="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. The other auto-clears."></td>
+                <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar" type="text" value="${line.increase_dollar != null ? fmtDollar(line.increase_dollar) : ''}" data-raw="${line.increase_dollar != null ? Math.round(line.increase_dollar) : ''}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. The other auto-clears. Negative values OK."></td>
                 <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_prop_${gl}'))">
                     <span class="pm-fx">fx</span>
                     <input id="pm_prop_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(proposed)}" data-raw="${Math.round(proposed)}" data-formula="${propFormula}" data-gl="${gl}" data-field="proposed" style="cursor:pointer; pointer-events:none;">
@@ -19833,6 +19944,7 @@ function renderTable() {
             <td class="number pm-fx-td" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.budget)}</span></td>
             <td></td>
+            <td></td>
             <td class="number pm-fx-td" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catVar)}</span></td>
             <td></td>
@@ -19856,6 +19968,7 @@ function renderTable() {
         <td class="number pm-fx-td" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
+        <td></td>
         <td></td>
         <td class="number pm-fx-td" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandVar)}</span></td>
@@ -20064,6 +20177,10 @@ async function saveAll() {
         const payload = LINES.map(l => ({
             gl_code: l.gl_code,
             increase_pct: l.increase_pct || 0,
+            // FA directive 2026-05-11: either-or with increase_pct. NULL means
+            // PM is on the % path; a number means PM entered $.
+            increase_dollar: (l.increase_dollar !== null && l.increase_dollar !== undefined && l.increase_dollar !== '')
+                              ? parseFloat(l.increase_dollar) : null,
             accrual_adj: l.accrual_adj || 0,
             unpaid_bills: l.unpaid_bills || 0,
             notes: l.notes || '',
