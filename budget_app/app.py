@@ -9526,6 +9526,48 @@ def admin_summary_row_options():
     return jsonify(grouped)
 
 
+@app.route("/api/admin/pm-reset-rm-review/<entity_code>", methods=["POST"])
+@require_admin
+def admin_pm_reset_rm_review(entity_code):
+    """Clear pm_review_state on every R&M line for one entity.
+
+    Recovery endpoint for accidentally-stamped lines (e.g. the dev hit
+    /api/pm/.../rm-bulk-no-change during gate verification on a live
+    building). Sets pm_review_state, pm_reviewed_at, pm_reviewed_by all
+    to NULL. Does NOT touch increase_pct / increase_dollar — those still
+    drive the proposed budget math and the FA's other workflows.
+
+    Admin-gated. Returns counts so you can verify.
+    """
+    BudgetLine = workflow_models["BudgetLine"]
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": "Budget not found"}), 404
+
+    rm = BudgetLine.query.filter_by(
+        budget_id=budget.id, sheet_name="Repairs & Supplies",
+    ).all()
+    cleared = 0
+    for line in rm:
+        if line.pm_review_state is not None:
+            line.pm_review_state = None
+            line.pm_reviewed_at = None
+            line.pm_reviewed_by = None
+            cleared += 1
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)[:300]}), 500
+    return jsonify({
+        "ok": True, "entity_code": entity_code,
+        "total_rm_lines": len(rm), "cleared": cleared,
+    })
+
+
 @app.route("/api/admin/add-summary-row", methods=["POST"])
 def admin_add_summary_row():
     """Insert a single new BudgetSummaryRow for one entity.
