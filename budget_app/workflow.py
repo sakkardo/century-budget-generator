@@ -334,23 +334,34 @@ BUDGET_STATUSES = [
     "not_started", "data_collection", "data_ready", "draft",
     "pm_pending", "pm_in_progress", "fa_review",
     "exec_review", "presentation", "approved",
-    "ar_pending", "ar_complete", "returned"
+    "ar_pending", "ar_complete", "returned",
+    # FA directive 2026-05-11: Monday-sync pruning. When a building moves
+    # out of the "Active Buildings (non-Lemle)" Monday group, its Budget
+    # row gets archived (rather than deleted, which would destroy
+    # BudgetLine + audit history). Listed buildings with this status are
+    # filtered out of /api/buildings and the FA/PM dashboards but the
+    # historical data is preserved for compliance.
+    "archived_inactive",
 ]
 USER_ROLES = ["fa", "pm", "admin", "cfo", "director", "ar"]
 
 VALID_TRANSITIONS = {
-    "not_started": ["data_collection"],
-    "data_collection": ["data_ready"],
-    "data_ready": ["draft"],
-    "draft": ["pm_pending"],
-    "pm_pending": ["pm_in_progress", "draft"],
-    "pm_in_progress": ["fa_review"],
-    "fa_review": ["approved", "returned", "exec_review"],
-    "exec_review": ["presentation", "approved", "returned"],
-    "presentation": ["approved", "returned"],
-    "approved": ["ar_pending"],
-    "ar_pending": ["ar_complete"],
-    "returned": ["draft"],
+    "not_started": ["data_collection", "archived_inactive"],
+    "data_collection": ["data_ready", "archived_inactive"],
+    "data_ready": ["draft", "archived_inactive"],
+    "draft": ["pm_pending", "archived_inactive"],
+    "pm_pending": ["pm_in_progress", "draft", "archived_inactive"],
+    "pm_in_progress": ["fa_review", "archived_inactive"],
+    "fa_review": ["approved", "returned", "exec_review", "archived_inactive"],
+    "exec_review": ["presentation", "approved", "returned", "archived_inactive"],
+    "presentation": ["approved", "returned", "archived_inactive"],
+    "approved": ["ar_pending", "archived_inactive"],
+    "ar_pending": ["ar_complete", "archived_inactive"],
+    "ar_complete": ["archived_inactive"],
+    "returned": ["draft", "archived_inactive"],
+    # Archived can be un-archived to "draft" if a building comes back
+    # into the active Monday group later.
+    "archived_inactive": ["draft", "not_started"],
 }
 
 # ─── Budget Year Config ─────────────────────────────────────────────────────
@@ -10474,7 +10485,12 @@ function _biDefaultMaint() {
   return rows;
 }
 function _biDefaultAmort() {
-  return { label: '', principal: 0, rate: 0, term: 0, start: '', freq: 12 };
+  // FA directive 2026-05-11: io_months = number of initial interest-only
+  // periods. 0 = standard amortization (default, no behavior change).
+  // 0 < io_months < total_periods = hybrid (I/O then amortize remaining
+  // principal over remaining periods). io_months == total_periods =
+  // pure I/O loan with balloon at maturity.
+  return { label: '', principal: 0, rate: 0, term: 0, start: '', freq: 12, io_months: 0 };
 }
 
 function _biSaveSoon() {
@@ -10790,6 +10806,7 @@ function _biRenderAmort() {
     +         '<option value="12"' + (Number(a.freq) === 12 ? ' selected' : '') + '>Monthly</option>'
     +         '<option value="4"'  + (Number(a.freq) === 4  ? ' selected' : '') + '>Quarterly</option>'
     +       '</select></div>'
+    +       '<div class="field"><label>Interest-Only Period <span style="font-weight:400; color:var(--gray-500); text-transform:none; letter-spacing:0;">(periods)</span></label><input type="text" id="biAmIO" value="' + (Number(a.io_months) > 0 ? a.io_months : '') + '" placeholder="0" onchange="_biAmUpd()" onfocus="this.select()" title="Number of initial periods that are interest-only. 0 = standard amortization. Equals total periods = pure I/O loan (balloon at maturity). Between = hybrid (I/O then amortize)."></div>'
     +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn primary" style="width:100%;" onclick="_biRecalcAmort()">Recalculate</button></div>'
     +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn" style="width:100%;" onclick="_biExportAmort()">Export CSV</button></div>'
     +     '</div>'
@@ -10824,14 +10841,19 @@ function _biAmUpd() {
     term:      _biNum(document.getElementById('biAmTerm').value),
     start:     document.getElementById('biAmStart').value || '',
     freq:      parseInt(document.getElementById('biAmFreq').value, 10) || 12,
+    // FA directive 2026-05-11: I/O period (interest-only periods at the
+    // start of the loan). 0 = standard amortization.
+    io_months: Math.max(0, Math.floor(_biNum(document.getElementById('biAmIO').value))),
   };
   if (a.label === cand.label && a.principal === cand.principal &&
       a.rate === cand.rate && a.term === cand.term &&
-      a.start === cand.start && a.freq === cand.freq) {
+      a.start === cand.start && a.freq === cand.freq &&
+      (Number(a.io_months) || 0) === cand.io_months) {
     return;
   }
   a.label = cand.label; a.principal = cand.principal; a.rate = cand.rate;
   a.term = cand.term; a.start = cand.start; a.freq = cand.freq;
+  a.io_months = cand.io_months;
   _biRecalcAmort();
   _biSaveSoon();
 }
@@ -10865,7 +10887,22 @@ function _biRecalcAmort() {
   }
   const totalPeriods = Math.round(termYears * freq);
   const periodRate = annualRate / freq;
-  const pmt = principal * periodRate / (1 - Math.pow(1 + periodRate, -totalPeriods));
+  // FA directive 2026-05-11: I/O support.
+  //   io_months = 0                  → standard amortization (current behavior)
+  //   0 < io_months < totalPeriods   → hybrid (I/O then amortize remaining principal over remaining periods)
+  //   io_months >= totalPeriods      → pure I/O with balloon at maturity
+  // Clamp to [0, totalPeriods] for safety.
+  const ioPeriods = Math.max(0, Math.min(totalPeriods, Math.floor(Number(a.io_months) || 0)));
+  const isPureIO = ioPeriods >= totalPeriods;
+  const isHybrid = ioPeriods > 0 && ioPeriods < totalPeriods;
+  const ioPmt = principal * periodRate;  // interest-only payment
+  // Amortizing payment AFTER the I/O period (recast on remaining principal
+  // over remaining periods). For standard amortization (ioPeriods=0) this
+  // collapses to the original formula.
+  const amortPeriods = totalPeriods - ioPeriods;
+  const amortPmt = amortPeriods > 0
+    ? principal * periodRate / (1 - Math.pow(1 + periodRate, -amortPeriods))
+    : 0;
   const parts = startStr.split('-');
   const sy = parseInt(parts[0], 10);
   const sm = parseInt(parts[1], 10);
@@ -10875,11 +10912,26 @@ function _biRecalcAmort() {
   let totalInterest = 0;
   let html = '';
   let lastDate = '';
+  let firstAmortPmt = null;
   for (let i = 1; i <= totalPeriods; i++) {
     const beg = balance;
     const interest = beg * periodRate;
-    let principalPaid = pmt - interest;
-    if (i === totalPeriods) principalPaid = beg;   // kill rounding drift
+    const inIOPhase = i <= ioPeriods;
+    let pmt, principalPaid;
+    if (inIOPhase) {
+      pmt = ioPmt;
+      principalPaid = 0;
+      // Balloon at maturity for pure I/O: last period repays full balance.
+      if (isPureIO && i === totalPeriods) {
+        principalPaid = beg;
+        pmt = interest + beg;
+      }
+    } else {
+      pmt = amortPmt;
+      principalPaid = pmt - interest;
+      if (i === totalPeriods) principalPaid = beg;   // kill rounding drift
+      if (firstAmortPmt === null) firstAmortPmt = pmt;
+    }
     const end = beg - principalPaid;
     totalInterest += interest;
     const d = new Date(startDate);
@@ -10887,12 +10939,16 @@ function _biRecalcAmort() {
     const dateStr = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
     lastDate = dateStr;
     const isYearEnd = (freq === 12 && i % 12 === 0) || (freq === 4 && i % 4 === 0);
-    const cls = isYearEnd ? 'year-end' : '';
-    html += '<tr class="' + cls + '">';
-    html += '<td>' + i + '</td>';
+    const isBalloon = isPureIO && i === totalPeriods;
+    const isRecastFirst = isHybrid && i === ioPeriods + 1;
+    let cls = isYearEnd ? 'year-end' : '';
+    if (isBalloon) cls += ' balloon-row';
+    if (isRecastFirst) cls += ' recast-row';
+    html += '<tr class="' + cls.trim() + '">';
+    html += '<td>' + i + (inIOPhase ? ' <span style="font-size:9px; color:var(--gray-500); font-weight:600;">I/O</span>' : '') + (isBalloon ? ' <span style="font-size:9px; color:#b45309; font-weight:700;">BALLOON</span>' : '') + (isRecastFirst ? ' <span style="font-size:9px; color:#0369a1; font-weight:700;">RECAST</span>' : '') + '</td>';
     html += '<td>' + dateStr + '</td>';
     html += '<td>' + _biFmtD(beg) + '</td>';
-    html += '<td>' + _biFmtD2(interest + principalPaid) + '</td>';
+    html += '<td>' + _biFmtD2(pmt) + '</td>';
     html += '<td>' + _biFmtD2(interest) + '</td>';
     html += '<td>' + _biFmtD2(principalPaid) + '</td>';
     html += '<td>' + _biFmtD(end) + '</td>';
@@ -10901,8 +10957,18 @@ function _biRecalcAmort() {
     if (balance < 0.01) balance = 0;
   }
   body.innerHTML = html;
-  document.getElementById('biSumPmt').textContent    = _biFmtD2(pmt);
-  document.getElementById('biSumAnnual').textContent = _biFmtD(pmt * freq);
+  // Summary card: show I/O payment + amortizing payment for hybrid, or
+  // just one for the standard / pure-I/O cases.
+  let pmtLabel;
+  if (isPureIO) {
+    pmtLabel = _biFmtD2(ioPmt) + ' <span style="font-size:10px; color:var(--gray-500); font-weight:500;">(I/O, balloon $' + Math.round(principal).toLocaleString() + ' at maturity)</span>';
+  } else if (isHybrid) {
+    pmtLabel = _biFmtD2(ioPmt) + ' <span style="font-size:10px; color:var(--gray-500); font-weight:500;">I/O for ' + ioPeriods + 'p, then ' + _biFmtD2(firstAmortPmt || amortPmt) + '/p</span>';
+  } else {
+    pmtLabel = _biFmtD2(amortPmt);
+  }
+  document.getElementById('biSumPmt').innerHTML      = pmtLabel;
+  document.getElementById('biSumAnnual').textContent = _biFmtD(amortPmt * freq);
   document.getElementById('biSumInt').textContent    = _biFmtD(totalInterest);
   document.getElementById('biSumMat').textContent    = lastDate;
 }

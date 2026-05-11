@@ -2369,20 +2369,31 @@ def _fetch_monday_buildings():
     board0 = result.get("data", {}).get("boards", [{}])[0]
     items = board0.get("items_page", {}).get("items", [])
 
-    # Only include items in the "Active Buildings (non-Lemle)" group.
-    # Match is case-insensitive on the trimmed title for resilience to capitalization changes.
+    # FA directive 2026-05-11: only include items in the "Active Buildings
+    # (non-Lemle)" group. Excludes "Lemle Bldgs - Back Office" and
+    # "No Longer Manage" groups. Match is case-insensitive on the trimmed
+    # title for resilience to capitalization changes.
+    #
+    # Previously: silent fallback that returned ALL items when the active
+    # group was not found — this was the original bug source. If the group
+    # title gets renamed on Monday, the sync would silently pollute the
+    # buildings.csv with Lemle + no-longer-managed entries. Now: raise
+    # RuntimeError so the caller (auto-sync runner) records the failure
+    # in _LAST_MONDAY_SYNC_ERROR and the FA sees it on the sync page.
     ACTIVE_GROUP = "active buildings (non-lemle)"
     all_titles = [g.get("title") for g in (board0.get("groups") or [])]
     matched = [g for g in (board0.get("groups") or [])
                if (g.get("title") or "").strip().lower() == ACTIVE_GROUP]
     if not matched:
-        logger.warning(
+        raise RuntimeError(
             f"Monday group '{ACTIVE_GROUP}' not found on board {MONDAY_BOARD_ID}. "
-            f"Available groups: {all_titles}. Returning ALL items as fallback."
+            f"Available groups: {all_titles}. Refusing to sync — "
+            "would pollute buildings list with Lemle / no-longer-managed entries. "
+            "Either restore the group title on Monday or update ACTIVE_GROUP in "
+            "_fetch_monday_buildings()."
         )
-    else:
-        active_id = matched[0].get("id")
-        items = [it for it in items if (it.get("group") or {}).get("id") == active_id]
+    active_id = matched[0].get("id")
+    items = [it for it in items if (it.get("group") or {}).get("id") == active_id]
 
     buildings = []
     for item in items:
@@ -2557,6 +2568,69 @@ def _apply_monday_sync(data):
         stats["budgets_created"] += 1
     if stats["budgets_created"]:
         db.session.commit()
+
+    # FA directive 2026-05-11: prune stale assignments + budgets for entity
+    # codes NOT in the active Monday group. The CSV is fully rewritten
+    # above (save_buildings overwrites), but BuildingAssignment + Budget
+    # rows from prior syncs persist forever otherwise — which is how
+    # Lemle and "no longer manage" entries kept leaking into the FA/PM
+    # dropdowns even after they were moved out of the active group on
+    # Monday.
+    #
+    # Budget rows are preserved (they have BudgetLine + BudgetRevision +
+    # audit history attached — destructive to delete), but flagged with
+    # status="archived_inactive" so /api/buildings filters them out. The
+    # CSV is the source of truth for the building list; the DB just
+    # holds historical revisions.
+    active_codes = {
+        str(b.get("entity_code", "")).strip()
+        for b in data
+        if (b.get("entity_code") or "")
+    }
+    stats["active_monday_codes"] = len(active_codes)
+
+    # Safety floor: never prune if the active list is suspiciously small.
+    # Monday's active group is ~144 buildings as of 2026-05; a fetch that
+    # comes back with <50 is almost certainly a partial result, not a
+    # legitimate shrink. Skip pruning in that case so we don't accidentally
+    # wipe valid assignments/budgets. The fetch itself will succeed for
+    # the CSV overwrite (which is harmless) but the cleanup is suppressed.
+    PRUNE_FLOOR = 50
+    if len(active_codes) < PRUNE_FLOOR:
+        stats["assignments_pruned"] = 0
+        stats["budgets_archived"] = 0
+        stats["prune_skipped_reason"] = (
+            f"active_codes={len(active_codes)} below PRUNE_FLOOR={PRUNE_FLOOR}; "
+            "refusing to prune to avoid destroying valid data on a partial fetch."
+        )
+        logger.warning(f"Monday sync: {stats['prune_skipped_reason']}")
+        return stats
+
+    # Prune BuildingAssignment rows for non-active entity codes.
+    stale_assignments = (BuildingAssignment.query
+                         .filter(~BuildingAssignment.entity_code.in_(active_codes))
+                         .all())
+    for a in stale_assignments:
+        db.session.delete(a)
+    stats["assignments_pruned"] = len(stale_assignments)
+
+    # Archive Budget rows for non-active entity codes (don't delete —
+    # they have BudgetLine + audit history attached).
+    stale_budgets = (Budget.query
+                     .filter(Budget.year == _BY,
+                             ~Budget.entity_code.in_(active_codes))
+                     .all())
+    for b in stale_budgets:
+        if (b.status or "") != "archived_inactive":
+            b.status = "archived_inactive"
+    stats["budgets_archived"] = len(stale_budgets)
+
+    if stats["assignments_pruned"] or stats["budgets_archived"]:
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Cleanup commit failed (non-fatal): {e}")
 
     return stats
 
