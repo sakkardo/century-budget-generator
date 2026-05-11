@@ -7604,11 +7604,13 @@ BUILDING_DETAIL_TEMPLATE = r"""
   @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
   /* ── Status pipeline ── */
-  .status-pipeline { display: flex; align-items: center; gap: 0; background: white; border-radius: 10px; padding: 12px 20px; margin-bottom: 24px; border: 1px solid var(--gray-200); overflow-x: auto; }
-  .pipeline-step { display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 13px; font-weight: 600; white-space: nowrap; color: var(--gray-400); }
+  /* FA directive 2026-05-11 Phase 1: status pipeline compressed from full
+     banner to thin strip. Same content, ~60% less vertical space. */
+  .status-pipeline { display: flex; align-items: center; gap: 0; background: white; border-radius: 6px; padding: 4px 12px; margin-bottom: 10px; border: 1px solid var(--gray-200); overflow-x: auto; }
+  .pipeline-step { display: flex; align-items: center; gap: 5px; padding: 3px 10px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--gray-400); }
   .pipeline-step.completed { color: var(--green); }
-  .pipeline-step.current { color: var(--blue); background: var(--blue-light); border-radius: 6px; }
-  .pipeline-arrow { color: var(--gray-300); font-size: 16px; margin: 0 4px; }
+  .pipeline-step.current { color: var(--blue); background: var(--blue-light); border-radius: 4px; }
+  .pipeline-arrow { color: var(--gray-300); font-size: 12px; margin: 0 2px; }
 
   header {
     background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
@@ -7617,22 +7619,30 @@ BUILDING_DETAIL_TEMPLATE = r"""
   }
   header h1 { font-size: 24px; font-weight: 700; }
   header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
-  .container { max-width: 1760px; margin: 0 auto; padding: 24px 20px; }
+  .container { max-width: 1760px; margin: 0 auto; padding: 16px 20px; }
+  /* FA directive 2026-05-11 Phase 1: KPI cards compressed from 4 huge
+     boxes (~120px tall) to a thin horizontal row (~52px tall). Same data,
+     ~60% less vertical real estate. Variance/% Change keep their green
+     accent so the headline numbers still pop. */
   .summary-cards {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    margin-bottom: 28px;
+    gap: 8px;
+    margin-bottom: 10px;
   }
   .summary-card {
     background: white;
-    border-radius: 12px;
-    padding: 24px;
+    border-radius: 8px;
+    padding: 8px 14px;
     border: 1px solid var(--gray-200);
-    text-align: center;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
   }
-  .card-value { font-size: 26px; font-weight: 700; color: var(--blue); }
-  .card-label { font-size: 12px; color: var(--gray-500); text-transform: uppercase; font-weight: 600; margin-top: 4px; }
+  .card-value { font-size: 18px; font-weight: 700; color: var(--blue); }
+  .card-label { font-size: 10px; color: var(--gray-500); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
   /* ── Context Strip (collapsible panels side by side) ── */
   .context-strip {
     display: grid;
@@ -7683,22 +7693,28 @@ BUILDING_DETAIL_TEMPLATE = r"""
     margin-bottom: 28px;
   }
   .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--blue); }
-  /* ── Promoted Budget Workbook ── */
+  /* FA directive 2026-05-11 Phase 1: Budget Workbook section header
+     compressed — the redundant "Budget Workbook" h2 title is hidden
+     (the page IS the workbook). Action buttons collapse to a thin
+     right-aligned row. Border still tight blue so the workbook visually
+     dominates the page. */
   .workbook-section {
     background: white;
     border: 2px solid var(--blue);
     border-radius: 12px;
     overflow: clip;
-    margin-bottom: 28px;
+    margin-bottom: 16px;
   }
   .workbook-section .workbook-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 16px 24px;
+    justify-content: flex-end;
+    padding: 6px 12px;
     border-bottom: 1px solid var(--gray-200);
+    background: var(--gray-50);
   }
-  .workbook-section .workbook-header h2 { font-size: 16px; font-weight: 700; color: var(--blue); margin: 0; }
+  .workbook-section .workbook-header h2 { display: none; }
+  .workbook-section .workbook-header .btn { padding: 5px 12px !important; font-size: 11px !important; }
   table { width: 100%; border-collapse: collapse; }
   th {
     background: var(--gray-100);
