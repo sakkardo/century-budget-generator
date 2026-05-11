@@ -19276,6 +19276,24 @@ PM_EDIT_TEMPLATE = r"""
   }
   .pm-rm-action-btn.primary:hover { background: #b91c1c; }
 
+  /* FA directive 2026-05-11 (Option A): live-mirror styling for the
+     sibling cell when one of the increase fields is entered. The mirror
+     is a passive readout (italic + dimmed) so the PM sees the equivalent
+     in the other unit without losing the either-or model — only one of
+     the two is stored as the real entry. !important needed to override
+     the $ column's inline green styling when in mirror state. */
+  input.pm-cell.pm-cell-mirror {
+    color: var(--gray-400, #9ca3af) !important;
+    font-style: italic !important;
+    background: transparent !important;
+    border-color: var(--gray-200, #e5e7eb) !important;
+    box-shadow: none !important;
+  }
+  input.pm-cell.pm-cell-mirror:focus {
+    color: var(--gray-700, #374151) !important;
+    font-style: normal !important;
+  }
+
   .submit-btn-blocked {
     background: var(--gray-300) !important;
     color: var(--gray-500) !important;
@@ -19688,25 +19706,39 @@ function pmCellBlur(el) {
     const line = LINES.find(l => l.gl_code === gl);
     if (!line) return;
 
+    // FA directive 2026-05-11 (Option A live mirror): refactored to a
+    // single-exit pattern so _pmUpdateMirror always runs at the bottom,
+    // even when the value didn't change. This matters because
+    // pmCellFocus clears the mirror display when the PM focuses a
+    // mirror cell — if they tab away without typing, we need to repaint
+    // the mirror so it doesn't stay blank.
+    let valueChanged = false;
+
     if (field === 'increase_pct') {
         const raw = (el.value || '').trim();
         if (raw === '' || raw === '—') {
             // Blank entry — clear %.
             el.dataset.raw = '';
             el.value = '';
-            if (line.increase_pct === 0 || line.increase_pct === null) return;
-            line.increase_pct = 0;
+            if (!(line.increase_pct === 0 || line.increase_pct === null)) {
+                line.increase_pct = 0;
+                valueChanged = true;
+            }
         } else {
             const pctVal = parseFloat(raw) || 0;
             el.dataset.raw = pctVal.toFixed(1);
             el.value = pctVal.toFixed(1) + '%';
-            if (line.increase_pct === pctVal / 100 && (line.increase_dollar === null || line.increase_dollar === undefined)) return;
-            line.increase_pct = pctVal / 100;
-            // Either-or: clear $ sibling if the PM entered a non-zero %.
-            if (pctVal !== 0 && line.increase_dollar !== null && line.increase_dollar !== undefined) {
-                line.increase_dollar = null;
-                const dEl = document.getElementById('pm_incd_' + gl);
-                if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; }
+            const newPct = pctVal / 100;
+            const pctChanged = line.increase_pct !== newPct;
+            const dollarPresent = line.increase_dollar !== null && line.increase_dollar !== undefined;
+            if (pctChanged || dollarPresent) {
+                line.increase_pct = newPct;
+                valueChanged = true;
+                // Either-or: clear $ sibling. The DOM repaint of the
+                // sibling happens in _pmUpdateMirror, not here.
+                if (pctVal !== 0 && dollarPresent) {
+                    line.increase_dollar = null;
+                }
             }
         }
     } else if (field === 'increase_dollar') {
@@ -19715,29 +19747,43 @@ function pmCellBlur(el) {
             // Blank entry — clear $.
             el.dataset.raw = '';
             el.value = '';
-            if (line.increase_dollar === null || line.increase_dollar === undefined) return;
-            line.increase_dollar = null;
+            if (!(line.increase_dollar === null || line.increase_dollar === undefined)) {
+                line.increase_dollar = null;
+                valueChanged = true;
+            }
         } else {
-            const val = parseDollar(raw);  // handles "$1,500", "-500", etc.
+            const val = parseDollar(raw);
             el.dataset.raw = Math.round(val);
             el.value = fmtDollar(val);
             const wasSame = (line.increase_dollar !== null && line.increase_dollar !== undefined && Math.round(line.increase_dollar) === Math.round(val));
-            if (wasSame && (line.increase_pct === 0 || line.increase_pct === null)) return;
-            line.increase_dollar = val;
-            // Either-or: clear % sibling.
-            if (line.increase_pct && line.increase_pct !== 0) {
-                line.increase_pct = 0;
-                const pEl = document.getElementById('pm_inc_' + gl);
-                if (pEl) { pEl.value = ''; pEl.dataset.raw = ''; }
+            const pctPresent = !!(line.increase_pct && line.increase_pct !== 0);
+            if (!wasSame || pctPresent) {
+                line.increase_dollar = val;
+                valueChanged = true;
+                // Either-or: clear % sibling. DOM repaint in _pmUpdateMirror.
+                if (pctPresent) line.increase_pct = 0;
             }
         }
     } else {
+        // Generic numeric field (accrual_adj, unpaid_bills, etc — all
+        // currently locked in the PM grid but kept for forward-compat).
         const val = parseDollar(el.value);
         el.dataset.raw = Math.round(val);
         el.value = fmt(val);
-        if (line[field] === val) return;
-        line[field] = val;
+        if (line[field] !== val) {
+            line[field] = val;
+            valueChanged = true;
+        }
     }
+
+    // Always repaint the mirror sibling for either-or fields, even when
+    // the value didn't change (see comment at top of function).
+    if (field === 'increase_pct' || field === 'increase_dollar') {
+        _pmUpdateMirror(gl, line);
+    }
+
+    if (!valueChanged) return;
+
     // FA directive 2026-05-11: stamp PM review state on R&M lines when the
     // PM types in % or $. _pm_action is consumed by saveAll() → cleared on
     // success. line.pm_review_state is updated optimistically so the row
@@ -19755,6 +19801,78 @@ function pmCellBlur(el) {
         _pmRmUpdateSubmitGate();
     }
     pmLineChanged(gl, field, null);
+}
+
+// FA directive 2026-05-11 (Option A): live-mirror helpers. When the PM
+// enters a % the $ cell shows the equivalent dollar delta in dimmed
+// italic ("≈ $1,000"), and vice versa. The mirror is a passive readout —
+// the real stored value is still either-or, so the gate, save logic,
+// and proposed-budget math all keep working unchanged. The PM sees both
+// numbers without losing the "fill one OR the other" mental model.
+
+function _pmUpdateMirror(gl, line) {
+    if (!line) return;
+    const pctEl = document.getElementById('pm_inc_' + gl);
+    const dollarEl = document.getElementById('pm_incd_' + gl);
+    if (!pctEl || !dollarEl) return;
+
+    const fc = computeForecast(line);
+    const pct = line.increase_pct || 0;
+    const hasDollar = line.increase_dollar !== null && line.increase_dollar !== undefined && line.increase_dollar !== '';
+
+    if (hasDollar) {
+        // $ is the source of truth — show $ value, mirror % from forecast.
+        dollarEl.value = fmtDollar(line.increase_dollar);
+        dollarEl.dataset.raw = String(Math.round(line.increase_dollar));
+        dollarEl.classList.remove('pm-cell-mirror');
+        if (fc !== 0 && Math.abs(line.increase_dollar) > 0.01) {
+            const mirrorPct = (line.increase_dollar / fc) * 100;
+            pctEl.value = '≈ ' + mirrorPct.toFixed(1) + '%';
+            pctEl.dataset.raw = '';
+            pctEl.classList.add('pm-cell-mirror');
+        } else {
+            pctEl.value = '';
+            pctEl.dataset.raw = '';
+            pctEl.classList.remove('pm-cell-mirror');
+        }
+    } else if (pct !== 0) {
+        // % is the source of truth — show % value, mirror $ delta.
+        pctEl.value = (pct * 100).toFixed(1) + '%';
+        pctEl.dataset.raw = (pct * 100).toFixed(1);
+        pctEl.classList.remove('pm-cell-mirror');
+        const delta = fc * pct;
+        if (Math.abs(delta) > 0.01) {
+            dollarEl.value = '≈ ' + fmtDollar(delta);
+            dollarEl.dataset.raw = '';
+            dollarEl.classList.add('pm-cell-mirror');
+        } else {
+            dollarEl.value = '';
+            dollarEl.dataset.raw = '';
+            dollarEl.classList.remove('pm-cell-mirror');
+        }
+    } else {
+        // Both 0 / null. Mirror class off on both. Don't override the
+        // value — pmRmNoChange / saveAll / initial render decide what
+        // the field shows in this state (empty for unreviewed, "0.0%"
+        // for no_change, etc).
+        pctEl.classList.remove('pm-cell-mirror');
+        dollarEl.classList.remove('pm-cell-mirror');
+    }
+}
+
+function pmCellFocus(el) {
+    // Mirror cell: clear display so the PM can type their real value.
+    // The mirror class is removed so the next blur treats the entry as
+    // a fresh value, not a derived display.
+    if (el.classList.contains('pm-cell-mirror')) {
+        el.value = '';
+        el.dataset.raw = '';
+        el.classList.remove('pm-cell-mirror');
+        return;
+    }
+    // Regular cell: existing behavior (strip the formatted % / $ for
+    // raw numeric editing).
+    el.value = el.dataset.raw || '';
 }
 
 // ── PM R&M review-gate helpers (FA directive 2026-05-11) ────────────────
@@ -19878,9 +19996,9 @@ async function pmRmNoChange(gl) {
     line.pm_review_state = 'no_change';
     line._pm_action = 'no_change';
     const pctEl = document.getElementById('pm_inc_' + gl);
-    if (pctEl) { pctEl.value = '0.0%'; pctEl.dataset.raw = '0.0'; }
+    if (pctEl) { pctEl.value = '0.0%'; pctEl.dataset.raw = '0.0'; pctEl.classList.remove('pm-cell-mirror'); }
     const dEl = document.getElementById('pm_incd_' + gl);
-    if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; }
+    if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; dEl.classList.remove('pm-cell-mirror'); }
     _pmRmUpdateRowState(gl, line);
     _pmRmUpdateProgress();
     _pmRmUpdateSubmitGate();
@@ -20504,11 +20622,48 @@ function renderTable() {
                     <input id="pm_fc_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(forecast)}" data-raw="${Math.round(forecast)}" data-formula="${fcstFormula}" data-gl="${gl}" data-field="forecast" style="cursor:pointer; pointer-events:none;">
                 </td>
                 <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
+                ${(function(){
+                  // FA directive 2026-05-11 (Option A): compute the mirror
+                  // values for initial render. Mirror = passive readout in
+                  // the sibling cell (italic dimmed) showing the equivalent
+                  // in the other unit. Storage stays either-or; mirror is
+                  // purely a UI affordance.
+                  const _hasDollar = line.increase_dollar !== null && line.increase_dollar !== undefined;
+                  const _pctNum = line.increase_pct || 0;
+                  const _stamped = !!line.pm_review_state;
+                  let _pctVal, _pctRaw, _pctMirror = false;
+                  let _dollarVal, _dollarRaw, _dollarMirror = false;
+                  if (_hasDollar) {
+                    _dollarVal = fmtDollar(line.increase_dollar);
+                    _dollarRaw = String(Math.round(line.increase_dollar));
+                    if (forecast !== 0 && Math.abs(line.increase_dollar) > 0.01) {
+                      _pctVal = '≈ ' + ((line.increase_dollar / forecast) * 100).toFixed(1) + '%';
+                      _pctRaw = '';
+                      _pctMirror = true;
+                    } else { _pctVal = ''; _pctRaw = ''; }
+                  } else if (_pctNum !== 0) {
+                    _pctVal = (_pctNum * 100).toFixed(1) + '%';
+                    _pctRaw = (_pctNum * 100).toFixed(1);
+                    const _delta = forecast * _pctNum;
+                    if (Math.abs(_delta) > 0.01) {
+                      _dollarVal = '≈ ' + fmtDollar(_delta);
+                      _dollarRaw = '';
+                      _dollarMirror = true;
+                    } else { _dollarVal = ''; _dollarRaw = ''; }
+                  } else {
+                    // Both 0/null. Stamped no_change shows "0.0%"; unreviewed shows blank.
+                    _pctVal = _stamped ? '0.0%' : '';
+                    _pctRaw = _stamped ? '0.0' : '';
+                    _dollarVal = ''; _dollarRaw = '';
+                  }
+                  return `
                 <td class="number">
-                  <input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1) + '%'}" data-raw="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. The other auto-clears.">
+                  <input id="pm_inc_${gl}" class="pm-cell pm-cell-pct${_pctMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_pctVal}" data-raw="${_pctRaw}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. Sibling shows the equivalent in the other unit.">
                   ${isRm && !line.pm_review_state && CAN_EDIT ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Mark this line as no change for the 2027 budget">No change</button>` : ''}
                 </td>
-                <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar" type="text" value="${line.increase_dollar != null ? fmtDollar(line.increase_dollar) : ''}" data-raw="${line.increase_dollar != null ? Math.round(line.increase_dollar) : ''}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. The other auto-clears. Negative values OK."></td>
+                <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar${_dollarMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_dollarVal}" data-raw="${_dollarRaw}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. Sibling shows the equivalent in the other unit. Negative values OK."></td>
+                  `;
+                })()}
                 <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_prop_${gl}'))">
                     <span class="pm-fx">fx</span>
                     <input id="pm_prop_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(proposed)}" data-raw="${Math.round(proposed)}" data-formula="${propFormula}" data-gl="${gl}" data-field="proposed" style="cursor:pointer; pointer-events:none;">
