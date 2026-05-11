@@ -10968,7 +10968,13 @@ function _biRecalcAmort() {
     pmtLabel = _biFmtD2(amortPmt);
   }
   document.getElementById('biSumPmt').innerHTML      = pmtLabel;
-  document.getElementById('biSumAnnual').textContent = _biFmtD(amortPmt * freq);
+  // Annual Debt Service: for pure I/O, amortPmt=0 (because amortPeriods=0),
+  // so use ioPmt × freq instead. For hybrid, the amortizing payment (post-
+  // recast) is the steady-state outflow most years. For standard amort,
+  // both ioPmt and amortPmt would give similar numbers but amortPmt is
+  // the right one.
+  const annualPmt = isPureIO ? ioPmt : amortPmt;
+  document.getElementById('biSumAnnual').textContent = _biFmtD(annualPmt * freq);
   document.getElementById('biSumInt').textContent    = _biFmtD(totalInterest);
   document.getElementById('biSumMat').textContent    = lastDate;
 }
