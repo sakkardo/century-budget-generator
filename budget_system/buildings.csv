@@ -47,7 +47,6 @@ entity_code,building_name,address,city,zip,type,units
 510,Hugh Grant Gardens HDFC,1966 Newbold Avenue,Bronx,10472,Coop,139
 703,The 160 East 22nd Street Condominium,160 East 22nd St,New York,10010,Condo,82
 710,157 East 72nd Street Condominium,157 East 72nd St,New York,10021,Condo,147
-715,The Parkwood Condominium,31 East 28th St,New York,10016,Condo,22
 717,240-79 Owners Corp.,240 East 79th St,New York,10075,Coop,66
 718,440 East 79th Street Owners Corp.,440 East 79th St,New York,10025,Coop,218
 719,33 Greenwich Owners Corp.,33 Greenwich Avenue,New York,10014,Coop,148
@@ -89,7 +88,6 @@ entity_code,building_name,address,city,zip,type,units
 867,205215 Owners LTD,205 East 88th St / 207 East 88th St /  209 East 88th St / 211 East 88th St / 213 East 88th St / 215 East 88th St,New York,10128,Coop,120
 869,100 West 18th Street Condominium,100 West 18th St,New York,10011,Condo,47
 870,13193 Owners Corp.,131 East 93rd St,New York,10128,Coop,35
-871,The 456 West 19th Street Condominium,456 West 19th St,New York,10011,Condo,22
 872,SouthBridge Towers,"90 Beekman St, 80 Gold St, 77 Fulton St, 80 Beekman St, 90 Gold St, 66 Frankfort St, 100 Beekman St, 333 Pearl St, 299 Pearl St",New York,10038,Coop,1651
 874,200 East 83rd Street Condominium,200 East 83rd St,New York,10028,Condo,85
 875,150 West 82nd Street Condominium,150 West 82nd St,New York,10024,Condo,27
@@ -129,7 +127,7 @@ entity_code,building_name,address,city,zip,type,units
 926,Gramercy Towers Owners Corp,4 Lexington Ave,New York,10010,Coop,160
 927,River and Warren Condominium,212 Warren Street,New York,10282,Condo,166
 929,200 E 75th Street Condominium,200 East 75th Street,New York,10021,Condo,36
-930,12 E 13th Street Condominium,12 E 13th Street,New York,10003,Condo,8
+930,12 East 13th Street Condominium,12 East 13th Street,New York,10003,Condo,8
 931,"771 West End Avenue, Inc",771 W End Ave,New York,10025,Coop,78
 932,155 West 18th St. Condo - (The Flynn),155 West 18th Street,New York,10011,Condo,30
 933,"132 East 35th Street Owners, Inc.",132 East 35th Street,New York,10017,Coop,187
@@ -141,22 +139,6 @@ entity_code,building_name,address,city,zip,type,units
 939,305 Equites Corp,305 West 86th Street,NY,10024,Coop,49
 940,"Newport East, Inc.",370 East 76th Street,New York,10021,Coop,364
 941,325 West 86th Corp,325 West 86th Street,New York,10024,Coop,49
-942,The Kalahari Condominium,40 W 116th Street,New York,10026,Condo,249
-943,The Halcyon Condominium,305 E 51st Street,New York,10022,Condo,123
+942,The Kalahari Condominium,40 West 116th Street,New York,10026,Condo,249
+943,The Halcyon Condominium,305 East 51st Street,New York,10022,Condo,123
 944,525 6th Avenue Condominium,525 6th Avenue,New York,10011,Condo,
-850,LL 141 East 26th Street LLC,141 East 26th St,New York,10010,Rental,35
-851,LL 218 East 81st Street LLC,218 East 81st St,New York,10028,Rental,17
-852,LL 216 East 83rd Street LLC,216 East 83rd St,New York,10028,Rental,20
-853,LL 1324 Lexington Avenue LLC,1324 Lexington Avenue,New York,10128,Rental,25
-854,LL 1371 First Avenue LLC,1371 1st Avenue,New York,10021,Rental,15
-855,LL 204 East 84th Street LLC,204 East 84th St,New York,10028,Rental,39
-856,LL 505 East 88th Street LLC,505 East 88th St,New York,10128,Rental,38
-857,LL 410 East 78th Street LLC,410 East 78th St,New York,10075,Rental,17
-858,LL 1361 Lexington Avenue LLC,1361 Lexington Avenue,New York,10128,Rental,9
-859,LL 1592 Second Avenue LLC,1592 2nd Avenue,New York,10028,Rental,18
-860,LL 450 East 81st Street LLC,450 East 81st St,New York,10028,Rental,38
-861,LL 305 East 78th Street LLC,305 East 78th St,New York,10075,Rental,20
-862,LL 204 East 25th Street LLC,204 East 25th St,New York,10010,Rental,41
-863,LL 205-215 East 88th Street LLC,205-215 East 88th St,New York,10128,Rental,40
-864,LL 7 Jones Street LLC,7 Jones St,New York,10014,Rental,20
-865,Lemle Master (204 East 83rd),204 East 83rd St,New York,10028,Rental,0

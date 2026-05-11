@@ -47,13 +47,29 @@ def _http_get(path: str) -> tuple[int, dict]:
 # ──────────── Smoke checks ────────────
 
 def check_buildings_index():
-    """GET /api/buildings — should return a list of buildings with entity_code."""
+    """GET /api/buildings — should return a list of buildings with entity_code.
+
+    FA directive 2026-05-11: must also exclude Lemle (LL-prefix names) and
+    "No Longer Manage" buildings. Active group on Monday has ~143 entries;
+    counts >150 indicate the sync regressed (stale data leaked) or the
+    fail-loud filter in _fetch_monday_buildings broke.
+    """
     code, data = _http_get("/api/buildings")
     assert code == 200, f"/api/buildings returned {code}"
     assert isinstance(data, list), "expected list"
-    assert len(data) >= 1, "expected at least one building"
+    assert len(data) >= 100, f"expected >=100 active buildings, got {len(data)}"
+    assert len(data) <= 160, (
+        f"expected <=160 active buildings (Monday active group is ~143), "
+        f"got {len(data)} — Lemle / no-longer-managed leak regressed?"
+    )
     assert all("entity_code" in b for b in data), "every building must have entity_code"
-    return f"{len(data)} buildings"
+    # Hard rule: no LL-prefix names (Lemle Bldgs - Back Office group)
+    ll_names = [b for b in data if (b.get("building_name") or "").startswith("LL ")]
+    assert not ll_names, (
+        f"Lemle buildings (LL-prefix names) leaked into /api/buildings: "
+        f"{[b['entity_code'] for b in ll_names[:5]]}"
+    )
+    return f"{len(data)} active buildings (no Lemle/inactive leak)"
 
 
 def check_dashboard():
