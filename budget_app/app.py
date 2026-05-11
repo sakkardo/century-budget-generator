@@ -9320,9 +9320,13 @@ def admin_set_summary_row_prefixes():
 
 
 @app.route("/api/admin/delete-summary-row", methods=["POST"])
-@require_admin
 def admin_delete_summary_row():
-    """ADMIN: Remove a BudgetSummaryRow by entity + label.
+    """Remove a BudgetSummaryRow by entity + label.
+
+    FA directive 2026-05-11: removed @require_admin so FAs can undo a
+    mis-added row directly from the dashboard. Action is logged to
+    wizard_events for traceability. URL preserved at /api/admin/... for
+    backward compat with tooling.
 
     Sister to add-summary-row. Used to undo a mis-added row from the FA's
     "+ Add Row" flow on the dashboard. Only deletes rows the FA created
@@ -9417,23 +9421,55 @@ def admin_delete_summary_row():
 
     try:
         deleted_id = row.id
+        deleted_label = row.label
+        deleted_section = row.section
+        deleted_display_order = row.display_order
         db.session.delete(row)
         db.session.commit()
         resp = {"ok": True, "deleted": label, "id": deleted_id}
         if merge_summary:
             resp["merged_into"] = merge_summary
+        try:
+            _log_wizard_event(
+                entity_code,
+                step="summary",
+                action="delete_row",
+                ok=True,
+                payload={
+                    "label": deleted_label,
+                    "section": deleted_section,
+                    "display_order": deleted_display_order,
+                    "row_id": deleted_id,
+                    "merged_into": merge_summary,
+                },
+            )
+        except Exception:
+            pass
         return jsonify(resp)
     except Exception as e:
         db.session.rollback()
+        try:
+            _log_wizard_event(
+                entity_code,
+                step="summary",
+                action="delete_row",
+                ok=False,
+                payload={"label": label, "error": str(e)[:300]},
+            )
+        except Exception:
+            pass
         return jsonify({"error": str(e)[:300]}), 500
 
 
 @app.route("/api/admin/summary-row-options", methods=["GET"])
-@require_admin
 def admin_summary_row_options():
     """Return canonical SUMMARY_ROW_MAP labels grouped by section, used to
     populate the Add Row dropdown on the FA dashboard. The FA picks from a
     canonical list so the new row inherits the right gl_prefix automatically.
+
+    FA directive 2026-05-11: removed @require_admin so the dashboard's
+    "+ Add Row" dropdown can fetch this list without prompting for an
+    admin key. Read-only canonical-labels endpoint — no mutation risk.
 
     Returns:
       {
@@ -9467,9 +9503,14 @@ def admin_summary_row_options():
 
 
 @app.route("/api/admin/add-summary-row", methods=["POST"])
-@require_admin
 def admin_add_summary_row():
-    """ADMIN: Insert a single new BudgetSummaryRow for one entity.
+    """Insert a single new BudgetSummaryRow for one entity.
+
+    FA directive 2026-05-11: removed @require_admin so FAs can add rows
+    from the dashboard's "+ Add Row" buttons (both the orphan-GL panel
+    and the per-section insert button) without entering the admin key.
+    Action is logged to wizard_events for traceability. URL preserved at
+    /api/admin/... for backward compat with any tooling that hits it.
 
     Used when an FA wants to break out an audit line (via the Inspector's
     Move action) into its own summary row that wasn't in the original
@@ -9563,6 +9604,16 @@ def admin_add_summary_row():
         )
         db.session.add(row)
         db.session.commit()
+        # FA directive 2026-05-11: log to wizard_events for traceability
+        # now that the admin gate is gone. Captures who (if FA cookie set)
+        # added what row, when.
+        _log_wizard_event(
+            entity_code, step="summary", action="add_row", ok=True,
+            payload={"label": row.label, "section": row.section,
+                     "display_order": row.display_order,
+                     "gl_prefixes": _json.loads(gl_prefixes_json) if gl_prefixes_json else [],
+                     "row_id": row.id},
+        )
         return jsonify({
             "ok": True, "id": row.id, "label": row.label,
             "display_order": row.display_order, "section": row.section,
@@ -9570,6 +9621,14 @@ def admin_add_summary_row():
         })
     except Exception as e:
         db.session.rollback()
+        try:
+            _log_wizard_event(
+                entity_code, step="summary", action="add_row", ok=False,
+                error_text=str(e)[:300],
+                payload={"label": label, "section": section},
+            )
+        except Exception:
+            pass
         return jsonify({"error": str(e)[:300]}), 500
 
 
