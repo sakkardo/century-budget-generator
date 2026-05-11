@@ -193,6 +193,30 @@ def _run_idempotent_migrations():
         # the PM Edit grid. New column stores the $ alternative; either-or
         # enforced at save time. NULL when PM is using the % path.
         "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS increase_dollar DOUBLE PRECISION",
+        # FA directive 2026-05-11: PM R&M review gate. Every R&M line on the
+        # PM portal must have an explicit review action before submit to FA.
+        # See BudgetLine class comment for state machine details.
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS pm_review_state VARCHAR(20)",
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS pm_reviewed_at TIMESTAMP",
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS pm_reviewed_by VARCHAR(50)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_lines_review_state "
+        "ON budget_lines (budget_id, sheet_name, pm_review_state)",
+        # One-time backfill: grandfather R&M lines where the PM already
+        # entered a non-zero % or any $ value into the new gate. Lines
+        # left at default 0% with no $ stay NULL (unreviewed) so the PM
+        # must explicitly act on them for the 2027 cycle. Idempotent —
+        # filter on pm_review_state IS NULL keeps it from re-running.
+        """
+        UPDATE budget_lines
+           SET pm_review_state = CASE
+                 WHEN increase_dollar IS NOT NULL THEN 'typed_dollar'
+                 ELSE 'typed_pct'
+               END,
+               pm_reviewed_at = COALESCE(updated_at, CURRENT_TIMESTAMP)
+         WHERE sheet_name = 'Repairs & Supplies'
+           AND pm_review_state IS NULL
+           AND (COALESCE(increase_pct, 0) <> 0 OR increase_dollar IS NOT NULL)
+        """,
         # FA directive 2026-05-10: per-FA visit tracking for the diff-strip
         # feature. Each row = one (user, building) visit with a small JSON
         # snapshot of the building's state. Diff endpoint compares the

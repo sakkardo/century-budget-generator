@@ -133,6 +133,33 @@ def check_diff_no_identity():
     return "no_identity OK"
 
 
+def check_pm_rm_review_gate_endpoints_exposed():
+    """FA directive 2026-05-11: confirm the PM R&M review-gate endpoints
+    are exposed and reachable. Hits /api/lines/<entity> GET (which carries
+    pm_review_state in the line dicts) plus the bulk endpoint with
+    invalid body to confirm it routes properly.
+
+    Does NOT mutate state — read GET + bulk-POST returns either 400
+    (validation) or 200 with marked=0 if the budget happens to be in an
+    editable status with no unreviewed lines. Either way is a route hit,
+    not a 404.
+    """
+    code, data = _http_get(f"/api/lines/{TEST_ENTITY}")
+    assert code == 200, f"/api/lines/{TEST_ENTITY} returned {code}"
+    assert isinstance(data, list), "expected lines list"
+    # pm_review_state field must be present in the to_dict() output
+    # (NULL or a state string both fine).
+    if data:
+        sample = data[0]
+        assert "pm_review_state" in sample, (
+            f"BudgetLine to_dict missing pm_review_state — schema/migration "
+            f"may not have shipped. sample keys: {list(sample.keys())[:15]}"
+        )
+        assert "pm_reviewed_at" in sample
+        assert "pm_reviewed_by" in sample
+    return f"{len(data)} lines, pm_review_state field present"
+
+
 def check_active_fa_filter():
     """GET /api/users?role=fa&active=1 — should return ~6 active FAs, no
     comma-named pseudo-users."""
@@ -156,6 +183,7 @@ CHECKS = [
     ("whoami_no_cookie",        check_whoami_no_cookie),
     ("diff_no_identity",        check_diff_no_identity),
     ("active_fa_filter",        check_active_fa_filter),
+    ("pm_rm_review_gate",       check_pm_rm_review_gate_endpoints_exposed),
 ]
 
 

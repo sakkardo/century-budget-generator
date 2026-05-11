@@ -606,6 +606,26 @@ def create_workflow_blueprint(db):
         notes = db.Column(db.Text, default="")
         pm_editable = db.Column(db.Boolean, default=False)
 
+        # FA directive 2026-05-11: PM R&M review gate. Every R&M line on the
+        # PM portal must have an explicit review action (typed % or $ value,
+        # OR a "No change" click) before the PM can submit back to the FA.
+        # pm_review_state acts as the single source of truth for "reviewed"
+        # without overloading increase_pct semantics (which defaults to 0
+        # and is used by every downstream math path).
+        #
+        #   NULL              = unreviewed (red row, blocks submit)
+        #   "typed_pct"       = PM entered a % value
+        #   "typed_dollar"    = PM entered a $ amount
+        #   "no_change"       = PM clicked the row's "No change" button
+        #   "bulk_no_change"  = PM used the section-level bulk action
+        #
+        # Only enforced for sheet_name = "Repairs & Supplies". Other sections
+        # stay edit-optional in the PM portal (PMs can set values, but it's
+        # not required and pm_review_state stays NULL on those lines).
+        pm_review_state = db.Column(db.String(20), nullable=True)
+        pm_reviewed_at = db.Column(db.DateTime, nullable=True)
+        pm_reviewed_by = db.Column(db.String(50), nullable=True)
+
         # Reclassification (PM can propose moving expenses to different GL)
         reclass_to_gl = db.Column(db.String(50), nullable=True)
         reclass_amount = db.Column(db.Float, default=0.0)
@@ -663,6 +683,10 @@ def create_workflow_blueprint(db):
                 "fa_proposed_note": self.fa_proposed_note or "",
                 "fa_override_value": self.fa_override_value,
                 "backup_json": _parse_backup_json(self.backup_json),
+                # FA directive 2026-05-11: PM R&M review gate fields.
+                "pm_review_state": self.pm_review_state,
+                "pm_reviewed_at": self.pm_reviewed_at.isoformat() if self.pm_reviewed_at else None,
+                "pm_reviewed_by": self.pm_reviewed_by,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
@@ -1832,6 +1856,33 @@ def create_workflow_blueprint(db):
         allowed = VALID_TRANSITIONS.get(budget.status, [])
         if new_status not in allowed:
             return jsonify({"error": f"Cannot move from '{budget.status}' to '{new_status}'. Allowed: {allowed}"}), 400
+
+        # FA directive 2026-05-11: PM R&M review gate.
+        # When the PM tries to submit back to the FA (any → fa_review from
+        # a PM-editing state), every "Repairs & Supplies" line on the
+        # budget must have an explicit review action (pm_review_state set).
+        # NULL = unreviewed = block submit. Returns 422 with the list of
+        # unreviewed line IDs so the frontend can scroll/highlight them.
+        # Only applies when the SOURCE state is one the PM owns.
+        if (new_status == "fa_review"
+                and budget.status in ("pm_pending", "pm_in_progress", "returned")):
+            unreviewed = BudgetLine.query.filter_by(
+                budget_id=budget.id, sheet_name="Repairs & Supplies",
+            ).filter(BudgetLine.pm_review_state.is_(None)).all()
+            if unreviewed:
+                return jsonify({
+                    "error": "rm_review_incomplete",
+                    "message": (
+                        f"{len(unreviewed)} Repairs & Maintenance line(s) "
+                        "still need review. Enter a % or $ value, or click "
+                        "'No change', on each highlighted row before submitting."
+                    ),
+                    "unreviewed_line_ids": [l.id for l in unreviewed],
+                    "unreviewed_count": len(unreviewed),
+                    "total_rm_lines": BudgetLine.query.filter_by(
+                        budget_id=budget.id, sheet_name="Repairs & Supplies",
+                    ).count(),
+                }), 422
 
         if "notes" in data:
             budget.fa_notes = data["notes"]
@@ -3714,6 +3765,45 @@ def create_workflow_blueprint(db):
                 changes.append(("increase_dollar", str(line.increase_dollar), "NULL (cleared by %-entry)"))
                 line.increase_dollar = None
 
+            # FA directive 2026-05-11: PM R&M review-gate state stamping.
+            # Only stamped for sheet_name == "Repairs & Supplies" and only
+            # when the FE sends an explicit `pm_action` signal — saveAll
+            # sends increase_pct for every line on every save, so we cannot
+            # use key-presence as the signal (would create false positives).
+            #
+            # Wire protocol (pm_action values):
+            #   "review_pct"     PM typed in the % field (incl. 0%)
+            #   "review_dollar"  PM typed in the $ field (incl. 0)
+            #   "no_change"      PM clicked the row's "No change" button —
+            #                    forces increase_pct = 0, increase_dollar = NULL
+            #
+            # Absence of pm_action leaves pm_review_state untouched (so
+            # saving notes or accrual_adj on an unreviewed line keeps it
+            # unreviewed; saving the same on an already-reviewed line keeps
+            # its prior state).
+            try:
+                _pm_action = (line_data.get("pm_action") or "").strip().lower()
+            except Exception:
+                _pm_action = ""
+            if line.sheet_name == "Repairs & Supplies" and _pm_action:
+                _new_state = None
+                if _pm_action == "no_change":
+                    # Explicit "No change" click overrides everything else.
+                    line.increase_pct = 0.0
+                    line.increase_dollar = None
+                    _new_state = "no_change"
+                elif _pm_action == "review_dollar":
+                    _new_state = "typed_dollar"
+                elif _pm_action == "review_pct":
+                    _new_state = "typed_pct"
+                if _new_state:
+                    _old_state = line.pm_review_state or "unreviewed"
+                    if _old_state != _new_state:
+                        line.pm_review_state = _new_state
+                        line.pm_reviewed_at = datetime.utcnow()
+                        line.pm_reviewed_by = _read_fa_id_from_cookie()
+                        changes.append(("pm_review_state", _old_state, _new_state))
+
             # Notes
             if "notes" in line_data:
                 new_val = line_data.get("notes", "")
@@ -3782,6 +3872,109 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "Failed to save changes"}), 500
 
         return jsonify(budget.to_dict())
+
+
+    # ─── PM R&M review gate: bulk "no change" endpoint ────────────────────
+    # FA directive 2026-05-11. The PM can click "Mark all unreviewed R&M
+    # as 0% (no change)" in the section header to sweep remaining
+    # unreviewed lines after the friction-modal confirms count + $ exposure.
+    # Distinct audit trail (`bulk_no_change`) so the FA can see in the diff
+    # which lines got individual attention vs. were swept in a bulk pass.
+
+    @bp.route("/api/pm/<entity_code>/rm-bulk-no-change", methods=["POST"])
+    def pm_rm_bulk_no_change(entity_code):
+        """Mark all unreviewed R&M lines on this budget as no_change.
+
+        Body (optional): {"confirm": true}  — frontend should always send
+        this after the user clicks through the confirm modal. Without it,
+        we still proceed (the friction is on the FE), but it's logged.
+
+        Response:
+          200 {"ok": true, "marked": N, "lines": [<ids>], "skipped": M}
+              where `marked` = previously-unreviewed lines now stamped
+              `bulk_no_change`, and `skipped` = already-reviewed lines
+              (their state is left untouched).
+        """
+        budget = Budget.query.filter_by(
+            entity_code=entity_code, year=BUDGET_YEAR
+        ).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        # Editable status check — same gate as update_lines.
+        if budget.status not in ("pm_pending", "pm_in_progress", "returned", "fa_review"):
+            return jsonify({"error": "Budget is not in editable status"}), 400
+
+        # Pull every R&M line on this budget.
+        all_rm = BudgetLine.query.filter_by(
+            budget_id=budget.id, sheet_name="Repairs & Supplies"
+        ).all()
+        unreviewed = [l for l in all_rm if l.pm_review_state is None]
+        skipped = len(all_rm) - len(unreviewed)
+
+        if not unreviewed:
+            return jsonify({
+                "ok": True, "marked": 0, "lines": [],
+                "skipped": skipped, "total_rm": len(all_rm),
+            })
+
+        # Promote pm_pending → pm_in_progress (same convention as
+        # update_lines so the section header counter reflects PM activity).
+        if budget.status == "pm_pending":
+            budget.status = "pm_in_progress"
+
+        user_id = _read_fa_id_from_cookie()
+        now = datetime.utcnow()
+        marked_ids = []
+        for line in unreviewed:
+            old_pct = line.increase_pct
+            old_dollar = line.increase_dollar
+            line.increase_pct = 0.0
+            line.increase_dollar = None
+            line.pm_review_state = "bulk_no_change"
+            line.pm_reviewed_at = now
+            line.pm_reviewed_by = user_id
+            marked_ids.append(line.id)
+            # One audit row per line so the FA can see exactly which lines
+            # the bulk action touched.
+            db.session.add(BudgetRevision(
+                budget_id=budget.id, budget_line_id=line.id,
+                action="pm_bulk_no_change", field_name="pm_review_state",
+                old_value="unreviewed", new_value="bulk_no_change",
+                source="pm", user_id=user_id,
+            ))
+
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error("PM bulk no-change save failed: %s", e)
+            return jsonify({"error": "Failed to save changes"}), 500
+
+        # Also log a single wizard_events row summarizing the sweep, for
+        # the "audit at a glance" view.
+        try:
+            from app import _log_wizard_event
+            _log_wizard_event(
+                entity_code, step="pm_review", action="bulk_no_change",
+                ok=True,
+                payload={
+                    "marked": len(marked_ids),
+                    "skipped": skipped,
+                    "total_rm": len(all_rm),
+                    "line_ids": marked_ids,
+                },
+            )
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": True,
+            "marked": len(marked_ids),
+            "lines": marked_ids,
+            "skipped": skipped,
+            "total_rm": len(all_rm),
+        })
 
 
     # ─── FA Line Edit & Reclass Endpoints ────────────────────────────────────
@@ -18965,6 +19158,148 @@ PM_EDIT_TEMPLATE = r"""
   .grand-total td.pm-fx-td { background:#1a3d2e; }
   .grand-total td.pm-fx-td .sub-val { color:#a5d6a7; }
   .pm-cell-pct { min-width:45px; width:auto; }
+
+  /* FA directive 2026-05-11: PM R&M review-gate styling. R&M rows must
+     each have an explicit PM action (typed % or $, or "No change" click)
+     before the budget can be submitted back to the FA. G&A and other
+     sections do not get these classes. */
+  .pm-row-rm-unreviewed > td.frozen-gl {
+    box-shadow: inset 4px 0 0 var(--red, #ef4444);
+  }
+  .pm-row-rm-unreviewed > td { background-color: #fef5f5 !important; }
+  .pm-row-rm-unreviewed > td.frozen { background-color: #fef5f5 !important; }
+  .pm-row-rm-reviewed > td.frozen-gl {
+    box-shadow: inset 4px 0 0 var(--green, #16a34a);
+  }
+  .pm-rm-state-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    vertical-align: middle;
+  }
+  .pm-rm-state-badge.unreviewed { background: #fee2e2; color: #b91c1c; }
+  .pm-rm-state-badge.reviewed { background: #dcfce7; color: #15803d; }
+  .pm-rm-state-badge.no-change { background: #e0e7ff; color: #4338ca; }
+
+  .pm-no-change-btn {
+    display: inline-block;
+    margin-top: 3px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    border: 1px solid var(--gray-300);
+    border-radius: 4px;
+    background: white;
+    color: var(--gray-600);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .pm-no-change-btn:hover {
+    background: #f0fdf4;
+    border-color: var(--green, #16a34a);
+    color: #15803d;
+  }
+
+  .pm-rm-progress-strip {
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    margin-bottom: 14px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .pm-rm-progress-strip.complete {
+    background: linear-gradient(to right, #f0fdf4, white 50%);
+    border-left: 4px solid var(--green, #16a34a);
+  }
+  .pm-rm-progress-strip.incomplete {
+    background: linear-gradient(to right, #fef5f5, white 50%);
+    border-left: 4px solid var(--red, #ef4444);
+  }
+  .pm-rm-progress-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: #111827;
+  }
+  .pm-rm-progress-counter {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: #fee2e2;
+    color: #b91c1c;
+    font-variant-numeric: tabular-nums;
+  }
+  .pm-rm-progress-counter.complete { background: #dcfce7; color: #15803d; }
+  .pm-rm-progress-bar {
+    flex: 1;
+    height: 8px;
+    min-width: 120px;
+    background: #e5e7eb;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .pm-rm-progress-fill {
+    height: 100%;
+    background: linear-gradient(to right, #ef4444, #f59e0b);
+    border-radius: 999px;
+    transition: width 0.3s;
+  }
+  .pm-rm-progress-fill.complete { background: var(--green, #16a34a); }
+  .pm-rm-progress-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .pm-rm-action-btn {
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--gray-300);
+    border-radius: 5px;
+    background: white;
+    color: var(--gray-700);
+    cursor: pointer;
+  }
+  .pm-rm-action-btn:hover { background: var(--gray-50); }
+  .pm-rm-action-btn.primary {
+    background: var(--red, #ef4444);
+    color: white;
+    border-color: var(--red, #ef4444);
+  }
+  .pm-rm-action-btn.primary:hover { background: #b91c1c; }
+
+  .submit-btn-blocked {
+    background: var(--gray-300) !important;
+    color: var(--gray-500) !important;
+    cursor: not-allowed !important;
+    position: relative;
+  }
+  .submit-btn-blocked::after {
+    content: attr(data-blocker);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    background: #1f2937;
+    color: white;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .submit-btn-blocked:hover::after { opacity: 1; }
 </style>
 </head>
 <body>
@@ -19056,8 +19391,24 @@ PM_EDIT_TEMPLATE = r"""
   </style>
 
   <div class="pm-sheet-tabs">
-    <div class="pm-sheet-tab active" onclick="pmSwitchSheet('Repairs &amp; Supplies', this)">Repairs &amp; Supplies <span id="rsCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
-    <div class="pm-sheet-tab" onclick="pmSwitchSheet('Gen &amp; Admin', this)">General &amp; Admin <span id="gaCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
+    <div class="pm-sheet-tab active" data-sheet="Repairs &amp; Supplies" onclick="pmSwitchSheet('Repairs &amp; Supplies', this)">Repairs &amp; Supplies <span id="rsCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
+    <div class="pm-sheet-tab" data-sheet="Gen &amp; Admin" onclick="pmSwitchSheet('Gen &amp; Admin', this)">General &amp; Admin <span id="gaCount" style="background:var(--blue);color:white;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px;"></span></div>
+  </div>
+
+  <!-- FA directive 2026-05-11: R&M review-gate progress strip. Visible only
+       on the Repairs & Supplies tab; hidden on Gen & Admin. Shows X of Y
+       reviewed, a progress bar, Jump-to-next, and the bulk "no change"
+       sweep button. -->
+  <div id="pmRmProgressStrip" class="pm-rm-progress-strip incomplete" style="display:none;">
+    <div class="pm-rm-progress-title">Repairs &amp; Maintenance</div>
+    <div id="pmRmProgressCounter" class="pm-rm-progress-counter">0 of 0 reviewed</div>
+    <div class="pm-rm-progress-bar">
+      <div id="pmRmProgressFill" class="pm-rm-progress-fill" style="width:0%;"></div>
+    </div>
+    <div class="pm-rm-progress-actions">
+      <button class="pm-rm-action-btn primary" id="pmRmJumpBtn" onclick="pmRmJumpToNext()">Jump to next unreviewed →</button>
+      <button class="pm-rm-action-btn" id="pmRmBulkBtn" onclick="pmRmBulkNoChange()">Mark all unreviewed as 0%</button>
+    </div>
   </div>
 
   <div class="grid-wrapper">
@@ -19150,6 +19501,9 @@ function pmSwitchSheet(sheetName, tabEl) {
   tabEl.classList.add('active');
   renderTable();
   updateZeroToggle();
+  // FA directive 2026-05-11: progress strip hides on G&A tab, shows on R&M.
+  if (typeof _pmRmUpdateProgress === 'function') _pmRmUpdateProgress();
+  if (typeof _pmRmUpdateSubmitGate === 'function') _pmRmUpdateSubmitGate();
 }
 
 let saveTimer = null;
@@ -19384,7 +19738,220 @@ function pmCellBlur(el) {
         if (line[field] === val) return;
         line[field] = val;
     }
+    // FA directive 2026-05-11: stamp PM review state on R&M lines when the
+    // PM types in % or $. _pm_action is consumed by saveAll() → cleared on
+    // success. line.pm_review_state is updated optimistically so the row
+    // visually flips green without waiting for the server round-trip.
+    if (line.sheet_name === 'Repairs & Supplies') {
+        if (field === 'increase_pct') {
+            line._pm_action = 'review_pct';
+            line.pm_review_state = 'typed_pct';
+        } else if (field === 'increase_dollar') {
+            line._pm_action = 'review_dollar';
+            line.pm_review_state = 'typed_dollar';
+        }
+        _pmRmUpdateRowState(gl, line);
+        _pmRmUpdateProgress();
+        _pmRmUpdateSubmitGate();
+    }
     pmLineChanged(gl, field, null);
+}
+
+// ── PM R&M review-gate helpers (FA directive 2026-05-11) ────────────────
+// Section-level gate forcing PMs to take an explicit action on every R&M
+// line before submitting back to the FA. None of these functions touch
+// G&A or any other sheet. _pm_action signals intent to the backend on
+// the next saveAll; absent _pm_action means saveAll won't change
+// pm_review_state for the line.
+
+function _pmRmUpdateRowState(gl, line) {
+    if (!line || line.sheet_name !== 'Repairs & Supplies') return;
+    const tr = document.querySelector('#linesBody tr[data-gl="' + gl + '"]');
+    if (!tr) return;
+    tr.classList.remove('pm-row-rm-unreviewed', 'pm-row-rm-reviewed');
+    tr.classList.add(line.pm_review_state ? 'pm-row-rm-reviewed' : 'pm-row-rm-unreviewed');
+    // Show/hide the "No change" button inline with the % cell.
+    const pctCell = document.getElementById('pm_inc_' + gl)?.parentElement;
+    if (pctCell) {
+        let btn = pctCell.querySelector('.pm-no-change-btn');
+        if (line.pm_review_state) {
+            if (btn) btn.remove();
+        } else if (!btn && CAN_EDIT) {
+            btn = document.createElement('button');
+            btn.className = 'pm-no-change-btn';
+            btn.textContent = 'No change';
+            btn.title = 'Mark this line as no change for the 2027 budget';
+            btn.onclick = () => pmRmNoChange(gl);
+            pctCell.appendChild(btn);
+        }
+    }
+}
+
+function _pmRmCounts() {
+    const rm = LINES.filter(l => l.sheet_name === 'Repairs & Supplies');
+    const reviewed = rm.filter(l => !!l.pm_review_state).length;
+    const unreviewed = rm.length - reviewed;
+    const unreviewedDollars = rm
+        .filter(l => !l.pm_review_state)
+        .reduce((s, l) => s + (l.current_budget || 0), 0);
+    return { total: rm.length, reviewed, unreviewed, unreviewedDollars };
+}
+
+function _pmRmUpdateProgress() {
+    const strip = document.getElementById('pmRmProgressStrip');
+    if (!strip) return;
+    // Only show on R&M tab.
+    if (_pmActiveSheet !== 'Repairs & Supplies') {
+        strip.style.display = 'none';
+        return;
+    }
+    const c = _pmRmCounts();
+    if (c.total === 0) {
+        strip.style.display = 'none';
+        return;
+    }
+    strip.style.display = 'flex';
+    const pct = Math.round((c.reviewed / c.total) * 100);
+    const counter = document.getElementById('pmRmProgressCounter');
+    const fill = document.getElementById('pmRmProgressFill');
+    const jump = document.getElementById('pmRmJumpBtn');
+    const bulk = document.getElementById('pmRmBulkBtn');
+    const isComplete = c.unreviewed === 0;
+    counter.textContent = c.reviewed + ' of ' + c.total + ' reviewed' + (isComplete ? ' ✓' : '');
+    counter.classList.toggle('complete', isComplete);
+    fill.style.width = pct + '%';
+    fill.classList.toggle('complete', isComplete);
+    strip.classList.toggle('complete', isComplete);
+    strip.classList.toggle('incomplete', !isComplete);
+    if (jump) jump.style.display = isComplete ? 'none' : '';
+    if (bulk) bulk.style.display = isComplete ? 'none' : '';
+}
+
+function _pmRmUpdateSubmitGate() {
+    const btn = document.getElementById('submitBtn');
+    if (!btn) return;
+    // If the budget is already in fa_review the PM is making tweaks — gate
+    // doesn't apply (the save-only path runs regardless).
+    if (BUDGET_STATUS === 'fa_review') {
+        btn.classList.remove('submit-btn-blocked');
+        btn.removeAttribute('data-blocker');
+        return;
+    }
+    const c = _pmRmCounts();
+    if (c.unreviewed > 0) {
+        btn.classList.add('submit-btn-blocked');
+        btn.setAttribute('data-blocker',
+            c.unreviewed + ' R&M line' + (c.unreviewed === 1 ? '' : 's') +
+            ' still need review');
+    } else {
+        btn.classList.remove('submit-btn-blocked');
+        btn.removeAttribute('data-blocker');
+    }
+}
+
+function pmRmJumpToNext() {
+    const unreviewed = LINES.filter(l =>
+        l.sheet_name === 'Repairs & Supplies' && !l.pm_review_state);
+    if (!unreviewed.length) return;
+    // Make sure we're on the R&M tab first.
+    if (_pmActiveSheet !== 'Repairs & Supplies') {
+        const tab = document.querySelector('.pm-sheet-tab[data-sheet="Repairs & Supplies"]');
+        if (tab) pmSwitchSheet('Repairs & Supplies', tab);
+    }
+    setTimeout(() => {
+        const el = document.getElementById('pm_inc_' + unreviewed[0].gl_code);
+        if (el) {
+            el.scrollIntoView({behavior: 'smooth', block: 'center'});
+            el.focus();
+        }
+    }, 60);
+}
+
+async function pmRmNoChange(gl) {
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line || line.sheet_name !== 'Repairs & Supplies') return;
+    if (!CAN_EDIT) return;
+    // Optimistic UI update.
+    const oldState = line.pm_review_state;
+    line.increase_pct = 0;
+    line.increase_dollar = null;
+    line.pm_review_state = 'no_change';
+    line._pm_action = 'no_change';
+    const pctEl = document.getElementById('pm_inc_' + gl);
+    if (pctEl) { pctEl.value = '0.0%'; pctEl.dataset.raw = '0.0'; }
+    const dEl = document.getElementById('pm_incd_' + gl);
+    if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; }
+    _pmRmUpdateRowState(gl, line);
+    _pmRmUpdateProgress();
+    _pmRmUpdateSubmitGate();
+    // Persist just this line so a refresh preserves the action even if the
+    // PM doesn't trigger a saveAll.
+    try {
+        const resp = await fetch('/api/lines/' + ENTITY, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({lines: [{
+                gl_code: gl, pm_action: 'no_change',
+                increase_pct: 0, increase_dollar: null,
+            }]}),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        line._pm_action = null;  // server consumed it
+        showToast('Marked "No change"', 'success');
+    } catch (e) {
+        // Roll back optimistic update on failure.
+        line.pm_review_state = oldState;
+        _pmRmUpdateRowState(gl, line);
+        _pmRmUpdateProgress();
+        _pmRmUpdateSubmitGate();
+        showToast('Save failed — try again', 'error');
+    }
+}
+
+async function pmRmBulkNoChange() {
+    if (!CAN_EDIT) return;
+    const c = _pmRmCounts();
+    if (c.unreviewed === 0) {
+        showToast('All R&M lines already reviewed.', 'info');
+        return;
+    }
+    const ok = confirm(
+        'Mark ' + c.unreviewed + ' R&M line' +
+        (c.unreviewed === 1 ? '' : 's') + ' as "No change" (0%)?\n\n' +
+        'Total current budget for these lines: $' +
+        Math.round(c.unreviewedDollars).toLocaleString() + '\n\n' +
+        'They will count as reviewed. The FA can see in the audit trail ' +
+        'that these were bulk-confirmed, not individually reviewed.'
+    );
+    if (!ok) return;
+    try {
+        const resp = await fetch('/api/pm/' + ENTITY + '/rm-bulk-no-change', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({confirm: true}),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            showToast('Bulk action failed: ' + (err.error || 'HTTP ' + resp.status), 'error');
+            return;
+        }
+        const body = await resp.json();
+        // Update in-memory state for every R&M line now flagged bulk_no_change.
+        LINES.forEach(l => {
+            if (l.sheet_name === 'Repairs & Supplies' && !l.pm_review_state) {
+                l.increase_pct = 0;
+                l.increase_dollar = null;
+                l.pm_review_state = 'bulk_no_change';
+                l._pm_action = null;
+            }
+        });
+        renderTable();
+        _pmRmUpdateProgress();
+        _pmRmUpdateSubmitGate();
+        showToast('Marked ' + body.marked + ' R&M line(s) as no change.', 'success');
+    } catch (e) {
+        showToast('Bulk action failed — try again', 'error');
+    }
 }
 
 // Format a dollar value like "$1,500" with comma + dollar sign.
@@ -19904,6 +20471,15 @@ function renderTable() {
             const tr = document.createElement('tr');
             if (isZero) { tr.classList.add('zero-row'); if (!_showZeroRows) tr.style.display = 'none'; }
 
+            // FA directive 2026-05-11: R&M review-gate row state. Only R&M
+            // rows get the red/green left border and the "No change" pill.
+            // G&A rows stay edit-optional and unmarked.
+            const isRm = (line.sheet_name === 'Repairs & Supplies');
+            if (isRm) {
+                tr.classList.add(line.pm_review_state ? 'pm-row-rm-reviewed' : 'pm-row-rm-unreviewed');
+                tr.dataset.gl = line.gl_code;
+            }
+
             const gl = line.gl_code;
             const estFormula = pmGetFormulaTooltip(line, 'estimate');
             const fcstFormula = pmGetFormulaTooltip(line, 'forecast');
@@ -19928,7 +20504,10 @@ function renderTable() {
                     <input id="pm_fc_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(forecast)}" data-raw="${Math.round(forecast)}" data-formula="${fcstFormula}" data-gl="${gl}" data-field="forecast" style="cursor:pointer; pointer-events:none;">
                 </td>
                 <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
-                <td class="number"><input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1) + '%'}" data-raw="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. The other auto-clears."></td>
+                <td class="number">
+                  <input id="pm_inc_${gl}" class="pm-cell pm-cell-pct" type="text" value="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1) + '%'}" data-raw="${line.increase_dollar != null ? '' : ((line.increase_pct || 0) * 100).toFixed(1)}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. The other auto-clears.">
+                  ${isRm && !line.pm_review_state && CAN_EDIT ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Mark this line as no change for the 2027 budget">No change</button>` : ''}
+                </td>
                 <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar" type="text" value="${line.increase_dollar != null ? fmtDollar(line.increase_dollar) : ''}" data-raw="${line.increase_dollar != null ? Math.round(line.increase_dollar) : ''}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="this.value=this.dataset.raw" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. The other auto-clears. Negative values OK."></td>
                 <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_prop_${gl}'))">
                     <span class="pm-fx">fx</span>
@@ -20190,26 +20769,34 @@ async function saveAll() {
     indicator.textContent = 'Saving...';
     indicator.className = 'save-indicator saving';
     try {
-        const payload = LINES.map(l => ({
-            gl_code: l.gl_code,
-            increase_pct: l.increase_pct || 0,
-            // FA directive 2026-05-11: either-or with increase_pct. NULL means
-            // PM is on the % path; a number means PM entered $.
-            increase_dollar: (l.increase_dollar !== null && l.increase_dollar !== undefined && l.increase_dollar !== '')
-                              ? parseFloat(l.increase_dollar) : null,
-            accrual_adj: l.accrual_adj || 0,
-            unpaid_bills: l.unpaid_bills || 0,
-            notes: l.notes || '',
-            category: l.category || '',
-            estimate_override: l.estimate_override !== null && l.estimate_override !== undefined ? l.estimate_override : null,
-            forecast_override: l.forecast_override !== null && l.forecast_override !== undefined ? l.forecast_override : null,
-            proposed_budget: l.proposed_budget || 0,
-            proposed_formula: l.proposed_formula || null,
-            prior_year: l.prior_year || 0,
-            ytd_actual: l._db_ytd_actual !== undefined ? l._db_ytd_actual : (l.ytd_actual || 0),
-            ytd_budget: l.ytd_budget || 0,
-            current_budget: l.current_budget || 0
-        }));
+        const payload = LINES.map(l => {
+            const item = {
+                gl_code: l.gl_code,
+                increase_pct: l.increase_pct || 0,
+                // FA directive 2026-05-11: either-or with increase_pct. NULL means
+                // PM is on the % path; a number means PM entered $.
+                increase_dollar: (l.increase_dollar !== null && l.increase_dollar !== undefined && l.increase_dollar !== '')
+                                  ? parseFloat(l.increase_dollar) : null,
+                accrual_adj: l.accrual_adj || 0,
+                unpaid_bills: l.unpaid_bills || 0,
+                notes: l.notes || '',
+                category: l.category || '',
+                estimate_override: l.estimate_override !== null && l.estimate_override !== undefined ? l.estimate_override : null,
+                forecast_override: l.forecast_override !== null && l.forecast_override !== undefined ? l.forecast_override : null,
+                proposed_budget: l.proposed_budget || 0,
+                proposed_formula: l.proposed_formula || null,
+                prior_year: l.prior_year || 0,
+                ytd_actual: l._db_ytd_actual !== undefined ? l._db_ytd_actual : (l.ytd_actual || 0),
+                ytd_budget: l.ytd_budget || 0,
+                current_budget: l.current_budget || 0
+            };
+            // FA directive 2026-05-11: only include pm_action when the PM
+            // actually acted on this line. Backend stamps pm_review_state
+            // ONLY when this key is present — without it, saveAll's blanket
+            // increase_pct=0 would false-stamp every untouched line.
+            if (l._pm_action) item.pm_action = l._pm_action;
+            return item;
+        });
         const linesWithNotes = payload.filter(p => p.notes && p.notes.trim().length > 0);
         console.log('[saveAll] PUT /api/lines/' + ENTITY + ' lines=' + payload.length + ' withNotes=' + linesWithNotes.length, linesWithNotes.map(l => ({gl: l.gl_code, notes: l.notes})));
         const resp = await fetch('/api/lines/' + ENTITY, {
@@ -20221,6 +20808,9 @@ async function saveAll() {
         if (resp.ok) {
             const body = await resp.json().catch(() => ({}));
             console.log('[saveAll] response body=', body);
+            // FA directive 2026-05-11: server consumed any pm_action signals,
+            // so clear the per-line flags before the next save batch builds.
+            LINES.forEach(l => { if (l._pm_action) l._pm_action = null; });
             indicator.textContent = 'Saved';
             indicator.className = 'save-indicator saved';
             indicator.onclick = null;
@@ -20243,6 +20833,25 @@ async function saveAll() {
 }
 
 async function submitForReview() {
+    // FA directive 2026-05-11: client-side R&M review gate.
+    // Block submit if any R&M line is unreviewed. Server enforces the same
+    // gate (defense in depth), but the client check gives instant feedback
+    // and auto-jumps the PM to the first unreviewed line so they can act
+    // without hunting.
+    if (BUDGET_STATUS !== 'fa_review') {
+        const c = _pmRmCounts();
+        if (c.unreviewed > 0) {
+            showToast(
+                c.unreviewed + ' R&M line' +
+                (c.unreviewed === 1 ? '' : 's') +
+                ' still need review before submit. Each line needs a % ' +
+                'or $ value (or click "No change").',
+                'error');
+            pmRmJumpToNext();
+            return;
+        }
+    }
+
     // Save first
     await saveAll();
 
@@ -20265,6 +20874,11 @@ async function submitForReview() {
     if (resp.ok) {
         showToast('Submitted for FA review!', 'success');
         setTimeout(() => { window.location.href = '/pm'; }, 1000);
+    } else if (resp.status === 422) {
+        // Server-side gate caught what the client missed (race condition
+        // where another tab cleared a state, or stale page state).
+        const err = await resp.json().catch(() => ({}));
+        showToast(err.message || 'R&M review incomplete — refresh and try again.', 'error');
     } else {
         const err = await resp.json();
         showToast('Error: ' + (err.error || 'Unknown'), 'error');
@@ -20489,6 +21103,10 @@ async function applyReclassAdjustments() {
     }
     renderTable();
     updateZeroToggle();
+    // FA directive 2026-05-11: initialize R&M progress strip + submit gate
+    // on page load so the PM sees the state without clicking anything.
+    if (typeof _pmRmUpdateProgress === 'function') _pmRmUpdateProgress();
+    if (typeof _pmRmUpdateSubmitGate === 'function') _pmRmUpdateSubmitGate();
 }
 applyReclassAdjustments();
 
