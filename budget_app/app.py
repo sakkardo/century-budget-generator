@@ -6852,6 +6852,203 @@ def _sharepoint_list_approved_budgets(entity_code):
     return matches
 
 
+@app.route("/api/admin/portfolio-label-scan", methods=["GET"])
+@require_admin
+def admin_portfolio_label_scan():
+    """Portfolio-wide canonical-map coverage audit.
+
+    Scans every active building's approved 2026 budget Excel in SharePoint,
+    parses only the row labels (fast — no full data extraction), cross-
+    references against canonical SUMMARY_ROW_MAP + LABEL_ALIASES, and
+    returns the gap report.
+
+    Use cases:
+      • Pre-cycle planning: "how many canonical fixes will I need before
+        all 143 buildings can import cleanly?" — answers it before the
+        FA hits the issues one building at a time.
+      • Regression check: after a canonical change, prove nothing else
+        broke.
+      • Working session prep: walk in with the full failure surface
+        rather than discovering it during the meeting.
+
+    Query params:
+      • sample=N — limit to first N buildings (default: scan all 143).
+        Useful for fast iteration.
+      • type=coop|condo|... — limit to one building_type.
+
+    Response:
+      {
+        "buildings_total": int,
+        "buildings_scanned": int,
+        "buildings_with_file": int,
+        "buildings_without_file": [<ec>...],
+        "buildings_parse_error": [{"ec": ..., "error": ...}],
+        "labels_total_distinct": int,
+        "labels_canonical_match": int,
+        "labels_alias_match": int,
+        "labels_unmapped": [
+          {"label": "...", "count": int, "on_entities": [<ec>...]}
+        ],
+        "by_building_type": {
+          "<type>": {
+            "scanned": int, "with_file": int,
+            "distinct_labels": int, "unmapped_count": int
+          }
+        }
+      }
+    """
+    import tempfile
+    from collections import defaultdict
+    import sys as _sys
+    from pathlib import Path as _P
+
+    # Add budget_summary to path
+    bs_path = str(_P(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in _sys.path:
+        _sys.path.insert(0, bs_path)
+    try:
+        from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+    except ImportError:
+        from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+    try:
+        from budget_summary_parser import parse_yrlycomp
+    except ImportError:
+        return jsonify({"error": "budget_summary_parser not available"}), 500
+
+    canonical_keys = set(SUMMARY_ROW_MAP.keys()) | set(_CONDO_ROWS.keys())
+    alias_keys = set(LABEL_ALIASES.keys())
+
+    sample_limit = request.args.get("sample", type=int)
+    type_filter = (request.args.get("type") or "").strip().lower()
+
+    # Load buildings from CSV
+    bldgs = load_buildings()
+    if type_filter:
+        bldgs = [b for b in bldgs if (b.get("type") or "").strip().lower() == type_filter]
+    if sample_limit:
+        bldgs = bldgs[:sample_limit]
+
+    stats = {
+        "buildings_total": len(bldgs),
+        "buildings_scanned": 0,
+        "buildings_with_file": 0,
+        "buildings_without_file": [],
+        "buildings_parse_error": [],
+        "labels_total_distinct": 0,
+        "labels_canonical_match": 0,
+        "labels_alias_match": 0,
+        "labels_unmapped": [],
+        "by_building_type": {},
+    }
+
+    label_to_entities = defaultdict(list)
+    type_stats = defaultdict(lambda: {
+        "scanned": 0, "with_file": 0,
+        "labels": set(), "unmapped": set(),
+    })
+
+    for b in bldgs:
+        ec = (b.get("entity_code") or "").strip()
+        btype = (b.get("type") or "unset").strip().lower()
+        if not ec:
+            continue
+        stats["buildings_scanned"] += 1
+        type_stats[btype]["scanned"] += 1
+
+        try:
+            files = _sharepoint_list_approved_budgets(ec)
+        except Exception as e:
+            stats["buildings_parse_error"].append({"ec": ec, "error": f"list: {str(e)[:120]}"})
+            continue
+
+        if not files:
+            stats["buildings_without_file"].append(ec)
+            continue
+
+        # Take the most recently modified approved file
+        files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+        target = files[0]
+        item_id = target.get("item_id")
+        if not item_id:
+            stats["buildings_parse_error"].append({"ec": ec, "error": "no item_id"})
+            continue
+
+        try:
+            _name, file_bytes = _sharepoint_download_item(item_id)
+        except Exception as e:
+            stats["buildings_parse_error"].append({"ec": ec, "error": f"download: {str(e)[:120]}"})
+            continue
+
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
+            parsed = parse_yrlycomp(tmp_path)
+        except Exception as e:
+            stats["buildings_parse_error"].append({"ec": ec, "error": f"parse: {str(e)[:120]}"})
+            continue
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        if isinstance(parsed, dict) and "error" in parsed:
+            stats["buildings_parse_error"].append({"ec": ec, "error": f"parse: {parsed['error'][:120]}"})
+            continue
+
+        # parse_yrlycomp returns {"rows": [...]} where each row has a "label"
+        rows = parsed.get("rows", []) if isinstance(parsed, dict) else []
+        if not rows:
+            stats["buildings_parse_error"].append({"ec": ec, "error": "no rows in parsed file"})
+            continue
+
+        stats["buildings_with_file"] += 1
+        type_stats[btype]["with_file"] += 1
+
+        for row in rows:
+            lbl = (row.get("label") or "").strip()
+            if not lbl:
+                continue
+            label_to_entities[lbl].append(ec)
+            type_stats[btype]["labels"].add(lbl)
+            if lbl not in canonical_keys and lbl not in alias_keys:
+                type_stats[btype]["unmapped"].add(lbl)
+
+    # Aggregate label stats
+    stats["labels_total_distinct"] = len(label_to_entities)
+    canonical_match = 0
+    alias_match = 0
+    unmapped_list = []
+    for lbl, ents in label_to_entities.items():
+        if lbl in canonical_keys:
+            canonical_match += 1
+        elif lbl in alias_keys:
+            alias_match += 1
+        else:
+            unmapped_list.append({
+                "label": lbl,
+                "count": len(ents),
+                "on_entities": sorted(set(ents))[:10],  # cap for readability
+                "total_buildings": len(set(ents)),
+            })
+    stats["labels_canonical_match"] = canonical_match
+    stats["labels_alias_match"] = alias_match
+    stats["labels_unmapped"] = sorted(unmapped_list, key=lambda x: -x["total_buildings"])
+
+    # Build by-type stats
+    for t, ts in type_stats.items():
+        stats["by_building_type"][t] = {
+            "scanned": ts["scanned"],
+            "with_file": ts["with_file"],
+            "distinct_labels": len(ts["labels"]),
+            "unmapped_count": len(ts["unmapped"]),
+            "sample_unmapped": sorted(ts["unmapped"])[:8],
+        }
+
+    return jsonify(stats)
+
+
 @app.route("/api/wizard/<entity_code>/approved-budget-files", methods=["GET"])
 def wizard_approved_budget_files(entity_code):
     """Read-only: list 2026 Approved Budget Excel files in SharePoint matching
