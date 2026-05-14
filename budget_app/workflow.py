@@ -8778,6 +8778,103 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--gray-200); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading-overlay { text-align: center; padding: 60px 20px; color: var(--gray-500); }
+
+  /* ── Health Pill + Drawer (Variant A, FA directive 2026-05-14 Phase 4) ────
+     Replaces the inline summary-cards + inline Readiness Inspector on the
+     workbook surface. Trigger: small pill in the top nav. Drawer slides
+     from right with KPIs + grouped gates (blockers / warnings / complete).
+     The inline summary-cards element is kept in the DOM (CSS-hidden) so
+     existing populator JS keeps running into it — the drawer mirrors the
+     same data via populateHealthDrawerKpis / populateHealthDrawerActions. */
+  .health-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; background: var(--blue-light); color: var(--blue);
+    border-radius: 999px; font-size: 12px; font-weight: 600;
+    cursor: pointer; border: 1px solid var(--blue); font-family: inherit;
+    transition: background 0.15s;
+  }
+  .health-pill:hover { background: white; }
+  .health-pill .badge {
+    background: var(--red); color: white;
+    padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 700;
+    min-width: 18px; text-align: center;
+  }
+  .health-pill .badge.zero { background: var(--green); }
+
+  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: none; z-index: 9998; }
+  .drawer-overlay.open { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: -540px; bottom: 0;
+    width: 540px; max-width: 92vw;
+    background: white; box-shadow: -8px 0 24px rgba(0,0,0,0.12);
+    transition: right 0.28s ease;
+    z-index: 9999; overflow-y: auto;
+  }
+  .drawer.open { right: 0; }
+  .drawer-header {
+    padding: 16px 22px;
+    background: linear-gradient(to right, #fef3c7, white 35%);
+    border-bottom: 1px solid var(--gray-200);
+    display: flex; align-items: center; gap: 14px;
+  }
+  .drawer-header h2 { font-size: 18px; font-weight: 700; margin: 0; }
+  .drawer-close {
+    margin-left: auto; background: none; border: none;
+    font-size: 22px; cursor: pointer; color: var(--gray-500);
+    padding: 0 4px; line-height: 1;
+  }
+  .drawer-close:hover { color: var(--gray-900); }
+  .drawer-kpis {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+    padding: 14px 22px; background: #faf7f0;
+  }
+  .drawer-kpi {
+    background: white; padding: 10px 12px; border-radius: 6px;
+    border: 1px solid var(--gray-200);
+  }
+  .drawer-kpi.pos { background: var(--green-light); border-color: #86efac; }
+  .drawer-kpi.warn { background: var(--yellow-light); border-color: #fde68a; }
+  .drawer-kpi.bad { background: var(--red-light); border-color: #fca5a5; }
+  .drawer-kpi .num { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .drawer-kpi.pos .num { color: var(--green); }
+  .drawer-kpi.warn .num { color: #92400e; }
+  .drawer-kpi.bad .num { color: var(--red); }
+  .drawer-kpi .lbl { font-size: 9px; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+
+  .ac-group { padding: 12px 22px; border-bottom: 1px solid var(--gray-100); }
+  .ac-group-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .ac-group.blockers .ac-group-title { color: var(--red); }
+  .ac-group.warnings .ac-group-title { color: var(--yellow); }
+  .ac-group.complete .ac-group-title { color: var(--green); cursor: pointer; user-select: none; }
+  .ac-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--gray-100); font-size: 12px; }
+  .ac-item:first-of-type { border-top: none; }
+  .ac-icon {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
+  }
+  .ac-icon.bad { background: var(--red-light); color: var(--red); }
+  .ac-icon.warn { background: var(--yellow-light); color: #92400e; }
+  .ac-icon.ok { background: var(--green-light); color: var(--green); }
+  .ac-text { flex: 1; min-width: 0; }
+  .ac-label { font-weight: 600; color: var(--gray-900); }
+  .ac-detail { font-size: 10px; color: var(--gray-500); margin-top: 2px; line-height: 1.4; }
+  .ac-btn {
+    padding: 4px 10px; border-radius: 4px;
+    font-size: 10px; font-weight: 600;
+    background: var(--blue-light); color: var(--blue);
+    border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+    text-decoration: none; display: inline-block;
+  }
+  .ac-btn.primary { background: var(--red); color: white; }
+  .ac-btn:hover { opacity: 0.85; }
+  .complete-collapsed .ac-item { display: none; }
+
+  /* Hide the inline summary-cards on the workbook — they live in the drawer now.
+     The DOM element is kept so the existing summaryCards populator keeps writing
+     into it (no defensive null-check rewrites needed). */
+  .summary-cards { display: none !important; }
 </style>
 </head>
 <body>
@@ -8794,9 +8891,14 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/admin/login?next=/dashboard/{{ entity_code }}" class="nav-link" style="font-size:12px;color:var(--gray-500);" title="Sign in with ADMIN_KEY to access admin endpoints">🔑 Admin</a>
   </div>
   <div class="breadcrumb" style="display:flex; align-items:center; gap:14px;">
-    <a href="/action/{{ entity_code }}" style="font-size:12px; padding:5px 12px; border:1px solid var(--blue); background:#eff6ff; color:var(--blue); border-radius:4px; text-decoration:none; font-weight:600;" title="Back to building health + readiness">&larr; Action Center</a>
     <span><a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span></span>
     <span style="flex:1"></span>
+    <!-- Variant A: Quiet Pill — opens the Health drawer (replaces the old
+         "← Action Center" navigation link). FA directive 2026-05-14 Phase 4. -->
+    <button class="health-pill" id="healthPill" onclick="openHealthDrawer()" title="Open Health drawer (blockers, warnings, KPIs)">
+      <span>⚡ Health</span>
+      <span class="badge" id="healthBadge">…</span>
+    </button>
     <a href="/wizard/{{ entity_code }}" style="font-size:12px; padding:5px 12px; border:1px solid var(--blue); background:#eff6ff; color:var(--blue); border-radius:4px; text-decoration:none; font-weight:600;" title="Open this building in the Budget Wizard">Open in Wizard &rarr;</a>
   </div>
 </nav>
@@ -9853,6 +9955,11 @@ async function renderReadinessInspector() {
   if (!data || !data.gates) { el.style.display = 'none'; return; }
   const gates = data.gates;
   const s = data.summary || {};
+
+  // Mirror gates into the Health drawer (Variant A, Phase 4). Runs every
+  // time the readiness inspector refreshes, so the drawer + pill badge
+  // stay in sync with the same data the inline panel used.
+  try { populateHealthDrawerActions(gates, s); } catch (e) { console.warn('drawer actions populate failed', e); }
   const okCount = s.ok || 0;
   const total = s.total || gates.length;
   const allGreen = (s.fail === 0 && s.warn === 0);
@@ -10217,6 +10324,11 @@ function renderDetail(data) {
       <div class="card-label">% Change</div>
     </div>
   `;
+
+  // Mirror the same KPIs into the Health drawer (Variant A, Phase 4).
+  // The inline .summary-cards element above is hidden via CSS; the drawer
+  // is now the single surface for these numbers.
+  try { populateHealthDrawerKpis(totalPrior, totalBudget, variance, pctChange, totalForecast); } catch (e) { console.warn('drawer kpi populate failed', e); }
 
   // PM Track — collapsible panel with badge.
   // Status mapping: 'not_started' is grouped with 'draft' for display because
@@ -19486,8 +19598,137 @@ async function returnPM() {
   loadDetail();
 }
 
+// ─── Health Drawer (Variant A — Quiet Pill) ───────────────────────────
+// FA directive 2026-05-14 Phase 4: replaces inline summary-cards + inline
+// Readiness Inspector. Trigger is the pill in the top nav. Drawer mirrors
+// the same data the inline panels already fetch (no extra API calls).
+function openHealthDrawer() {
+  const d = document.getElementById('healthDrawer');
+  const o = document.getElementById('healthOverlay');
+  if (d) { d.classList.add('open'); d.setAttribute('aria-hidden','false'); }
+  if (o) o.classList.add('open');
+}
+function closeHealthDrawer() {
+  const d = document.getElementById('healthDrawer');
+  const o = document.getElementById('healthOverlay');
+  if (d) { d.classList.remove('open'); d.setAttribute('aria-hidden','true'); }
+  if (o) o.classList.remove('open');
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeHealthDrawer();
+});
+
+function _fmtDrawerMoney(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  const v = Math.round(n);
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString();
+}
+
+function populateHealthDrawerKpis(totalPrior, totalBudget, variance, pctChange, totalForecast) {
+  const el = document.getElementById('drawerKpis');
+  if (!el) return;
+  const absPct = Math.abs(pctChange || 0);
+  const varClass = absPct > 10 ? 'bad' : absPct > 5 ? 'warn' : 'pos';
+  const arrow = pctChange > 0 ? ' ▲' : pctChange < 0 ? ' ▼' : '';
+  const varSign = variance > 0 ? '+' : '';
+  el.innerHTML =
+    '<div class="drawer-kpi"><div class="num">' + _fmtDrawerMoney(totalPrior) + '</div><div class="lbl">Prior Year</div></div>' +
+    '<div class="drawer-kpi"><div class="num">' + _fmtDrawerMoney(totalBudget) + '</div><div class="lbl">Current Budget</div></div>' +
+    '<div class="drawer-kpi ' + varClass + '"><div class="num">' + (variance < 0 ? '' : varSign) + _fmtDrawerMoney(variance) + '</div><div class="lbl">Variance</div></div>' +
+    '<div class="drawer-kpi ' + varClass + '"><div class="num">' + (totalForecast ? pctChange.toFixed(1) + '%' + arrow : '—') + '</div><div class="lbl">% Change</div></div>';
+}
+
+function populateHealthDrawerActions(gates, summary) {
+  const s = summary || {};
+  const fail = s.fail || 0;
+  const warn = s.warn || 0;
+  const ok = s.ok || 0;
+  // Update pill badge
+  const total = fail + warn;
+  const badge = document.getElementById('healthBadge');
+  if (badge) {
+    badge.textContent = total > 0 ? String(total) : '✓';
+    badge.className = 'badge' + (total === 0 ? ' zero' : '');
+  }
+  // Drawer header summary
+  const sumEl = document.getElementById('healthSummary');
+  if (sumEl) {
+    const parts = [];
+    if (fail > 0) parts.push(fail + ' blocker' + (fail !== 1 ? 's' : ''));
+    if (warn > 0) parts.push(warn + ' warning' + (warn !== 1 ? 's' : ''));
+    if (ok > 0) parts.push(ok + ' ready');
+    sumEl.textContent = parts.join(' · ');
+  }
+  const actionsEl = document.getElementById('drawerActions');
+  if (!actionsEl) return;
+  const failGates = (gates || []).filter(function(g){ return g.status === 'fail'; });
+  const warnGates = (gates || []).filter(function(g){ return g.status === 'warn'; });
+  const okGates   = (gates || []).filter(function(g){ return g.status === 'ok' || g.status === 'skip'; });
+
+  function renderGate(g, severity) {
+    const iconClass = severity === 'fail' ? 'bad' : severity === 'warn' ? 'warn' : 'ok';
+    const icon = severity === 'fail' ? '✕' : severity === 'warn' ? '!' : '✓';
+    let btnHtml = '';
+    if (g.action_url && g.action_label) {
+      const btnClass = severity === 'fail' ? 'ac-btn primary' : 'ac-btn';
+      const isHash = String(g.action_url).startsWith('#');
+      if (isHash) {
+        const safeUrl = String(g.action_url).replace(/'/g, "\\'");
+        btnHtml = '<a class="' + btnClass + '" onclick="closeHealthDrawer(); readinessAction(\'' + safeUrl + '\')">' + g.action_label + '</a>';
+      } else {
+        btnHtml = '<a class="' + btnClass + '" href="' + g.action_url + '">' + g.action_label + '</a>';
+      }
+    }
+    return '<div class="ac-item">' +
+      '<span class="ac-icon ' + iconClass + '">' + icon + '</span>' +
+      '<div class="ac-text">' +
+        '<div class="ac-label">' + (g.label || '') + '</div>' +
+        (g.detail ? '<div class="ac-detail">' + g.detail + '</div>' : '') +
+      '</div>' + btnHtml +
+    '</div>';
+  }
+
+  let html = '';
+  if (failGates.length > 0) {
+    html += '<div class="ac-group blockers"><div class="ac-group-title">🔴 Blockers — must resolve before generating</div>';
+    failGates.forEach(function(g){ html += renderGate(g, 'fail'); });
+    html += '</div>';
+  }
+  if (warnGates.length > 0) {
+    html += '<div class="ac-group warnings"><div class="ac-group-title">🟡 Warnings — review before submitting</div>';
+    warnGates.forEach(function(g){ html += renderGate(g, 'warn'); });
+    html += '</div>';
+  }
+  if (okGates.length > 0) {
+    html += '<div class="ac-group complete complete-collapsed" id="drawerOkGroup">' +
+      '<div class="ac-group-title" onclick="document.getElementById(\'drawerOkGroup\').classList.toggle(\'complete-collapsed\');">▶ ' + okGates.length + ' things complete — click to expand</div>';
+    okGates.forEach(function(g){ html += renderGate(g, 'ok'); });
+    html += '</div>';
+  }
+  if (!html) {
+    html = '<div style="padding:24px 22px; text-align:center; color:var(--gray-500);">✅ All checks clear — ready to generate.</div>';
+  }
+  actionsEl.innerHTML = html;
+}
+
 loadDetail();
 </script>
+
+<!-- Health Drawer (Variant A — Quiet Pill). Lives at end of body so it can
+     overlay the whole workbook. Populated by populateHealthDrawerKpis (from
+     loadDetail's KPI block) + populateHealthDrawerActions (from
+     renderReadinessInspector). FA directive 2026-05-14 Phase 4. -->
+<div class="drawer-overlay" id="healthOverlay" onclick="closeHealthDrawer()"></div>
+<aside class="drawer" id="healthDrawer" aria-hidden="true" aria-label="Health drawer">
+  <div class="drawer-header">
+    <h2>&#9889; Health</h2>
+    <div id="healthSummary" style="font-size:11px; color:var(--gray-500);"></div>
+    <button class="drawer-close" onclick="closeHealthDrawer()" aria-label="Close drawer">&#x2715;</button>
+  </div>
+  <div class="drawer-kpis" id="drawerKpis"></div>
+  <div id="drawerActions"></div>
+</aside>
+
 </body>
 </html>
 """
