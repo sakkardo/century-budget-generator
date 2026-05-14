@@ -8189,45 +8189,47 @@ BUILDING_DETAIL_TEMPLATE = r"""
   <!-- Summary Cards -->
   <div class="summary-cards" id="summaryCards"></div>
 
-  <!-- Context Strip: PM Review + FA Checklist as collapsible panels -->
-  <div class="context-strip">
-    <div class="panel" id="pmPanel">
-      <div class="panel-header" onclick="togglePanel(this)">
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <h3>PM Expense Review</h3>
-          <span class="badge badge-gray" id="pmBadge"></span>
-          <span class="panel-summary" id="pmSummary"></span>
-          <!-- Inline header action — populated by JS when status allows. -->
-          <span id="pmHeaderAction" style="margin-left:auto;"></span>
-        </div>
-        <span class="chevron">▾</span>
-      </div>
-      <div class="panel-body" id="pmTrackContent"></div>
-    </div>
-    <div class="panel" id="faPanel">
-      <div class="panel-header" onclick="togglePanel(this)">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <h3>FA Completion Checklist</h3>
-          <span class="badge badge-blue" id="faBadge"></span>
-          <span class="panel-summary" id="faSummary"></span>
-        </div>
-        <span class="chevron">▾</span>
-      </div>
-      <div class="panel-body" id="assemblyContent"></div>
-    </div>
+  <!-- FA directive 2026-05-14 (Dashboard Phase 2 — Action Center
+       consolidation): the old Context Strip is replaced by a single
+       compact "PM status row". The FA Completion Checklist panel is
+       removed entirely — its job is done by the 9-gate Readiness
+       Inspector inside the workbook section, which is more actionable
+       (each gate has a click-through action button). Hidden divs below
+       preserve element IDs so the existing JS populators (lines 9601-
+       9672) keep working without defensive null-checks. -->
+  <div class="pm-status-row" id="pmPanel" style="background:white; border:1px solid var(--gray-200); border-radius:8px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12px;">
+    <strong style="font-size:13px; color:var(--blue, #5a4a3f);">PM Expense Review</strong>
+    <span class="badge badge-gray" id="pmBadge"></span>
+    <span class="panel-summary" id="pmSummary" style="color:var(--gray-500);"></span>
+    <span id="pmHeaderAction" style="margin-left:auto;"></span>
+  </div>
+  <!-- Detailed PM body content (collapsed by default, expandable). -->
+  <details id="pmTrackDetails" style="margin-bottom:12px;">
+    <summary style="font-size:11px; color:var(--gray-500); cursor:pointer; padding:4px 12px;">▾ PM detail</summary>
+    <div class="panel-body" id="pmTrackContent" style="padding:8px 14px; background:white; border-radius:6px; border:1px solid var(--gray-200); margin-top:4px;"></div>
+  </details>
+  <!-- Hidden FA Completion Checklist (Readiness Inspector covers this). -->
+  <div id="faPanel" style="display:none;" aria-hidden="true">
+    <span id="faBadge"></span>
+    <span id="faSummary"></span>
+    <div id="assemblyContent"></div>
   </div>
 
   <!-- Pending Edits & Notes Panel — Notes + Invoice Reclasses + Budget Proposals.
        Renamed from "PM Review" because the items here aren't strictly PM-only:
        the FA also reviews + accepts/rejects each one, and Budget Proposals can
-       originate from either side. -->
-  <div class="panel" id="pmReviewPanel" style="display:none; margin-bottom:16px;">
-    <div class="panel-header" style="background:linear-gradient(to right,#fefce8,#fef9c3); border-bottom:1px solid #fde68a;" onclick="togglePanel(this)">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <h3 style="color:var(--gray-800);" title="Items proposed by PM that need FA review/decision (notes, GL re-classifications, budget proposals)">Pending Edits &amp; Notes</h3>
-        <span id="pmReviewBadge" style="display:inline-flex; align-items:center; gap:4px; background:var(--orange); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:12px;"><span style="width:6px;height:6px;background:white;border-radius:50%;animation:pmPulse 1.5s infinite;"></span> <span id="pmReviewBadgeText"></span></span>
+       originate from either side.
+       FA directive 2026-05-14 (Dashboard Phase 2): reduced to a compact
+       counter bar. The badge + label live in a single thin header that
+       expands on click. The tabs/tables below are unchanged. -->
+  <div class="panel" id="pmReviewPanel" style="display:none; margin-bottom:12px;">
+    <div class="panel-header" style="background:linear-gradient(to right,#fefce8,#fef9c3); border-bottom:1px solid #fde68a; padding:8px 14px;" onclick="togglePanel(this)">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="font-size:12px; font-weight:600; color:var(--gray-700);" title="Items proposed by PM that need FA review/decision (notes, GL re-classifications, budget proposals)">⚠ Pending Edits &amp; Notes</span>
+        <span id="pmReviewBadge" style="display:inline-flex; align-items:center; gap:4px; background:var(--orange); color:white; font-size:11px; font-weight:700; padding:2px 9px; border-radius:12px;"><span style="width:6px;height:6px;background:white;border-radius:50%;animation:pmPulse 1.5s infinite;"></span> <span id="pmReviewBadgeText"></span></span>
+        <h3 id="pmReviewHiddenTitle" style="display:none;">Pending Edits &amp; Notes</h3>
       </div>
-      <span class="chevron">▾</span>
+      <span class="chevron" style="font-size:11px;">▾</span>
     </div>
     <div class="panel-body" style="padding:0;">
       <div id="pmReviewTabs" style="display:flex; border-bottom:1px solid var(--gray-200); background:var(--gray-50);">
@@ -8297,8 +8299,15 @@ BUILDING_DETAIL_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- Sources Panel (collapsed by default — shows 5-source upload status) -->
-  <div class="sources-section" style="background:#fff; border:1px solid var(--gray-200); border-radius:10px; margin-bottom:16px; overflow:hidden;">
+  <!-- FA directive 2026-05-14 (Dashboard Phase 2): Data Sources panel
+       hidden entirely. The Readiness Inspector's "Source files found"
+       gate covers the same information (audit upload status, source
+       completeness) plus tells the FA whether the audit is also
+       CONFIRMED. Hidden div preserves IDs so the existing populator
+       JS (lines 8606-...) keeps working without defensive null-checks.
+       To re-enable, change display:none to display:block on the
+       outer wrapper. -->
+  <div class="sources-section" style="display:none;" aria-hidden="true">
     <div onclick="toggleSourcesPanel()" id="sourcesPanelHeader" style="padding:10px 20px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:#fafaf7; border-bottom:1px solid transparent;">
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="font-size:14px; font-weight:600; color:var(--blue);">📂 Data Sources</span>
