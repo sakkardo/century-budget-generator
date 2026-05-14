@@ -8898,7 +8898,10 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <a href="/audited-financials" class="nav-link">Audited Financials</a>
     <a href="/admin/login?next=/dashboard/{{ entity_code }}" class="nav-link" style="font-size:12px;color:var(--gray-500);" title="Sign in with ADMIN_KEY to access admin endpoints">🔑 Admin</a>
   </div>
-  <div class="breadcrumb" style="display:flex; align-items:center; gap:14px;">
+  <!-- max-width:none overrides the .breadcrumb 300px cap from the global
+       nav CSS — the cluster now holds the breadcrumb text + Health pill
+       + Open in Wizard button and needs ~480px. FA directive 2026-05-14 Phase 4. -->
+  <div class="breadcrumb" style="display:flex; align-items:center; gap:14px; max-width:none;">
     <span><a href="/dashboard">Dashboard</a> &rsaquo; <span id="breadcrumbName">Loading...</span></span>
     <span style="flex:1"></span>
     <!-- Variant A: Quiet Pill — opens the Health drawer (replaces the old
@@ -19651,12 +19654,16 @@ function populateHealthDrawerActions(gates, summary) {
   const fail = s.fail || 0;
   const warn = s.warn || 0;
   const ok = s.ok || 0;
-  // Update pill badge
-  const total = fail + warn;
+  // Update pill badge — shows BLOCKER count only (not blockers + warnings).
+  // Rationale: the badge means "you can't ship this." Warnings are
+  // "review before submitting," not blockers, so they shouldn't trip
+  // the red alarm. When blockers = 0, badge shows green ✓ even if
+  // warnings still exist; the drawer header still surfaces the warning
+  // count in text so it isn't invisible.
   const badge = document.getElementById('healthBadge');
   if (badge) {
-    badge.textContent = total > 0 ? String(total) : '✓';
-    badge.className = 'badge' + (total === 0 ? ' zero' : '');
+    badge.textContent = fail > 0 ? String(fail) : '✓';
+    badge.className = 'badge' + (fail === 0 ? ' zero' : '');
   }
   // Drawer header summary
   const sumEl = document.getElementById('healthSummary');
