@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Building 168 — Diff Strip Preview</title>
+<style>
+  :root {
+    --blue: #5a4a3f;
+    --blue-dark: #3f3329;
+    --blue-light: #f5efe7;
+    --green: #16a34a;
+    --green-dark: #166534;
+    --green-light: #f0fdf4;
+    --green-border: #bbf7d0;
+    --amber: #d97706;
+    --amber-dark: #92400e;
+    --amber-light: #fffbeb;
+    --amber-border: #fde68a;
+    --red: #dc2626;
+    --red-dark: #991b1b;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    background: var(--gray-50);
+    color: var(--gray-800);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    min-height: 100vh;
+  }
+
+  /* Page header (mimics the real app's header) */
+  header.app-header {
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
+    color: white;
+    padding: 18px 24px;
+  }
+  header.app-header h1 { margin: 0; font-size: 22px; font-weight: 700; }
+  header.app-header .meta {
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.85;
+  }
+
+  /* Mock annotation labels */
+  .annotation {
+    background: #fef3c7;
+    border-left: 3px solid #f59e0b;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #92400e;
+    font-style: italic;
+  }
+  .annotation strong { font-style: normal; font-weight: 700; }
+
+  /* ─────────────────────────────────────────────
+     THE NEW DIFF STRIP — what we're previewing
+     ───────────────────────────────────────────── */
+  .diff-strip {
+    background: var(--amber-light);
+    border-bottom: 1px solid var(--amber-border);
+    padding: 14px 24px;
+    position: relative;
+  }
+  .diff-strip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  .diff-strip-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--amber-dark);
+  }
+  .diff-strip-icon {
+    font-size: 18px;
+  }
+  .diff-strip-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .diff-btn {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 5px;
+    cursor: pointer;
+    border: 1px solid var(--amber);
+    background: white;
+    color: var(--amber-dark);
+  }
+  .diff-btn.primary {
+    background: var(--amber);
+    color: white;
+    border-color: var(--amber);
+  }
+  .diff-close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--amber-dark);
+    font-size: 18px;
+    line-height: 1;
+    padding: 2px 6px;
+  }
+  .diff-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+    color: var(--gray-700);
+  }
+  .diff-list li {
+    padding: 3px 0 3px 22px;
+    position: relative;
+  }
+  .diff-list li::before {
+    content: '•';
+    position: absolute;
+    left: 8px;
+    color: var(--amber);
+    font-weight: 700;
+  }
+  .diff-list .pill {
+    display: inline-block;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 9px;
+    margin-right: 4px;
+    vertical-align: 1px;
+  }
+  .pill.system { background: #e0e7ff; color: #3730a3; }
+  .pill.fa     { background: #fce7f3; color: #9d174d; }
+  .pill.auto   { background: #d1fae5; color: #065f46; }
+  .pill.alert  { background: #fee2e2; color: #991b1b; }
+  .diff-meta {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--amber-dark);
+    opacity: 0.78;
+  }
+
+  /* ─────────────────────────────────────────────
+     READINESS INSPECTOR (already shipped — for context)
+     ───────────────────────────────────────────── */
+  .readiness {
+    background: var(--green-light);
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .readiness-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 24px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .readiness-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .readiness-header-left .icon { font-size: 16px; }
+  .readiness-header-left .label {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--green-dark);
+  }
+  .readiness-header-left .summary {
+    font-size: 13px;
+    color: var(--green-dark);
+  }
+  .readiness-header .recent-changes-link {
+    font-size: 11px;
+    color: var(--amber-dark);
+    text-decoration: underline;
+    cursor: pointer;
+    margin-right: 12px;
+  }
+  .readiness-header .chevron {
+    font-size: 12px;
+    color: var(--green-dark);
+  }
+  .readiness-body {
+    padding: 4px 24px 14px;
+  }
+  .readiness-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .readiness-table tr {
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+  }
+  .readiness-table tr:last-child { border-bottom: none; }
+  .readiness-table td {
+    padding: 8px 12px;
+    vertical-align: top;
+  }
+  .readiness-dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 13px;
+    border: 1.5px solid;
+  }
+  .dot-ok   { background: var(--green-light); color: var(--green); border-color: var(--green); }
+  .dot-warn { background: var(--amber-light); color: var(--amber); border-color: var(--amber); }
+  .dot-fail { background: #fef2f2; color: var(--red); border-color: var(--red); }
+
+  .gate-label {
+    font-weight: 600;
+    color: var(--gray-700);
+    font-size: 13px;
+  }
+  .gate-detail {
+    color: var(--gray-600);
+    font-size: 12px;
+  }
+  .gate-action a, .gate-action button {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    border-radius: 4px;
+    border: 1px solid;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .gate-action.ok-action a    { color: var(--green); border-color: var(--green); }
+  .gate-action.warn-action a  { color: var(--amber); border-color: var(--amber); }
+  .gate-action.fail-action a  { color: var(--red); border-color: var(--red); }
+
+  /* ─────────────────────────────────────────────
+     Period banner + workbook stub for context
+     ───────────────────────────────────────────── */
+  .period-banner {
+    padding: 10px 24px;
+    background: var(--green-light);
+    color: var(--green-dark);
+    font-size: 13px;
+    border-bottom: 1px solid var(--green-border);
+  }
+  .audit-banner {
+    padding: 8px 24px;
+    background: var(--green-light);
+    color: var(--green-dark);
+    font-size: 12px;
+    border-bottom: 1px solid var(--green-border);
+  }
+  .audit-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 4px;
+    vertical-align: 2px;
+  }
+  .workbook-stub {
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--gray-400);
+    font-size: 14px;
+    border-top: 1px solid var(--gray-200);
+  }
+
+  /* Hover affordance */
+  .readiness-header:hover { background: rgba(0,0,0,0.02); }
+  .diff-btn:hover { filter: brightness(0.95); }
+
+  /* Footer note */
+  .footer-note {
+    padding: 24px;
+    background: white;
+    border-top: 1px solid var(--gray-200);
+    font-size: 12px;
+    color: var(--gray-500);
+    line-height: 1.6;
+  }
+  .footer-note h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--gray-700);
+  }
+  .footer-note ul { margin: 0; padding-left: 20px; }
+  .footer-note li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <header class="app-header">
+    <h1>168 — 310 East 49th Owners Corp.</h1>
+    <div class="meta">Entity 168 · 2026 Budget · FA: Sarah K. · PM: Mike T.</div>
+  </header>
+
+  <div class="annotation">
+    <strong>THE NEW DIFF STRIP</strong> ↓&nbsp;&nbsp;Renders only when the FA hasn't been here in &gt;24h, AND there are changes to show. Auto-clears on first navigation away.
+  </div>
+
+  <!-- ═════════════════════════════════════════════════════════════════════
+       THE DIFF STRIP — this is the new feature being previewed
+       ═════════════════════════════════════════════════════════════════════ -->
+  <div class="diff-strip">
+    <div class="diff-strip-header">
+      <div class="diff-strip-title">
+        <span class="diff-strip-icon">🔔</span>
+        <span>Since you last opened this building <span style="font-weight:500;opacity:0.8;">(Mon, May 5 · 4 days ago)</span></span>
+      </div>
+      <div class="diff-strip-actions">
+        <button class="diff-btn">Show details</button>
+        <button class="diff-btn primary">Got it</button>
+        <button class="diff-close" title="Dismiss">×</button>
+      </div>
+    </div>
+    <ul class="diff-list">
+      <li>
+        <span class="pill auto">AUTO</span>
+        Audit was <strong>auto-confirmed</strong> overnight — FY2025 reconciliation passed all checks.
+      </li>
+      <li>
+        <span class="pill system">SYSTEM</span>
+        Orphan GL warnings dropped from <strong>4 → 2</strong> — alias resolver attached <em>4810-Late Fees</em> and <em>4815-NSF Fees</em> to Other Income.
+      </li>
+      <li>
+        <span class="pill fa">FA</span>
+        <strong>Mike T.</strong> edited 1 line on Mon: Energy R&amp;M YTD adjusted from $9,840 → $11,420.
+      </li>
+      <li>
+        <span class="pill alert">ALERT</span>
+        Energy R&amp;M crossed the variance threshold: forecast now <strong>+18%</strong> vs prior year (was +9%). Worth a look.
+      </li>
+    </ul>
+    <div class="diff-meta">
+      Auto-clears when you leave this page · You can find this diff anytime via "Recent changes" in the Readiness panel below.
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>READINESS INSPECTOR</strong> ↓&nbsp;&nbsp;Already shipped 2026-05-09. Note the new <em>"View recent changes"</em> link on the right — opens the diff strip if it auto-cleared.
+  </div>
+
+  <!-- ═════════════════════════════════════════════════════════════════════
+       READINESS INSPECTOR — already shipped, shown here for context
+       ═════════════════════════════════════════════════════════════════════ -->
+  <div class="readiness">
+    <div class="readiness-header">
+      <div class="readiness-header-left">
+        <span class="icon">⚠️</span>
+        <span class="label">Readiness</span>
+        <span class="summary">5 of 8 ready · 3 warnings</span>
+      </div>
+      <div style="display:flex;align-items:center;">
+        <span class="recent-changes-link">View recent changes ↗</span>
+        <span class="chevron">▼</span>
+      </div>
+    </div>
+    <div class="readiness-body">
+      <table class="readiness-table">
+        <tr>
+          <td style="width:28px;"><span class="readiness-dot dot-ok">✓</span></td>
+          <td style="min-width:170px;"><div class="gate-label">Source files found</div></td>
+          <td><div class="gate-detail">FY2025 audit uploaded</div></td>
+          <td style="text-align:right;" class="gate-action ok-action"><a href="#">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-ok">✓</span></td>
+          <td><div class="gate-label">Audit confirmed</div></td>
+          <td><div class="gate-detail">FY2025 confirmed</div></td>
+          <td style="text-align:right;" class="gate-action ok-action"><a href="#">View →</a></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-ok">✓</span></td>
+          <td><div class="gate-label">Period set</div></td>
+          <td><div class="gate-detail">Actuals: Jan–Apr · Estimate: May–Dec</div></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-ok">✓</span></td>
+          <td><div class="gate-label">Building type set</div></td>
+          <td><div class="gate-detail">Co-op</div></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-warn">⚠</span></td>
+          <td><div class="gate-label">No orphan GLs</div></td>
+          <td><div class="gate-detail">2 GLs with data not aggregated</div></td>
+          <td style="text-align:right;" class="gate-action warn-action"><a href="#">Review →</a></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-ok">✓</span></td>
+          <td><div class="gate-label">No duplicate rows</div></td>
+          <td><div class="gate-detail">Each GL prefix maps to one row</div></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-warn">⚠</span></td>
+          <td><div class="gate-label">Payroll reviewed</div></td>
+          <td><div class="gate-detail">No payroll positions configured</div></td>
+          <td style="text-align:right;" class="gate-action warn-action"><a href="#">Add →</a></td>
+        </tr>
+        <tr>
+          <td><span class="readiness-dot dot-warn">⚠</span></td>
+          <td><div class="gate-label">Budget generated</div></td>
+          <td><div class="gate-detail">Ready to generate</div></td>
+          <td style="text-align:right;" class="gate-action warn-action"><a href="#">Generate →</a></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="period-banner">
+    <strong>📅 Period:</strong> Actuals: Jan–Apr 2026 · Estimate: May–Dec 2026
+    &nbsp;&nbsp;<a href="#" style="color: var(--blue); text-decoration: none; font-size: 12px;">✏️ Edit</a>
+  </div>
+  <div class="audit-banner">
+    <strong>📄 FY2025 Audit:</strong>
+    &nbsp;<span class="audit-dot"></span><span style="color:var(--green-dark);font-weight:600;">Uploaded</span> →
+    <span class="audit-dot"></span><span style="font-weight:600;">Extracted</span> →
+    <span class="audit-dot"></span><span style="font-weight:600;">Mapped</span> →
+    <span class="audit-dot"></span><span style="font-weight:600;">Confirmed</span>
+    &nbsp;&nbsp;<span style="color:var(--green-dark);">✓ Confirmed on 2026-05-05</span>
+  </div>
+
+  <div class="workbook-stub">
+    [Budget Workbook tabs render below — Income, Energy, R&amp;S, etc.]
+  </div>
+
+  <div class="footer-note">
+    <h3>What this preview shows</h3>
+    <ul>
+      <li><strong>4 kinds of changes</strong> are surfaced today (per recommendation): system actions (auto-resolves, audit auto-confirms), other-FA edits, alerts (variance threshold crossings), and warnings deltas (orphan/duplicate counts moving). New GLs appearing and individual line variance get added in v2.</li>
+      <li><strong>Color-coded pills</strong> (AUTO, SYSTEM, FA, ALERT) tell the FA at a glance who/what made the change without reading the line.</li>
+      <li><strong>Auto-clears</strong> when the FA navigates away — no "Got it" friction. The Readiness panel keeps a "View recent changes ↗" link in case they want to re-see it.</li>
+      <li><strong>Only renders when there's something to show AND the FA hasn't been here in &gt;24h</strong> — no noise on same-day reopens.</li>
+      <li><strong>Per-FA tracking</strong> — Sarah and Mike each see their own diff strip independent of each other's visits.</li>
+    </ul>
+    <h3 style="margin-top:14px;">Tweak any of the four design choices?</h3>
+    <ul>
+      <li><strong>Choice 1 (visit definition):</strong> per-FA, time-based</li>
+      <li><strong>Choice 2 (what to surface):</strong> system + alerts + FA edits + warnings deltas (v1)</li>
+      <li><strong>Choice 3 (visual treatment):</strong> bullet list summary with pills</li>
+      <li><strong>Choice 4 (ack model):</strong> auto-clear on navigate, with retroactive "View recent changes" link in readiness panel</li>
+    </ul>
+  </div>
+
+</div>
+
+</body>
+</html>

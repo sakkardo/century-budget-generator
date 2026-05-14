@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FA Dashboard — Design improvement preview</title>
+<style>
+  :root {
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --green-border: #84e1bc;
+    --red: #e02424;
+    --red-light: #fde8e8;
+    --amber: #d97706;
+    --amber-light: #fef3c7;
+    --amber-border: #fcd34d;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-400: #b8afa1;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0; background: var(--gray-50); color: var(--gray-900);
+    font-size: 13px; line-height: 1.5;
+  }
+  .container { max-width: 1380px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; color: var(--blue); }
+  h2 {
+    font-size: 15px; margin: 28px 0 12px;
+    padding: 6px 14px; border-radius: 6px; display: inline-block;
+    font-weight: 700;
+  }
+  h2.bad { background: var(--red-light); color: var(--red); }
+  h2.good { background: var(--green-light); color: var(--green); }
+  h2.note { background: var(--blue-light); color: var(--blue); }
+  .lead { color: var(--gray-700); font-size: 13px; margin: 0 0 24px; }
+
+  /* shared mock styles */
+  .mock { background:white; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; margin-bottom:18px; }
+  .mock-header {
+    background: linear-gradient(135deg, var(--blue), var(--blue-dark));
+    color:white; padding: 12px 18px;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .mock-header h3 { margin:0; font-size: 16px; font-weight:700; }
+  .mock-header .meta { font-size:11px; opacity:0.85; margin-top:2px; }
+  .mock-body { padding: 0; }
+  .annot-band {
+    background: var(--amber-light); border-left: 3px solid var(--amber);
+    padding: 8px 14px; font-size:11px; color:#92400e; font-style:italic;
+  }
+  .annot-band strong { font-style:normal; font-weight:700; }
+
+  /* ─── BEFORE — current state mockup ─────────────────────── */
+  .stripe { padding: 12px 18px; border-bottom:1px solid var(--gray-200); }
+  .stripe.thin { padding: 8px 18px; }
+  .stripe-label {
+    background: var(--red-light); color:var(--red); font-size:10px;
+    padding:2px 8px; border-radius: 9px; font-weight:700;
+    text-transform: uppercase; letter-spacing:.5px;
+    display:inline-block; margin-right:8px;
+  }
+
+  .pipeline { display:flex; gap:8px; align-items:center; font-size:12px; }
+  .pipeline span { padding:3px 10px; border-radius:14px; color:var(--gray-500); font-weight:600; }
+  .pipeline span.done { background: var(--green-light); color: var(--green); }
+  .pipeline span.cur  { background: var(--blue-light); color: var(--blue); }
+  .pipeline .arrow { color: var(--gray-300); }
+
+  .kpi-row { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
+  .kpi {
+    border: 1px solid var(--gray-200); border-radius:8px;
+    padding: 12px 14px; text-align:center; background: white;
+  }
+  .kpi.good { background: var(--green-light); border-color: var(--green-border); }
+  .kpi .v { font-size: 22px; font-weight: 700; color: var(--gray-900); }
+  .kpi .v.good { color: var(--green); }
+  .kpi .l { font-size: 10px; color: var(--gray-500); text-transform: uppercase; letter-spacing:.5px; }
+
+  .dropdown {
+    background: white; border:1px solid var(--gray-300); border-radius:6px;
+    padding: 8px 12px; font-size: 12px; display:flex; justify-content:space-between;
+    align-items:center; cursor:pointer;
+  }
+  .dropdown .label { font-weight: 600; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:9px; font-size:10px; font-weight:600; margin-left:6px; }
+  .pill.amber { background: var(--amber-light); color:#92400e; }
+  .pill.blue { background: var(--blue-light); color: var(--blue); }
+
+  .alert {
+    background: var(--amber-light); border:1px solid var(--amber-border);
+    border-radius:6px; padding:9px 14px; font-size:12px; color:#92400e;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .source-row {
+    background: white; border:1px dashed var(--gray-300); border-radius:6px;
+    padding: 8px 14px; font-size:12px; color:var(--gray-700);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+
+  .sheet-tabs {
+    display:flex; gap:4px; padding:0 18px; background:var(--gray-50);
+    border-bottom: 2px solid var(--gray-200); overflow-x:auto;
+  }
+  .sheet-tab {
+    padding: 8px 13px; font-size:12px; font-weight:600; color:var(--gray-500);
+    border-bottom: 2px solid transparent; margin-bottom: -2px; cursor:pointer;
+    white-space: nowrap;
+  }
+  .sheet-tab.active { color: var(--blue); border-bottom-color: var(--blue); background:white; }
+  .sheet-tab .b { background: var(--red); color:white; font-size:9px; padding:1px 5px; border-radius:8px; margin-left:4px; }
+
+  .orphan-table {
+    width:100%; border-collapse:collapse; font-size:12px;
+    margin: 12px 18px; width: calc(100% - 36px);
+    background: var(--amber-light); border:1px solid var(--amber-border);
+    border-radius:6px;
+  }
+  .orphan-table th, .orphan-table td { padding: 6px 10px; text-align:left; }
+  .orphan-table th { color: #92400e; font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
+  .orphan-table .add-row { background: var(--amber); color:white; border:none; padding:3px 10px; border-radius:4px; font-weight:600; font-size:11px; cursor:pointer; }
+
+  .formula-bar {
+    background: white; padding: 8px 18px;
+    border-top:1px solid var(--gray-200); border-bottom:1px solid var(--gray-200);
+    display:flex; align-items:center; gap:10px;
+  }
+  .formula-bar .fx-label { font-size:10px; font-weight:700; background:var(--gray-700); color:white; padding:2px 6px; border-radius:3px; }
+  .formula-bar input { flex:1; padding:5px 8px; border:1px solid var(--gray-200); border-radius:4px; font-family:"SF Mono",monospace; font-size:11px; }
+
+  /* ─── AFTER — proposed clean state ─────────────────────── */
+  .action-center {
+    background: var(--amber-light); border:1px solid var(--amber-border);
+    border-radius:8px; margin: 14px 18px;
+    overflow:hidden;
+  }
+  .action-center-header {
+    padding: 10px 16px; background: var(--amber);
+    color:white; font-weight:700; font-size:13px;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .action-center-header .meta { font-size:11px; font-weight:500; opacity:0.9; }
+  .action-list { background: white; }
+  .action-row {
+    padding: 10px 16px; border-bottom: 1px solid var(--gray-100);
+    display: grid; grid-template-columns: 28px 1fr auto; gap:12px;
+    align-items:center;
+  }
+  .action-row:last-child { border-bottom:none; }
+  .action-row .icon {
+    width:24px; height:24px; border-radius:50%; display:inline-flex;
+    align-items:center; justify-content:center; font-size:13px; font-weight:700;
+    background: var(--amber-light); color: var(--amber); border:1.5px solid var(--amber);
+  }
+  .action-row .icon.warn { background: var(--amber-light); color: var(--amber); border-color: var(--amber); }
+  .action-row .icon.info { background: var(--blue-light); color: var(--blue); border-color: var(--blue); }
+  .action-row .label { font-size:13px; font-weight:600; color: var(--gray-900); }
+  .action-row .detail { font-size:11px; color: var(--gray-500); margin-top: 1px; }
+  .action-row .btn {
+    background: var(--amber); color:white; border:none; padding:5px 12px;
+    border-radius:5px; font-weight:600; font-size:11px; cursor:pointer; white-space:nowrap;
+  }
+
+  .status-strip {
+    display:flex; align-items:center; gap:18px;
+    padding: 8px 18px; background: var(--gray-50);
+    border-bottom:1px solid var(--gray-200);
+    font-size: 11px; color: var(--gray-700);
+  }
+  .status-strip .seg { display:flex; align-items:center; gap:6px; }
+  .status-strip .dot { width:7px; height:7px; border-radius:50%; }
+  .status-strip .dot.good { background: var(--green); }
+  .status-strip .dot.warn { background: var(--amber); }
+  .status-strip .dot.gray { background: var(--gray-300); }
+  .status-strip .kpi-mini { font-weight:700; color: var(--gray-900); }
+
+  .compact-actions-bar {
+    display:flex; gap:8px; padding: 8px 18px;
+    background: white;
+    border-bottom:1px solid var(--gray-200);
+  }
+  .compact-actions-bar button {
+    padding:5px 12px; font-size:12px; font-weight:600; border-radius:5px;
+    border:1px solid var(--gray-300); background:white; color: var(--gray-700);
+    cursor:pointer;
+  }
+  .compact-actions-bar .primary {
+    background: var(--green); color:white; border-color: var(--green);
+  }
+
+  .summary-mini {
+    padding: 16px 18px; color: var(--gray-700); font-size: 12px;
+    background: var(--gray-50);
+    text-align: center;
+  }
+
+  .compare-table {
+    width:100%; border-collapse: collapse; font-size:12px;
+    margin-top: 10px;
+  }
+  .compare-table th, .compare-table td {
+    border: 1px solid var(--gray-200); padding: 8px 10px; text-align: left; vertical-align: top;
+  }
+  .compare-table th {
+    background: var(--blue-light); color: var(--blue);
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  }
+  .verb {
+    display:inline-block; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700;
+  }
+  .verb.kill { background: var(--red-light); color: var(--red); }
+  .verb.keep { background: var(--green-light); color: var(--green); }
+  .verb.merge { background: var(--blue-light); color: var(--blue); }
+  .verb.move { background: var(--amber-light); color: var(--amber); }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<h1>FA Dashboard — Design improvement plan</h1>
+<p class="lead">
+Today the FA opens building 168 and meets <strong>13 horizontal stripes</strong> before the data they came to work on. Each one is a small ask: "look at me, I matter." Stacked together, the page reads as anxious. The fix is to <strong>aggregate</strong> (one Action Center), <strong>compress</strong> (status strip), and <strong>get out of the way</strong> (workbook front-and-center).
+</p>
+
+<!-- ============ THE PROBLEM ============ -->
+<h2 class="bad">⛔ Today — 13 stripes competing for attention</h2>
+<div class="annot-band">Each row below is a separate stripe in the live UI. Annotation tags show what category each belongs to.</div>
+
+<div class="mock">
+  <div class="mock-header"><div><h3>168 — 310 East 49th Owners Corp.</h3><div class="meta">Entity 168 · 2026 Budget · FA: Sarah · PM: Christina Bernard</div></div></div>
+  <div class="mock-body">
+
+    <div class="stripe thin"><span class="stripe-label">1 · STATUS</span>
+      <div class="pipeline">
+        <span class="done">✓ Draft</span>
+        <span class="arrow">›</span><span class="cur">● PM Review</span>
+        <span class="arrow">›</span><span>FA Review</span>
+        <span class="arrow">›</span><span>Approved</span>
+      </div>
+    </div>
+
+    <div class="stripe"><span class="stripe-label">2 · KPIs</span>
+      <div class="kpi-row">
+        <div class="kpi"><div class="v">$4,629,296</div><div class="l">Prior Year</div></div>
+        <div class="kpi"><div class="v">$4,753,447</div><div class="l">Current Budget</div></div>
+        <div class="kpi good"><div class="v good">$124,151</div><div class="l">Variance</div></div>
+        <div class="kpi good"><div class="v good">2.7% ▲</div><div class="l">% Change</div></div>
+      </div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">3 · WORKFLOW</span>
+      <div class="dropdown"><span class="label">PM Expense Review</span><span><span class="pill amber">Sent May 11, 2026</span> Christina Bernard</span></div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">4 · WORKFLOW</span>
+      <div class="dropdown"><span class="label">FA Completion Checklist</span><span>4 / 7 — 57% complete</span></div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">5 · INBOX</span>
+      <div class="alert"><span>📋 Pending Edits &amp; Notes</span><span><span class="pill amber">● 41 items need review</span></span></div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">6 · STATUS</span>
+      <div class="source-row"><span>📁 Data Sources</span><span>4 of 5 uploaded</span></div>
+    </div>
+
+    <div class="stripe" style="background:var(--blue-light); padding:10px 18px;">
+      <strong style="color:var(--blue);">Budget Workbook</strong>
+      <span style="float:right; font-size:11px; color:var(--gray-500);">[Board Presentation] [Building Info] [Download Excel]</span>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">7 · STATUS</span>
+      <div class="alert"><span>⚠️ Readiness</span><span>5 of 8 ready · 3 warnings</span></div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">8 · STATUS</span>
+      <div style="font-size:12px;">📅 <strong>Period:</strong> Actuals Jan–Apr 2026 · Estimate May–Dec 2026 &nbsp; <a href="#" style="color:var(--blue); font-size:11px;">✎ Edit</a></div>
+    </div>
+
+    <div class="stripe thin"><span class="stripe-label">9 · STATUS</span>
+      <div style="font-size:12px;">📄 <strong>FY2025 Audit:</strong> &nbsp;● Uploaded → ● Extracted → ● Mapped → ● Confirmed &nbsp;<span style="color:var(--green);">✓ Confirmed on 2026-05-05</span></div>
+    </div>
+
+    <div class="stripe thin" style="padding:0;"><span class="stripe-label" style="margin:8px 8px 8px 18px;">10 · DATA</span>
+      <div class="sheet-tabs">
+        <div class="sheet-tab active">Summary</div>
+        <div class="sheet-tab">Income</div>
+        <div class="sheet-tab">Payroll</div>
+        <div class="sheet-tab">Energy</div>
+        <div class="sheet-tab">Water &amp; Sewer</div>
+        <div class="sheet-tab">Repairs &amp; Supplies</div>
+        <div class="sheet-tab">Gen &amp; Admin</div>
+        <div class="sheet-tab">RE Taxes</div>
+        <div class="sheet-tab">Capital</div>
+        <div class="sheet-tab">Unmapped</div>
+        <div class="sheet-tab">⚙ Assumptions</div>
+        <div class="sheet-tab">📝 History</div>
+      </div>
+    </div>
+
+    <div class="stripe thin" style="padding:0;"><span class="stripe-label" style="margin:8px 8px 8px 18px;">11 · WARNING</span>
+      <table class="orphan-table">
+        <thead><tr><th colspan="4">⚠️ 2 unmapped GLs with data</th></tr></thead>
+        <tr><td>4800-0000 — Interest Income</td><td>YTD $550</td><td>Bud $5,000</td><td><button class="add-row">+ Add Row</button></td></tr>
+        <tr><td>5260-0000 — Fuel</td><td>YTD $6,367</td><td>Bud —</td><td><button class="add-row">+ Add Row</button></td></tr>
+      </table>
+    </div>
+
+    <div class="stripe thin" style="padding:0;"><span class="stripe-label" style="margin:6px 8px 6px 18px;">12 · TOOL</span>
+      <div class="formula-bar">
+        <span class="fx-label">fx</span><span style="font-size:12px;">CLICK A CELL...</span>
+        <input placeholder="Select an editable cell to enter a value or formula…">
+      </div>
+    </div>
+
+    <div class="summary-mini"><span class="stripe-label">13 · DATA</span>
+      [Summary table renders here — 32 rows, the actual content the FA came to see]
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ THE FIX ============ -->
+<h2 class="good">✅ Proposed — 3 zones: Action / Status / Workbook</h2>
+<div class="annot-band">
+Three principles: <strong>(1)</strong> Aggregate every "you need to do X" signal into ONE Action Center at the top. <strong>(2)</strong> Compress all passive status into a single thin strip. <strong>(3)</strong> The Budget Workbook fills the screen — that's the work, not the meta. Quick stats stay reachable but don't take up real estate.
+</div>
+
+<div class="mock">
+  <div class="mock-header">
+    <div>
+      <h3>168 — 310 East 49th Owners Corp.</h3>
+      <div class="meta">Entity 168 · 2026 Budget · FA: Sarah · PM: Christina Bernard</div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button style="background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3); color:white; padding:5px 12px; border-radius:5px; font-size:11px; cursor:pointer;">📊 Stats</button>
+      <button style="background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3); color:white; padding:5px 12px; border-radius:5px; font-size:11px; cursor:pointer;">🏢 Building Info</button>
+      <button style="background:var(--green); border:none; color:white; padding:5px 12px; border-radius:5px; font-size:11px; cursor:pointer;">⬇ Download Excel</button>
+    </div>
+  </div>
+  <div class="mock-body">
+
+    <!-- Status strip: one thin row, all passive info -->
+    <div class="status-strip">
+      <div class="seg"><span class="dot good"></span> Draft</div>
+      <div class="seg"><span class="dot warn"></span> <strong>PM Review (sent May 11)</strong></div>
+      <div class="seg"><span class="dot gray"></span> FA Review</div>
+      <div class="seg"><span class="dot gray"></span> Approved</div>
+      <div style="flex:1;"></div>
+      <div class="seg">📅 Jan–Apr actual · May–Dec est</div>
+      <div class="seg">📄 FY2025 ✓ confirmed</div>
+      <div class="seg">📁 4 of 5 sources</div>
+    </div>
+
+    <!-- Action Center — one orchestrated to-do list -->
+    <div class="action-center">
+      <div class="action-center-header">
+        <div>📥 8 things need your attention</div>
+        <div class="meta">Variance +$124,151 · 2.7% ▲ &nbsp;|&nbsp; Open all in workbook ▾</div>
+      </div>
+      <div class="action-list">
+        <div class="action-row">
+          <span class="icon warn">!</span>
+          <div>
+            <div class="label">41 PM edits awaiting your review</div>
+            <div class="detail">Christina Bernard submitted on May 11 — proposed changes across Repairs &amp; Gen Admin</div>
+          </div>
+          <button class="btn">Review →</button>
+        </div>
+        <div class="action-row">
+          <span class="icon warn">!</span>
+          <div>
+            <div class="label">2 unmapped GLs with data</div>
+            <div class="detail">4800-0000 Interest Income · 5260-0000 Fuel — pre-filled suggested labels</div>
+          </div>
+          <button class="btn">Review →</button>
+        </div>
+        <div class="action-row">
+          <span class="icon warn">!</span>
+          <div>
+            <div class="label">3 readiness warnings</div>
+            <div class="detail">Orphan GLs (2) · Payroll positions not configured · Budget not yet generated</div>
+          </div>
+          <button class="btn">View →</button>
+        </div>
+        <div class="action-row">
+          <span class="icon info">i</span>
+          <div>
+            <div class="label">FA checklist 4 of 7 complete</div>
+            <div class="detail">3 items remaining before this building is ready to send for FA Review</div>
+          </div>
+          <button class="btn" style="background: var(--blue);">Continue →</button>
+        </div>
+        <div class="action-row">
+          <span class="icon info">i</span>
+          <div>
+            <div class="label">1 missing data source</div>
+            <div class="detail">Expense Distribution not uploaded</div>
+          </div>
+          <button class="btn" style="background: var(--blue);">Upload →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sheet tabs (unchanged) -->
+    <div class="sheet-tabs">
+      <div class="sheet-tab active">Summary <span class="b">2</span></div>
+      <div class="sheet-tab">Income</div>
+      <div class="sheet-tab">Payroll <span class="b">1</span></div>
+      <div class="sheet-tab">Energy</div>
+      <div class="sheet-tab">Water &amp; Sewer</div>
+      <div class="sheet-tab">Repairs &amp; Supplies</div>
+      <div class="sheet-tab">Gen &amp; Admin</div>
+      <div class="sheet-tab">RE Taxes</div>
+      <div class="sheet-tab">Capital</div>
+      <div class="sheet-tab">Unmapped</div>
+      <div class="sheet-tab">⚙ Assumptions</div>
+      <div class="sheet-tab">📝 History</div>
+    </div>
+
+    <!-- Formula bar — unchanged, just trimmer -->
+    <div class="formula-bar">
+      <span class="fx-label">fx</span>
+      <input placeholder="Click a cell to inspect or enter a value…">
+    </div>
+
+    <!-- Summary content -->
+    <div class="summary-mini" style="padding:32px 18px; background: white;">
+      <em>Summary table renders here — same 32 rows, same data, but now it's the first thing the FA actually sees once they've scanned the Action Center for ~5 seconds.</em>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ WHAT CHANGED ============ -->
+<h2 class="note">📋 What changes (specifically)</h2>
+
+<table class="compare-table">
+<tr>
+  <th style="width:30%">Today's stripe</th>
+  <th style="width:15%">Action</th>
+  <th>Where it ends up</th>
+</tr>
+<tr>
+  <td>1. Status pipeline (Draft › PM Review › ...)</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Compressed into the thin status strip as 4 colored dots</td>
+</tr>
+<tr>
+  <td>2. 4 big KPI cards (Prior / Current / Variance / % Change)</td>
+  <td><span class="verb move">MOVE</span></td>
+  <td>Behind a "📊 Stats" button in the header. Variance + % shows compact in Action Center header. 4 huge cards are not the headline — the to-do list is.</td>
+</tr>
+<tr>
+  <td>3. PM Expense Review dropdown</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Becomes the top Action Center row: "41 PM edits awaiting review"</td>
+</tr>
+<tr>
+  <td>4. FA Completion Checklist dropdown (4/7)</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Becomes an Action Center row with a "Continue →" button</td>
+</tr>
+<tr>
+  <td>5. Pending Edits &amp; Notes (41 items)</td>
+  <td><span class="verb kill">REPLACED</span></td>
+  <td>Same content surfaced via the "41 PM edits" Action Center row</td>
+</tr>
+<tr>
+  <td>6. Data Sources (4 of 5)</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Compact "📁 4 of 5 sources" in status strip; missing source surfaces as an Action Center row if &lt;100%</td>
+</tr>
+<tr>
+  <td>7. Readiness panel (5 of 8 · 3 warnings)</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Becomes the "3 readiness warnings" Action Center row. Click to expand the full 8-gate detail.</td>
+</tr>
+<tr>
+  <td>8. Period banner</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Compact in status strip: "📅 Jan–Apr actual · May–Dec est"</td>
+</tr>
+<tr>
+  <td>9. FY2025 Audit chip (4-step progression)</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Compact in status strip: "📄 FY2025 ✓ confirmed". When NOT confirmed, becomes an Action Center row.</td>
+</tr>
+<tr>
+  <td>10. Sheet tabs (12 tabs)</td>
+  <td><span class="verb keep">KEEP</span></td>
+  <td>Same — but adds per-tab warning badges (the orange "2" / "1") so the FA can see at a glance which sheets need attention without an inspector panel.</td>
+</tr>
+<tr>
+  <td>11. 2 unmapped GLs warning</td>
+  <td><span class="verb merge">MERGE</span></td>
+  <td>Becomes "2 unmapped GLs with data" Action Center row + per-Summary-tab badge</td>
+</tr>
+<tr>
+  <td>12. Formula bar</td>
+  <td><span class="verb keep">KEEP</span></td>
+  <td>Unchanged — still the single most-used FA tool. Trimmed visual weight.</td>
+</tr>
+<tr>
+  <td>13. Workbook content area</td>
+  <td><span class="verb keep">KEEP</span></td>
+  <td>Unchanged behaviorally, but now visible in the first viewport instead of buried.</td>
+</tr>
+</table>
+
+<!-- ============ PRINCIPLES ============ -->
+<h2 class="note">🧭 The three principles</h2>
+
+<div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-top: 6px;">
+  <div class="mock" style="margin:0;">
+    <div style="background: var(--amber); color:white; padding:10px 14px; font-weight:700; font-size:13px;">1 · AGGREGATE</div>
+    <div style="padding:14px; font-size:12px;">
+      One <strong>Action Center</strong> at the top. Every "you need to do X" signal funnels in. Ordered by urgency. Each row has ONE button — Review, View, Continue, Upload. No more than 6 items shown at once; rest collapse behind "show all".
+    </div>
+  </div>
+  <div class="mock" style="margin:0;">
+    <div style="background: var(--blue); color:white; padding:10px 14px; font-weight:700; font-size:13px;">2 · COMPRESS</div>
+    <div style="padding:14px; font-size:12px;">
+      All passive status (pipeline, period, audit, sources) compresses into ONE thin strip. <strong>Glanceable, not anxious.</strong> Anything red/amber in the strip auto-promotes itself to an Action Center row.
+    </div>
+  </div>
+  <div class="mock" style="margin:0;">
+    <div style="background: var(--green); color:white; padding:10px 14px; font-weight:700; font-size:13px;">3 · GET OUT OF THE WAY</div>
+    <div style="padding:14px; font-size:12px;">
+      The <strong>Budget Workbook</strong> fills the rest of the screen. KPI cards hide behind a button (rarely consulted). Section headers ("Budget Workbook") deleted — the page IS the workbook. The FA sees data immediately.
+    </div>
+  </div>
+</div>
+
+<!-- ============ EFFORT / SHIP PLAN ============ -->
+<h2 class="note">🛠 Effort &amp; ship plan</h2>
+
+<table class="compare-table">
+<tr><th style="width:18%">Phase</th><th>What ships</th><th style="width:14%">Effort</th></tr>
+<tr>
+  <td><strong>Phase 1</strong> — Status compression</td>
+  <td>Compress pipeline + period + audit + sources into a single thin strip. Eliminate the "Budget Workbook" section header. Move KPI cards behind a button.</td>
+  <td>~1-2 hrs</td>
+</tr>
+<tr>
+  <td><strong>Phase 2</strong> — Action Center</td>
+  <td>New <code>renderActionCenter(data)</code> component. Aggregates from existing endpoints (no new backend): PM-edits count + orphan-GLs + readiness warnings + checklist + missing sources. Ordered by urgency. Each row click-throughs to the right tab/panel.</td>
+  <td>~3-4 hrs</td>
+</tr>
+<tr>
+  <td><strong>Phase 3</strong> — Per-tab warning badges</td>
+  <td>Show small badge counts on sheet tabs ("Summary 2", "Payroll 1") so FA sees per-sheet issues without expanding panels.</td>
+  <td>~1 hr</td>
+</tr>
+<tr>
+  <td><strong>Phase 4</strong> — Polish</td>
+  <td>"Action Center" auto-collapses to one-line "All clear ✓" when zero items. Header buttons (Stats / Building Info / Download) consolidated.</td>
+  <td>~1 hr</td>
+</tr>
+</table>
+
+<p style="margin-top:14px; font-size:13px; color:var(--gray-700);">
+<strong>Total: ~6-8 hours.</strong> Zero new endpoints — everything aggregates from data already on <code>/api/dashboard/&lt;entity&gt;</code> and <code>/api/readiness/&lt;entity&gt;</code>. No data risk. Behavior under the hood unchanged — this is purely a re-layout of what's already there.
+</p>
+
+<!-- ============ CONFIRMATION ============ -->
+<div style="background: var(--green-light); border:1px solid var(--green-border); border-radius:8px; padding:14px 18px; margin-top:24px;">
+  <strong style="color:var(--green);">✅ Confirm to ship</strong>
+  <p style="font-size:13px; color:var(--gray-900); margin:6px 0 0;">
+  Reply with: "ship Phase 1+2", "ship all 4 phases", "skip phase X", or specific tweaks. I'll ship the agreed phases with verification between each. If you want to redirect entirely (different layout), now's the moment.
+  </p>
+</div>
+
+</div>
+
+</body>
+</html>

@@ -7499,6 +7499,28 @@ def admin_portfolio_scan_alert_on_delta():
                     "scan_id": scan_id})
 
 
+@app.route("/preview/<filename>", methods=["GET"])
+def preview_html(filename):
+    """Serve project-root HTML preview files (e.g. design mockups) so they
+    can be viewed via real URLs instead of file:// (which Chrome extension
+    permissions block). Read-only, only serves .html files in the project
+    root, no path traversal.
+    """
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+\.html$", filename):
+        return "Invalid filename", 400
+    path = Path(__file__).resolve().parent.parent / filename
+    if not path.exists() or not path.is_file():
+        return f"Preview file not found: {filename}", 404
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        from flask import Response
+        return Response(html, mimetype="text/html")
+    except Exception as e:
+        return f"Error reading preview: {e}", 500
+
+
 @app.route("/admin/portfolio-health", methods=["GET"])
 @require_admin
 def admin_portfolio_health_page():

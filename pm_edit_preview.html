@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PM Edit — Lock cells + add $ column preview</title>
+<style>
+  :root {
+    --blue: #5a4a3f;
+    --blue-dark: #3d322a;
+    --blue-light: #f5efe7;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --red: #e02424;
+    --red-light: #fde8e8;
+    --yellow: #f59e0b;
+    --yellow-light: #fef3c7;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+    --gray-900: #1a1714;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    background: var(--gray-50);
+    color: var(--gray-900);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .container { max-width: 1300px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 6px; color: var(--blue); }
+  h2 {
+    font-size: 16px;
+    margin: 24px 0 10px;
+    color: var(--blue);
+    padding: 6px 12px;
+    border-radius: 6px;
+    display: inline-block;
+  }
+  h2.before { background: var(--red-light); color: var(--red); }
+  h2.after  { background: var(--green-light); color: var(--green); }
+  .lead { font-size: 13px; color: var(--gray-700); margin: 6px 0 16px; }
+
+  .grid {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    overflow-x: auto;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  thead th {
+    background: var(--blue-light);
+    color: var(--blue);
+    text-align: right;
+    padding: 8px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid var(--blue);
+    white-space: nowrap;
+  }
+  thead th:first-child, thead th:nth-child(2) { text-align: left; }
+  thead th.editable {
+    background: #fffbeb;
+    border-bottom-color: var(--yellow);
+    color: #92400e;
+  }
+  thead th.new-col {
+    background: #d1fae5;
+    border-bottom-color: #16a34a;
+    color: #065f46;
+  }
+  tbody td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--gray-100);
+    text-align: right;
+    vertical-align: middle;
+  }
+  tbody td:first-child, tbody td:nth-child(2) {
+    text-align: left;
+    color: var(--gray-900);
+    font-size: 12px;
+  }
+  tbody td:first-child {
+    color: var(--blue);
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  input.cell {
+    width: 100%;
+    border: 1px solid var(--gray-300);
+    padding: 4px 6px;
+    border-radius: 3px;
+    background: white;
+    font-size: 12px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: inherit;
+  }
+  input.cell.locked {
+    background: var(--gray-100);
+    color: var(--gray-500);
+    border-color: var(--gray-200);
+    cursor: not-allowed;
+  }
+  input.cell.editable {
+    background: #fffbeb;
+    border-color: var(--yellow);
+  }
+  input.cell.editable:focus { outline: 2px solid var(--yellow); }
+  input.cell.new-col {
+    background: #d1fae5;
+    border-color: #16a34a;
+  }
+  input.cell.fx {
+    background: var(--gray-100);
+    border-color: var(--gray-200);
+    color: var(--gray-700);
+    font-style: italic;
+  }
+  .fx-label {
+    font-size: 9px;
+    color: var(--gray-500);
+    margin-right: 2px;
+  }
+
+  .annot-band {
+    background: var(--yellow-light);
+    border-left: 4px solid var(--yellow);
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #92400e;
+    margin-bottom: 12px;
+    border-radius: 4px;
+  }
+  .annot-band strong { color: #78350f; }
+
+  .change-summary {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 24px 0;
+  }
+  .change-summary h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--gray-700);
+  }
+  .change-summary ul {
+    margin: 0;
+    padding-left: 22px;
+    font-size: 13px;
+    color: var(--gray-900);
+    line-height: 1.7;
+  }
+  .change-summary li {
+    margin-bottom: 4px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .pill.lock { background: var(--gray-200); color: var(--gray-700); }
+  .pill.keep { background: #fef3c7; color: #92400e; }
+  .pill.new  { background: #d1fae5; color: #065f46; }
+  .pill.fx   { background: var(--blue-light); color: var(--blue); }
+
+  .scenario {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .scenario h4 {
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: var(--blue);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .scenario .row { margin: 4px 0; }
+  .scenario code {
+    background: var(--gray-100);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<h1>PM Budget Review — Lock cells + add $ column</h1>
+<p class="lead">
+FA directive: <em>"lock all cells except for the proposed budget increase column. In addition to locking everything other than that column, please make another column so it is either a % or a $ amount (either or)."</em>
+</p>
+
+<!-- ============ BEFORE ============ -->
+<h2 class="before">⛔ BEFORE — Today (8 editable cells per row)</h2>
+<div class="annot-band">
+The PM can edit eight cells per row: Prior Year · YTD Actual · Accrual · Unpaid · Current Budget · Increase % · Notes (Proposed/Estimate/Forecast/Variance/%Change are <span class="pill fx">fx</span> formula cells, already locked).
+</div>
+
+<div class="grid">
+<table>
+<thead>
+<tr>
+  <th>GL Code</th>
+  <th>Description</th>
+  <th class="editable">Prior Year</th>
+  <th class="editable">YTD Actual</th>
+  <th class="editable">Accrual</th>
+  <th class="editable">Unpaid</th>
+  <th>Estimate (fx)</th>
+  <th>Forecast (fx)</th>
+  <th class="editable">Current Budget</th>
+  <th class="editable">Increase %</th>
+  <th>Proposed (fx)</th>
+  <th>Variance (fx)</th>
+  <th>% Change (fx)</th>
+  <th class="editable">Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>5610-0000</td>
+  <td>Repairs - Plumbing</td>
+  <td><input class="cell editable" value="12,540"></td>
+  <td><input class="cell editable" value="4,820"></td>
+  <td><input class="cell editable" value="0"></td>
+  <td><input class="cell editable" value="0"></td>
+  <td><input class="cell fx" value="9,640" disabled></td>
+  <td><input class="cell fx" value="14,460" disabled></td>
+  <td><input class="cell editable" value="13,000"></td>
+  <td><input class="cell editable" value="3.0%"></td>
+  <td><input class="cell fx" value="13,390" disabled></td>
+  <td><input class="cell fx" value="-1,070" disabled></td>
+  <td><input class="cell fx" value="-7.4%" disabled></td>
+  <td><input class="cell editable" value=""></td>
+</tr>
+<tr>
+  <td>5620-0000</td>
+  <td>Repairs - Electrical</td>
+  <td><input class="cell editable" value="8,200"></td>
+  <td><input class="cell editable" value="2,150"></td>
+  <td><input class="cell editable" value="500"></td>
+  <td><input class="cell editable" value="0"></td>
+  <td><input class="cell fx" value="5,300" disabled></td>
+  <td><input class="cell fx" value="7,950" disabled></td>
+  <td><input class="cell editable" value="8,500"></td>
+  <td><input class="cell editable" value="2.0%"></td>
+  <td><input class="cell fx" value="8,670" disabled></td>
+  <td><input class="cell fx" value="-720" disabled></td>
+  <td><input class="cell fx" value="-9.1%" disabled></td>
+  <td><input class="cell editable" value=""></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ AFTER ============ -->
+<h2 class="after">✅ AFTER — Proposed (only 2 editable cells per row, either-or)</h2>
+<div class="annot-band">
+PM can ONLY edit two cells per row: <strong>Increase %</strong> (existing) <em>or</em> <strong>Increase $</strong> (new). Entering one auto-clears the other. Everything else is locked (grey, not-allowed cursor, disabled inputs).
+</div>
+
+<div class="grid">
+<table>
+<thead>
+<tr>
+  <th>GL Code</th>
+  <th>Description</th>
+  <th>Prior Year</th>
+  <th>YTD Actual</th>
+  <th>Accrual</th>
+  <th>Unpaid</th>
+  <th>Estimate (fx)</th>
+  <th>Forecast (fx)</th>
+  <th>Current Budget</th>
+  <th class="editable">Increase %</th>
+  <th class="new-col">Increase $ <small style="font-weight:normal;display:block;text-transform:none;letter-spacing:0;margin-top:2px;">NEW · either/or</small></th>
+  <th>Proposed (fx)</th>
+  <th>Variance (fx)</th>
+  <th>% Change (fx)</th>
+  <th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>5610-0000</td>
+  <td>Repairs - Plumbing</td>
+  <td><input class="cell locked" value="12,540" disabled></td>
+  <td><input class="cell locked" value="4,820" disabled></td>
+  <td><input class="cell locked" value="0" disabled></td>
+  <td><input class="cell locked" value="0" disabled></td>
+  <td><input class="cell fx" value="9,640" disabled></td>
+  <td><input class="cell fx" value="14,460" disabled></td>
+  <td><input class="cell locked" value="13,000" disabled></td>
+  <td><input class="cell editable" value="3.0%"></td>
+  <td><input class="cell new-col" placeholder="$ amount" value=""></td>
+  <td><input class="cell fx" value="13,390" disabled></td>
+  <td><input class="cell fx" value="-1,070" disabled></td>
+  <td><input class="cell fx" value="-7.4%" disabled></td>
+  <td><input class="cell locked" value="" disabled></td>
+</tr>
+<tr>
+  <td>5620-0000</td>
+  <td>Repairs - Electrical</td>
+  <td><input class="cell locked" value="8,200" disabled></td>
+  <td><input class="cell locked" value="2,150" disabled></td>
+  <td><input class="cell locked" value="500" disabled></td>
+  <td><input class="cell locked" value="0" disabled></td>
+  <td><input class="cell fx" value="5,300" disabled></td>
+  <td><input class="cell fx" value="7,950" disabled></td>
+  <td><input class="cell locked" value="8,500" disabled></td>
+  <td><input class="cell editable" placeholder="—" value=""></td>
+  <td><input class="cell new-col" value="$1,500"></td>
+  <td><input class="cell fx" value="10,000" disabled></td>
+  <td><input class="cell fx" value="-1,500" disabled></td>
+  <td><input class="cell fx" value="-17.6%" disabled></td>
+  <td><input class="cell locked" value="" disabled></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ EITHER-OR LOGIC ============ -->
+<div class="change-summary">
+<h3>📐 Either-or logic — how the two new columns interact</h3>
+<div class="scenario">
+  <h4>Scenario A: PM enters Increase % = 5%</h4>
+  <div class="row">→ Proposed Budget = <code>current_budget × (1 + 5%)</code></div>
+  <div class="row">→ Increase $ column auto-clears (blank).</div>
+  <div class="row">→ Database stores: <code>increase_pct=0.05, increase_dollar=NULL</code></div>
+</div>
+<div class="scenario">
+  <h4>Scenario B: PM enters Increase $ = $1,500</h4>
+  <div class="row">→ Proposed Budget = <code>current_budget + $1,500</code></div>
+  <div class="row">→ Increase % column auto-clears (blank).</div>
+  <div class="row">→ Database stores: <code>increase_pct=NULL, increase_dollar=1500</code></div>
+</div>
+<div class="scenario">
+  <h4>Scenario C: PM clears both</h4>
+  <div class="row">→ Proposed Budget = <code>current_budget</code> (no change).</div>
+  <div class="row">→ Database stores: <code>increase_pct=NULL, increase_dollar=NULL</code></div>
+</div>
+</div>
+
+<!-- ============ CHANGE SUMMARY ============ -->
+<div class="change-summary">
+<h3>🛠 Summary of code changes</h3>
+<ul>
+  <li><span class="pill lock">LOCK</span> Disable inputs on: <code>prior_year</code>, <code>ytd_actual</code>, <code>accrual_adj</code>, <code>unpaid_bills</code>, <code>current_budget</code>, <code>notes</code> — all get <code>disabled</code> attr, grey background, not-allowed cursor.</li>
+  <li><span class="pill keep">KEEP</span> Increase % column stays editable as today.</li>
+  <li><span class="pill new">NEW</span> Add <strong>Increase $</strong> column right next to Increase %. Inputs format as <code>$1,500</code>. Either-or with %: typing in one clears the other.</li>
+  <li><span class="pill new">NEW</span> Schema: add <code>BudgetLine.increase_dollar</code> column (float, nullable). Migration via existing <code>_run_idempotent_migrations()</code>.</li>
+  <li><span class="pill fx">FX</span> Proposed Budget formula updated:<br>
+    &nbsp;&nbsp;<code>if increase_dollar is not None:</code> proposed = current_budget + increase_dollar<br>
+    &nbsp;&nbsp;<code>elif increase_pct is not None:</code> proposed = current_budget × (1 + increase_pct)<br>
+    &nbsp;&nbsp;<code>else:</code> proposed = current_budget</li>
+  <li><span class="pill keep">KEEP</span> All other UX: invoice drill-down, reclass proposals, "Submit to FA" button, audit trail to <code>budget_revisions</code> — unchanged.</li>
+</ul>
+</div>
+
+<div class="change-summary" style="background:#fef3c7; border-color:#fcd34d;">
+<h3 style="color:#92400e;">❓ Three open questions before I ship</h3>
+<ol style="margin:0; padding-left:22px; font-size:13px; color:#78350f; line-height:1.8;">
+  <li><strong>Notes column:</strong> The FA said "lock all cells except for the proposed budget increase column." Strictly that locks Notes too. But Notes is the PM's way to explain <em>why</em> they're proposing a change. <strong>Lock Notes too (strict), or keep Notes editable?</strong></li>
+  <li><strong>Sign of $ amount:</strong> Should the PM be allowed to enter a negative $ amount (decrease the budget)? I'd say yes — same as how % can be negative today.</li>
+  <li><strong>Format of $ field:</strong> Auto-format on blur as <code>$1,500</code> (with comma + dollar sign) or strict raw number? Comma+$ is friendlier; I'd default to that unless you prefer otherwise.</li>
+</ol>
+</div>
+
+<div class="change-summary" style="background:#d1fae5; border-color:#16a34a;">
+<h3 style="color:#065f46;">✅ Confirm to ship</h3>
+<p style="margin:0; font-size:13px; color:#065f46;">
+Reply with your answers to the 3 questions above (or "go with defaults" — Notes locked, negatives allowed, comma+$ format), and I'll ship in ~30 min.
+</p>
+</div>
+
+</div>
+
+</body>
+</html>

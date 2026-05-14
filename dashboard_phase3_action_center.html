@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard Phase 3 — true Action Center landing</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: white;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+    --red: #ef4444;
+    --red-50: #fef2f2;
+    --red-100: #fee2e2;
+    --red-700: #b91c1c;
+    --green: #16a34a;
+    --green-50: #f0fdf4;
+    --green-100: #dcfce7;
+    --green-700: #15803d;
+    --amber: #f59e0b;
+    --amber-50: #fffbeb;
+    --amber-100: #fef3c7;
+    --amber-700: #b45309;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
+    --brown: #5a4a3f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .container { max-width: 1280px; margin: 24px auto; padding: 0 32px 80px; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  h2.section { font-size: 20px; margin: 40px 0 14px; border-bottom: 2px solid var(--gray-200); padding-bottom: 8px; }
+  h3.sub { font-size: 15px; font-weight: 700; margin: 20px 0 10px; color: #1f2937; }
+  .lede { color: var(--muted); margin-bottom: 28px; font-size: 14px; }
+
+  .callout {
+    background: var(--amber-50);
+    border-left: 4px solid var(--amber);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin: 16px 0;
+  }
+  .callout strong { color: #92400e; }
+
+  /* Diagnosis table */
+  .dx-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    margin: 12px 0;
+  }
+  .dx-table th {
+    background: #f9fafb;
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    border-bottom: 2px solid var(--border);
+  }
+  .dx-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--gray-100);
+    vertical-align: top;
+  }
+  .dx-table tr:last-child td { border-bottom: none; }
+  .dx-table .count {
+    font-weight: 700;
+    color: var(--red);
+    text-align: center;
+  }
+
+  /* Mockup styling — same as prior preview */
+  .dash-wrap {
+    background: var(--bg);
+    border: 1px solid var(--gray-300);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 12px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .mockup-label {
+    background: var(--red-50);
+    color: var(--red-700);
+    padding: 6px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    display: inline-block;
+    border-radius: 4px 4px 0 0;
+  }
+  .mockup-label.good {
+    background: var(--green-50);
+    color: var(--green-700);
+  }
+  .header-strip {
+    background: var(--brown);
+    color: white;
+    padding: 14px 18px;
+  }
+  .header-strip h2 { margin: 0 0 4px; font-size: 17px; }
+  .header-strip .meta { font-size: 11px; opacity: 0.85; }
+
+  /* Status pipeline + KPI cards */
+  .pipeline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+    font-size: 11px;
+    flex-wrap: wrap;
+  }
+  .pipe-step {
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--gray-100);
+    color: var(--muted);
+  }
+  .pipe-step.done { background: var(--green-100); color: var(--green-700); }
+  .pipe-step.current { background: var(--red-100); color: var(--red-700); font-weight: 600; }
+  .pipe-arrow { color: var(--gray-400); }
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 8px;
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .kpi {
+    padding: 8px 10px;
+    border-radius: 5px;
+    background: var(--gray-100);
+  }
+  .kpi.pos { background: var(--green-50); }
+  .kpi .num { font-size: 15px; font-weight: 700; color: var(--text); }
+  .kpi.pos .num { color: var(--green-700); }
+  .kpi .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; }
+
+  /* Old-style: panels stacked */
+  .old-panel {
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+    padding: 11px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+  }
+  .old-panel .title { font-weight: 600; }
+  .old-panel.warning { background: #fef5f5; }
+  .old-panel.attention { background: var(--amber-50); }
+  .old-readiness {
+    background: #fef5f5;
+    padding: 12px 16px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .old-readiness h3 { margin: 0 0 6px; font-size: 13px; }
+  .old-readiness .gate {
+    display: flex;
+    gap: 8px;
+    padding: 4px 0;
+    align-items: center;
+  }
+  .old-readiness .gate.bad { color: var(--red-700); }
+  .old-readiness .gate.warn { color: var(--amber-700); }
+  .old-readiness .gate.ok { color: var(--green-700); }
+
+  /* NEW: Action Center */
+  .action-center {
+    background: white;
+    padding: 0;
+    border-radius: 0;
+  }
+  .ac-header {
+    padding: 14px 18px;
+    background: linear-gradient(to right, #fef3c7, white 30%);
+    border-bottom: 1px solid var(--gray-200);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .ac-header .ac-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1f2937;
+  }
+  .ac-counts {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .ac-counts span {
+    padding: 3px 9px;
+    border-radius: 999px;
+  }
+  .ac-counts .blocker { background: var(--red-100); color: var(--red-700); }
+  .ac-counts .warn { background: var(--amber-100); color: var(--amber-700); }
+  .ac-counts .ok { background: var(--green-100); color: var(--green-700); }
+
+  .ac-group {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--gray-100);
+  }
+  .ac-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .ac-group.blockers .ac-group-title { color: var(--red-700); }
+  .ac-group.warnings .ac-group-title { color: var(--amber-700); }
+  .ac-group.complete .ac-group-title { color: var(--green-700); }
+
+  .ac-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid var(--gray-100);
+    font-size: 13px;
+  }
+  .ac-item:first-of-type { border-top: none; }
+  .ac-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .ac-icon.bad { background: var(--red-100); color: var(--red-700); }
+  .ac-icon.warn { background: var(--amber-100); color: var(--amber-700); }
+  .ac-icon.ok { background: var(--green-100); color: var(--green-700); }
+  .ac-text { flex: 1; }
+  .ac-label { font-weight: 600; }
+  .ac-detail { font-size: 11px; color: var(--muted); }
+  .ac-button {
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--blue-light);
+    color: var(--brown);
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .ac-button.primary {
+    background: var(--red);
+    color: white;
+  }
+
+  /* Inline-expand demo */
+  .ac-item-expanded {
+    background: var(--amber-50);
+    padding: 12px 14px;
+    border-radius: 8px;
+    margin-top: 8px;
+    font-size: 11px;
+  }
+  .ac-item-expanded ul {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+  .ac-item-expanded li { padding: 2px 0; }
+
+  /* Pending edits chip */
+  .pending-chip {
+    margin: 12px 18px;
+    padding: 10px 14px;
+    background: var(--amber);
+    color: white;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .pending-chip .arrow { margin-left: auto; opacity: 0.7; }
+
+  /* Big CTAs */
+  .cta-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 10px;
+    padding: 14px 18px;
+    background: var(--gray-50);
+  }
+  .cta {
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: white;
+    border: 1px solid var(--gray-200);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cta:hover { background: var(--blue-light); border-color: var(--blue); }
+  .cta.primary {
+    background: var(--brown);
+    color: white;
+    border: none;
+  }
+  .cta.primary:hover { background: #4a3a30; }
+  .cta .cta-title { font-size: 14px; font-weight: 700; }
+  .cta .cta-sub { font-size: 11px; opacity: 0.7; }
+
+  /* Workbook view */
+  .workbook-strip {
+    background: var(--gray-100);
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    border-top: 1px solid var(--gray-200);
+  }
+  .workbook-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 14px;
+    background: white;
+    border-bottom: 2px solid var(--gray-200);
+  }
+  .workbook-tab {
+    padding: 8px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+  }
+  .workbook-tab.active { color: var(--blue); border-bottom-color: var(--blue); background: white; }
+
+  /* Back link */
+  .back-link {
+    padding: 8px 14px;
+    background: var(--gray-50);
+    border-bottom: 1px solid var(--gray-200);
+    font-size: 11px;
+  }
+  .back-link a { color: var(--blue); text-decoration: none; }
+
+  /* Side-by-side */
+  .ba-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 16px 0;
+  }
+
+  /* PM chip */
+  .pm-status-strip {
+    padding: 10px 18px;
+    background: white;
+    border-bottom: 1px solid var(--gray-200);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .badge-gray { background: var(--gray-100); color: var(--gray-500); }
+  .badge-green { background: var(--green-100); color: var(--green-700); }
+
+  /* Tabs */
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--gray-200);
+    margin: 20px 0 16px;
+  }
+  .tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Dashboard Phase 3 — true Action Center landing</h1>
+  <p class="lede">Phase 2 (yesterday) hid panels. This is the real fix: separate the "what needs my attention" page from the "edit the numbers" page. Consolidates 9 readiness gates + 2 wizard sidebar cards + 2 below-the-workbook warnings + 1 summary-tab warning into ONE prioritized action list with click-through expansion.</p>
+
+  <h2 class="section">The diagnosis — what your screenshot showed me</h2>
+  <table class="dx-table">
+    <thead>
+      <tr><th>Information</th><th class="count">Places it shows</th><th>What that looks like</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>"Period not set"</strong></td>
+        <td class="count">3</td>
+        <td>Readiness gate · Red warning bar below workbook header · Workbook math fallback</td>
+      </tr>
+      <tr>
+        <td><strong>FY2025 Audit confirmed</strong></td>
+        <td class="count">3</td>
+        <td>Readiness "Source files" gate · Readiness "Audit confirmed" gate · "Uploaded → Extracted → Mapped → Confirmed" strip below workbook header</td>
+      </tr>
+      <tr>
+        <td><strong>6 labels won't aggregate</strong></td>
+        <td class="count">3</td>
+        <td>Readiness "Approved-file labels" gate · Wizard sidebar NOTES · Wizard sidebar PRE-IMPORT LABEL CHECK card</td>
+      </tr>
+      <tr>
+        <td><strong>Orphan GL / duplicate row</strong></td>
+        <td class="count">2</td>
+        <td>Readiness gates · Inline warnings on the Summary tab</td>
+      </tr>
+      <tr>
+        <td><strong>Broken click-through</strong></td>
+        <td class="count">1 bug</td>
+        <td>Clicking "Approved-file labels" jumps to <code>/api/wizard/&lt;ec&gt;/scan-findings</code> — raw JSON. <strong>This is on me. Will be fixed.</strong></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>The root cause:</strong> these aren't 4 separate concerns surfaced in 4 different ways. They're all the SAME concern ("what does the FA need to do next?") rendered in parallel places. The fix is one consolidated panel where each item exists exactly once, with an action button that actually goes somewhere useful.
+  </div>
+
+  <h2 class="section">The structural move — two pages, not one</h2>
+  <p>Your instinct is right. The mental model is:</p>
+  <ul style="font-size: 13px; line-height: 1.8;">
+    <li><strong>"What needs my attention?"</strong> — health, readiness, warnings, action items. A landing page.</li>
+    <li><strong>"Let me edit the numbers."</strong> — the workbook tabs. A focused page.</li>
+  </ul>
+  <p>Two separate URLs:</p>
+  <ul style="font-size: 13px; line-height: 1.8;">
+    <li><code>/dashboard/&lt;ec&gt;</code> → <strong>Action Center landing (NEW)</strong></li>
+    <li><code>/dashboard/&lt;ec&gt;/workbook</code> → <strong>Workbook view (existing, stripped down)</strong></li>
+  </ul>
+  <p>The Action Center is the default landing. Click "Open Workbook" or any tab name to switch.</p>
+
+  <div class="tab-bar">
+    <div class="tab active" onclick="showTab(0)">Action Center landing</div>
+    <div class="tab" onclick="showTab(1)">Workbook view</div>
+    <div class="tab" onclick="showTab(2)">Click-through fix</div>
+    <div class="tab" onclick="showTab(3)">Implementation plan</div>
+  </div>
+
+  <!-- TAB 1: Action Center landing -->
+  <div id="tab-0">
+    <h2 class="section">Side-by-side: today's prod vs Action Center landing</h2>
+
+    <div class="ba-grid">
+      <!-- CURRENT (from screenshot) -->
+      <div>
+        <div class="mockup-label">Today on prod (your screenshot)</div>
+        <div class="dash-wrap">
+          <div class="header-strip">
+            <h2>130 E. 18 Owners Corp.</h2>
+            <div class="meta">Entity 148 | 2027 Budget | FA: Kristy | PM: Jacob</div>
+          </div>
+          <div class="kpi-row">
+            <div class="kpi"><div class="num">$13,823,802</div><div class="lbl">Prior Year</div></div>
+            <div class="kpi"><div class="num">$13,886,487</div><div class="lbl">Current</div></div>
+            <div class="kpi pos"><div class="num">+$62,685</div><div class="lbl">Variance</div></div>
+            <div class="kpi pos"><div class="num">0.5% ▲</div><div class="lbl">% Change</div></div>
+          </div>
+          <div class="old-panel">
+            <span class="title">PM Expense Review</span>
+            <span class="badge badge-gray">Not Sent</span>
+            <span style="color:var(--muted);font-size:10px;">Jacob Sirotkin</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--blue);">[Send to PM →]</span>
+          </div>
+          <div style="background:white;padding:6px 14px;font-size:11px;color:var(--muted);">▶ PM detail</div>
+          <div class="old-readiness">
+            <h3>Readiness · 3 of 9 ready · 2 blockers · 4 warnings</h3>
+            <div class="gate ok">✓ Source files found</div>
+            <div class="gate ok">✓ Audit confirmed</div>
+            <div class="gate bad">✕ Period set — Forecast will use default 2-month YTD</div>
+            <div class="gate ok">✓ Building type</div>
+            <div class="gate warn">⚠ 1 GL not aggregated</div>
+            <div class="gate warn">⚠ 1 duplicate set</div>
+            <div class="gate warn">⚠ Payroll reviewed</div>
+            <div class="gate bad">✕ 6 labels won't aggregate</div>
+            <div class="gate warn">⚠ Budget generated</div>
+          </div>
+          <div class="old-panel warning">
+            <span>⚠ <strong>Period not set</strong> — YTD/forecast formulas using default 2-month YTD.</span>
+            <span style="font-size:11px;color:var(--red);font-weight:600;">[Set period]</span>
+          </div>
+          <div class="old-panel" style="background:#f0fdf4;font-size:10px;">
+            FY2025 Audit: ● Uploaded → ● Extracted → ● Mapped → ● Confirmed ✓
+          </div>
+          <div class="workbook-tabs">
+            <div class="workbook-tab active">Summary</div>
+            <div class="workbook-tab">Income</div>
+            <div class="workbook-tab">Payroll</div>
+            <div class="workbook-tab">Energy</div>
+            <div class="workbook-tab">…</div>
+          </div>
+          <div class="old-panel attention" style="font-size:10px;">
+            <span>⚠ Duplicate row warning · Summary · Rows: Real Estate Taxes, Real Estate Tax Benefit Credits — share GL 6315</span>
+          </div>
+          <div class="workbook-strip">[Summary tab content]</div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px;">
+          ~9 separate visual elements competing for attention. Same info shown in 2-3 places.
+        </p>
+      </div>
+
+      <!-- PROPOSED -->
+      <div>
+        <div class="mockup-label good">Proposed Action Center landing</div>
+        <div class="dash-wrap">
+          <div class="header-strip">
+            <h2>130 E. 18 Owners Corp.</h2>
+            <div class="meta">Entity 148 | 2027 Budget | FA: Kristy | PM: Jacob</div>
+          </div>
+          <div class="pipeline">
+            <span class="pipe-step current">● Draft</span>
+            <span class="pipe-arrow">›</span>
+            <span class="pipe-step">PM Review</span>
+            <span class="pipe-arrow">›</span>
+            <span class="pipe-step">FA Review</span>
+            <span class="pipe-arrow">›</span>
+            <span class="pipe-step">Approved</span>
+          </div>
+          <div class="kpi-row">
+            <div class="kpi"><div class="num">$13,823,802</div><div class="lbl">Prior Year</div></div>
+            <div class="kpi"><div class="num">$13,886,487</div><div class="lbl">Current</div></div>
+            <div class="kpi pos"><div class="num">+$62,685</div><div class="lbl">Variance</div></div>
+            <div class="kpi pos"><div class="num">0.5% ▲</div><div class="lbl">% Change</div></div>
+          </div>
+          <div class="pm-status-strip">
+            <span style="font-weight:600;">📤 PM Expense Review</span>
+            <span class="badge badge-gray">Not Sent</span>
+            <span style="color:var(--muted);">Jacob Sirotkin</span>
+            <a class="ac-button" style="margin-left:auto;">Send to PM →</a>
+          </div>
+          <div class="action-center">
+            <div class="ac-header">
+              <span class="ac-title">⚡ Action Center</span>
+              <div class="ac-counts">
+                <span class="blocker">2 blockers</span>
+                <span class="warn">4 warnings</span>
+                <span class="ok">3 ready</span>
+              </div>
+            </div>
+
+            <div class="ac-group blockers">
+              <div class="ac-group-title">🔴 Blockers — must resolve before generating</div>
+              <div class="ac-item">
+                <span class="ac-icon bad">✕</span>
+                <div class="ac-text">
+                  <div class="ac-label">Period not set</div>
+                  <div class="ac-detail">Forecast formulas are using default 2-month YTD until you set the period</div>
+                </div>
+                <a class="ac-button primary">Set period</a>
+              </div>
+              <div class="ac-item">
+                <span class="ac-icon bad">✕</span>
+                <div class="ac-text">
+                  <div class="ac-label">6 approved-file labels won't aggregate</div>
+                  <div class="ac-detail">Click to see which labels and what they should map to</div>
+                </div>
+                <a class="ac-button primary">Review</a>
+              </div>
+              <!-- Inline expansion when "Review" is clicked -->
+              <div class="ac-item-expanded">
+                <strong style="font-size:11px;">6 unmapped labels in <code>148 - 130 East 18th Street 2026 Budget -Approved.xlsx</code>:</strong>
+                <ul>
+                  <li>Commercial Rent Escalations <span style="color:var(--muted);">→ no canonical row yet</span></li>
+                  <li>Cable TV <span style="color:var(--muted);">→ "Cable TV (new canonical row needed)"</span></li>
+                  <li>Prior Year Surplus <span style="color:var(--muted);">→ per-building manual</span></li>
+                  <li>Apt. 8J Acquisition <span style="color:var(--muted);">→ per-building manual</span></li>
+                  <li>Other Source of Funds <span style="color:var(--muted);">→ no canonical row yet</span></li>
+                  <li>Mortgage Prepayment Premium <span style="color:var(--muted);">→ per-building manual</span></li>
+                </ul>
+                <div style="margin-top:6px;display:flex;gap:6px;">
+                  <a class="ac-button">Open canonical map</a>
+                  <a class="ac-button">Mark all as manual</a>
+                  <a class="ac-button">Re-scan</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="ac-group warnings">
+              <div class="ac-group-title">🟡 Warnings — review before submitting</div>
+              <div class="ac-item">
+                <span class="ac-icon warn">!</span>
+                <div class="ac-text">
+                  <div class="ac-label">1 unmapped GL: 4520-0000 Commercial Real Estate Tax</div>
+                  <div class="ac-detail">$-135 YTD, $21,498 budget · needs to be added as a summary row or override per building</div>
+                </div>
+                <a class="ac-button">+ Add Row</a>
+              </div>
+              <div class="ac-item">
+                <span class="ac-icon warn">!</span>
+                <div class="ac-text">
+                  <div class="ac-label">1 duplicate row set</div>
+                  <div class="ac-detail">"Real Estate Taxes" + "Real Estate Tax Benefit Credits" both pull GL 6315</div>
+                </div>
+                <a class="ac-button">Review</a>
+              </div>
+              <div class="ac-item">
+                <span class="ac-icon warn">!</span>
+                <div class="ac-text">
+                  <div class="ac-label">No payroll positions configured</div>
+                  <div class="ac-detail">Add positions on the Payroll tab</div>
+                </div>
+                <a class="ac-button">Add positions</a>
+              </div>
+              <div class="ac-item">
+                <span class="ac-icon warn">!</span>
+                <div class="ac-text">
+                  <div class="ac-label">Budget not yet generated</div>
+                  <div class="ac-detail">Generate when upstream blockers and warnings are resolved</div>
+                </div>
+                <span style="font-size:11px;color:var(--gray-400);">Blocked</span>
+              </div>
+            </div>
+
+            <div class="ac-group complete">
+              <div class="ac-group-title">✅ 3 things complete (click to expand)</div>
+              <div class="ac-item" style="opacity:0.7;">
+                <span class="ac-icon ok">✓</span>
+                <div class="ac-text">
+                  <div class="ac-label">FY2025 audit uploaded and confirmed</div>
+                  <div class="ac-detail">Confirmed 2026-05-13 by system</div>
+                </div>
+              </div>
+              <div class="ac-item" style="opacity:0.7;">
+                <span class="ac-icon ok">✓</span>
+                <div class="ac-text">
+                  <div class="ac-label">Building type set: Co-op</div>
+                </div>
+              </div>
+              <div class="ac-item" style="opacity:0.7;">
+                <span class="ac-icon ok">✓</span>
+                <div class="ac-text">
+                  <div class="ac-label">Source files present</div>
+                  <div class="ac-detail">4 of 5 sources uploaded · 1 optional source missing</div>
+                </div>
+                <a class="ac-button">View</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="pending-chip">
+            ⚠ 41 items pending PM/FA review <span class="arrow">→</span>
+          </div>
+
+          <div class="cta-row">
+            <div class="cta primary">
+              <div class="cta-title">📊 Open Workbook →</div>
+              <div class="cta-sub">Edit budget numbers across all tabs</div>
+            </div>
+            <div class="cta">
+              <div class="cta-title">📋 Board Presentation</div>
+              <div class="cta-sub">Generate slide deck</div>
+            </div>
+            <div class="cta">
+              <div class="cta-title">📥 Download Excel</div>
+              <div class="cta-sub">Export current state</div>
+            </div>
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px;">
+          One Action Center panel. Each item exists exactly once. Click-through actions all work.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: Workbook view -->
+  <div id="tab-1" style="display:none;">
+    <h2 class="section">The Workbook view — clean, focused</h2>
+    <p>Same URL when you click "Open Workbook" or click into any tab. No readiness panel. No wizard sidebar. No below-workbook warnings (they all moved to the Action Center). Just the budget.</p>
+    <div class="dash-wrap">
+      <div class="header-strip">
+        <h2>130 E. 18 Owners Corp. — Workbook</h2>
+        <div class="meta">Entity 148 | 2027 Budget | FA: Kristy | PM: Jacob</div>
+      </div>
+      <div class="back-link">
+        <a>← Back to Action Center</a>
+        <span style="color:var(--muted);margin-left:14px;">2 blockers · 4 warnings · 3 ready</span>
+      </div>
+      <div class="pipeline">
+        <span class="pipe-step current">● Draft</span>
+        <span class="pipe-arrow">›</span>
+        <span class="pipe-step">PM Review</span>
+        <span class="pipe-arrow">›</span>
+        <span class="pipe-step">FA Review</span>
+        <span class="pipe-arrow">›</span>
+        <span class="pipe-step">Approved</span>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><div class="num">$13,823,802</div><div class="lbl">Prior Year</div></div>
+        <div class="kpi"><div class="num">$13,886,487</div><div class="lbl">Current</div></div>
+        <div class="kpi pos"><div class="num">+$62,685</div><div class="lbl">Variance</div></div>
+        <div class="kpi pos"><div class="num">0.5% ▲</div><div class="lbl">% Change</div></div>
+      </div>
+      <div class="workbook-tabs">
+        <div class="workbook-tab active">Summary</div>
+        <div class="workbook-tab">Income</div>
+        <div class="workbook-tab">Payroll</div>
+        <div class="workbook-tab">Energy</div>
+        <div class="workbook-tab">Water &amp; Sewer</div>
+        <div class="workbook-tab">Repairs &amp; Supplies</div>
+        <div class="workbook-tab">Gen &amp; Admin</div>
+        <div class="workbook-tab">RE Taxes</div>
+        <div class="workbook-tab">Capital</div>
+        <div class="workbook-tab">Unmapped</div>
+      </div>
+      <div class="workbook-strip" style="min-height:300px;">
+        [Summary tab data — full real estate, no surrounding clutter.<br><br>
+        Tab-level warnings (orphan GL, duplicate row) still appear here at the top
+        of the relevant tab, in compact pill form, with a "Resolve in Action Center"
+        link.]
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px;">
+      The wizard sidebar (right side of screen) is replaced by the Action Center on the landing page.
+      In the workbook view, no sidebar — focused editing surface.
+    </p>
+  </div>
+
+  <!-- TAB 3: Click-through fix -->
+  <div id="tab-2" style="display:none;">
+    <h2 class="section">Click-through behavior — fixing the broken jumps</h2>
+    <p>Every action button on the Action Center goes somewhere useful. Three patterns:</p>
+
+    <h3 class="sub">Pattern 1: Inline expand (most readiness items)</h3>
+    <p>Click "Review" on "6 approved-file labels won't aggregate" → the item EXPANDS to show the full list inline (see Action Center mockup above). No page navigation. No JSON. Just the data, right there.</p>
+
+    <h3 class="sub">Pattern 2: In-page anchor + tab switch (most warnings)</h3>
+    <p>Click "+ Add Row" on "1 unmapped GL: 4520-0000" → switches to the workbook view + jumps to Summary tab + scrolls to the orphan warning row + opens the Add Row modal pre-filled.</p>
+
+    <h3 class="sub">Pattern 3: Dedicated review page (a few cases)</h3>
+    <p>Click "View" on "FY2025 audit confirmed" → navigates to <code>/audited-financials/review/&lt;upload_id&gt;</code> (already exists). Click "Open canonical map" → admin page at <code>/admin/portfolio-health</code>.</p>
+
+    <h3 class="sub">What's gone</h3>
+    <ul style="font-size:13px;line-height:1.7;">
+      <li><strong>Jumping to raw JSON endpoints</strong>. <code>/api/wizard/&lt;ec&gt;/scan-findings</code> is for the wizard sidebar JS only. The user never sees it directly.</li>
+      <li><strong>Anchor links to non-existent IDs</strong>. <code>#tab=Payroll</code> would silently do nothing if the JS handler isn't wired. Now every link is verified to have a receiver.</li>
+      <li><strong>Action buttons that say "Generate" before all upstream gates are green</strong>. Now disabled with a tooltip.</li>
+    </ul>
+  </div>
+
+  <!-- TAB 4: Implementation plan -->
+  <div id="tab-3" style="display:none;">
+    <h2 class="section">Implementation plan</h2>
+
+    <h3 class="sub">Routing</h3>
+    <ul style="font-size:13px;line-height:1.7;">
+      <li><code>/dashboard/&lt;ec&gt;</code> → renders the new Action Center (currently renders the workbook page)</li>
+      <li><code>/dashboard/&lt;ec&gt;/workbook</code> → renders the workbook view (the existing template, stripped of readiness/sidebar/warnings)</li>
+      <li>The two templates share the header strip, pipeline, KPI cards. Different bodies.</li>
+    </ul>
+
+    <h3 class="sub">Code changes</h3>
+    <table class="dx-table">
+      <thead>
+        <tr><th>Task</th><th>Where</th><th>Effort</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>New <code>ACTION_CENTER_TEMPLATE</code> with the consolidated panel</td>
+          <td>workflow.py — new template after BUILDING_DETAIL_TEMPLATE</td>
+          <td>~4 hours (HTML + CSS + JS for inline expand)</td>
+        </tr>
+        <tr>
+          <td>New endpoint <code>GET /dashboard/&lt;ec&gt;</code> renders ACTION_CENTER_TEMPLATE; existing route moves to <code>/dashboard/&lt;ec&gt;/workbook</code></td>
+          <td>workflow.py — split building_detail()</td>
+          <td>~30 min</td>
+        </tr>
+        <tr>
+          <td>New consolidated JS function <code>renderActionCenter()</code> — pulls from /api/readiness, /api/wizard/&lt;ec&gt;/scan-findings, /api/summary/&lt;ec&gt;.warnings, all in one call, dedupes</td>
+          <td>workflow.py JS in ACTION_CENTER_TEMPLATE</td>
+          <td>~3 hours</td>
+        </tr>
+        <tr>
+          <td>Remove duplicate warnings from workbook view: "Period not set" red bar, "FY2025 Audit progression" strip below workbook header, summary-tab orphan/duplicate warnings</td>
+          <td>workflow.py BUILDING_DETAIL_TEMPLATE — delete those sections</td>
+          <td>~1 hour</td>
+        </tr>
+        <tr>
+          <td>Fix the broken click-throughs (Approved-file labels → inline expand; everything else verified)</td>
+          <td>workflow.py readiness gates + ACTION_CENTER_TEMPLATE</td>
+          <td>~1 hour</td>
+        </tr>
+        <tr>
+          <td>Wizard sidebar moves to Action Center (becomes part of the consolidated list), no longer a separate floating panel</td>
+          <td>workflow.py initWizardSidebar — disable on Action Center, keep on workbook view</td>
+          <td>~30 min</td>
+        </tr>
+        <tr>
+          <td>Verify smoke 9/9 + Chrome screenshot pass</td>
+          <td>—</td>
+          <td>~30 min</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:13px;"><strong>Total: ~10-12 hours of work, one commit.</strong> Risk is medium — touches the most-visited page. Mitigation: roll out behind a query param flag (<code>?action_center=1</code>) for a day, then flip default.</p>
+
+    <h3 class="sub">Rollout safety</h3>
+    <ul style="font-size:13px;line-height:1.7;">
+      <li>Ship behind <code>?action_center=1</code> first — FA visits <code>/dashboard/148?action_center=1</code> to see the new view. Default URL still renders existing dashboard.</li>
+      <li>Verify it works on 168 + 148 + a condo + a building with no data</li>
+      <li>Flip the default after FA validates</li>
+      <li>Old workbook view always reachable via <code>?action_center=0</code> for a week as fallback</li>
+      <li>Keep the existing IDs/JS populators intact (same defensive pattern as Phase 2)</li>
+    </ul>
+
+    <h3 class="sub">What I'd build first</h3>
+    <p>Lowest risk path:</p>
+    <ol style="font-size:13px;line-height:1.8;">
+      <li><strong>Fix the Approved-file labels click-through right now</strong> (15 min) — point it to <code>/admin/portfolio-health#building-&lt;ec&gt;</code> instead of the JSON URL. Lands today.</li>
+      <li><strong>Remove the 3 duplicate warnings below the workbook header</strong> (1 hour) — period banner, audit progression strip, summary tab orphan/duplicate warnings. The Readiness panel covers them. Lands today.</li>
+      <li><strong>Then the big Action Center rebuild</strong> behind a feature flag. Lands later this week after we agree on the design.</li>
+    </ol>
+
+    <h3 class="sub">My honest take</h3>
+    <p style="font-size:13px;line-height:1.7;">
+      The two-page model is the right structural move. The current single-page is asking the FA to context-switch on the same screen between "diagnosing" and "editing" — that's why it feels busy even after Phase 2 hid panels.<br><br>
+      But — I should ship the quick wins (#1 + #2 above) <em>today</em> while you decide on the bigger restructure. If you greenlight the Action Center, I do that next. If you want to try a different approach (e.g. keep one page but reorganize more aggressively), tell me before I start.
+    </p>
+  </div>
+
+</div>
+
+<script>
+function showTab(n) {
+  for (let i = 0; i < 4; i++) {
+    const el = document.getElementById('tab-' + i);
+    if (el) el.style.display = (i === n) ? 'block' : 'none';
+  }
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach((t, i) => t.classList.toggle('active', i === n));
+}
+</script>
+</body>
+</html>

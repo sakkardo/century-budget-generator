@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Product Review — Visual Previews</title>
+<style>
+  :root {
+    --blue: #5a4a3f;
+    --blue-dark: #3f3329;
+    --blue-light: #f5efe7;
+    --green: #16a34a;
+    --green-dark: #166534;
+    --green-light: #f0fdf4;
+    --green-border: #bbf7d0;
+    --amber: #d97706;
+    --amber-dark: #92400e;
+    --amber-light: #fffbeb;
+    --amber-border: #fde68a;
+    --red: #dc2626;
+    --red-dark: #991b1b;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    background: var(--gray-50);
+    color: var(--gray-800);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .container { max-width: 1180px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 24px; margin: 0 0 8px; color: var(--blue); }
+  h2 { font-size: 18px; margin: 32px 0 12px; color: var(--blue); border-bottom: 2px solid var(--blue-light); padding-bottom: 6px; }
+  h3 { font-size: 14px; margin: 16px 0 8px; color: var(--gray-700); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+  .lead { font-size: 14px; color: var(--gray-600); margin-bottom: 24px; }
+
+  .preview-card {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .preview-card .label {
+    background: var(--blue);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 14px;
+  }
+  .preview-card .body { padding: 18px 20px; }
+
+  /* Mock building dashboard header */
+  .mock-header {
+    background: linear-gradient(135deg, var(--blue), var(--blue-dark));
+    color: white;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .mock-header h1 { color: white; font-size: 18px; margin: 0; }
+  .mock-meta { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+  .mock-fa-chip {
+    background: rgba(34,197,94,0.18);
+    border: 1px solid rgba(34,197,94,0.5);
+    border-radius: 18px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  /* === UNIFIED STATUS BLOCK preview === */
+  .ub-block { border-bottom: 1px solid var(--gray-200); }
+  .ub-row {
+    display: grid;
+    grid-template-columns: 28px 180px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 9px 20px;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+  }
+  .ub-row:last-child { border-bottom: none; }
+  .ub-dot {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; border: 1.5px solid;
+  }
+  .ub-dot.ok    { background: var(--green-light); color: var(--green); border-color: var(--green); }
+  .ub-dot.warn  { background: var(--amber-light); color: var(--amber); border-color: var(--amber); }
+  .ub-dot.fail  { background: #fef2f2; color: var(--red); border-color: var(--red); }
+  .ub-dot.new   { background: #eff6ff; color: #2563eb; border-color: #2563eb; }
+  .ub-label { font-weight: 600; color: var(--gray-700); font-size: 13px; }
+  .ub-detail { color: var(--gray-600); font-size: 12px; }
+  .ub-action { white-space: nowrap; }
+  .ub-action a, .ub-action button {
+    padding: 4px 10px; font-size: 11px; font-weight: 600;
+    background: transparent; border: 1px solid;
+    border-radius: 4px; cursor: pointer;
+    text-decoration: none; display: inline-block;
+  }
+  .ub-action.ok-action a    { color: var(--green); border-color: var(--green); }
+  .ub-action.warn-action a  { color: var(--amber); border-color: var(--amber); }
+  .ub-action.fail-action a  { color: var(--red); border-color: var(--red); }
+  .ub-action.new-action a   { color: #2563eb; border-color: #2563eb; }
+
+  .ub-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px;
+    background: var(--green-light);
+    cursor: pointer; user-select: none;
+  }
+  .ub-header h3 { color: var(--green-dark); margin: 0; font-size: 13px; }
+  .ub-summary { font-size: 12px; color: var(--green-dark); font-weight: 600; }
+
+  .ub-section-divider {
+    background: var(--gray-100);
+    padding: 8px 20px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--gray-500);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-top: 1px solid var(--gray-200);
+    border-bottom: 1px solid var(--gray-200);
+  }
+
+  /* Annotation strip for callouts */
+  .annot {
+    background: #fef3c7;
+    border-left: 3px solid #f59e0b;
+    padding: 8px 14px;
+    font-size: 11px;
+    color: #92400e;
+    font-style: italic;
+  }
+
+  /* Comparison cards */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .compare > div {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .compare h4 {
+    margin: 0 0 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--gray-500);
+  }
+  .compare h4 .red { color: var(--red); }
+  .compare h4 .green { color: var(--green); }
+
+  /* Inline-style RE Tax tab "before" mockup (showing the visual fragmentation) */
+  .re-old {
+    background: #f8fafc;
+    color: #0f172a;
+    font-family: "SF Mono", Menlo, monospace;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    padding: 12px;
+    font-size: 11px;
+  }
+  .re-old .label { color: #2563eb; }
+  .re-old .input { background: #ffffff; border: 1px solid #94a3b8; padding: 2px 6px; font-family: monospace; }
+
+  /* Code-style block */
+  pre {
+    background: #1e293b; color: #e2e8f0;
+    padding: 12px 16px; border-radius: 6px;
+    font-size: 12px; overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre .c { color: #94a3b8; }
+  pre .k { color: #f472b6; }
+  pre .s { color: #fbbf24; }
+
+  table.priorities {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.priorities th, table.priorities td {
+    border: 1px solid var(--gray-200);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.priorities th {
+    background: var(--blue-light);
+    color: var(--blue);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  table.priorities tr.tier-1 td:first-child { background: #fef2f2; color: var(--red-dark); font-weight: 700; }
+  table.priorities tr.tier-2 td:first-child { background: var(--amber-light); color: var(--amber-dark); font-weight: 700; }
+  table.priorities tr.tier-3 td:first-child { background: var(--green-light); color: var(--green-dark); font-weight: 700; }
+  table.priorities tr.tier-4 td:first-child { background: var(--gray-100); color: var(--gray-600); font-weight: 600; }
+
+  .effort {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .effort-s { background: #d1fae5; color: #065f46; }
+  .effort-m { background: #fef3c7; color: #92400e; }
+  .effort-l { background: #fecaca; color: #991b1b; }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<h1>Century Budget App — Product Review</h1>
+<p class="lead">
+Synthesis of Plan agent (architecture) + Explore agent (code health) audits + live observations. Three preview mockups below show the highest-impact UX changes.
+</p>
+
+<!-- ===== SECTION 1: PRIORITY TABLE ===== -->
+<h2>Ranked recommendations (impact ÷ effort)</h2>
+
+<table class="priorities">
+  <thead>
+    <tr>
+      <th>Tier</th>
+      <th>Recommendation</th>
+      <th>Why it matters</th>
+      <th>Effort</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <tr class="tier-3">
+      <td>QUICK</td>
+      <td><strong>Delete 37 .bak files</strong> from budget_app/ root</td>
+      <td>Confuses grep, glob, future-you. No safety value (you have git).</td>
+      <td><span class="effort effort-s">5 min</span></td>
+    </tr>
+    <tr class="tier-3">
+      <td>QUICK</td>
+      <td><strong>Sign the <code>century_fa_id</code> cookie</strong> with itsdangerous</td>
+      <td>Closes trivial impersonation. 5-line change in <code>_read_fa_id_from_cookie</code>.</td>
+      <td><span class="effort effort-s">15 min</span></td>
+    </tr>
+    <tr class="tier-3">
+      <td>QUICK</td>
+      <td><strong>Strip <code>EXCEL_TRUTH_212</code> + <code>DEFAULTS_212</code></strong> from prod JS</td>
+      <td>~700 lines of 212-specific Excel-debug data shipped to every browser, every page, every building. Move behind <code>?debug=1</code> or delete.</td>
+      <td><span class="effort effort-s">10 min</span></td>
+    </tr>
+    <tr class="tier-3">
+      <td>QUICK</td>
+      <td><strong>Replace stray <code>print()</code> with <code>logger.info</code></strong> (33 sites)</td>
+      <td>Structured logs become filterable. Railway captures both, but you can't grep print noise after the fact.</td>
+      <td><span class="effort effort-s">30 min</span></td>
+    </tr>
+    <tr class="tier-3">
+      <td>QUICK</td>
+      <td><strong>Cache <code>_sharepoint_list_entity_sources</code></strong> 5 min per entity</td>
+      <td>Cuts Graph reads on wizard page 5–10×. Module-level dict. Existing 401-retry logic stays.</td>
+      <td><span class="effort effort-s">20 min</span></td>
+    </tr>
+
+    <tr class="tier-2">
+      <td>MAJOR</td>
+      <td><strong>Unified Status Block</strong> — merge diff strip + readiness inspector + audit chip into ONE collapsible panel</td>
+      <td>Today the FA sees three overlapping signals at the top of every dashboard. They answer different questions but feel redundant. One block with section dividers reads cleaner. <em>(See Preview 1 below)</em></td>
+      <td><span class="effort effort-m">2-3 hrs</span></td>
+    </tr>
+    <tr class="tier-2">
+      <td>MAJOR</td>
+      <td><strong>RE Tax tab visual reskin</strong> — adopt the same CSS vars as the dashboard</td>
+      <td>RE Tax tab uses <code>#f8fafc</code>, <code>#cbd5e1</code>, <code>#2563eb</code> — inherited from the original Excel-port. Doesn't match the warm-blue palette (<code>--blue: #5a4a3f</code>) used everywhere else. Visual fragmentation. <em>(See Preview 2)</em></td>
+      <td><span class="effort effort-m">1-2 hrs</span></td>
+    </tr>
+    <tr class="tier-2">
+      <td>MAJOR</td>
+      <td><strong>SharePoint config externalization</strong> — move folder paths + year tokens to env / DB</td>
+      <td>"2027 Budget" hardcoded in app.py:5567. "2026 budget approved budgets only" subpath at 6122. Year rollover requires code edits. Make these configurable.</td>
+      <td><span class="effort effort-m">1-2 hrs</span></td>
+    </tr>
+    <tr class="tier-2">
+      <td>MAJOR</td>
+      <td><strong>Properties DB table</strong> to replace <code>PROPERTY_TAX_CONFIG</code> + <code>PROPERTY_DEFAULTS</code></td>
+      <td>Today: 5 buildings hand-keyed in 2 places (Python + JS). At 150 buildings, 300 dictionary entries to maintain across two languages. One table + one seeder kills both.</td>
+      <td><span class="effort effort-m">3-4 hrs</span></td>
+    </tr>
+    <tr class="tier-2">
+      <td>MAJOR</td>
+      <td><strong><code>wizard_events</code> log table</strong> + 1-row insert per wizard click</td>
+      <td>When a building gets stuck on building #47, you grep one table and see the exact step + payload + error. Today the only breadcrumb is `logger.warning` strings that may not even fire because of <code>except Exception: pass</code>.</td>
+      <td><span class="effort effort-m">2-3 hrs</span></td>
+    </tr>
+
+    <tr class="tier-1">
+      <td>CRITICAL</td>
+      <td><strong>One smoke-test file</strong> — <code>test_api_smoke.py</code> hits 5 endpoints, asserts response shape</td>
+      <td>30K LOC, 0 tests, 144 buildings ahead. One smoke test per major endpoint catches accidental schema breakage from the next 50 commits. Lower bar than 80% coverage; massive ROI.</td>
+      <td><span class="effort effort-m">3-4 hrs</span></td>
+    </tr>
+    <tr class="tier-1">
+      <td>CRITICAL</td>
+      <td><strong>SharePoint filename pattern: regex anchored, not substring</strong></td>
+      <td>Current matchers (e.g., audit_2025: <code>"audit"</code>, <code>"financial statement"</code>, <code>"afs"</code>, <code>".pdf"</code>) are first-match-wins substring lists. PM names a file <code>Approved_Budget_FS_audit_v2.pdf</code> → audit slot eats the budget file. At 6 buildings you got lucky. At 50, expect monthly mysteries.</td>
+      <td><span class="effort effort-m">2-3 hrs</span></td>
+    </tr>
+
+    <tr class="tier-4">
+      <td>LATER</td>
+      <td><strong>Split workflow.py</strong> into models.py + routes/* + templates/*</td>
+      <td>21K-line file is the only thing on architectural fire. Real fix is multi-day. Don't start until 30+ buildings shipped — you'll learn what natural module boundaries are during rollout.</td>
+      <td><span class="effort effort-l">2-3 days</span></td>
+    </tr>
+    <tr class="tier-4">
+      <td>LATER</td>
+      <td><strong>Move JS out of Python strings</strong> into <code>static/js/*.js</code></td>
+      <td>10K lines of JS in <code>r"""..."""</code> blocks defeats every JS tool. Linting, formatting, bundling, source maps all unavailable.</td>
+      <td><span class="effort effort-l">1-2 days</span></td>
+    </tr>
+    <tr class="tier-4">
+      <td>LATER</td>
+      <td><strong>Centralized <code>markDirty()</code> save queue</strong> for all editable cells</td>
+      <td>Real fix for the auto-save-on-blur bug class. Today: 18 handlers each with their own change-detection. Better: one queue, debounced 600ms, change-detection in one place.</td>
+      <td><span class="effort effort-l">1 day</span></td>
+    </tr>
+    <tr class="tier-4">
+      <td>LATER</td>
+      <td><strong>Migrate to Alembic</strong> — replace <code>_run_idempotent_migrations()</code></td>
+      <td>One-time setup. Then <code>alembic revision --autogenerate</code> stops the manual ALTER TABLE list growing forever in app.py.</td>
+      <td><span class="effort effort-m">3-4 hrs</span></td>
+    </tr>
+
+  </tbody>
+</table>
+
+<!-- ===== PREVIEW 1: UNIFIED STATUS BLOCK ===== -->
+<h2>Preview 1 — Unified Status Block (replaces 3 separate panels)</h2>
+<div class="annot">
+Today the dashboard shows the audit chip (FY confirmed dots), then the period banner, then the diff strip (when applicable), then the readiness inspector. Four separate horizontal stripes, each with its own visual style. Below: one panel, three sections, consistent visual language.
+</div>
+
+<div class="preview-card">
+  <span class="label">After — One coherent block</span>
+  <div class="body" style="padding: 0;">
+    <div class="mock-header">
+      <div>
+        <h1>168 — 310 East 49th Owners Corp.</h1>
+        <div class="mock-meta">Entity 168 · 2027 Budget · FA: Sarah K. · PM: Mike T.</div>
+      </div>
+      <div class="mock-fa-chip">Working as: Jennifer Murman</div>
+    </div>
+
+    <div class="ub-block">
+      <div class="ub-header">
+        <h3>📋 BUILDING STATUS — 5 of 8 ready · 2 changes since you were last here</h3>
+        <span class="ub-summary">▼ Collapse</span>
+      </div>
+
+      <div class="ub-section-divider">⏰ Recent activity (since Mon May 5)</div>
+      <div class="ub-row">
+        <div><span class="ub-dot new">✦</span></div>
+        <div class="ub-label">Audit auto-confirmed</div>
+        <div class="ub-detail">FY2025 audit was confirmed by the system overnight</div>
+        <div class="ub-action new-action"><a href="#">View →</a></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot new">✦</span></div>
+        <div class="ub-label">Mike T. edited a line</div>
+        <div class="ub-detail">Energy R&amp;M YTD: $9,840 → $11,420 on Mon</div>
+        <div class="ub-action new-action"><a href="#">View →</a></div>
+      </div>
+
+      <div class="ub-section-divider">✅ Readiness gates</div>
+      <div class="ub-row">
+        <div><span class="ub-dot ok">✓</span></div>
+        <div class="ub-label">Source files found</div>
+        <div class="ub-detail">FY2025 audit uploaded</div>
+        <div class="ub-action ok-action"><a href="#">View →</a></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot ok">✓</span></div>
+        <div class="ub-label">Audit confirmed</div>
+        <div class="ub-detail">FY2025 confirmed</div>
+        <div class="ub-action ok-action"><a href="#">View →</a></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot ok">✓</span></div>
+        <div class="ub-label">Period set</div>
+        <div class="ub-detail">Actuals: Jan–Apr · Estimate: May–Dec</div>
+        <div class="ub-action"></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot ok">✓</span></div>
+        <div class="ub-label">Building type set</div>
+        <div class="ub-detail">Co-op</div>
+        <div class="ub-action"></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot warn">⚠</span></div>
+        <div class="ub-label">Orphan GLs</div>
+        <div class="ub-detail">2 GLs with data not aggregated</div>
+        <div class="ub-action warn-action"><a href="#">Review →</a></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot ok">✓</span></div>
+        <div class="ub-label">No duplicate rows</div>
+        <div class="ub-detail">Each GL prefix maps to one row</div>
+        <div class="ub-action"></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot warn">⚠</span></div>
+        <div class="ub-label">Payroll reviewed</div>
+        <div class="ub-detail">No payroll positions configured</div>
+        <div class="ub-action warn-action"><a href="#">Add →</a></div>
+      </div>
+      <div class="ub-row">
+        <div><span class="ub-dot warn">⚠</span></div>
+        <div class="ub-label">Budget generated</div>
+        <div class="ub-detail">Ready to generate</div>
+        <div class="ub-action warn-action"><a href="#">Generate →</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>Why this matters</h3>
+<ul style="font-size:13px; line-height:1.7; color:var(--gray-700);">
+  <li><strong>Same visual language</strong> for every status signal — dots + label + detail + action button. Today the audit uses 4-step dots, the period uses a 13px sentence, the diff uses pill-tagged bullets, and readiness uses a different dot system.</li>
+  <li><strong>One mental model</strong>: top section is "what changed since I left", bottom section is "what's still left to do". Today the FA has to mentally separate these from format alone.</li>
+  <li><strong>Collapsible</strong> as a unit — when all gates green and no recent activity, collapses to a single line. Today four bars stay visible.</li>
+  <li>Implementation: combine <code>renderAuditStatusBanner</code> + <code>renderPeriodBanner</code> + <code>renderDiffStrip</code> + <code>renderReadinessInspector</code> into one <code>renderBuildingStatus(data)</code>. Existing endpoints unchanged.</li>
+</ul>
+
+<!-- ===== PREVIEW 2: RE TAX VISUAL RESKIN ===== -->
+<h2>Preview 2 — RE Tax tab visual reconciliation</h2>
+<div class="annot">
+The RE Tax tab was hand-ported from a 212 Excel file. It looks like a different product. Side-by-side: current palette vs reskinned to match the rest of the dashboard.
+</div>
+
+<div class="compare">
+  <div>
+    <h4><span class="red">Today</span> — Excel-port palette (out of place)</h4>
+    <div class="re-old">
+      <div style="font-weight:700; color:#1e3a5f; padding:8px 0; border-bottom:1px solid #cbd5e1;">1. TAX LIABILITY COMPUTATION</div>
+      <div style="margin-top:8px; color:#1e3a5f; font-weight:700; font-size:10px;">Current Year — 2026/2027 (Actual, July 2026)</div>
+      <div style="display:flex; justify-content:space-between; padding:6px 0;">
+        <span>Transitional AV</span>
+        <span class="input">6,772,950.00</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; padding:6px 0; border-top:1px dashed #94a3b8;">
+        <span>1st Half Tax</span>
+        <span style="color:#16a34a; font-weight:700;">$423,377.10</span>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h4><span class="green">Reskinned</span> — matches dashboard palette</h4>
+    <div style="background: white; border: 1px solid var(--gray-200); border-radius: 6px; padding: 12px;">
+      <div style="font-weight:700; color: var(--blue); padding: 8px 0; border-bottom: 1px solid var(--blue-light); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">1. Tax Liability Computation</div>
+      <div style="margin-top:8px; color: var(--gray-500); font-weight:600; font-size:10px; text-transform: uppercase; letter-spacing: 0.5px;">Current Year — 2026/2027 (Actual, July 2026)</div>
+      <div style="display:flex; justify-content:space-between; padding:6px 0; align-items: center;">
+        <span style="color: var(--gray-700);">Transitional AV</span>
+        <input value="6,772,950.00" style="background: var(--blue-light); border: 1px solid var(--blue); padding: 3px 8px; border-radius: 4px; font-size: 12px; text-align: right; font-family: inherit; width: 110px;">
+      </div>
+      <div style="display:flex; justify-content:space-between; padding:6px 0; border-top: 1px dashed var(--gray-200); align-items: center;">
+        <span style="color: var(--gray-700);">1st Half Tax</span>
+        <span style="color: var(--green); font-weight:700;">$423,377.10</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>The fix</h3>
+<p style="font-size:13px; color: var(--gray-700);">
+Extract a single <code>_BASE_STYLES</code> Python string with the CSS vars (<code>--blue</code>, <code>--green</code>, <code>--gray-100</code>, etc.) and prepend it to every <code>render_template_string</code> call. The RE Tax tab's hardcoded inline styles get replaced with <code>var(--*)</code> references. Visual cohesion in 30 minutes — no logic change, no math change.
+</p>
+
+<!-- ===== PREVIEW 3: SAFE FA IDENTITY (signed cookie) ===== -->
+<h2>Preview 3 — Signed cookie code preview</h2>
+
+<div class="compare">
+  <div>
+    <h4><span class="red">Today</span> — unsigned, trivially forgeable</h4>
+<pre><span class="c"># workflow.py:4650</span>
+<span class="k">def</span> _read_fa_id_from_cookie():
+    <span class="k">try</span>:
+        raw = request.cookies.get(<span class="s">"century_fa_id"</span>)
+        <span class="k">if not</span> raw: <span class="k">return None</span>
+        uid = <span class="k">int</span>(raw)
+        user = User.query.filter_by(id=uid).first()
+        <span class="k">if not</span> user: <span class="k">return None</span>
+        <span class="k">return</span> uid
+    <span class="k">except</span> <span class="k">Exception</span>:
+        <span class="k">return None</span>
+
+<span class="c"># Anyone can do:
+# document.cookie = "century_fa_id=18"
+# and become Jennifer Murman.</span></pre>
+  </div>
+  <div>
+    <h4><span class="green">Signed</span> — forgery-proof</h4>
+<pre><span class="c"># workflow.py — at module top</span>
+<span class="k">from</span> itsdangerous <span class="k">import</span> URLSafeSerializer, BadSignature
+
+<span class="k">def</span> _fa_signer():
+    <span class="k">return</span> URLSafeSerializer(
+        current_app.config[<span class="s">"SECRET_KEY"</span>],
+        salt=<span class="s">"century-fa-id"</span>,
+    )
+
+<span class="k">def</span> _read_fa_id_from_cookie():
+    raw = request.cookies.get(<span class="s">"century_fa_id"</span>)
+    <span class="k">if not</span> raw: <span class="k">return None</span>
+    <span class="k">try</span>:
+        uid = _fa_signer().loads(raw)
+        <span class="k">return int</span>(uid)
+    <span class="k">except</span> (BadSignature, ValueError, TypeError):
+        <span class="k">return None</span></pre>
+  </div>
+</div>
+<p style="font-size: 13px; color: var(--gray-700);">
+Plus the matching change in <code>api_set_whoami</code> to encode with <code>signer.dumps(user.id)</code> when setting the cookie. Forgery requires <code>SECRET_KEY</code> — which is in Railway env, not in any client.
+</p>
+
+<!-- ===== WHAT TO SHIP ===== -->
+<h2>If I had your week — recommended slice</h2>
+
+<table class="priorities">
+  <thead>
+    <tr><th>Day</th><th>What ships</th><th>Why now</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="font-weight:700;">Today (1-2 hrs)</td>
+      <td>5 quick wins: .bak cleanup · cookie signing · strip 212 debug data · print→logger · SP cache</td>
+      <td>Pure hygiene + 1 security fix. Zero behavioral change. Sets the table for everything else.</td>
+    </tr>
+    <tr>
+      <td style="font-weight:700;">Tomorrow (4-6 hrs)</td>
+      <td>Unified Status Block + RE Tax visual reskin (Preview 1 + 2)</td>
+      <td>Highest-leverage UX changes. Visible to FA on every dashboard. No data risk.</td>
+    </tr>
+    <tr>
+      <td style="font-weight:700;">Day 3 (4 hrs)</td>
+      <td><code>test_api_smoke.py</code> + <code>wizard_events</code> log table</td>
+      <td>Insurance for the next 144 buildings. Test catches breakage; events table makes "stuck on #47" debuggable.</td>
+    </tr>
+    <tr>
+      <td style="font-weight:700;">Day 4 (3-4 hrs)</td>
+      <td>Properties DB table — kill <code>PROPERTY_TAX_CONFIG</code> + <code>PROPERTY_DEFAULTS</code></td>
+      <td>Cuts 300 hand-keyed dict entries to one seeded table. Required before serious portfolio rollout.</td>
+    </tr>
+    <tr>
+      <td style="font-weight:700;">Day 5 (2-3 hrs)</td>
+      <td>SharePoint filename regex + folder path externalization</td>
+      <td>The "audit slot ate the budget file" class of bug becomes impossible. Year rollover stops requiring code edits.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 style="color: var(--gray-500);">Explicitly NOT this week</h3>
+<ul style="font-size:13px; line-height:1.7; color: var(--gray-700);">
+  <li><strong>Splitting workflow.py.</strong> Plan agent's call: don't start until 30+ buildings shipped. The natural module seams will be obvious by then. Premature splits become re-splits.</li>
+  <li><strong>Moving JS to static files.</strong> Dependent on workflow.py split. Same logic.</li>
+  <li><strong>Centralized markDirty() save queue.</strong> The current 18-handler fix works (verified live yesterday). The proper fix is wholesale and depends on the JS being in real files first.</li>
+</ul>
+
+<h2>Bottom line</h2>
+<p style="font-size: 14px; line-height: 1.7; color: var(--gray-800);">
+You're not on fire. You have <strong>one</strong> big architectural problem (the two monoliths) and <strong>three</strong> medium ones (no tests, hardcoded entity defaults, SharePoint filename matching). The product itself is well-conceived and the recent commits (auto-save fixes, RE Tax overhaul, FA identity, diff strip) are solid. Everything in this review is polish.
+</p>
+<p style="font-size: 14px; line-height: 1.7; color: var(--gray-800);">
+The <strong>5 quick wins</strong> + <strong>Day 2 UX changes</strong> are the highest-ROI work for this week. The deeper refactors (workflow.py split, JS extraction) wait until rollout teaches you what the natural seams are.
+</p>
+
+</div>
+
+</body>
+</html>

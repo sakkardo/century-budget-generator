@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Portfolio fix process — visual walkthrough</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: white;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --red: #ef4444;
+    --red-bg: #fef2f2;
+    --green: #16a34a;
+    --green-bg: #f0fdf4;
+    --amber: #f59e0b;
+    --amber-bg: #fffbeb;
+    --blue: #3b82f6;
+    --blue-bg: #eff6ff;
+    --purple: #8b5cf6;
+    --purple-bg: #f5f3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+    font-size: 14px;
+  }
+  .container { max-width: 1200px; margin: 32px auto; padding: 0 32px 80px; }
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    margin: 0 0 8px;
+    color: #111827;
+  }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 48px 0 18px;
+    color: #111827;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 8px;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 24px 0 12px;
+    color: #1f2937;
+  }
+  .lede {
+    font-size: 16px;
+    color: var(--muted);
+    margin-bottom: 32px;
+  }
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    padding: 20px 24px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  /* Architecture diagram */
+  .layers {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 24px 0;
+  }
+  .layer {
+    background: white;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    position: relative;
+    margin-bottom: 32px;
+  }
+  .layer:not(:last-child)::after {
+    content: '↓';
+    position: absolute;
+    bottom: -28px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 22px;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .layer-name {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .layer-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .layer-detail {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .layer-eg {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    background: #f9fafb;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: #1f2937;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .layer.yardi { border-color: var(--blue); background: var(--blue-bg); }
+  .layer.sharepoint { border-color: var(--purple); background: var(--purple-bg); }
+  .layer.canonical { border-color: var(--amber); background: var(--amber-bg); }
+  .layer.summary { border-color: var(--green); background: var(--green-bg); }
+
+  /* Pipeline steps */
+  .step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--blue);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .step-body {
+    flex: 1;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  .step-body h4 { margin: 0 0 4px; font-size: 14px; font-weight: 700; }
+  .step-body p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  /* Code blocks */
+  code, pre {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+  }
+  code.inline {
+    background: #f3f4f6;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #1f2937;
+  }
+  pre.code-block {
+    background: #1f2937;
+    color: #e5e7eb;
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  pre.code-block .added { color: #4ade80; }
+  pre.code-block .removed { color: #f87171; }
+  pre.code-block .comment { color: #94a3b8; }
+  pre.diff-block {
+    background: #fafafa;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--green);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 12px;
+    overflow-x: auto;
+  }
+  pre.diff-block .added { background: #dcfce7; color: #14532d; display: block; padding-left: 10px; }
+
+  /* Before/After verification cards */
+  .ba-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .ba-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: white;
+  }
+  .ba-card.before { border-left: 4px solid var(--red); background: var(--red-bg); }
+  .ba-card.after { border-left: 4px solid var(--green); background: var(--green-bg); }
+  .ba-card h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .ba-card pre { margin: 0; font-size: 11px; background: white; padding: 8px; border-radius: 4px; border: 1px solid var(--border); }
+
+  /* Verification mechanisms */
+  .verify-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .verify-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .verify-card .num {
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--green);
+    color: white;
+    text-align: center;
+    font-weight: 700;
+    font-size: 12px;
+    line-height: 24px;
+    margin-right: 8px;
+  }
+  .verify-card h4 { display: inline; font-size: 14px; }
+
+  /* Stats grid */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .stat-card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+  }
+  .stat-card .num { font-size: 26px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .stat-card .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+
+  /* Inline ANSI-style screenshot of live data */
+  .terminal {
+    background: #1f2937;
+    color: #d1d5db;
+    border-radius: 8px;
+    padding: 16px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    overflow-x: auto;
+    line-height: 1.6;
+    margin: 12px 0;
+  }
+  .terminal .key { color: #60a5fa; }
+  .terminal .ok { color: #4ade80; }
+  .terminal .warn { color: #fbbf24; }
+  .terminal .bad { color: #f87171; }
+  .terminal .dim { color: #9ca3af; }
+
+  /* Callouts */
+  .callout {
+    border-left: 4px solid var(--blue);
+    background: var(--blue-bg);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  .callout strong { color: #1e40af; }
+
+  /* Tables */
+  table.std {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  table.std th {
+    background: #f9fafb;
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  table.std td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.std code {
+    font-size: 11px;
+    background: #f3f4f6;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Portfolio fix process — visual walkthrough</h1>
+  <p class="lede">How the canonical-map fixes work end-to-end, from SharePoint Excel files to dollar values flowing on the dashboard. With real numbers from today's scan.</p>
+
+  <!-- ════════════ THE DATA ARCHITECTURE ════════════ -->
+  <h2>1) The 4-layer data architecture</h2>
+  <p>The reason fixes don't auto-propagate is that there are <strong>four separate layers</strong>, and the canonical map is the bridge. When a building's label doesn't match what canonical knows, the dollar values don't flow to the right row.</p>
+
+  <div class="layers">
+    <div class="layer yardi">
+      <div class="layer-name">Layer 1 — Source ledger</div>
+      <div class="layer-title">Yardi Chart of Accounts</div>
+      <div class="layer-detail">The real general ledger. ~300 distinct GL codes used across the portfolio. Each transaction posts to one GL.</div>
+      <div class="layer-eg">4010-0000  Maintenance
+4040-0000  Commercial Rent
+5630-0000  Plumbing Repairs
+6145-0000  Errors &amp; Omissions Insurance
+7025-0000  Flip Tax (expense)</div>
+    </div>
+
+    <div class="layer sharepoint">
+      <div class="layer-name">Layer 2 — FA-curated rollup template</div>
+      <div class="layer-title">SharePoint approved 2026 budget Excel files</div>
+      <div class="layer-detail">One file per building. Contains the row labels each FA used. <strong>No GL codes</strong> in this file — just human-readable line labels. When the wizard imports a building, these labels become the summary tab's rows.</div>
+      <div class="layer-eg">Maintenance
+Commercial Rent      &lt;-- 148 uses this label
+Storage Room         &lt;-- 140's label for storage income
+Cable                &lt;-- 5 buildings shortened "Cable TV"
+Operating Assessment &lt;-- 23 buildings; canonical is "Assessment - Operating"</div>
+    </div>
+
+    <div class="layer canonical">
+      <div class="layer-name">Layer 3 — The bridge (where today's work happens)</div>
+      <div class="layer-title">GL_TO_SUMMARY_MAP.py — canonical rollup rules</div>
+      <div class="layer-detail">Says <strong>"this row label aggregates from these GL prefixes."</strong> Has two parts: <code class="inline">SUMMARY_ROW_MAP</code> (label → GL prefix list) and <code class="inline">LABEL_ALIASES</code> (variant label → canonical label).</div>
+      <div class="layer-eg">"Maintenance":         { gl_prefix: ["4010"] }
+"Commercial":          { gl_prefix: ["4040"] }
+"Storage Income":      { gl_prefix: ["4130-0000", "4130-0010"] }
+"Repairs &amp; Maintenance": { gl_prefix: [54 prefixes] }
+
+LABEL_ALIASES = {
+  "Commercial Rent": "Commercial",
+  "Bicycle Storage": "Bicycle Charge",
+  "Operating Assessment": "Assessment - Operating",  &lt;-- proposed
+  ...
+}</div>
+    </div>
+
+    <div class="layer summary">
+      <div class="layer-name">Layer 4 — What the FA sees</div>
+      <div class="layer-title">BudgetSummaryRow records (the summary tab in the dashboard)</div>
+      <div class="layer-detail">One row per (entity, year, label). Has a <code class="inline">gl_prefixes_json</code> field that's resolved from the canonical map at import time. The summary tab's dollar values come from summing GL lines that match this prefix list.</div>
+      <div class="layer-eg">Building 148, label="Commercial Rent",
+  gl_prefixes_json=[]            &lt;-- empty! No data flows.
+  col3_ytd = $0
+
+After we added LABEL_ALIASES["Commercial Rent"] = "Commercial":
+  gl_prefixes_json=["4040"]      &lt;-- prefix populated!
+  col3_ytd = $144,015            &lt;-- dollars flow.</div>
+    </div>
+  </div>
+
+  <!-- ════════════ THE SCANNER ════════════ -->
+  <h2>2) What the scanner does</h2>
+  <p>The scanner endpoint at <code class="inline">/api/admin/portfolio-label-scan</code> (admin-gated, shipped today) is a read-only probe. It does <strong>not</strong> change any data — it tells you what would break if you imported each building cleanly.</p>
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <h4>Load active buildings</h4>
+      <p>Reads <code class="inline">buildings.csv</code> — 143 buildings (post Monday-filter cleanup yesterday).</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <h4>For each building, find its approved 2026 budget Excel in SharePoint</h4>
+      <p>Calls Microsoft Graph: <code class="inline">drives/&lt;drive&gt;/root:/2027 Budget/&lt;entity&gt;:/children</code>. Filters to files matching the "approved" regex pattern. Result: 100 of 143 buildings had a findable file.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <h4>Download each file (~1-3 MB each)</h4>
+      <p>Streams bytes via Graph API. Saved to a temp file for the parser. Deleted immediately after.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <h4>Parse with <code class="inline">budget_summary_parser.parse_yrlycomp()</code></h4>
+      <p>Returns a structured list of rows. Each row has a <code class="inline">label</code> (and other fields we ignore for this scan — we only want labels).</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <h4>Cross-reference each label against canonical</h4>
+      <p>Checks: is the label in <code class="inline">SUMMARY_ROW_MAP</code>? In <code class="inline">_CONDO_ROWS</code>? In <code class="inline">LABEL_ALIASES</code>? If none of the three, it goes into the unmapped list.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">6</div>
+    <div class="step-body">
+      <h4>Aggregate by frequency</h4>
+      <p>Same unmapped label seen across multiple buildings is grouped. "Operating Assessment" found on 23 buildings is more urgent to fix than a singleton on 1 building.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">7</div>
+    <div class="step-body">
+      <h4>Return JSON gap report</h4>
+      <p>List of unmapped labels with the buildings affected, plus per-building-type stats.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>Important:</strong> the scanner only <em>reads</em>. Nothing changes. No buildings get touched. It's safe to run as often as you want. Takes ~3 minutes per chunk of 30 buildings (Railway gateway timeout caps it), so we ran 5 chunks today.
+  </div>
+
+  <h3>What the scanner output actually looks like</h3>
+  <div class="terminal">
+=== <span class="key">PORTFOLIO LABEL-COVERAGE FINAL REPORT</span> ===
+Buildings scanned:              <span class="ok">143</span>
+Buildings with approved 2026:   <span class="ok">100</span>  (70%)
+Buildings without file:         <span class="warn">27</span>   (19%)  <span class="dim">-- wizard import will fail</span>
+Parse errors:                   <span class="warn">16</span>   (11%)  <span class="dim">-- needs investigation</span>
+Distinct unmapped labels:       <span class="bad">234</span>
+
+=== <span class="key">BUCKET A: ALIASES (helps most buildings)</span> ===
+   23x  '<span class="bad">Operating Assessment</span>'                 → '<span class="ok">Assessment - Operating</span>'
+   15x  '<span class="bad">Storage Room</span>'                         → '<span class="ok">Storage Income</span>'
+   13x  '<span class="bad">Gas-Cooking</span>'                          → '<span class="ok">Gas Cooking / Heating</span>'
+   12x  '<span class="bad">Parking</span>'                              → '<span class="ok">Garage</span>'
+   11x  '<span class="bad">Claim Proceeds - Insurance Repairs</span>'   → '<span class="ok">Claims Proceeds - Insurance Repairs</span>'  <span class="dim">(missing 's')</span>
+    9x  '<span class="bad">Flip Tax/Transfer Fees</span>'               → '<span class="ok">Flip Tax</span>'
+    ...
+   <span class="ok">[38 total alias adds → helps 71 buildings (50%)]</span>
+  </div>
+
+  <!-- ════════════ ONE FIX END-TO-END ════════════ -->
+  <h2>3) One fix end-to-end — "Operating Assessment"</h2>
+  <p>The scanner found "Operating Assessment" appearing on 23 buildings. Canonical has the same row labeled "Assessment - Operating". One line of code lifts 23 buildings.</p>
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <h4>Identify in scanner output</h4>
+      <p>Top row of the alias bucket: <code class="inline">23x 'Operating Assessment' → 'Assessment - Operating'</code></p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <h4>Decide: alias vs new canonical row</h4>
+      <p>The label "Assessment - Operating" already exists in <code class="inline">SUMMARY_ROW_MAP</code> with <code class="inline">gl_prefix: ["4200"]</code>. So we don't need a new row — just an alias from the variant label.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <h4>Add one line to LABEL_ALIASES</h4>
+    </div>
+  </div>
+  <pre class="diff-block">
+<span style="color:#6b7280">// File: budget_summary/GL_TO_SUMMARY_MAP.py</span>
+
+  LABEL_ALIASES = {
+      "Common Charges": "Maintenance",
+      "Storage": "Storage Income",
+      "Bicycle": "Bicycle Charge",
+      "Bike": "Bicycle Charge",
+      "Bicycle Storage": "Bicycle Charge",
+      "Commercial Rent": "Commercial",
+<span class="added">+     "Operating Assessment": "Assessment - Operating",     &lt;-- ADDED (helps 23 buildings)</span>
+      "Assessment-Operating": "Assessment - Operating",
+      ...
+  }
+</pre>
+
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <h4>Deploy</h4>
+      <p><code class="inline">bash deploy.sh</code> → Railway redeploys → new canonical map live in ~60 seconds.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <h4>Trigger resolve-aliases on each affected building</h4>
+      <p><code class="inline">POST /api/admin/resolve-summary-aliases/&lt;entity&gt;</code> for each of the 23 entities. The resolver reads each building's BudgetSummaryRow rows, checks each label against canonical + aliases, and re-stamps <code class="inline">gl_prefixes_json</code> to match.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num">6</div>
+    <div class="step-body">
+      <h4>Result: every "Operating Assessment" row across 23 buildings now has the right GL prefix</h4>
+      <p>The summary aggregation runs at request time — next time anyone opens that building's summary tab, the dollar value is there. No FA action required.</p>
+    </div>
+  </div>
+
+  <!-- ════════════ VERIFICATION ════════════ -->
+  <h2>4) How verification works</h2>
+  <p>Three independent mechanisms confirm each fix worked. Any one of them can catch a regression.</p>
+
+  <div class="verify-grid">
+    <div class="verify-card">
+      <div><span class="num">1</span><h4>Re-run the scanner</h4></div>
+      <p style="margin: 10px 0 0; font-size: 13px; color: var(--muted);">After deploying a fix, hit <code class="inline">/api/admin/portfolio-label-scan</code> again. The fixed label should drop out of the unmapped list. If it doesn't, the alias didn't propagate.</p>
+    </div>
+    <div class="verify-card">
+      <div><span class="num">2</span><h4>Hit the API per building</h4></div>
+      <p style="margin: 10px 0 0; font-size: 13px; color: var(--muted);">For any affected building: <code class="inline">GET /api/summary/&lt;ec&gt;</code> returns each row's <code class="inline">gl_prefixes</code> field. The fixed row should show the canonical prefix list (not <code class="inline">[]</code>).</p>
+    </div>
+    <div class="verify-card">
+      <div><span class="num">3</span><h4>Visual check — the dashboard</h4></div>
+      <p style="margin: 10px 0 0; font-size: 13px; color: var(--muted);">Open the building's summary tab. The fixed row's YTD column shows real dollar values now (was $0). Readiness panel's "orphan GLs" counter drops.</p>
+    </div>
+  </div>
+
+  <h3>Real example: 148's summary, before vs. after this morning's canonical fixes</h3>
+  <div class="ba-grid">
+    <div class="ba-card before">
+      <h4>Before fix (2026-05-13 morning)</h4>
+      <pre>Commercial Rent           $        0 YTD
+Bicycle Storage           $        0
+Insurance                 $  241,031
+Repairs &amp; Maintenance     $   84,768
+Admin &amp; Other             $   34,663
+Other Income              $   73,437
+
+Readiness panel:
+   ❌ No orphan GLs   <strong>13 GLs not aggregated</strong></pre>
+    </div>
+    <div class="ba-card after">
+      <h4>After fix (2026-05-13 afternoon)</h4>
+      <pre>Commercial Rent           $  <strong>144,015</strong> YTD   ← +$144k
+Bicycle Storage           $      <strong>800</strong>          ← +$800
+Insurance                 $  <strong>248,890</strong>          ← +$7,859 (6145 added)
+Repairs &amp; Maintenance     $   <strong>89,266</strong>          ← +$4,498 (HVAC etc.)
+Admin &amp; Other             $   <strong>68,174</strong>          ← +$33k (Cable expense etc.)
+Other Income              $   <strong>73,550</strong>          ← +$113 (Security admin)
+
+Readiness panel:
+   ⚠️  No orphan GLs   <strong>1 GL not aggregated</strong>  (was 13)</pre>
+    </div>
+  </div>
+
+  <p style="font-size: 13px; color: var(--muted);">The dashboard I just captured live on prod shows exactly this state on 148. The single remaining orphan is the 4520-0000 case I flagged for the working session (per-building conflict — needs override registry).</p>
+
+  <!-- ════════════ TODAY'S SCAN RESULTS ════════════ -->
+  <h2>5) Today's scan results — what we're about to fix</h2>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="num">143</div>
+      <div class="lbl">Buildings scanned</div>
+    </div>
+    <div class="stat-card">
+      <div class="num">100</div>
+      <div class="lbl">Files findable</div>
+    </div>
+    <div class="stat-card">
+      <div class="num">234</div>
+      <div class="lbl">Unmapped labels</div>
+    </div>
+    <div class="stat-card">
+      <div class="num">~71</div>
+      <div class="lbl">Buildings fixed by aliases alone</div>
+    </div>
+  </div>
+
+  <table class="std">
+    <thead>
+      <tr>
+        <th>Bucket</th>
+        <th>Count</th>
+        <th>Buildings affected</th>
+        <th>What to do</th>
+        <th>Effort</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>A — Aliases</strong></td>
+        <td>38 labels</td>
+        <td><strong>71 buildings (50%)</strong></td>
+        <td>Add 38 lines to <code>LABEL_ALIASES</code></td>
+        <td>~30 minutes</td>
+      </tr>
+      <tr>
+        <td><strong>B — New canonical rows</strong></td>
+        <td>15 labels</td>
+        <td>34 buildings (24%)</td>
+        <td>Add 15 entries to <code>SUMMARY_ROW_MAP</code> with GL prefixes</td>
+        <td>~3 hours</td>
+      </tr>
+      <tr>
+        <td>D — Uncertain</td>
+        <td>7 labels</td>
+        <td>~10 buildings</td>
+        <td>Working session — pick per-row treatment</td>
+        <td>~1 hour with FA</td>
+      </tr>
+      <tr>
+        <td>C — Singletons</td>
+        <td>173 labels</td>
+        <td>69 buildings (48%)</td>
+        <td>Build per-building override registry (1 day) + populate</td>
+        <td>1 dev day + FA distributed</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>6) What happens next — the full plan with verification at every step</h2>
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <h4>I ship the 38 aliases + 5 obvious new canonical rows</h4>
+      <p>One code change. One deploy. Verifiable by re-running the scanner.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <h4>Run resolve-aliases portfolio-wide</h4>
+      <p>One HTTP call per building → re-stamps gl_prefixes_json on existing rows. Returns count of rows updated per building. Verifiable in the response payload.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <h4>Re-run the portfolio scanner</h4>
+      <p>The 38 aliased labels should drop from the unmapped list. If they don't, something didn't propagate.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <h4>Working session resolves the 22 judgment-call labels (Bucket B + D)</h4>
+      <p>Each one: you/FA picks the GL prefix and section. I add to canonical + deploy + resolve-aliases. Same verification chain.</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <h4>I build the per-building override registry</h4>
+      <p>New DB table + admin UI. Lets a per-(entity, label) row override canonical when a building's GL has a unique meaning. Handles the 173 singletons without polluting canonical.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>Every step is reversible.</strong> Aliases are code — git history. <code>resolve-aliases</code> updates a JSON field; we can rollback by snapshotting before. The summary tab math is recomputed on every request from the (gl_prefixes, GL line) join — no destructive caching. If anything looks wrong, the FA opens the dashboard and immediately sees the wrong dollar value; we revert the canonical change and re-resolve.
+  </div>
+
+</div>
+</body>
+</html>

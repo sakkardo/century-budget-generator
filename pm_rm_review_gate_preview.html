@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PM Review Gate — Repairs & Maintenance — Design Preview</title>
+<style>
+  :root {
+    --red-50: #fef2f2;
+    --red-100: #fee2e2;
+    --red-200: #fecaca;
+    --red-500: #ef4444;
+    --red-600: #dc2626;
+    --red-700: #b91c1c;
+    --green-50: #f0fdf4;
+    --green-100: #dcfce7;
+    --green-500: #22c55e;
+    --green-600: #16a34a;
+    --green-700: #15803d;
+    --amber-50: #fffbeb;
+    --amber-100: #fef3c7;
+    --amber-400: #fbbf24;
+    --amber-500: #f59e0b;
+    --amber-700: #b45309;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --gray-900: #111827;
+    --blue-50: #eff6ff;
+    --blue-500: #3b82f6;
+    --blue-600: #2563eb;
+    --blue-700: #1d4ed8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    background: #f5f6f8;
+    color: var(--gray-900);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .container { max-width: 1280px; margin: 24px auto; padding: 0 24px; }
+  .header {
+    background: white;
+    padding: 16px 24px;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .breadcrumb { color: var(--gray-500); font-size: 13px; margin-top: 4px; }
+  .pm-badge {
+    background: var(--blue-50);
+    color: var(--blue-700);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .design-note {
+    background: var(--amber-50);
+    border-left: 4px solid var(--amber-500);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--amber-700);
+  }
+  .design-note b { color: var(--gray-900); }
+
+  /* Section header with progress */
+  .section-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--gray-200);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .section-header.urgent { background: linear-gradient(to right, var(--red-50), white 40%); }
+  .section-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .section-title h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--gray-900);
+  }
+  .review-counter {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--red-100);
+    color: var(--red-700);
+  }
+  .review-counter.complete { background: var(--green-100); color: var(--green-700); }
+  .section-actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 6px 14px;
+    border: 1px solid var(--gray-300);
+    border-radius: 6px;
+    background: white;
+    color: var(--gray-700);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: var(--gray-50); border-color: var(--gray-400); }
+  .btn-primary {
+    background: var(--blue-600);
+    color: white;
+    border-color: var(--blue-600);
+  }
+  .btn-primary:hover { background: var(--blue-700); }
+  .btn-primary:disabled, .btn-primary.disabled {
+    background: var(--gray-300);
+    border-color: var(--gray-300);
+    color: var(--gray-500);
+    cursor: not-allowed;
+  }
+  .btn-ghost {
+    border: 1px dashed var(--gray-300);
+    background: transparent;
+    color: var(--gray-600);
+  }
+  .btn-jump {
+    background: var(--red-600);
+    color: white;
+    border-color: var(--red-600);
+  }
+  .btn-jump:hover { background: var(--red-700); }
+
+  /* Progress bar */
+  .progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--gray-200);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(to right, var(--red-500), var(--amber-400));
+    border-radius: 999px;
+    transition: width 0.3s;
+  }
+  .progress-fill.complete { background: var(--green-500); }
+  .progress-label {
+    font-size: 11px;
+    color: var(--gray-500);
+    font-variant-numeric: tabular-nums;
+    min-width: 50px;
+    text-align: right;
+  }
+
+  /* Table */
+  table.pm-grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  table.pm-grid th {
+    background: var(--gray-50);
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--gray-600);
+    border-bottom: 1px solid var(--gray-200);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    position: sticky;
+    top: 0;
+  }
+  table.pm-grid th.num { text-align: right; }
+  table.pm-grid td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--gray-100);
+    vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+  }
+  table.pm-grid td.num { text-align: right; }
+  table.pm-grid tr.row-unreviewed {
+    background: var(--red-50);
+    border-left: 4px solid var(--red-500);
+  }
+  table.pm-grid tr.row-unreviewed td:first-child { padding-left: 8px; }
+  table.pm-grid tr.row-modified {
+    background: var(--amber-50);
+    border-left: 4px solid var(--amber-500);
+  }
+  table.pm-grid tr.row-modified td:first-child { padding-left: 8px; }
+  table.pm-grid tr.row-reviewed {
+    background: white;
+    border-left: 4px solid var(--green-500);
+  }
+  table.pm-grid tr.row-reviewed td:first-child { padding-left: 8px; }
+
+  .row-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+  .row-state.unreviewed { background: var(--red-100); color: var(--red-700); }
+  .row-state.modified { background: var(--amber-100); color: var(--amber-700); }
+  .row-state.reviewed { background: var(--green-100); color: var(--green-700); }
+  .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .dot.red { background: var(--red-500); }
+  .dot.amber { background: var(--amber-500); animation: pulse 1.8s infinite; }
+  .dot.green { background: var(--green-500); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Inputs in grid */
+  input.pm-input {
+    width: 75px;
+    padding: 4px 6px;
+    border: 1px solid var(--gray-300);
+    border-radius: 4px;
+    font-size: 12px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    background: white;
+  }
+  input.pm-input:focus {
+    outline: none;
+    border-color: var(--blue-500);
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+  }
+  input.pm-input.locked {
+    background: var(--gray-100);
+    color: var(--gray-500);
+    cursor: not-allowed;
+    border-color: var(--gray-200);
+  }
+  input.pm-input.has-value {
+    background: var(--green-50);
+    border-color: var(--green-500);
+    font-weight: 600;
+    color: var(--green-700);
+  }
+  input.pm-input.either-or-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .either-or-cell {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    justify-content: flex-end;
+  }
+  .either-or-sep {
+    font-size: 10px;
+    color: var(--gray-400);
+    font-weight: 500;
+  }
+
+  .no-change-btn {
+    font-size: 10px;
+    padding: 3px 8px;
+    border: 1px solid var(--gray-300);
+    border-radius: 4px;
+    background: white;
+    color: var(--gray-600);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .no-change-btn:hover {
+    background: var(--green-50);
+    border-color: var(--green-500);
+    color: var(--green-700);
+  }
+  .check-icon {
+    color: var(--green-600);
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  /* Submit bar */
+  .submit-bar {
+    background: white;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .submit-summary { font-size: 12px; color: var(--gray-600); }
+  .submit-summary b { color: var(--gray-900); }
+  .submit-blocker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--red-700);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .submit-btn-large {
+    padding: 10px 24px;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+
+  /* Tooltip */
+  .tooltip-wrap { position: relative; display: inline-block; }
+  .tooltip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    background: var(--gray-900);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    pointer-events: none;
+  }
+  .tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    right: 24px;
+    border: 5px solid transparent;
+    border-top-color: var(--gray-900);
+  }
+
+  /* Modal */
+  .modal-overlay {
+    position: relative;
+    background: rgba(15, 23, 42, 0.45);
+    padding: 60px 24px;
+    border-radius: 12px;
+    margin-top: 24px;
+  }
+  .modal {
+    background: white;
+    max-width: 480px;
+    margin: 0 auto;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.25);
+  }
+  .modal h3 {
+    margin: 0 0 12px;
+    font-size: 16px;
+    color: var(--gray-900);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .modal p {
+    color: var(--gray-600);
+    font-size: 13px;
+    margin: 0 0 16px;
+  }
+  .modal .stat-box {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-around;
+    text-align: center;
+  }
+  .stat-num {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--gray-900);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-label {
+    font-size: 11px;
+    color: var(--gray-500);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 2px;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .modal-actions .btn-confirm {
+    background: var(--red-600);
+    color: white;
+    border-color: var(--red-600);
+  }
+  .modal-actions .btn-confirm:hover { background: var(--red-700); }
+
+  /* Section heading */
+  .preview-section-heading {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--gray-800);
+    border-bottom: 2px solid var(--gray-200);
+    padding-bottom: 8px;
+  }
+  .preview-caption {
+    color: var(--gray-500);
+    font-size: 12px;
+    margin-bottom: 16px;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 16px;
+    padding: 12px 16px;
+    background: var(--gray-50);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 11px;
+    color: var(--gray-600);
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border-left-width: 3px;
+    border-left-style: solid;
+  }
+  .legend-swatch.unreviewed { background: var(--red-50); border-left-color: var(--red-500); }
+  .legend-swatch.modified { background: var(--amber-50); border-left-color: var(--amber-500); }
+  .legend-swatch.reviewed { background: white; border-left-color: var(--green-500); border: 1px solid var(--gray-200); border-left: 3px solid var(--green-500); }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <div class="header">
+    <div>
+      <h1>PM Budget Review — 2027</h1>
+      <div class="breadcrumb">Building 168 · 130 W 79th St · Submitted by Sarah Chen (FA) · PM portal · Awaiting review</div>
+    </div>
+    <div class="pm-badge">Working as: Christina Bernard (PM)</div>
+  </div>
+
+  <div class="design-note">
+    <b>Design preview — not live yet. Scope (locked):</b>
+    <ul style="margin: 6px 0 0 18px; padding: 0;">
+      <li><b>PM portal only.</b> FA portal builds the budget, no gate there. PM portal reviews it, gate lives here.</li>
+      <li><b>Repairs &amp; Maintenance only.</b> Every GL line under R&amp;M needs an explicit action (% or $ value, including 0, OR a "No change" click). NULL = unreviewed = blocks submit.</li>
+      <li><b>Every other section in PM portal stays edit-optional.</b> G&amp;A, Income, Energy, Payroll, NOI/NOE: PM can override if they want, no gate, no red rows, no submit block.</li>
+    </ul>
+  </div>
+
+  <h2 class="preview-section-heading">View 1 — Main grid, mid-review</h2>
+  <p class="preview-caption">PM has reviewed 3 of 12 R&amp;M lines. One line is amber (just edited, not yet saved). Submit button is disabled with hover tooltip explaining why.</p>
+
+  <div class="legend">
+    <div class="legend-item"><span class="legend-swatch unreviewed"></span> Unreviewed — needs PM decision</div>
+    <div class="legend-item"><span class="legend-swatch modified"></span> Modified, unsaved</div>
+    <div class="legend-item"><span class="legend-swatch reviewed"></span> Reviewed (number entered or "No change" clicked)</div>
+  </div>
+
+  <div class="section-card">
+    <div class="section-header urgent">
+      <div class="section-title-row">
+        <div class="section-title">
+          <h2>Repairs &amp; Maintenance</h2>
+          <span class="review-counter">3 of 12 reviewed</span>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-jump">Jump to next unreviewed →</button>
+          <button class="btn btn-ghost">Mark all unreviewed as 0% (no change)</button>
+        </div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 25%;"></div>
+        </div>
+        <div class="progress-label">25%</div>
+      </div>
+    </div>
+
+    <table class="pm-grid">
+      <thead>
+        <tr>
+          <th style="width: 130px;">Status</th>
+          <th>GL / Description</th>
+          <th class="num">2024 Actual</th>
+          <th class="num">2026 YTD</th>
+          <th class="num">2026 Budget</th>
+          <th class="num">2026 Forecast</th>
+          <th class="num" style="width: 180px;">Increase % or $</th>
+          <th class="num">Proposed 2027</th>
+          <th style="width: 90px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="row-reviewed">
+          <td><span class="row-state reviewed"><span class="dot green"></span> Reviewed</span></td>
+          <td><b>5605-0000</b> Building Maintenance</td>
+          <td class="num">48,920</td>
+          <td class="num">42,156</td>
+          <td class="num">52,000</td>
+          <td class="num">51,400</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input has-value" value="3.0%" readonly>
+              <span class="either-or-sep">or</span>
+              <input class="pm-input either-or-disabled" placeholder="$">
+            </div>
+          </td>
+          <td class="num"><b>53,560</b></td>
+          <td><span class="check-icon">✓</span></td>
+        </tr>
+        <tr class="row-reviewed">
+          <td><span class="row-state reviewed"><span class="dot green"></span> Reviewed</span></td>
+          <td><b>5610-0000</b> Plumbing Repairs</td>
+          <td class="num">18,440</td>
+          <td class="num">14,820</td>
+          <td class="num">22,000</td>
+          <td class="num">19,760</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input either-or-disabled" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input has-value" value="$1,500" readonly>
+            </div>
+          </td>
+          <td class="num"><b>23,500</b></td>
+          <td><span class="check-icon">✓</span></td>
+        </tr>
+        <tr class="row-reviewed">
+          <td><span class="row-state reviewed"><span class="dot green"></span> No change</span></td>
+          <td><b>5615-0000</b> Electrical Repairs</td>
+          <td class="num">12,800</td>
+          <td class="num">9,440</td>
+          <td class="num">15,000</td>
+          <td class="num">13,920</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input has-value" value="0%" readonly>
+              <span class="either-or-sep">or</span>
+              <input class="pm-input either-or-disabled" placeholder="$">
+            </div>
+          </td>
+          <td class="num"><b>15,000</b></td>
+          <td><span class="check-icon">✓</span></td>
+        </tr>
+        <tr class="row-modified">
+          <td><span class="row-state modified"><span class="dot amber"></span> Editing…</span></td>
+          <td><b>5620-0000</b> Elevator Maintenance Contract</td>
+          <td class="num">38,200</td>
+          <td class="num">32,840</td>
+          <td class="num">42,000</td>
+          <td class="num">39,408</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input has-value" value="4.5%" autofocus>
+              <span class="either-or-sep">or</span>
+              <input class="pm-input either-or-disabled" placeholder="$">
+            </div>
+          </td>
+          <td class="num"><b>43,890</b></td>
+          <td style="color: var(--amber-700); font-size: 11px;">Saving…</td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5625-0000</b> Boiler Maintenance Contract</td>
+          <td class="num">21,600</td>
+          <td class="num">18,200</td>
+          <td class="num">24,000</td>
+          <td class="num">21,840</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5630-0000</b> HVAC Repairs</td>
+          <td class="num">9,840</td>
+          <td class="num">7,200</td>
+          <td class="num">11,000</td>
+          <td class="num">10,400</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5635-0000</b> Roof Repairs</td>
+          <td class="num">4,200</td>
+          <td class="num">3,100</td>
+          <td class="num">6,000</td>
+          <td class="num">4,440</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5640-0000</b> Window Repairs</td>
+          <td class="num">2,800</td>
+          <td class="num">1,950</td>
+          <td class="num">4,000</td>
+          <td class="num">2,940</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5645-0000</b> Pest Control</td>
+          <td class="num">3,600</td>
+          <td class="num">3,000</td>
+          <td class="num">4,200</td>
+          <td class="num">3,720</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5650-0000</b> Window Cleaning</td>
+          <td class="num">7,200</td>
+          <td class="num">6,400</td>
+          <td class="num">8,000</td>
+          <td class="num">7,440</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5655-0000</b> Locksmith / Hardware</td>
+          <td class="num">2,400</td>
+          <td class="num">1,800</td>
+          <td class="num">2,800</td>
+          <td class="num">2,520</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+        <tr class="row-unreviewed">
+          <td><span class="row-state unreviewed"><span class="dot red"></span> Needs review</span></td>
+          <td><b>5660-0000</b> Snow Removal</td>
+          <td class="num">5,400</td>
+          <td class="num">4,200</td>
+          <td class="num">6,200</td>
+          <td class="num">5,580</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-400);">—</td>
+          <td><button class="no-change-btn">No change</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="submit-bar">
+    <div>
+      <div class="submit-summary"><b>3 of 12</b> R&amp;M lines reviewed · <b>$87,400</b> in unreviewed budget</div>
+      <div class="submit-blocker" style="margin-top: 4px;">
+        <span class="dot red"></span> 9 R&amp;M lines still need review before you can submit
+      </div>
+    </div>
+    <div class="tooltip-wrap">
+      <button class="btn btn-primary submit-btn-large disabled">Submit Review to FA</button>
+      <div class="tooltip">9 R&amp;M lines still need review</div>
+    </div>
+  </div>
+
+  <h2 class="preview-section-heading">View 2 — All reviewed, ready to submit</h2>
+  <p class="preview-caption">All 12 R&amp;M lines reviewed (mix of entered values and "No change" clicks). Submit button enabled, header turns green.</p>
+
+  <div class="section-card">
+    <div class="section-header" style="background: linear-gradient(to right, var(--green-50), white 40%);">
+      <div class="section-title-row">
+        <div class="section-title">
+          <h2>Repairs &amp; Maintenance</h2>
+          <span class="review-counter complete">12 of 12 reviewed ✓</span>
+        </div>
+        <div class="section-actions">
+          <button class="btn">View summary →</button>
+        </div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar">
+          <div class="progress-fill complete" style="width: 100%;"></div>
+        </div>
+        <div class="progress-label">100%</div>
+      </div>
+    </div>
+    <div style="padding: 16px 20px; color: var(--gray-500); font-size: 12px; text-align: center;">
+      [collapsed — 12 reviewed rows, expand to see detail]
+    </div>
+  </div>
+
+  <div class="submit-bar">
+    <div>
+      <div class="submit-summary"><b>12 of 12</b> R&amp;M lines reviewed · Section ready to submit</div>
+      <div style="margin-top: 4px; font-size: 12px; color: var(--green-700);">
+        <span class="check-icon">✓</span> 5 lines with % increase · 2 with $ amount · 5 marked "No change"
+      </div>
+    </div>
+    <button class="btn btn-primary submit-btn-large">Submit Review to FA →</button>
+  </div>
+
+  <h2 class="preview-section-heading">View 3 — Bulk action confirm modal</h2>
+  <p class="preview-caption">When PM clicks "Mark all unreviewed as 0% (no change)". Shows count + dollar exposure so they can't blindly sweep without seeing what they're sweeping.</p>
+
+  <div class="modal-overlay">
+    <div class="modal">
+      <h3>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--amber-500);">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        Mark 9 R&amp;M lines as "No change"?
+      </h3>
+      <p>This will mark all unreviewed Repairs &amp; Maintenance lines as 0% increase (no change from current budget) and count them as reviewed. The FA will see they were bulk-confirmed, not individually reviewed.</p>
+
+      <div class="stat-box">
+        <div>
+          <div class="stat-num">9</div>
+          <div class="stat-label">Lines affected</div>
+        </div>
+        <div>
+          <div class="stat-num">$87,400</div>
+          <div class="stat-label">Current budget</div>
+        </div>
+        <div>
+          <div class="stat-num">$0</div>
+          <div class="stat-label">Total change</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn">Cancel — review individually</button>
+        <button class="btn btn-confirm">Yes, mark 9 lines as no change</button>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="preview-section-heading">Decisions baked into this design</h2>
+  <ul style="font-size: 13px; color: var(--gray-700); line-height: 1.7; background: white; padding: 20px 20px 20px 40px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+    <li><b>Reviewed = explicit numeric value (incl. 0) OR explicit "No change" click.</b> NULL = unreviewed. Existing schema fields <code>increase_pct</code> + <code>increase_dollar</code> support this if we stop defaulting to 0 at line creation.</li>
+    <li><b>"No change" button writes <code>increase_pct = 0</code> explicitly</b> with a <code>review_action="no_change"</code> log entry to <code>budget_revisions</code>. Distinct from a typed 0 so the FA can see which lines got individual attention.</li>
+    <li><b>Submit gate is per-section, not per-grid.</b> Only R&amp;M is gated for now. Other sections (Gen &amp; Admin, Energy, etc.) still submit as today. Easy to add more sections to the gate list later.</li>
+    <li><b>Capital exempt.</b> Capital decisions happen on the Capital Forecast tab, not in the PM grid. Per-line PM gate here would duplicate work.</li>
+    <li><b>Bulk action requires reading the count + dollar exposure</b> before confirming. The number "9 lines" and "$87,400" force the PM to acknowledge what they're sweeping.</li>
+    <li><b>Audit trail:</b> every row review (typed or bulk) logged with <code>user_id</code>, timestamp, source (individual vs bulk), so the FA can see in the diff strip exactly how each line was decided.</li>
+    <li><b>Jump-to-next button</b> keeps the PM moving without hunting for red rows.</li>
+  </ul>
+
+  <h2 class="preview-section-heading">View 4 — What G&amp;A looks like in the same PM portal (NO gate)</h2>
+  <p class="preview-caption">Same PM portal page, different section. G&amp;A and every section other than R&amp;M render as today: no row-state column, no progress bar, no "No change" button. PM can edit % or $ if they want — it just isn't required.</p>
+
+  <div class="section-card">
+    <div class="section-header" style="border-bottom: 1px solid var(--gray-200);">
+      <div class="section-title-row">
+        <div class="section-title">
+          <h2>General &amp; Administrative</h2>
+          <span style="font-size: 12px; color: var(--gray-500); font-weight: 500;">Edit-optional — no review required</span>
+        </div>
+      </div>
+    </div>
+    <table class="pm-grid">
+      <thead>
+        <tr>
+          <th>GL / Description</th>
+          <th class="num">2024 Actual</th>
+          <th class="num">2026 YTD</th>
+          <th class="num">2026 Budget</th>
+          <th class="num">2026 Forecast</th>
+          <th class="num" style="width: 180px;">Increase % or $</th>
+          <th class="num">Proposed 2027</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>6710-0000</b> Telephone</td>
+          <td class="num">3,240</td>
+          <td class="num">2,800</td>
+          <td class="num">3,600</td>
+          <td class="num">3,360</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-500);">3,600 <span style="font-size: 10px; color: var(--gray-400);">(unchanged)</span></td>
+        </tr>
+        <tr>
+          <td><b>6720-0000</b> Office Supplies</td>
+          <td class="num">1,800</td>
+          <td class="num">1,420</td>
+          <td class="num">2,000</td>
+          <td class="num">1,704</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-500);">2,000 <span style="font-size: 10px; color: var(--gray-400);">(unchanged)</span></td>
+        </tr>
+        <tr>
+          <td><b>6730-0000</b> Professional Fees</td>
+          <td class="num">42,000</td>
+          <td class="num">35,200</td>
+          <td class="num">48,000</td>
+          <td class="num">42,240</td>
+          <td class="num">
+            <div class="either-or-cell">
+              <input class="pm-input" placeholder="%">
+              <span class="either-or-sep">or</span>
+              <input class="pm-input" placeholder="$">
+            </div>
+          </td>
+          <td class="num" style="color: var(--gray-500);">48,000 <span style="font-size: 10px; color: var(--gray-400);">(unchanged)</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="preview-caption" style="margin-top: 8px;">
+    G&amp;A lines have <b>no row-state column</b>, <b>no "No change" button</b>, and <b>no entry in the section-progress counter</b>. The PM can type a value if they want, but the Submit button only counts R&amp;M completion.
+  </p>
+
+</div>
+
+</body>
+</html>
