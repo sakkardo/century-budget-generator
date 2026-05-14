@@ -94,8 +94,8 @@ def check_readiness():
     for key in ("ok", "warn", "fail", "total", "ready"):
         assert key in summary, f"summary missing key: {key}"
     gates = data["gates"]
-    assert isinstance(gates, list) and len(gates) == 8, \
-        f"expected 8 gates, got {len(gates)}"
+    assert isinstance(gates, list) and len(gates) == 9, \
+        f"expected 9 gates, got {len(gates)}"
     for g in gates:
         for key in ("key", "label", "status", "detail"):
             assert key in g, f"gate missing {key}: {g}"

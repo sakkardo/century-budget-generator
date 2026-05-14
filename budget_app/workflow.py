@@ -3199,6 +3199,68 @@ def create_workflow_blueprint(db):
                             "current_budget": round(total_cb, 2),
                         },
                     })
+
+            # FA directive 2026-05-14: surface portfolio-scan findings for
+            # this building. Pulls the latest building_scan_findings row
+            # written by /api/wizard/<ec>/scan-findings or the nightly
+            # scanner. Tells the FA which labels in her approved 2026 file
+            # won't aggregate to any canonical row, BEFORE she imports.
+            try:
+                scan_row = db.session.execute(db.text(
+                    "SELECT scanned_at, has_file, labels_unmapped, parse_error, "
+                    "unmapped_labels_json "
+                    "FROM building_scan_findings "
+                    "WHERE entity_code = :ec "
+                    "ORDER BY scanned_at DESC LIMIT 1"
+                ), {"ec": entity_code}).fetchone()
+                if scan_row:
+                    unmapped_n = int(scan_row[2] or 0)
+                    has_file = bool(scan_row[1])
+                    parse_err = scan_row[3]
+                    if parse_err and not has_file:
+                        notes.append({
+                            "type": "scan_no_approved_file",
+                            "severity": "critical",
+                            "title": "No approved 2026 budget file in SharePoint",
+                            "message": (
+                                "The wizard's import step won't find a file. "
+                                "Either upload one to the entity's 2027 Budget "
+                                f"folder, or open /api/wizard/{entity_code}/"
+                                "scan-findings?refresh=1 after uploading."
+                            ),
+                        })
+                    elif unmapped_n > 0:
+                        # Extract label sample for display
+                        try:
+                            ul_j = json.loads(scan_row[4] or '{"unmapped":[]}')
+                            sample = [
+                                (u.get("label") if isinstance(u, dict) else u)
+                                for u in (ul_j.get("unmapped", []) or [])
+                            ][:6]
+                        except Exception:
+                            sample = []
+                        sev = "high" if unmapped_n > 2 else "medium"
+                        notes.append({
+                            "type": "scan_unmapped_labels",
+                            "severity": sev,
+                            "title": (
+                                f"{unmapped_n} approved-budget label"
+                                f"{'s' if unmapped_n != 1 else ''} won't aggregate"
+                            ),
+                            "message": (
+                                "These labels in the approved 2026 file have "
+                                "no canonical row to flow into. After import, "
+                                "those rows will show $0 on the summary tab. "
+                                "Sample: " + ", ".join(sample[:5]) +
+                                ("..." if len(sample) > 5 else "")
+                            ),
+                            "unmapped_count": unmapped_n,
+                            "sample_labels": sample,
+                            "review_url": f"/api/wizard/{entity_code}/scan-findings",
+                        })
+            except Exception as _scan_err:
+                logger.warning(f"_wizard_notes_for_entity scan-findings lookup "
+                               f"failed for {entity_code}: {_scan_err}")
         except Exception as _err:
             logger.warning(f"_wizard_notes_for_entity failed for {entity_code}: {_err}")
         return notes
@@ -4598,9 +4660,10 @@ def create_workflow_blueprint(db):
     # 8 places.
     @bp.route("/api/readiness/<entity_code>", methods=["GET"])
     def api_readiness(entity_code):
-        """Per-building readiness inspector. Returns 8 gates with status +
+        """Per-building readiness inspector. Returns 9 gates with status +
         click-through actions. Read-only. Safe to call on every dashboard
-        load.
+        load. Gate 8 ("Approved-file labels") added 2026-05-14 — reflects
+        portfolio scan findings for this building.
 
         Response shape:
           {
@@ -4906,7 +4969,79 @@ def create_workflow_blueprint(db):
                 "action_label": "Add",
             })
 
-        # ── Gate 8: Generated ──
+        # ── Gate 8: Approved-file labels (FA directive 2026-05-14) ──
+        # Reads the latest building_scan_findings row for this entity.
+        # If no scan has run yet, status="skip" so this gate doesn't block
+        # a building that's never been scanned. Once the wizard's
+        # scan-findings endpoint runs, this gate reflects the result.
+        try:
+            label_row = db.session.execute(db.text(
+                "SELECT scanned_at, has_file, labels_unmapped, parse_error "
+                "FROM building_scan_findings "
+                "WHERE entity_code = :ec "
+                "ORDER BY scanned_at DESC LIMIT 1"
+            ), {"ec": entity_code}).fetchone()
+        except Exception:
+            label_row = None
+
+        if not label_row:
+            gates.append({
+                "key": "approved_file_labels",
+                "label": "Approved-file labels",
+                "status": "skip",
+                "detail": "Not yet scanned — open the wizard or run /api/admin/scan-building to check",
+                "action_url": None,
+                "action_label": None,
+            })
+        elif label_row[3] and not label_row[1]:  # parse_error + no file
+            gates.append({
+                "key": "approved_file_labels",
+                "label": "Approved-file labels",
+                "status": "fail",
+                "detail": "No approved 2026 budget file found in SharePoint",
+                "action_url": None,
+                "action_label": None,
+            })
+        elif label_row[3]:  # parse_error
+            gates.append({
+                "key": "approved_file_labels",
+                "label": "Approved-file labels",
+                "status": "fail",
+                "detail": f"Parse error: {str(label_row[3])[:60]}",
+                "action_url": None,
+                "action_label": None,
+            })
+        else:
+            unmapped_n = int(label_row[2] or 0)
+            if unmapped_n == 0:
+                gates.append({
+                    "key": "approved_file_labels",
+                    "label": "Approved-file labels",
+                    "status": "ok",
+                    "detail": "All labels map to canonical rows — import will be clean",
+                    "action_url": None,
+                    "action_label": None,
+                })
+            elif unmapped_n <= 2:
+                gates.append({
+                    "key": "approved_file_labels",
+                    "label": "Approved-file labels",
+                    "status": "warn",
+                    "detail": f"{unmapped_n} label{'s' if unmapped_n != 1 else ''} won't aggregate — review before import",
+                    "action_url": f"/api/wizard/{entity_code}/scan-findings",
+                    "action_label": "Review",
+                })
+            else:
+                gates.append({
+                    "key": "approved_file_labels",
+                    "label": "Approved-file labels",
+                    "status": "fail",
+                    "detail": f"{unmapped_n} labels won't aggregate — multiple summary rows will be $0",
+                    "action_url": f"/api/wizard/{entity_code}/scan-findings",
+                    "action_label": "Review",
+                })
+
+        # ── Gate 9: Generated ──
         bstatus = (budget.status or "").lower()
         if bstatus == "generated":
             gates.append({
@@ -8323,10 +8458,75 @@ function _isUnchangedInput(el) {
         html += `</div>`;
       }
 
+      // FA directive 2026-05-14: dedicated "Approved-budget label check"
+      // card. Pulls /api/wizard/<ec>/scan-findings and shows the FA which
+      // labels in her approved 2026 file won't aggregate to canonical
+      // rows BEFORE she imports. If no scan exists yet, the endpoint
+      // runs one inline (~3s) and caches it. The card placeholder
+      // renders immediately; the data fills in when the fetch resolves.
+      html += `<div id="scanFindingsCard" style="margin-top:12px;border-top:1px solid var(--gray-200);padding-top:10px;">`;
+      html += `<div style="font-size:9px;font-weight:700;color:var(--gray-500);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Pre-import label check</div>`;
+      html += `<div id="scanFindingsBody" style="font-size:10px;color:var(--gray-500);font-style:italic;">Loading...</div>`;
+      html += `</div>`;
+
       html += `<div style="margin-top:12px;"><button onclick="document.getElementById(\'wizardSidebar\').style.transform=\'translateX(180px)\'" style="font-size:9px;border:none;background:var(--gray-100);color:var(--gray-500);padding:4px 8px;border-radius:4px;cursor:pointer;width:100%;">Collapse</button></div>`;
 
       sidebar.innerHTML = html;
       document.body.appendChild(sidebar);
+
+      // Now fire the scan-findings fetch and populate the card. Auto-runs
+      // a fresh scan if no cached finding exists for this building.
+      fetch(`/api/wizard/${entityCode}/scan-findings`)
+        .then(r => r.json())
+        .then(sf => {
+          const body = document.getElementById('scanFindingsBody');
+          if (!body) return;
+          const verdict = sf.verdict || 'unknown';
+          const bg = verdict === 'clean' ? '#dcfce7' :
+                     (verdict === 'warn' ? '#fef3c7' :
+                      (verdict === 'fail' ? '#fee2e2' : '#f3f4f6'));
+          const border = verdict === 'clean' ? '#86efac' :
+                         (verdict === 'warn' ? '#fde68a' :
+                          (verdict === 'fail' ? '#fca5a5' : '#e5e7eb'));
+          const titleColor = verdict === 'clean' ? '#15803d' :
+                             (verdict === 'warn' ? '#a16207' :
+                              (verdict === 'fail' ? '#991b1b' : '#6b7280'));
+          const icon = verdict === 'clean' ? '✓' :
+                       (verdict === 'warn' ? '⚠' :
+                        (verdict === 'fail' ? '✕' : '?'));
+          let h = '';
+          h += `<div style="background:${bg};border:1px solid ${border};padding:8px 10px;border-radius:5px;line-height:1.4;">`;
+          h += `<div style="font-weight:700;color:${titleColor};font-size:11px;margin-bottom:4px;">${icon} ${verdict.toUpperCase()}</div>`;
+          h += `<div style="color:${titleColor};font-size:10px;">${(sf.verdict_msg || '').replace(/</g,'&lt;')}</div>`;
+          // Show sample unmapped labels if any
+          if (Array.isArray(sf.unmapped_labels) && sf.unmapped_labels.length) {
+            h += `<div style="margin-top:6px;font-size:9px;font-weight:600;color:${titleColor};">Labels not mapped:</div>`;
+            const samp = sf.unmapped_labels.slice(0, 5);
+            samp.forEach(u => {
+              const lbl = (u.label || '').replace(/</g,'&lt;');
+              const sug = u.suggested ? ` <span style="color:#6b7280;font-size:9px;">→ ${u.suggested.replace(/</g,'&lt;')}</span>` : '';
+              h += `<div style="font-size:9px;color:${titleColor};margin-top:2px;">• <code style="background:rgba(0,0,0,0.05);padding:0 3px;font-size:9px;">${lbl}</code>${sug}</div>`;
+            });
+            if (sf.unmapped_labels.length > 5) {
+              h += `<div style="font-size:9px;color:#6b7280;margin-top:3px;">+${sf.unmapped_labels.length - 5} more</div>`;
+            }
+          }
+          // Show file info + refresh button
+          if (sf.file_name) {
+            h += `<div style="margin-top:6px;font-size:9px;color:#6b7280;">File: <code style="font-size:9px;">${(sf.file_name || '').slice(0,40)}</code></div>`;
+          }
+          if (sf.scanned_at) {
+            const dt = new Date(sf.scanned_at);
+            h += `<div style="margin-top:2px;font-size:9px;color:#9ca3af;">Scanned ${dt.toLocaleString()}</div>`;
+          }
+          h += `<div style="margin-top:6px;"><button onclick="(function(){const b=document.getElementById('scanFindingsBody');if(b)b.innerHTML='<span style=\\'font-style:italic;color:#6b7280;\\'>Re-scanning...</span>';fetch('/api/wizard/${entityCode}/scan-findings?refresh=1',{method:'POST'}).then(r=>r.json()).then(()=>{location.reload();});})();" style="font-size:9px;border:1px solid #d1d5db;background:white;color:#374151;padding:3px 8px;border-radius:3px;cursor:pointer;">Re-scan</button></div>`;
+          h += `</div>`;
+          body.innerHTML = h;
+        })
+        .catch(e => {
+          const body = document.getElementById('scanFindingsBody');
+          if (body) body.innerHTML = '<span style="color:#9ca3af;">scan unavailable</span>';
+        });
 
       // Adjust main content + nav so the wizard sidebar doesn't overlap the
       // breadcrumb's "Open in Wizard" link (which was getting truncated).

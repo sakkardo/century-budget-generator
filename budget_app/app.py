@@ -284,6 +284,54 @@ def _run_idempotent_migrations():
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        # FA directive 2026-05-14: portfolio-scan persistence layer.
+        # portfolio_scans = one row per scan run with aggregate stats.
+        # building_scan_findings = one row per (scan, building) with per-
+        # building label coverage detail. The FA wizard reads the latest
+        # findings for the building being onboarded so she sees in
+        # advance which labels won't aggregate.
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_scans (
+            id SERIAL PRIMARY KEY,
+            scanned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finalized_at TIMESTAMP NULL,
+            triggered_by VARCHAR(50) DEFAULT 'manual',
+            chunks_completed INTEGER NOT NULL DEFAULT 0,
+            duration_seconds INTEGER NULL,
+            buildings_scanned INTEGER NOT NULL DEFAULT 0,
+            buildings_with_file INTEGER NOT NULL DEFAULT 0,
+            buildings_without_file_count INTEGER NOT NULL DEFAULT 0,
+            buildings_parse_error_count INTEGER NOT NULL DEFAULT 0,
+            labels_total_distinct INTEGER NOT NULL DEFAULT 0,
+            labels_canonical_match INTEGER NOT NULL DEFAULT 0,
+            labels_alias_match INTEGER NOT NULL DEFAULT 0,
+            labels_unmapped_count INTEGER NOT NULL DEFAULT 0,
+            stats_json TEXT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_portfolio_scans_scanned_at "
+        "ON portfolio_scans (scanned_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS building_scan_findings (
+            id SERIAL PRIMARY KEY,
+            scan_id INTEGER NOT NULL REFERENCES portfolio_scans(id) ON DELETE CASCADE,
+            entity_code VARCHAR(50) NOT NULL,
+            has_file BOOLEAN NOT NULL DEFAULT FALSE,
+            file_name VARCHAR(500) NULL,
+            file_modified_at TIMESTAMP NULL,
+            parse_error VARCHAR(500) NULL,
+            labels_total INTEGER NOT NULL DEFAULT 0,
+            labels_canonical INTEGER NOT NULL DEFAULT 0,
+            labels_alias INTEGER NOT NULL DEFAULT 0,
+            labels_unmapped INTEGER NOT NULL DEFAULT 0,
+            unmapped_labels_json TEXT NULL,
+            scanned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_building_scan_findings_entity_scan "
+        "ON building_scan_findings (entity_code, scan_id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_building_scan_findings_scan "
+        "ON building_scan_findings (scan_id)",
     ]
     with app.app_context():
         for stmt in statements:
@@ -6852,57 +6900,14 @@ def _sharepoint_list_approved_budgets(entity_code):
     return matches
 
 
-@app.route("/api/admin/portfolio-label-scan", methods=["GET"])
-@require_admin
-def admin_portfolio_label_scan():
-    """Portfolio-wide canonical-map coverage audit.
+# ─── Portfolio Label-Scan Persistence Layer ─────────────────────────────
+# FA directive 2026-05-14: scan results need to be saved + visible to FAs
+# in the wizard, not just consumed once in a CLI session.
 
-    Scans every active building's approved 2026 budget Excel in SharePoint,
-    parses only the row labels (fast — no full data extraction), cross-
-    references against canonical SUMMARY_ROW_MAP + LABEL_ALIASES, and
-    returns the gap report.
-
-    Use cases:
-      • Pre-cycle planning: "how many canonical fixes will I need before
-        all 143 buildings can import cleanly?" — answers it before the
-        FA hits the issues one building at a time.
-      • Regression check: after a canonical change, prove nothing else
-        broke.
-      • Working session prep: walk in with the full failure surface
-        rather than discovering it during the meeting.
-
-    Query params:
-      • sample=N — limit to first N buildings (default: scan all 143).
-        Useful for fast iteration.
-      • type=coop|condo|... — limit to one building_type.
-
-    Response:
-      {
-        "buildings_total": int,
-        "buildings_scanned": int,
-        "buildings_with_file": int,
-        "buildings_without_file": [<ec>...],
-        "buildings_parse_error": [{"ec": ..., "error": ...}],
-        "labels_total_distinct": int,
-        "labels_canonical_match": int,
-        "labels_alias_match": int,
-        "labels_unmapped": [
-          {"label": "...", "count": int, "on_entities": [<ec>...]}
-        ],
-        "by_building_type": {
-          "<type>": {
-            "scanned": int, "with_file": int,
-            "distinct_labels": int, "unmapped_count": int
-          }
-        }
-      }
-    """
-    import tempfile
-    from collections import defaultdict
+def _load_canonical_label_sets():
+    """Return (canonical_keys, alias_keys) for the current canonical map."""
     import sys as _sys
     from pathlib import Path as _P
-
-    # Add budget_summary to path
     bs_path = str(_P(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in _sys.path:
         _sys.path.insert(0, bs_path)
@@ -6910,150 +6915,866 @@ def admin_portfolio_label_scan():
         from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
     except ImportError:
         from budget_summary.GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+    return (set(SUMMARY_ROW_MAP.keys()) | set(_CONDO_ROWS.keys()),
+            set(LABEL_ALIASES.keys()),
+            LABEL_ALIASES)
+
+
+def _scan_one_building(ec, canonical_keys, alias_keys, label_aliases):
+    """Scan ONE building's approved 2026 budget file. Returns a finding dict
+    suitable for persisting to building_scan_findings.
+
+    Finding shape:
+      {
+        "entity_code": str,
+        "has_file": bool,
+        "file_name": str|None,
+        "file_modified_at": str|None,  # iso
+        "parse_error": str|None,
+        "labels_total": int,
+        "labels_canonical": int,
+        "labels_alias": int,
+        "labels_unmapped": int,
+        "unmapped_labels": [
+          {"label": "...", "suggested": "alias_target"|None}
+        ],
+        "all_labels": [...]   # raw list for FA-facing display
+      }
+
+    Never raises — every error path returns a finding with parse_error set.
+    """
+    import tempfile
+    import sys as _sys
+    from pathlib import Path as _P
+    bs_path = str(_P(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in _sys.path:
+        _sys.path.insert(0, bs_path)
     try:
         from budget_summary_parser import parse_yrlycomp
     except ImportError:
-        return jsonify({"error": "budget_summary_parser not available"}), 500
+        return {"entity_code": ec, "has_file": False, "parse_error": "parser not available",
+                "labels_total": 0, "labels_canonical": 0, "labels_alias": 0,
+                "labels_unmapped": 0, "unmapped_labels": [], "all_labels": []}
 
-    canonical_keys = set(SUMMARY_ROW_MAP.keys()) | set(_CONDO_ROWS.keys())
-    alias_keys = set(LABEL_ALIASES.keys())
+    finding = {
+        "entity_code": ec, "has_file": False, "file_name": None,
+        "file_modified_at": None, "parse_error": None,
+        "labels_total": 0, "labels_canonical": 0, "labels_alias": 0,
+        "labels_unmapped": 0, "unmapped_labels": [], "all_labels": [],
+    }
 
+    try:
+        files = _sharepoint_list_approved_budgets(ec)
+    except Exception as e:
+        finding["parse_error"] = f"list: {str(e)[:120]}"
+        return finding
+
+    if not files:
+        finding["parse_error"] = "no approved 2026 budget file found in SharePoint"
+        return finding
+
+    files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+    target = files[0]
+    finding["file_name"] = target.get("name")
+    finding["file_modified_at"] = target.get("last_modified")
+    item_id = target.get("item_id")
+    if not item_id:
+        finding["parse_error"] = "no item_id on file"
+        return finding
+
+    try:
+        _name, file_bytes = _sharepoint_download_item(item_id)
+    except Exception as e:
+        finding["parse_error"] = f"download: {str(e)[:120]}"
+        return finding
+
+    finding["has_file"] = True
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        parsed = parse_yrlycomp(tmp_path)
+    except Exception as e:
+        finding["parse_error"] = f"parse: {str(e)[:120]}"
+        return finding
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    if isinstance(parsed, dict) and "error" in parsed:
+        finding["parse_error"] = f"parse: {parsed['error'][:120]}"
+        return finding
+
+    rows = parsed.get("rows", []) if isinstance(parsed, dict) else []
+    if not rows:
+        finding["parse_error"] = "no rows in parsed file"
+        return finding
+
+    # Filter out subtotal/section-header noise so the count is meaningful.
+    SUBTOTAL_NOISE = {
+        "expenses", "income", "total expenses", "total income",
+        "total non-operating expenses", "total non- operating income",
+        "total non-operating income", "total surplus <deficit>",
+        "net operating surplus <deficit>", "non-operating income",
+        "non-operating expense", "non-operating expenses",
+        "non- operating expenses", "non- operating income", "page 2",
+    }
+
+    all_labels = []
+    unmapped = []
+    canon_count = 0
+    alias_count = 0
+    for row in rows:
+        lbl = (row.get("label") or "").strip()
+        if not lbl:
+            continue
+        if lbl.lower() in SUBTOTAL_NOISE:
+            continue
+        all_labels.append(lbl)
+        if lbl in canonical_keys:
+            canon_count += 1
+        elif lbl in alias_keys:
+            alias_count += 1
+        else:
+            unmapped.append({"label": lbl, "suggested": None})
+
+    finding["labels_total"] = len(all_labels)
+    finding["labels_canonical"] = canon_count
+    finding["labels_alias"] = alias_count
+    finding["labels_unmapped"] = len(unmapped)
+    finding["unmapped_labels"] = unmapped
+    finding["all_labels"] = all_labels
+    return finding
+
+
+def _persist_building_finding(scan_id, finding):
+    """Write one building's finding to building_scan_findings. Idempotent
+    per (scan_id, entity_code) — re-running a chunk overwrites prior."""
+    import json as _json
+    try:
+        db.session.execute(db.text(
+            "DELETE FROM building_scan_findings "
+            "WHERE scan_id = :sid AND entity_code = :ec"
+        ), {"sid": scan_id, "ec": finding["entity_code"]})
+        db.session.execute(db.text(
+            "INSERT INTO building_scan_findings "
+            "(scan_id, entity_code, has_file, file_name, file_modified_at, "
+            " parse_error, labels_total, labels_canonical, labels_alias, "
+            " labels_unmapped, unmapped_labels_json) "
+            "VALUES (:sid, :ec, :hf, :fn, :fm, :pe, :lt, :lc, :la, :lu, :ul)"
+        ), {
+            "sid": scan_id,
+            "ec": finding["entity_code"],
+            "hf": finding["has_file"],
+            "fn": (finding.get("file_name") or None),
+            "fm": _parse_iso_or_none(finding.get("file_modified_at")),
+            "pe": finding.get("parse_error"),
+            "lt": finding["labels_total"],
+            "lc": finding["labels_canonical"],
+            "la": finding["labels_alias"],
+            "lu": finding["labels_unmapped"],
+            "ul": _json.dumps({
+                "unmapped": finding.get("unmapped_labels", []),
+                "all_labels": finding.get("all_labels", []),
+            }),
+        })
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"_persist_building_finding({finding.get('entity_code')}): {e}")
+
+
+def _parse_iso_or_none(s):
+    """Parse iso timestamp to datetime, or None."""
+    if not s:
+        return None
+    try:
+        from datetime import datetime as _dt
+        # Trim 'Z' or microseconds beyond what fromisoformat handles
+        s2 = str(s).replace("Z", "+00:00")
+        return _dt.fromisoformat(s2)
+    except Exception:
+        return None
+
+
+def _create_or_continue_scan(scan_id=None, triggered_by="manual"):
+    """Either continues an existing scan (chunked use) or creates a new one.
+    Returns the scan_id integer."""
+    if scan_id:
+        # Verify exists
+        row = db.session.execute(db.text(
+            "SELECT id FROM portfolio_scans WHERE id = :id"
+        ), {"id": scan_id}).fetchone()
+        if row:
+            return scan_id
+    # Create new
+    res = db.session.execute(db.text(
+        "INSERT INTO portfolio_scans (triggered_by, chunks_completed) "
+        "VALUES (:tb, 0) RETURNING id"
+    ), {"tb": triggered_by[:50]})
+    new_id = res.fetchone()[0]
+    db.session.commit()
+    return new_id
+
+
+def _finalize_scan(scan_id):
+    """Compute aggregate stats from per-building findings and update the
+    portfolio_scans row. Called after all chunks are persisted."""
+    import json as _json
+    try:
+        rows = db.session.execute(db.text(
+            "SELECT entity_code, has_file, parse_error, labels_total, "
+            "labels_canonical, labels_alias, labels_unmapped, "
+            "unmapped_labels_json "
+            "FROM building_scan_findings WHERE scan_id = :sid"
+        ), {"sid": scan_id}).fetchall()
+
+        buildings_scanned = len(rows)
+        buildings_with_file = sum(1 for r in rows if r[1])
+        buildings_no_file = sum(1 for r in rows if not r[1] and r[2])
+        buildings_parse_err = sum(1 for r in rows
+                                  if r[1] and r[2])
+
+        # Aggregate label universe across all buildings
+        from collections import defaultdict as _dd
+        label_to_entities = _dd(set)
+        canon_labels = set()
+        alias_labels = set()
+        for r in rows:
+            ec = r[0]
+            try:
+                ul_json = _json.loads(r[7] or '{"unmapped":[], "all_labels":[]}')
+            except Exception:
+                ul_json = {"unmapped": [], "all_labels": []}
+            for u in ul_json.get("unmapped", []):
+                lbl = u.get("label") if isinstance(u, dict) else u
+                if lbl:
+                    label_to_entities[lbl].add(ec)
+
+        labels_total_distinct = sum(1 for r in rows for _ in [r[3]]) and (
+            sum(r[3] for r in rows)  # crude: sum of all labels per building
+        ) or 0
+        # Distinct unmapped across the portfolio
+        labels_unmapped_count = len(label_to_entities)
+
+        # canon/alias counts are per-building sums (not portfolio-distinct).
+        # The "buckets the FA cares about" are unmapped — keep that distinct.
+        labels_canon_sum = sum(r[4] for r in rows)
+        labels_alias_sum = sum(r[5] for r in rows)
+
+        stats_json = _json.dumps({
+            "unmapped_labels": sorted(
+                [{"label": l, "count": len(es), "on_entities": sorted(es)[:10]}
+                 for l, es in label_to_entities.items()],
+                key=lambda x: -x["count"]
+            )[:500],
+        })
+
+        # Compute duration
+        scan_row = db.session.execute(db.text(
+            "SELECT scanned_at FROM portfolio_scans WHERE id = :sid"
+        ), {"sid": scan_id}).fetchone()
+        duration_s = None
+        if scan_row:
+            from datetime import datetime as _dt
+            try:
+                duration_s = int((_dt.utcnow() - scan_row[0]).total_seconds())
+            except Exception:
+                pass
+
+        db.session.execute(db.text(
+            "UPDATE portfolio_scans SET "
+            "finalized_at = CURRENT_TIMESTAMP, "
+            "duration_seconds = :ds, "
+            "buildings_scanned = :bs, "
+            "buildings_with_file = :bf, "
+            "buildings_without_file_count = :bnf, "
+            "buildings_parse_error_count = :bpe, "
+            "labels_total_distinct = :ltd, "
+            "labels_canonical_match = :lcm, "
+            "labels_alias_match = :lam, "
+            "labels_unmapped_count = :luc, "
+            "stats_json = :sj "
+            "WHERE id = :sid"
+        ), {
+            "ds": duration_s,
+            "bs": buildings_scanned,
+            "bf": buildings_with_file,
+            "bnf": buildings_no_file,
+            "bpe": buildings_parse_err,
+            "ltd": labels_total_distinct,
+            "lcm": labels_canon_sum,
+            "lam": labels_alias_sum,
+            "luc": labels_unmapped_count,
+            "sj": stats_json,
+            "sid": scan_id,
+        })
+        db.session.commit()
+        return {
+            "scan_id": scan_id,
+            "buildings_scanned": buildings_scanned,
+            "buildings_with_file": buildings_with_file,
+            "labels_unmapped_distinct": labels_unmapped_count,
+        }
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"_finalize_scan({scan_id}) failed: {e}")
+        raise
+
+
+@app.route("/api/admin/portfolio-label-scan", methods=["GET", "POST"])
+@require_admin
+def admin_portfolio_label_scan():
+    """Portfolio-wide canonical-map coverage audit.
+
+    Persistent: every call writes findings to building_scan_findings and
+    aggregate stats to portfolio_scans. Re-running a chunk overwrites prior
+    findings for the same (scan_id, entity_code).
+
+    Query params:
+      • scan_id=N — continue an existing scan (chunked use). If omitted,
+        creates a new scan_id and returns it in the response.
+      • finalize=1 — after this chunk, finalize the scan (compute aggregate
+        stats across all chunks). Pass on the LAST chunk.
+      • sample=N — limit to first N buildings.
+      • offset=N — skip first N buildings (for chunking).
+      • type=coop|condo|... — limit to one building_type.
+      • triggered_by=manual|preflight|wizard — provenance tag.
+    """
+    import tempfile
+    from collections import defaultdict
+
+    canonical_keys, alias_keys, label_aliases = _load_canonical_label_sets()
+
+    scan_id = request.args.get("scan_id", type=int)
     sample_limit = request.args.get("sample", type=int)
     offset = request.args.get("offset", type=int) or 0
     type_filter = (request.args.get("type") or "").strip().lower()
+    triggered_by = (request.args.get("triggered_by") or "manual").strip()[:50]
+    finalize_flag = request.args.get("finalize", default=0, type=int)
 
-    # Load buildings from CSV
     bldgs = load_buildings()
     if type_filter:
         bldgs = [b for b in bldgs if (b.get("type") or "").strip().lower() == type_filter]
-    # FA directive 2026-05-14: Railway gateway timeout (~60s) caps a single
-    # call to ~30 buildings worth of SharePoint download+parse. Use
-    # ?offset=N&sample=M to chunk through the portfolio. Five sequential
-    # calls of sample=30 covers the full 143 active buildings.
     if offset:
         bldgs = bldgs[offset:]
     if sample_limit:
         bldgs = bldgs[:sample_limit]
 
-    stats = {
+    # Create or continue scan
+    scan_id = _create_or_continue_scan(scan_id, triggered_by)
+
+    # Per-chunk live stats (also persisted)
+    chunk_stats = {
+        "scan_id": scan_id,
         "buildings_total": len(bldgs),
         "buildings_scanned": 0,
         "buildings_with_file": 0,
         "buildings_without_file": [],
         "buildings_parse_error": [],
-        "labels_total_distinct": 0,
-        "labels_canonical_match": 0,
-        "labels_alias_match": 0,
         "labels_unmapped": [],
-        "by_building_type": {},
     }
-
-    label_to_entities = defaultdict(list)
-    type_stats = defaultdict(lambda: {
-        "scanned": 0, "with_file": 0,
-        "labels": set(), "unmapped": set(),
-    })
+    chunk_unmapped = defaultdict(list)
 
     for b in bldgs:
         ec = (b.get("entity_code") or "").strip()
         btype = (b.get("type") or "unset").strip().lower()
         if not ec:
             continue
-        stats["buildings_scanned"] += 1
-        type_stats[btype]["scanned"] += 1
+        chunk_stats["buildings_scanned"] += 1
+        finding = _scan_one_building(ec, canonical_keys, alias_keys, label_aliases)
+        # Persist this finding immediately so partial scans aren't lost.
+        _persist_building_finding(scan_id, finding)
 
-        try:
-            files = _sharepoint_list_approved_budgets(ec)
-        except Exception as e:
-            stats["buildings_parse_error"].append({"ec": ec, "error": f"list: {str(e)[:120]}"})
-            continue
+        if finding["has_file"]:
+            chunk_stats["buildings_with_file"] += 1
+        elif finding["parse_error"] and "no approved 2026" in (finding.get("parse_error") or ""):
+            chunk_stats["buildings_without_file"].append(ec)
+        elif finding["parse_error"]:
+            chunk_stats["buildings_parse_error"].append({"ec": ec, "error": finding["parse_error"]})
 
-        if not files:
-            stats["buildings_without_file"].append(ec)
-            continue
+        for u in finding.get("unmapped_labels", []):
+            lbl = u.get("label") if isinstance(u, dict) else u
+            if lbl:
+                chunk_unmapped[lbl].append(ec)
 
-        # Take the most recently modified approved file
-        files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
-        target = files[0]
-        item_id = target.get("item_id")
-        if not item_id:
-            stats["buildings_parse_error"].append({"ec": ec, "error": "no item_id"})
-            continue
+    # Increment chunks counter
+    try:
+        db.session.execute(db.text(
+            "UPDATE portfolio_scans SET chunks_completed = chunks_completed + 1 "
+            "WHERE id = :sid"
+        ), {"sid": scan_id})
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
-        try:
-            _name, file_bytes = _sharepoint_download_item(item_id)
-        except Exception as e:
-            stats["buildings_parse_error"].append({"ec": ec, "error": f"download: {str(e)[:120]}"})
-            continue
+    chunk_stats["labels_unmapped"] = sorted(
+        [{"label": l, "count": len(es), "on_entities": sorted(set(es))[:10],
+          "total_buildings": len(set(es))}
+         for l, es in chunk_unmapped.items()],
+        key=lambda x: -x["total_buildings"]
+    )
 
-        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-        try:
-            parsed = parse_yrlycomp(tmp_path)
-        except Exception as e:
-            stats["buildings_parse_error"].append({"ec": ec, "error": f"parse: {str(e)[:120]}"})
-            continue
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+    if finalize_flag:
+        final = _finalize_scan(scan_id)
+        chunk_stats["finalized"] = True
+        chunk_stats["final_summary"] = final
 
-        if isinstance(parsed, dict) and "error" in parsed:
-            stats["buildings_parse_error"].append({"ec": ec, "error": f"parse: {parsed['error'][:120]}"})
-            continue
+    return jsonify(chunk_stats)
 
-        # parse_yrlycomp returns {"rows": [...]} where each row has a "label"
-        rows = parsed.get("rows", []) if isinstance(parsed, dict) else []
-        if not rows:
-            stats["buildings_parse_error"].append({"ec": ec, "error": "no rows in parsed file"})
-            continue
 
-        stats["buildings_with_file"] += 1
-        type_stats[btype]["with_file"] += 1
+@app.route("/api/admin/portfolio-scan-finalize/<int:scan_id>", methods=["POST"])
+@require_admin
+def admin_portfolio_scan_finalize(scan_id):
+    """Compute aggregate stats from all persisted findings for this scan.
+    Call after the last chunk completes."""
+    try:
+        result = _finalize_scan(scan_id)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
 
-        for row in rows:
-            lbl = (row.get("label") or "").strip()
-            if not lbl:
-                continue
-            label_to_entities[lbl].append(ec)
-            type_stats[btype]["labels"].add(lbl)
-            if lbl not in canonical_keys and lbl not in alias_keys:
-                type_stats[btype]["unmapped"].add(lbl)
 
-    # Aggregate label stats
-    stats["labels_total_distinct"] = len(label_to_entities)
-    canonical_match = 0
-    alias_match = 0
-    unmapped_list = []
-    for lbl, ents in label_to_entities.items():
-        if lbl in canonical_keys:
-            canonical_match += 1
-        elif lbl in alias_keys:
-            alias_match += 1
-        else:
-            unmapped_list.append({
-                "label": lbl,
-                "count": len(ents),
-                "on_entities": sorted(set(ents))[:10],  # cap for readability
-                "total_buildings": len(set(ents)),
-            })
-    stats["labels_canonical_match"] = canonical_match
-    stats["labels_alias_match"] = alias_match
-    stats["labels_unmapped"] = sorted(unmapped_list, key=lambda x: -x["total_buildings"])
+@app.route("/api/admin/scan-building/<entity_code>", methods=["POST"])
+@require_admin
+def admin_scan_one_building(entity_code):
+    """On-demand single-building scan. Creates a 1-building scan record so
+    the FA-facing wizard endpoint has fresh data when asked. Returns the
+    finding with the unmapped labels for this building only."""
+    canonical_keys, alias_keys, label_aliases = _load_canonical_label_sets()
+    scan_id = _create_or_continue_scan(triggered_by="single-building")
+    finding = _scan_one_building(entity_code, canonical_keys, alias_keys, label_aliases)
+    _persist_building_finding(scan_id, finding)
+    _finalize_scan(scan_id)
+    return jsonify({"ok": True, "scan_id": scan_id, "finding": finding})
 
-    # Build by-type stats
-    for t, ts in type_stats.items():
-        stats["by_building_type"][t] = {
-            "scanned": ts["scanned"],
-            "with_file": ts["with_file"],
-            "distinct_labels": len(ts["labels"]),
-            "unmapped_count": len(ts["unmapped"]),
-            "sample_unmapped": sorted(ts["unmapped"])[:8],
+
+@app.route("/api/admin/portfolio-scan-delta", methods=["GET"])
+@require_admin
+def admin_portfolio_scan_delta():
+    """Compare the two most recent finalized scans. Returns the labels
+    that appeared NEW in the latest scan (regression candidates) and any
+    that disappeared (fixes that propagated). Used by the nightly Teams
+    alert.
+    """
+    import json as _json
+    rows = db.session.execute(db.text(
+        "SELECT id, scanned_at, labels_unmapped_count, stats_json "
+        "FROM portfolio_scans "
+        "WHERE finalized_at IS NOT NULL "
+        "ORDER BY scanned_at DESC LIMIT 2"
+    )).fetchall()
+    if len(rows) < 2:
+        return jsonify({"ok": True, "have_prior": False,
+                        "message": "Only one finalized scan exists — no delta yet."})
+    latest, prior = rows[0], rows[1]
+    try:
+        lstats = _json.loads(latest[3] or "{}")
+        pstats = _json.loads(prior[3] or "{}")
+    except Exception:
+        lstats, pstats = {}, {}
+    l_labels = {u["label"]: u for u in lstats.get("unmapped_labels", [])}
+    p_labels = {u["label"]: u for u in pstats.get("unmapped_labels", [])}
+    new_labels = [l_labels[k] for k in l_labels if k not in p_labels]
+    removed_labels = [p_labels[k] for k in p_labels if k not in l_labels]
+    return jsonify({
+        "ok": True,
+        "have_prior": True,
+        "latest_scan_id": latest[0],
+        "latest_at": latest[1].isoformat() if latest[1] else None,
+        "latest_unmapped_count": latest[2],
+        "prior_scan_id": prior[0],
+        "prior_at": prior[1].isoformat() if prior[1] else None,
+        "prior_unmapped_count": prior[2],
+        "new_labels": sorted(new_labels, key=lambda x: -x.get("count", 0))[:20],
+        "removed_labels": sorted(removed_labels, key=lambda x: -x.get("count", 0))[:20],
+        "delta_count": (latest[2] or 0) - (prior[2] or 0),
+    })
+
+
+def _post_teams_health_alert(title, summary, details_md=None, severity="info"):
+    """Post a simple Adaptive Card to Teams via the existing
+    TEAMS_WEBHOOK_URL env var. Used by the nightly scan delta alert.
+    Never raises — failures get logged + swallowed."""
+    webhook = (os.environ.get("TEAMS_WEBHOOK_URL") or "").strip()
+    if not webhook:
+        return False
+    try:
+        color_map = {"info": "#2563eb", "warn": "#f59e0b", "fail": "#dc2626"}
+        accent = color_map.get(severity, "#2563eb")
+        body = [
+            {"type": "TextBlock", "text": title, "weight": "Bolder",
+             "size": "Medium", "color": "Default"},
+            {"type": "TextBlock", "text": summary, "wrap": True,
+             "spacing": "Small"},
+        ]
+        if details_md:
+            body.append({"type": "TextBlock", "text": details_md,
+                         "wrap": True, "isSubtle": True, "spacing": "Small"})
+        card = {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard", "version": "1.4",
+                    "body": body,
+                },
+            }],
         }
+        import urllib.request, ssl
+        data = json.dumps(card).encode("utf-8")
+        req = urllib.request.Request(
+            webhook, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            return resp.status < 400
+    except Exception as e:
+        logger.warning(f"_post_teams_health_alert failed: {e}")
+        return False
 
-    return jsonify(stats)
+
+@app.route("/api/admin/portfolio-scan-alert-on-delta", methods=["POST"])
+@require_admin
+def admin_portfolio_scan_alert_on_delta():
+    """If the latest finalized scan has new unmapped labels vs. the prior
+    finalized scan, post a Teams alert. Idempotent — same scan won't alert
+    twice (tracked via wizard_events 'alerted' marker).
+    """
+    delta_resp = admin_portfolio_scan_delta()
+    delta = delta_resp.get_json() if hasattr(delta_resp, "get_json") else delta_resp
+    if not delta.get("have_prior"):
+        return jsonify({"alerted": False, "reason": "no prior scan"})
+
+    new_labels = delta.get("new_labels", [])
+    if not new_labels:
+        return jsonify({"alerted": False, "reason": "no new unmapped labels"})
+
+    # Idempotency check
+    scan_id = delta.get("latest_scan_id")
+    try:
+        prior_alert = db.session.execute(db.text(
+            "SELECT id FROM wizard_events "
+            "WHERE step = 'portfolio_scan' AND action = 'alerted' "
+            "AND payload_json LIKE :pat LIMIT 1"
+        ), {"pat": f"%scan_id\": {scan_id}%"}).fetchone()
+        if prior_alert:
+            return jsonify({"alerted": False, "reason": "already alerted",
+                            "scan_id": scan_id})
+    except Exception:
+        pass
+
+    sample_md = "**New unmapped labels in latest scan:**\n" + "\n".join(
+        f"• {nl['label']} ({nl['count']}x: {', '.join(nl.get('on_entities', [])[:3])}{'...' if len(nl.get('on_entities', [])) > 3 else ''})"
+        for nl in new_labels[:8]
+    )
+    if len(new_labels) > 8:
+        sample_md += f"\n…and {len(new_labels) - 8} more."
+
+    posted = _post_teams_health_alert(
+        title=f"⚠️ Portfolio scan — {len(new_labels)} new unmapped label(s)",
+        summary=f"Scan #{scan_id} found {len(new_labels)} labels that weren't in the prior scan. "
+                f"Total unmapped: {delta.get('latest_unmapped_count')} (was {delta.get('prior_unmapped_count')}).",
+        details_md=sample_md,
+        severity="warn",
+    )
+    # Mark as alerted so we don't double-alert on retry
+    try:
+        db.session.execute(db.text(
+            "INSERT INTO wizard_events (entity_code, step, action, ok, payload_json) "
+            "VALUES ('_portfolio', 'portfolio_scan', 'alerted', :ok, :pl)"
+        ), {"ok": posted, "pl": json.dumps({
+            "scan_id": scan_id,
+            "new_count": len(new_labels),
+        })})
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"alerted": posted, "new_label_count": len(new_labels),
+                    "scan_id": scan_id})
+
+
+@app.route("/admin/portfolio-health", methods=["GET"])
+@require_admin
+def admin_portfolio_health_page():
+    """Render an HTML page summarizing the latest portfolio scan.
+
+    Shows: aggregate stats, top unmapped labels (with frequency), per-
+    building drill-down (which buildings have which gaps), and a
+    7-scan history strip. All read from portfolio_scans +
+    building_scan_findings.
+    """
+    import json as _json
+
+    # Latest scan
+    latest = db.session.execute(db.text(
+        "SELECT id, scanned_at, finalized_at, triggered_by, "
+        "buildings_scanned, buildings_with_file, "
+        "buildings_without_file_count, buildings_parse_error_count, "
+        "labels_total_distinct, labels_canonical_match, labels_alias_match, "
+        "labels_unmapped_count, stats_json "
+        "FROM portfolio_scans "
+        "WHERE finalized_at IS NOT NULL "
+        "ORDER BY scanned_at DESC LIMIT 1"
+    )).fetchone()
+
+    # Last 7 scans for the trend strip
+    history = db.session.execute(db.text(
+        "SELECT id, scanned_at, buildings_scanned, buildings_with_file, "
+        "labels_unmapped_count "
+        "FROM portfolio_scans "
+        "WHERE finalized_at IS NOT NULL "
+        "ORDER BY scanned_at DESC LIMIT 7"
+    )).fetchall()
+
+    if not latest:
+        return ("<html><body style='font-family:sans-serif;padding:40px;'>"
+                "<h1>Portfolio Health</h1>"
+                "<p>No scan has been finalized yet. Run "
+                "<code>POST /api/admin/portfolio-label-scan?finalize=1</code> "
+                "to produce the first one.</p></body></html>")
+
+    try:
+        stats = _json.loads(latest[12] or "{}")
+    except Exception:
+        stats = {}
+    unmapped_labels = stats.get("unmapped_labels", [])
+
+    # Per-building findings for the latest scan
+    bldgs = db.session.execute(db.text(
+        "SELECT entity_code, has_file, file_name, parse_error, "
+        "labels_total, labels_canonical, labels_alias, labels_unmapped "
+        "FROM building_scan_findings "
+        "WHERE scan_id = :sid "
+        "ORDER BY labels_unmapped DESC, entity_code"
+    ), {"sid": latest[0]}).fetchall()
+
+    # Build HTML
+    history_html = ""
+    for h in reversed(history):
+        history_html += (
+            f'<div style="display:inline-block; padding:8px 12px; margin-right:6px; '
+            f'background:white; border:1px solid #e5e7eb; border-radius:6px; '
+            f'text-align:center; min-width:90px;">'
+            f'<div style="font-size:18px; font-weight:700; color:#dc2626;">{h[4] or 0}</div>'
+            f'<div style="font-size:10px; color:#6b7280;">{h[1].strftime("%b %d %H:%M") if h[1] else "?"}</div>'
+            f'<div style="font-size:10px; color:#9ca3af;">unmapped</div>'
+            f'</div>'
+        )
+
+    label_rows = ""
+    for u in unmapped_labels[:100]:
+        lbl = u.get("label", "")
+        cnt = u.get("count", 0)
+        ents = u.get("on_entities", [])
+        bg_color = "#fee2e2" if cnt >= 5 else ("#fef3c7" if cnt >= 2 else "#f3f4f6")
+        label_rows += (
+            f'<tr><td style="padding:8px 14px; border-bottom:1px solid #f3f4f6; '
+            f'background:{bg_color};"><strong>{cnt}x</strong></td>'
+            f'<td style="padding:8px 14px; border-bottom:1px solid #f3f4f6;"><code>{lbl}</code></td>'
+            f'<td style="padding:8px 14px; border-bottom:1px solid #f3f4f6; '
+            f'font-size:11px; color:#6b7280;">{", ".join(ents[:8])}</td>'
+            f'</tr>'
+        )
+
+    bldg_rows = ""
+    for b in bldgs:
+        ec, has_file, fname, perr, lt, lc, la, lu = b
+        status_color = "#16a34a" if (lu == 0 and has_file) else (
+            "#f59e0b" if (lu and lu <= 2) else "#dc2626"
+        )
+        status_text = ("OK" if (lu == 0 and has_file)
+                       else ("WARN" if (lu and lu <= 2) else "FAIL"))
+        detail = perr if perr else (
+            f"{lu} unmapped of {lt} labels" if has_file else "no file"
+        )
+        bldg_rows += (
+            f'<tr><td style="padding:6px 12px; border-bottom:1px solid #f3f4f6;">'
+            f'<a href="/dashboard/{ec}" style="color:#2563eb;">{ec}</a></td>'
+            f'<td style="padding:6px 12px; border-bottom:1px solid #f3f4f6; color:{status_color}; font-weight:600;">{status_text}</td>'
+            f'<td style="padding:6px 12px; border-bottom:1px solid #f3f4f6; font-size:12px;">{detail}</td>'
+            f'<td style="padding:6px 12px; border-bottom:1px solid #f3f4f6; font-size:11px; color:#6b7280;">{fname or "—"}</td>'
+            f'</tr>'
+        )
+
+    finalized_str = latest[2].strftime("%Y-%m-%d %H:%M UTC") if latest[2] else "?"
+
+    return ("<!DOCTYPE html><html><head><meta charset=utf-8>"
+            "<title>Portfolio Health</title>"
+            "<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+            "margin:0;background:#f9fafb;color:#111827;}"
+            ".container{max-width:1280px;margin:24px auto;padding:0 24px 80px;}"
+            "h1{font-size:24px;margin:0 0 4px;}"
+            "h2{font-size:16px;margin:32px 0 12px;color:#1f2937;border-bottom:1px solid #e5e7eb;padding-bottom:6px;}"
+            ".stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0;}"
+            ".stat{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:14px;text-align:center;}"
+            ".stat .num{font-size:26px;font-weight:700;color:#111827;}"
+            ".stat .lbl{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-top:4px;}"
+            "table{width:100%;border-collapse:collapse;font-size:13px;background:white;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;}"
+            "th{background:#f9fafb;text-align:left;padding:10px 14px;border-bottom:2px solid #e5e7eb;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;}"
+            "code{font-family:Consolas,Monaco,monospace;font-size:12px;background:#f3f4f6;padding:1px 5px;border-radius:3px;}"
+            ".banner{background:white;border-radius:8px;padding:16px 20px;border:1px solid #e5e7eb;margin-bottom:8px;}"
+            "</style></head><body>"
+            "<div class='container'>"
+            f"<h1>Portfolio Health — Label Coverage</h1>"
+            f"<p style='color:#6b7280;font-size:13px;margin-bottom:24px;'>Latest scan finalized {finalized_str} · triggered by <code>{latest[3]}</code> · scan #{latest[0]}</p>"
+            f"<div class='banner'><strong>Trend (last {len(history)} scans):</strong><br><div style='margin-top:8px;'>{history_html}</div></div>"
+            f"<div class='stats'>"
+            f"<div class='stat'><div class='num'>{latest[4] or 0}</div><div class='lbl'>Buildings scanned</div></div>"
+            f"<div class='stat'><div class='num'>{latest[5] or 0}</div><div class='lbl'>With approved 2026 file</div></div>"
+            f"<div class='stat'><div class='num'>{latest[6] or 0}</div><div class='lbl'>Missing file</div></div>"
+            f"<div class='stat'><div class='num' style='color:#dc2626;'>{latest[11] or 0}</div><div class='lbl'>Distinct unmapped labels</div></div>"
+            f"</div>"
+            f"<h2>Unmapped labels — top {min(len(unmapped_labels), 100)} by frequency</h2>"
+            f"<table><thead><tr><th>Count</th><th>Label</th><th>Sample entities</th></tr></thead>"
+            f"<tbody>{label_rows}</tbody></table>"
+            f"<h2>Per-building findings ({len(bldgs)} rows)</h2>"
+            f"<table><thead><tr><th>Entity</th><th>Status</th><th>Detail</th><th>File</th></tr></thead>"
+            f"<tbody>{bldg_rows}</tbody></table>"
+            "</div></body></html>")
+
+
+@app.route("/api/wizard/<entity_code>/scan-findings", methods=["GET", "POST"])
+def wizard_scan_findings(entity_code):
+    """FA-facing endpoint (NO admin gate). Returns the latest scan finding
+    for this building, plus suggested alias targets so the FA sees what
+    will/won't aggregate before she imports.
+
+    Query params:
+      • refresh=1 — POST or GET; runs a fresh single-building scan instead
+        of returning cached. Use when FA wants to re-check after a fix.
+
+    Response:
+      {
+        "entity_code": str,
+        "scanned_at": iso,
+        "has_file": bool,
+        "file_name": str|None,
+        "labels_total": int,
+        "labels_canonical": int,
+        "labels_alias": int,
+        "labels_unmapped": int,
+        "unmapped_labels": [
+          {"label": "...", "suggested": "<canonical>"|None,
+           "suggestion_kind": "alias_target"|"new_canonical"|"manual"|"per_building"|None}
+        ],
+        "verdict": "clean"|"warn"|"fail",
+        "verdict_msg": str,
+      }
+    """
+    refresh = (request.args.get("refresh", default=0, type=int) == 1
+               or request.method == "POST")
+
+    # If refresh requested OR no recent finding, run a fresh scan.
+    finding_row = None
+    if not refresh:
+        finding_row = db.session.execute(db.text(
+            "SELECT bsf.scan_id, bsf.scanned_at, bsf.has_file, bsf.file_name, "
+            "bsf.parse_error, bsf.labels_total, bsf.labels_canonical, "
+            "bsf.labels_alias, bsf.labels_unmapped, bsf.unmapped_labels_json "
+            "FROM building_scan_findings bsf "
+            "WHERE bsf.entity_code = :ec "
+            "ORDER BY bsf.scanned_at DESC LIMIT 1"
+        ), {"ec": entity_code}).fetchone()
+
+    if not finding_row or refresh:
+        # Run a fresh scan inline. ~3 seconds for a single building.
+        canonical_keys, alias_keys, label_aliases = _load_canonical_label_sets()
+        scan_id = _create_or_continue_scan(triggered_by="wizard")
+        finding = _scan_one_building(entity_code, canonical_keys, alias_keys, label_aliases)
+        _persist_building_finding(scan_id, finding)
+        _finalize_scan(scan_id)
+        # Re-read so timestamps are consistent
+        finding_row = db.session.execute(db.text(
+            "SELECT bsf.scan_id, bsf.scanned_at, bsf.has_file, bsf.file_name, "
+            "bsf.parse_error, bsf.labels_total, bsf.labels_canonical, "
+            "bsf.labels_alias, bsf.labels_unmapped, bsf.unmapped_labels_json "
+            "FROM building_scan_findings bsf "
+            "WHERE bsf.entity_code = :ec AND bsf.scan_id = :sid"
+        ), {"ec": entity_code, "sid": scan_id}).fetchone()
+
+    if not finding_row:
+        return jsonify({"entity_code": entity_code, "has_file": False,
+                        "parse_error": "scan failed", "verdict": "fail",
+                        "verdict_msg": "Could not produce a scan finding for this building."})
+
+    import json as _json
+    try:
+        ul = _json.loads(finding_row[9] or '{"unmapped":[]}')
+    except Exception:
+        ul = {"unmapped": []}
+
+    # Resolve suggestions for each unmapped label by checking the canonical
+    # map + alias map. We've already classified them as unmapped, but at
+    # query-time we can suggest a target if the label is a near-match.
+    _, alias_keys, label_aliases = _load_canonical_label_sets()
+    unmapped_with_suggestions = []
+    for u in ul.get("unmapped", []):
+        lbl = u.get("label") if isinstance(u, dict) else u
+        if not lbl: continue
+        suggestion = None
+        suggestion_kind = None
+        # Check if a normalized version matches an alias key
+        norm = lbl.strip().lower().replace("  ", " ")
+        for ak, target in label_aliases.items():
+            if ak.strip().lower() == norm:
+                suggestion = target
+                suggestion_kind = "alias_target"
+                break
+        # If lbl includes "assessment" / "operating" but isn't matched, hint
+        if not suggestion:
+            l_low = lbl.lower()
+            if "operating assessment" in l_low: suggestion = "Assessment - Operating"; suggestion_kind = "alias_target"
+            elif "storage room" in l_low: suggestion = "Storage Income"; suggestion_kind = "alias_target"
+            elif "parking" == l_low: suggestion = "Garage"; suggestion_kind = "alias_target"
+            elif "cable" == l_low or "cable tv" in l_low: suggestion = "Cable TV (new canonical row needed)"; suggestion_kind = "new_canonical"
+            elif "flip tax" in l_low: suggestion = "Flip Tax (new canonical row needed)"; suggestion_kind = "new_canonical"
+        unmapped_with_suggestions.append({
+            "label": lbl,
+            "suggested": suggestion,
+            "suggestion_kind": suggestion_kind,
+        })
+
+    unmapped_count = len(unmapped_with_suggestions)
+    has_file = bool(finding_row[2])
+    parse_error = finding_row[4]
+
+    if parse_error and not has_file:
+        verdict = "fail"
+        verdict_msg = f"No approved 2026 budget file found. Wizard import will not work until this is resolved."
+    elif parse_error:
+        verdict = "fail"
+        verdict_msg = f"Parse error: {parse_error}"
+    elif unmapped_count == 0:
+        verdict = "clean"
+        verdict_msg = "All labels in the approved 2026 file map to canonical rows. Import will produce clean data."
+    elif unmapped_count <= 2:
+        verdict = "warn"
+        verdict_msg = f"{unmapped_count} label{'s' if unmapped_count != 1 else ''} won't aggregate to a canonical row. Those rows will show $0 on the summary tab unless fixed first."
+    else:
+        verdict = "fail"
+        verdict_msg = f"{unmapped_count} labels won't aggregate. Review before importing — multiple summary rows will show $0."
+
+    return jsonify({
+        "entity_code": entity_code,
+        "scan_id": finding_row[0],
+        "scanned_at": finding_row[1].isoformat() if finding_row[1] else None,
+        "has_file": has_file,
+        "file_name": finding_row[3],
+        "parse_error": parse_error,
+        "labels_total": finding_row[5] or 0,
+        "labels_canonical": finding_row[6] or 0,
+        "labels_alias": finding_row[7] or 0,
+        "labels_unmapped": unmapped_count,
+        "unmapped_labels": unmapped_with_suggestions,
+        "verdict": verdict,
+        "verdict_msg": verdict_msg,
+    })
 
 
 @app.route("/api/wizard/<entity_code>/approved-budget-files", methods=["GET"])
