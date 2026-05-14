@@ -8384,9 +8384,14 @@ Promise.all([
   }
   document.getElementById('statusPipeline').innerHTML = pipeHtml;
 
-  // KPI cards
-  const prior = b.prior_year_total || 0;
-  const current = b.current_budget_total || 0;
+  // KPI cards — totals are computed by summing the lines array (same as
+  // the workbook dashboard does — Budget object has no precomputed totals)
+  const lines = dash.lines || [];
+  let prior = 0, current = 0;
+  lines.forEach(l => {
+    prior += l.prior_year || 0;
+    current += l.current_budget || 0;
+  });
   const variance = current - prior;
   const pctChange = prior ? (variance / prior) * 100 : 0;
   const varPos = variance >= 0;
@@ -8394,7 +8399,7 @@ Promise.all([
     '<div class="kpi"><div class="num">' + fmt(prior) + '</div><div class="lbl">Prior Year</div></div>' +
     '<div class="kpi"><div class="num">' + fmt(current) + '</div><div class="lbl">Current Budget</div></div>' +
     '<div class="kpi ' + (varPos ? 'pos' : 'neg') + '"><div class="num">' + (varPos ? '+' : '') + fmt(variance) + '</div><div class="lbl">Variance</div></div>' +
-    '<div class="kpi ' + (varPos ? 'pos' : 'neg') + '"><div class="num">' + (varPos ? '+' : '') + pctChange.toFixed(1) + '% ' + (varPos ? '▲' : '▼') + '</div><div class="lbl">% Change</div></div>';
+    '<div class="kpi ' + (varPos ? 'pos' : 'neg') + '"><div class="num">' + (prior ? (varPos ? '+' : '') + pctChange.toFixed(1) + '% ' + (varPos ? '▲' : '▼') : '—') + '</div><div class="lbl">% Change</div></div>';
 
   // ── Consolidate items into Blockers / Warnings / Complete ──
   const blockers = [];
