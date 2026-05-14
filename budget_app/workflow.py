@@ -2975,24 +2975,6 @@ def create_workflow_blueprint(db):
     def wizard_page(entity_code=None):
         """Render the Budget Wizard gate page."""
         import json as json_mod
-        try:
-            return _wizard_page_inner(entity_code)
-        except Exception as _wiz_exc:
-            # FA directive 2026-05-14 (temporary): the wizard 500s on prod
-            # but works locally. Catch + return traceback so I can debug.
-            # Revert this once the cause is fixed.
-            import traceback as _tb
-            tb = _tb.format_exc()
-            return (
-                "<!DOCTYPE html><html><head><title>Wizard debug</title></head>"
-                "<body style='font-family:monospace; padding:20px; background:#111; color:#0f0;'>"
-                "<h2 style='color:#fc6;'>Wizard route exception</h2>"
-                f"<pre style='white-space:pre-wrap; word-wrap:break-word;'>{tb.replace('<','&lt;')}</pre>"
-                "</body></html>"
-            ), 500
-
-    def _wizard_page_inner(entity_code=None):
-        import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
         from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
 
