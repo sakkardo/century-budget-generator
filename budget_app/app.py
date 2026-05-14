@@ -6919,12 +6919,19 @@ def admin_portfolio_label_scan():
     alias_keys = set(LABEL_ALIASES.keys())
 
     sample_limit = request.args.get("sample", type=int)
+    offset = request.args.get("offset", type=int) or 0
     type_filter = (request.args.get("type") or "").strip().lower()
 
     # Load buildings from CSV
     bldgs = load_buildings()
     if type_filter:
         bldgs = [b for b in bldgs if (b.get("type") or "").strip().lower() == type_filter]
+    # FA directive 2026-05-14: Railway gateway timeout (~60s) caps a single
+    # call to ~30 buildings worth of SharePoint download+parse. Use
+    # ?offset=N&sample=M to chunk through the portfolio. Five sequential
+    # calls of sample=30 covers the full 143 active buildings.
+    if offset:
+        bldgs = bldgs[offset:]
     if sample_limit:
         bldgs = bldgs[:sample_limit]
 
