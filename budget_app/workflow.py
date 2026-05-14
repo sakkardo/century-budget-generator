@@ -8871,10 +8871,18 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .ac-btn:hover { opacity: 0.85; }
   .complete-collapsed .ac-item { display: none; }
 
-  /* Hide the inline summary-cards on the workbook — they live in the drawer now.
-     The DOM element is kept so the existing summaryCards populator keeps writing
-     into it (no defensive null-check rewrites needed). */
-  .summary-cards { display: none !important; }
+  /* Hide every workbook element whose content is now duplicated in the drawer.
+     The populator JS for each one keeps running (they feed other things or
+     stay around as fallbacks), but visually the workbook is clean. The drawer
+     is the single surface for: KPIs, readiness gates, period status, audit
+     status, duplicate-row warnings, unmapped-GL warnings.
+     FA directive 2026-05-14 Phase 4 (Variant A: Quiet Pill). */
+  .summary-cards,
+  #readinessInspector,
+  #periodBanner,
+  #auditStatusBanner,
+  #unifiedStatusBlock,
+  #sumWarningsBanner { display: none !important; }
 </style>
 </head>
 <body>
