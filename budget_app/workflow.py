@@ -15834,7 +15834,21 @@ async function sumAddOrphanRow(glCode) {
       alert('Add Row failed: ' + (data.error || 'unknown'));
       return;
     }
-    showToast('Added: ' + label, 'success');
+    // FA directive 2026-05-13: if a row with this label already exists,
+    // the orphan still needs its GL prefix added. The /add-summary-row
+    // endpoint preserves existing rows (idempotent) but doesn't append
+    // prefixes. Run resolve-aliases so the canonical map's prefix list
+    // gets re-stamped on the row.
+    const rowAlreadyExisted = (data.noop || '').includes('already exists');
+    if (rowAlreadyExisted) {
+      try {
+        await fetch('/api/admin/resolve-summary-aliases/' + entityCode,
+                    {method: 'POST', headers: {'Content-Type': 'application/json'}});
+      } catch (e) { /* non-fatal */ }
+      showToast('"' + label + '" already exists — refreshed GL mapping for ' + prefix, 'info');
+    } else {
+      showToast('Added: ' + label, 'success');
+    }
     // Reload the summary tab — orphan should disappear from warnings on next render.
     const sheetContent = document.getElementById('sheetContent');
     if (sheetContent && typeof renderBudgetSummary === 'function') {
@@ -15908,9 +15922,18 @@ async function sumDoInsert(secKey) {
       return;
     }
 
-    // For canonical labels, attach gl_prefixes via alias-resolve. For GL mode,
-    // the prefix was already attached server-side at insert time.
-    if (isCanonical) {
+    // FA directive 2026-05-13: when the row already exists (server returns
+    // {ok:true, noop:"row already exists"}), the FA used to see a misleading
+    // "Added" toast with no visible change. Now we explicitly tell them the
+    // row was already present + that we re-ran resolve-aliases on it (which
+    // is the actual fix for an empty-prefix existing row — e.g. 148's
+    // "Commercial Rent" or "Bicycle Storage").
+    const rowAlreadyExisted = (data.noop || '').includes('already exists');
+
+    // For canonical labels OR when the row already existed, run alias-resolve
+    // so existing rows with empty gl_prefixes_json pick up their canonical
+    // prefix list. (For GL mode the prefix was already attached at insert.)
+    if (isCanonical || rowAlreadyExisted) {
       try {
         await fetch('/api/admin/resolve-summary-aliases/' + entityCode,
                     {method: 'POST', headers: {'Content-Type': 'application/json'}});
@@ -15918,7 +15941,11 @@ async function sumDoInsert(secKey) {
     }
 
     sumCloseInsert();
-    showToast('Added: ' + label, 'success');
+    if (rowAlreadyExisted) {
+      showToast('"' + label + '" already exists — refreshed its GL mapping from canonical', 'info');
+    } else {
+      showToast('Added: ' + label, 'success');
+    }
     // Reload the summary tab so the new row + its data appear
     const sheetContent = document.getElementById('sheetContent');
     if (sheetContent && typeof renderBudgetSummary === 'function') {

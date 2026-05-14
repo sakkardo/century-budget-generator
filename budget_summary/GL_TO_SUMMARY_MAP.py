@@ -24,6 +24,13 @@ LABEL_ALIASES = {
     "Bicycle": "Bicycle Charge",
     "Bike": "Bicycle Charge",
     "Bike Storage": "Bicycle Charge",
+    # FA directive 2026-05-13 (from 148 orphan investigation): the yrlycomp
+    # for 148 (and likely other coops) uses these label variants. Without
+    # the alias, resolve-aliases can't stamp GL prefixes on the row → the
+    # FA sees an empty row and "Add Row" silently no-ops because the row
+    # already exists.
+    "Bicycle Storage": "Bicycle Charge",
+    "Commercial Rent": "Commercial",
     # Assessment / commercial label variants seen on 168
     "Assessment-Operating": "Assessment - Operating",
     # Energy variants
@@ -176,12 +183,13 @@ SUMMARY_ROW_MAP = {
         "sheet": "Income",
         "gl_prefix": ["4070", "4250", "4700", "4705", "4710", "4715", "4720", "4725",
                        "4803", "4812", "4815", "4818", "4911", "4917", "4922",
-                       "4926", "4932", "4990"],
+                       "4926", "4932", "4956", "4990"],
         "section": "income",
         "notes": "Catch-all. SUM of all Income GL codes not covered above. "
                  "Added 2026-05-03 from 168 orphan scan: 4070 (Prepaid Income), "
                  "4818 (Flip Tax - Operating), 4911 (Messenger), 4917 (Credit Check), "
-                 "4926 (Administrative Fees)."
+                 "4926 (Administrative Fees). "
+                 "Added 2026-05-13 from 148 orphan scan: 4956 (Security Account Admin)."
     },
 
     # ─── EXPENSES ────────────────────────────────────────────────────────
@@ -242,11 +250,14 @@ SUMMARY_ROW_MAP = {
         # Comprehensive 5606-5874 range. The prior list missed odd-numbered
         # codes (5627, 5633, 5642, 5666, 5682, 5695, 5812, 5821, etc.) —
         # diagnosed via /api/admin/summary-debug/168 orphan scan 2026-05-03.
+        # 2026-05-13: added 5622 (HVAC Repairs), 5636 (Air Conditioning Repairs),
+        # 5670 (Intercom Repairs), 5678 (Roof Tank/Water Tank Repairs) — all
+        # orphans on 148.
         "gl_prefix": [
             # Repairs (5606-5699)
-            "5606", "5610", "5612", "5615", "5620", "5625", "5627", "5630",
-            "5633", "5635", "5639", "5640", "5642", "5645", "5648", "5650",
-            "5655", "5660", "5665", "5666", "5668", "5680", "5682", "5690",
+            "5606", "5610", "5612", "5615", "5620", "5622", "5625", "5627", "5630",
+            "5633", "5635", "5636", "5639", "5640", "5642", "5645", "5648", "5650",
+            "5655", "5660", "5665", "5666", "5668", "5670", "5678", "5680", "5682", "5690",
             "5695",
             # Maintenance contracts (5800-5874)
             "5803", "5806", "5809", "5810", "5812", "5815", "5818", "5820",
@@ -257,15 +268,18 @@ SUMMARY_ROW_MAP = {
         "category": ["repairs", "maintenance"],
         "section": "expenses",
         "notes": "SUM of repairs + maintenance categories from R&M sheet. "
-                 "Prefix list expanded 2026-05-03 to cover odd-numbered sub-GLs."
+                 "Prefix list expanded 2026-05-03 to cover odd-numbered sub-GLs. "
+                 "Expanded again 2026-05-13 with 5622, 5636, 5670, 5678 (148 orphans)."
     },
     "Insurance": {
         "sheet": "Gen & Admin",
+        # 2026-05-13: added 6145 (Errors & Omissions Insurance) — orphan on 148.
         "gl_prefix": ["6105", "6110", "6115", "6120", "6125", "6126", "6135",
-                       "6180", "6195"],
+                       "6145", "6180", "6195"],
         "section": "expenses",
         "gl_range": ("6100-0000", "6199-9999"),
-        "notes": "All 61xx codes. building_assumptions has per-policy overrides."
+        "notes": "All 61xx codes. building_assumptions has per-policy overrides. "
+                 "Added 6145 (Errors & Omissions) 2026-05-13."
     },
     "Real Estate Taxes": {
         "sheet": "RE Taxes",
@@ -299,17 +313,21 @@ SUMMARY_ROW_MAP = {
         # FA #16 (2026-05-03): expanded from 5-step to full 6700-6799 range.
         # 168 had real data on 6714, 6718, 6722, 6726, 6728, 6734, 6738,
         # 6742, 6754, 6762, 6763, 6764, 6768, 6774 — all orphans before.
+        # 2026-05-13: added 6708 (Stationery & Printing), 6712 (Computer
+        # Software), 6716 (Cable TV Expense), 6746 (Lobby & Hallway
+        # Decorations) — all orphans on 148.
         "gl_prefix": [
-            "6706", "6710", "6714", "6715", "6718", "6720", "6722", "6725",
+            "6706", "6708", "6710", "6712", "6714", "6715", "6716", "6718", "6720", "6722", "6725",
             "6726", "6728", "6730", "6734", "6735", "6738", "6740", "6742",
-            "6745", "6750", "6754", "6755", "6760", "6762", "6763", "6764",
+            "6745", "6746", "6750", "6754", "6755", "6760", "6762", "6763", "6764",
             "6765", "6768", "6770", "6774", "6775", "6780", "6785", "6790",
             "6795",
         ],
         "section": "expenses",
         "gl_range": ("6700-0000", "6899-9999"),
         "notes": "Office, telephone, permits, board expenses, misc admin. "
-                 "Prefix list expanded 2026-05-03 from FA #16 orphan diagnosis."
+                 "Prefix list expanded 2026-05-03 from FA #16 orphan diagnosis. "
+                 "Expanded again 2026-05-13 with 6708, 6712, 6716, 6746 (148 orphans)."
     },
     "Financial Expenses": {
         "sheet": "Gen & Admin",
