@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Variant B — Status Bar — 130 E. 18 Owners Corp.</title>
+<style>
+:root {
+  --bg: #f4f1eb;
+  --card: white;
+  --border: #e5e0d5;
+  --text: #1a1714;
+  --muted: #8a7e72;
+  --brown: #5a4a3f;
+  --brown-light: #f5efe7;
+  --red: #e02424;
+  --red-50: #fee2e2;
+  --red-light: #fef5f5;
+  --green: #057a55;
+  --green-50: #def7ec;
+  --amber: #d97706;
+  --amber-50: #fef3c7;
+  --gray-100: #ede9e1;
+  --gray-200: #e5e0d5;
+  --gray-300: #d5cfc5;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.top-nav {
+  background: white;
+  border-bottom: 1px solid var(--gray-200);
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.nav-brand { font-weight: 700; }
+.nav-links { display: flex; gap: 18px; }
+.nav-link { color: var(--muted); text-decoration: none; font-size: 13px; }
+.nav-link.active { color: var(--brown); font-weight: 600; }
+.building-head {
+  background: var(--brown);
+  color: white;
+  padding: 18px 24px;
+}
+.building-head h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+.building-head .meta { font-size: 12px; opacity: 0.85; }
+.pipeline {
+  background: white;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--gray-200);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+.pipe-step {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--gray-100);
+  color: var(--muted);
+}
+.pipe-step.current { background: var(--red-50); color: var(--red); font-weight: 600; }
+.pipe-arrow { color: var(--gray-300); }
+
+/* THE STATUS BAR */
+.status-bar {
+  background: linear-gradient(to right, #fef5f5, #fefce8 50%);
+  border-top: 2px solid var(--red);
+  border-bottom: 1px solid var(--red-50);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-size: 13px;
+}
+.status-bar:hover {
+  background: linear-gradient(to right, #fee2e2, #fef3c7 50%);
+}
+.status-bar .severity-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.status-bar .text { font-weight: 600; color: var(--text); }
+.status-bar .blockers-chip {
+  background: var(--red);
+  color: white;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.status-bar .warnings-chip {
+  background: var(--amber);
+  color: white;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.status-bar .cta {
+  margin-left: auto;
+  color: var(--brown);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workbook { padding: 0 24px 60px; }
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--gray-200);
+  background: white;
+  padding: 0 24px;
+  margin: 0 -24px;
+}
+.tab {
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+}
+.tab.active { color: var(--brown); border-bottom-color: var(--brown); background: white; }
+.summary-content { padding: 18px 0; }
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--gray-200);
+  font-size: 12px;
+}
+.summary-table thead th {
+  background: #faf7f0;
+  text-align: right;
+  padding: 10px 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--gray-200);
+}
+.summary-table thead th:first-child { text-align: left; }
+.summary-table .section-header td {
+  background: var(--brown-light);
+  font-weight: 700;
+  color: var(--brown);
+  padding: 8px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.summary-table tbody td {
+  padding: 8px 12px;
+  text-align: right;
+  border-bottom: 1px solid var(--gray-100);
+  font-variant-numeric: tabular-nums;
+}
+.summary-table tbody td:first-child { text-align: left; font-weight: 500; }
+.summary-table tr.subtotal td { background: #fafaf7; font-weight: 700; }
+.summary-table tr.grand-total td { background: #1f2937; color: white; font-weight: 700; }
+
+/* Drawer (same as A) */
+.drawer-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.3);
+  display: none;
+  z-index: 100;
+}
+.drawer-overlay.open { display: block; }
+.drawer {
+  position: fixed; top: 0; right: -480px; bottom: 0;
+  width: 480px;
+  background: white;
+  box-shadow: -8px 0 24px rgba(0,0,0,0.1);
+  transition: right 0.3s ease;
+  z-index: 101;
+  overflow-y: auto;
+}
+.drawer.open { right: 0; }
+.drawer-header {
+  padding: 16px 22px;
+  background: linear-gradient(to right, #fef3c7, white 35%);
+  border-bottom: 1px solid var(--gray-200);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.drawer-header h2 { font-size: 18px; }
+.drawer-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 14px 22px;
+  background: #faf7f0;
+}
+.kpi {
+  background: white;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--gray-200);
+}
+.kpi.pos { background: var(--green-50); }
+.kpi .num { font-size: 16px; font-weight: 700; }
+.kpi.pos .num { color: var(--green); }
+.kpi .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; }
+.ac-group {
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--gray-100);
+}
+.ac-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.ac-group.blockers .ac-group-title { color: var(--red); }
+.ac-group.warnings .ac-group-title { color: var(--amber); }
+.ac-group.complete .ac-group-title { color: var(--green); cursor: pointer; }
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--gray-100);
+  font-size: 12px;
+}
+.ac-item:first-of-type { border-top: none; }
+.ac-icon {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.ac-icon.bad { background: var(--red-50); color: var(--red); }
+.ac-icon.warn { background: var(--amber-50); color: var(--amber); }
+.ac-icon.ok { background: var(--green-50); color: var(--green); }
+.ac-text { flex: 1; }
+.ac-label { font-weight: 600; }
+.ac-detail { font-size: 10px; color: var(--muted); margin-top: 1px; }
+.ac-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--brown-light);
+  color: var(--brown);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ac-btn.primary { background: var(--red); color: white; }
+.complete-collapsed .ac-item { display: none; }
+.preview-label {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  background: var(--brown);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  z-index: 200;
+  opacity: 0.85;
+}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <span class="nav-brand">Century Management</span>
+  <div class="nav-links">
+    <a class="nav-link">Home</a>
+    <a class="nav-link active">FA Dashboard</a>
+    <a class="nav-link">PM Portal</a>
+    <a class="nav-link">Audited Financials</a>
+  </div>
+</nav>
+
+<div class="building-head">
+  <h1>130 E. 18 Owners Corp.</h1>
+  <div class="meta">Entity 148 | 2027 Budget | FA: Kristy Paxinos | PM: Jacob Sirotkin</div>
+</div>
+
+<div class="pipeline">
+  <span class="pipe-step current">● Draft</span>
+  <span class="pipe-arrow">›</span>
+  <span class="pipe-step">PM Review</span>
+  <span class="pipe-arrow">›</span>
+  <span class="pipe-step">FA Review</span>
+  <span class="pipe-arrow">›</span>
+  <span class="pipe-step">Approved</span>
+</div>
+
+<!-- THE STATUS BAR -->
+<div class="status-bar" onclick="document.getElementById('drawer').classList.add('open'); document.getElementById('overlay').classList.add('open');">
+  <span class="severity-dot"></span>
+  <span class="text">
+    <span class="blockers-chip">2 blockers</span>
+    &nbsp;·&nbsp;
+    <span class="warnings-chip">4 warnings</span>
+    &nbsp;before this budget can be sent for review
+  </span>
+  <span class="cta">Click to review →</span>
+</div>
+
+<div class="workbook">
+  <div class="tab-bar">
+    <div class="tab active">Summary</div>
+    <div class="tab">Income</div>
+    <div class="tab">Payroll</div>
+    <div class="tab">Energy</div>
+    <div class="tab">Water &amp; Sewer</div>
+    <div class="tab">Repairs &amp; Supplies</div>
+    <div class="tab">Gen &amp; Admin</div>
+    <div class="tab">RE Taxes</div>
+    <div class="tab">Capital</div>
+    <div class="tab">Unmapped</div>
+  </div>
+
+  <div class="summary-content">
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Line Item</th>
+          <th>2024 Actual</th>
+          <th>2026 YTD</th>
+          <th>Forecast</th>
+          <th>2026 Budget</th>
+          <th>% Increase</th>
+          <th>Proposed 2027</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="section-header"><td colspan="7">Income</td></tr>
+        <tr><td>Maintenance</td><td>$10,234,500</td><td>$1,665,730</td><td>$10,500,000</td><td>$10,400,000</td><td>2.0%</td><td>$10,710,000</td></tr>
+        <tr><td>Commercial Rent</td><td>$140,000</td><td>$144,015</td><td>$144,000</td><td>$144,000</td><td>3.0%</td><td>$148,320</td></tr>
+        <tr><td>Storage Income</td><td>$8,400</td><td>$1,400</td><td>$8,400</td><td>$8,400</td><td>0.0%</td><td>$8,400</td></tr>
+        <tr><td>Other Income</td><td>$80,000</td><td>$73,550</td><td>$82,000</td><td>$82,000</td><td>2.5%</td><td>$84,050</td></tr>
+        <tr class="subtotal"><td>Total Income</td><td>$10,462,900</td><td>$1,884,695</td><td>$10,734,400</td><td>$10,634,400</td><td></td><td>$10,950,770</td></tr>
+        <tr class="section-header"><td colspan="7">Expenses</td></tr>
+        <tr><td>Payroll</td><td>$1,820,000</td><td>$306,400</td><td>$1,860,000</td><td>$1,850,000</td><td>3.5%</td><td>$1,914,750</td></tr>
+        <tr><td>Insurance</td><td>$245,000</td><td>$248,890</td><td>$250,000</td><td>$248,000</td><td>4.0%</td><td>$257,920</td></tr>
+        <tr><td>Repairs &amp; Maintenance</td><td>$540,000</td><td>$89,266</td><td>$540,000</td><td>$535,000</td><td>2.0%</td><td>$545,700</td></tr>
+        <tr><td>Administrative &amp; Other</td><td>$320,000</td><td>$68,174</td><td>$340,000</td><td>$330,000</td><td>2.5%</td><td>$338,250</td></tr>
+        <tr><td>Real Estate Taxes</td><td>$2,045,000</td><td>$340,000</td><td>$2,045,791</td><td>$2,045,000</td><td>2.0%</td><td>$2,085,900</td></tr>
+        <tr class="subtotal"><td>Total Expenses</td><td>$10,360,200</td><td>$1,810,365</td><td>$10,560,000</td><td>$10,572,000</td><td></td><td>$10,888,085</td></tr>
+        <tr class="grand-total"><td>Net Operating Surplus</td><td>$102,700</td><td>$74,330</td><td>$174,400</td><td>$62,400</td><td></td><td>$62,685</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Slide-out drawer (same as A) -->
+<div class="drawer-overlay" id="overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <h2>⚡ Health</h2>
+    <div style="font-size:11px; color: var(--muted);">2 blockers · 4 warnings · 3 ready</div>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi"><div class="num">$13,823,802</div><div class="lbl">Prior Year</div></div>
+    <div class="kpi"><div class="num">$13,886,487</div><div class="lbl">Current Budget</div></div>
+    <div class="kpi pos"><div class="num">+$62,685</div><div class="lbl">Variance</div></div>
+    <div class="kpi pos"><div class="num">+0.5% ▲</div><div class="lbl">% Change</div></div>
+  </div>
+  <div class="ac-group blockers">
+    <div class="ac-group-title">🔴 Blockers — must resolve before generating</div>
+    <div class="ac-item">
+      <span class="ac-icon bad">✕</span>
+      <div class="ac-text">
+        <div class="ac-label">Period not set</div>
+        <div class="ac-detail">Forecast will use default 2-month YTD until set</div>
+      </div>
+      <a class="ac-btn primary">Set period</a>
+    </div>
+    <div class="ac-item">
+      <span class="ac-icon bad">✕</span>
+      <div class="ac-text">
+        <div class="ac-label">6 approved-file labels won't aggregate</div>
+        <div class="ac-detail">Click to see which labels and what they should map to</div>
+      </div>
+      <a class="ac-btn primary">Review</a>
+    </div>
+  </div>
+  <div class="ac-group warnings">
+    <div class="ac-group-title">🟡 Warnings — review before submitting</div>
+    <div class="ac-item"><span class="ac-icon warn">!</span><div class="ac-text"><div class="ac-label">1 unmapped GL: 4520-0000</div><div class="ac-detail">Commercial Real Estate Tax — $-135 YTD</div></div><a class="ac-btn">+ Add Row</a></div>
+    <div class="ac-item"><span class="ac-icon warn">!</span><div class="ac-text"><div class="ac-label">1 duplicate row set</div><div class="ac-detail">Real Estate Taxes + Real Estate Tax Benefit Credits share GL 6315</div></div><a class="ac-btn">Review</a></div>
+    <div class="ac-item"><span class="ac-icon warn">!</span><div class="ac-text"><div class="ac-label">No payroll positions configured</div><div class="ac-detail">Add positions on the Payroll tab</div></div><a class="ac-btn">Add</a></div>
+    <div class="ac-item"><span class="ac-icon warn">!</span><div class="ac-text"><div class="ac-label">Budget not yet generated</div><div class="ac-detail">Generate when upstream blockers are resolved</div></div></div>
+  </div>
+  <div class="ac-group complete complete-collapsed" id="completeGroup">
+    <div class="ac-group-title" onclick="document.getElementById('completeGroup').classList.toggle('complete-collapsed');">
+      ▶ 3 things complete — click to expand
+    </div>
+    <div class="ac-item"><span class="ac-icon ok">✓</span><div class="ac-text"><div class="ac-label">FY2025 audit confirmed</div></div></div>
+    <div class="ac-item"><span class="ac-icon ok">✓</span><div class="ac-text"><div class="ac-label">Building type set: Co-op</div></div></div>
+    <div class="ac-item"><span class="ac-icon ok">✓</span><div class="ac-text"><div class="ac-label">Source files found</div></div></div>
+  </div>
+</div>
+
+<div class="preview-label">Variant B — Status Bar (click the red bar between pipeline and tabs)</div>
+
+<script>
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+</script>
+
+</body>
+</html>

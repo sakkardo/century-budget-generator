@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FA Dashboard — Variant Comparison Board</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #1a1614; color: #f5efe7; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 100;
+    background: #0f0d0c; border-bottom: 1px solid #2a2422;
+    padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .topbar h1 {
+    font-size: 15px; font-weight: 700; color: #f5efe7;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .topbar h1 .badge {
+    background: #5a4a3f; color: #fff; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .topbar .meta { font-size: 12px; color: #8a7a6f; }
+
+  .selector {
+    background: #0f0d0c; border-bottom: 1px solid #2a2422;
+    padding: 0 24px; display: flex; gap: 4px;
+  }
+  .selector button {
+    background: transparent; border: none; color: #8a7a6f;
+    padding: 12px 20px; font-size: 13px; font-weight: 600;
+    font-family: inherit; cursor: pointer;
+    border-bottom: 2px solid transparent; transition: all 0.15s;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .selector button:hover { color: #d4c5b8; }
+  .selector button.active { color: #f5efe7; border-bottom-color: #c9a87c; }
+  .selector button .letter {
+    width: 22px; height: 22px; border-radius: 4px;
+    background: #2a2422; color: #d4c5b8;
+    font-size: 11px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .selector button.active .letter { background: #c9a87c; color: #1a1614; }
+  .selector .spacer { flex: 1; }
+  .selector .mode-toggle {
+    display: flex; gap: 0; border: 1px solid #2a2422; border-radius: 6px;
+    margin: 8px 0;
+  }
+  .selector .mode-toggle button {
+    padding: 8px 14px; font-size: 12px; border-radius: 0;
+    border-bottom: none;
+  }
+  .selector .mode-toggle button:first-child { border-radius: 5px 0 0 5px; }
+  .selector .mode-toggle button:last-child { border-radius: 0 5px 5px 0; }
+  .selector .mode-toggle button.active {
+    background: #c9a87c; color: #1a1614; border-bottom-color: transparent;
+  }
+
+  .summary {
+    background: #15110f; padding: 14px 24px;
+    border-bottom: 1px solid #2a2422;
+    font-size: 12px; color: #a89890; line-height: 1.6;
+    display: none;
+  }
+  .summary.show { display: block; }
+  .summary strong { color: #f5efe7; font-weight: 600; }
+  .summary .desc-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+    margin-top: 8px;
+  }
+  .summary .desc-card { background: #1a1614; padding: 12px 14px; border-radius: 6px; border-left: 3px solid #c9a87c; }
+  .summary .desc-card h4 { font-size: 12px; font-weight: 700; color: #f5efe7; margin-bottom: 4px; }
+  .summary .desc-card p { font-size: 11px; color: #8a7a6f; line-height: 1.5; }
+
+  .stage {
+    background: #2a2422;
+    padding: 16px;
+    height: calc(100vh - 105px);
+    overflow: hidden;
+  }
+  .stage.with-summary {
+    height: calc(100vh - 280px);
+  }
+
+  /* Single view */
+  .frame-wrap {
+    width: 100%; height: 100%;
+    background: #fff; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .frame-wrap iframe { width: 100%; height: 100%; border: none; }
+
+  /* Side-by-side */
+  .stage.side-by-side { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stage.side-by-side .panel {
+    background: #fff; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    display: flex; flex-direction: column;
+  }
+  .stage.side-by-side .panel-head {
+    background: #15110f; color: #f5efe7; padding: 10px 14px;
+    font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid #2a2422;
+  }
+  .stage.side-by-side .panel-head .letter {
+    width: 20px; height: 20px; border-radius: 4px;
+    background: #c9a87c; color: #1a1614;
+    font-size: 11px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .stage.side-by-side .panel-head .label { color: #a89890; font-weight: 500; }
+  .stage.side-by-side iframe { width: 100%; height: 100%; border: none; flex: 1; }
+
+  .hint {
+    position: fixed; bottom: 16px; right: 16px;
+    background: rgba(15, 13, 12, 0.95); color: #d4c5b8;
+    padding: 10px 14px; border-radius: 6px;
+    font-size: 11px; border: 1px solid #2a2422;
+    z-index: 50;
+  }
+  .hint kbd {
+    background: #2a2422; padding: 2px 6px; border-radius: 3px;
+    font-family: monospace; font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>
+    <span class="badge">Design Shotgun</span>
+    FA Dashboard — Drawer-Trigger Variants
+  </h1>
+  <div class="meta">Building 148 · Real data · Three trigger patterns for the Action Center drawer</div>
+</div>
+
+<div class="selector">
+  <button class="variant-btn active" data-variant="A" onclick="show('A')">
+    <span class="letter">A</span> Quiet Pill
+  </button>
+  <button class="variant-btn" data-variant="B" onclick="show('B')">
+    <span class="letter">B</span> Status Bar
+  </button>
+  <button class="variant-btn" data-variant="C" onclick="show('C')">
+    <span class="letter">C</span> Floating FAB
+  </button>
+  <div class="spacer"></div>
+  <div class="mode-toggle">
+    <button class="mode-btn active" data-mode="single" onclick="setMode('single')">Single</button>
+    <button class="mode-btn" data-mode="side" onclick="setMode('side')">Side-by-Side</button>
+  </div>
+  <button class="info-btn" onclick="toggleSummary()" style="padding: 8px 14px; font-size: 12px;">
+    <span style="border: 1px solid #5a4a3f; border-radius: 50%; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px;">i</span>
+    Summary
+  </button>
+</div>
+
+<div class="summary" id="summary">
+  <div><strong>The question:</strong> Where does the "open Action Center" trigger live so the workbook stays clean but blockers are still impossible to miss?</div>
+  <div class="desc-grid">
+    <div class="desc-card">
+      <h4>A · Quiet Pill</h4>
+      <p>Small button in the top-right nav. Red badge with count. Subtle until you read it. Doesn't steal focus from data. Best if FAs work mostly without blockers.</p>
+    </div>
+    <div class="desc-card">
+      <h4>B · Status Bar</h4>
+      <p>Horizontal red-tinted strip above the tabs. "● 2 blockers · 4 warnings — click to review." Hard to miss. Disappears when zero issues. Best if blockers are common.</p>
+    </div>
+    <div class="desc-card">
+      <h4>C · Floating FAB</h4>
+      <p>Circular button bottom-right with badge. Workbook surface is fully data. Trigger floats on top. Best for total minimalism but trigger never goes away.</p>
+    </div>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="frame-wrap" id="single">
+    <iframe id="frame" src="dashboard_variant_A_quiet_pill.html"></iframe>
+  </div>
+</div>
+
+<div class="hint">
+  Press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> to switch · <kbd>S</kbd> side-by-side · <kbd>I</kbd> summary
+</div>
+
+<script>
+let currentVariant = 'A';
+let currentMode = 'single';
+
+const variants = {
+  A: 'dashboard_variant_A_quiet_pill.html',
+  B: 'dashboard_variant_B_status_bar.html',
+  C: 'dashboard_variant_C_floating_fab.html'
+};
+
+function show(letter) {
+  currentVariant = letter;
+  document.querySelectorAll('.variant-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.variant === letter);
+  });
+  if (currentMode === 'single') {
+    document.getElementById('frame').src = variants[letter];
+  }
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  const stage = document.getElementById('stage');
+  if (mode === 'single') {
+    stage.classList.remove('side-by-side');
+    stage.innerHTML = '<div class="frame-wrap" id="single"><iframe id="frame" src="' + variants[currentVariant] + '"></iframe></div>';
+    document.querySelectorAll('.variant-btn').forEach(b => b.style.opacity = '1');
+  } else {
+    stage.classList.add('side-by-side');
+    stage.innerHTML =
+      '<div class="panel"><div class="panel-head"><span class="letter">A</span> Quiet Pill <span class="label">· top-right nav</span></div><iframe src="' + variants.A + '"></iframe></div>' +
+      '<div class="panel"><div class="panel-head"><span class="letter">B</span> Status Bar <span class="label">· above tabs</span></div><iframe src="' + variants.B + '"></iframe></div>' +
+      '<div class="panel"><div class="panel-head"><span class="letter">C</span> Floating FAB <span class="label">· bottom-right</span></div><iframe src="' + variants.C + '"></iframe></div>';
+    document.querySelectorAll('.variant-btn').forEach(b => b.style.opacity = '0.4');
+  }
+}
+
+function toggleSummary() {
+  const s = document.getElementById('summary');
+  const stage = document.getElementById('stage');
+  s.classList.toggle('show');
+  stage.classList.toggle('with-summary', s.classList.contains('show'));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === '1') show('A');
+  if (e.key === '2') show('B');
+  if (e.key === '3') show('C');
+  if (e.key === 's' || e.key === 'S') setMode(currentMode === 'single' ? 'side' : 'single');
+  if (e.key === 'i' || e.key === 'I') toggleSummary();
+});
+</script>
+</body>
+</html>
