@@ -19684,8 +19684,8 @@ function populateHealthDrawerActions(gates, summary) {
     const iconClass = severity === 'fail' ? 'bad' : severity === 'warn' ? 'warn' : 'ok';
     const icon = severity === 'fail' ? '✕' : severity === 'warn' ? '!' : '✓';
     let btnHtml = '';
+    const btnClass = severity === 'fail' ? 'ac-btn primary' : 'ac-btn';
     if (g.action_url && g.action_label) {
-      const btnClass = severity === 'fail' ? 'ac-btn primary' : 'ac-btn';
       const isHash = String(g.action_url).startsWith('#');
       if (isHash) {
         const safeUrl = String(g.action_url).replace(/'/g, "\\'");
@@ -19693,6 +19693,12 @@ function populateHealthDrawerActions(gates, summary) {
       } else {
         btnHtml = '<a class="' + btnClass + '" href="' + g.action_url + '">' + g.action_label + '</a>';
       }
+    } else if (g.action_label && g.key) {
+      // Gate has an action label but no URL (e.g., period_set) — dispatch by
+      // gate key to a client-side handler. Without this, the FA would see
+      // a blocker with no way to fix it.
+      const safeKey = String(g.key).replace(/'/g, "\\'");
+      btnHtml = '<a class="' + btnClass + '" onclick="drawerGateAction(\'' + safeKey + '\')">' + g.action_label + '</a>';
     }
     return '<div class="ac-item">' +
       '<span class="ac-icon ' + iconClass + '">' + icon + '</span>' +
@@ -19724,6 +19730,39 @@ function populateHealthDrawerActions(gates, summary) {
     html = '<div style="padding:24px 22px; text-align:center; color:var(--gray-500);">✅ All checks clear — ready to generate.</div>';
   }
   actionsEl.innerHTML = html;
+}
+
+// Gate-action dispatcher for drawer buttons that have no action_url (the API
+// returns action_label but action_url=null for gates whose fix is fully
+// client-side, e.g. period_set). Without this, those blockers would render
+// no button — dead UX.
+function drawerGateAction(key) {
+  if (key === 'period_set') {
+    // The period picker lives inside #periodBanner (rendered by editPeriod()).
+    // We hid that banner via CSS to clean up the workbook, so we have to
+    // temporarily promote it to visible with inline !important — wins over
+    // the CSS rule. After save, renderPeriodBanner re-paints it; we leave
+    // visibility on so the FA sees their save took effect, then they can
+    // re-open the drawer to confirm the gate flipped green.
+    closeHealthDrawer();
+    const ubs = document.getElementById('unifiedStatusBlock');
+    const banner = document.getElementById('periodBanner');
+    if (ubs) ubs.style.setProperty('display', 'block', 'important');
+    if (banner) {
+      banner.style.setProperty('display', 'block', 'important');
+      banner.style.padding = '12px 24px';
+      // Defer to next tick so the unhide paints first, then editPeriod()
+      // can write its picker UI into the now-visible banner.
+      setTimeout(function() {
+        if (typeof editPeriod === 'function') editPeriod();
+        banner.scrollIntoView({behavior: 'smooth', block: 'center'});
+      }, 50);
+    }
+    return;
+  }
+  // Default fallback: log and let the FA figure it out (shouldn't happen if
+  // every gate-key with action_label is wired above).
+  console.warn('drawerGateAction: no handler for gate key', key);
 }
 
 loadDetail();
