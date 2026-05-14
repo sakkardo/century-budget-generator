@@ -31,6 +31,64 @@ LABEL_ALIASES = {
     # already exists.
     "Bicycle Storage": "Bicycle Charge",
     "Commercial Rent": "Commercial",
+    # FA directive 2026-05-14: portfolio scan #1 surfaced 234 unmapped
+    # labels across the 100 buildings with parseable approved-2026 files.
+    # The block below adds 31 aliases targeting EXISTING canonical labels
+    # — each is a typo/spacing/casing variant we observed in the wild.
+    # Helps ~71 buildings (50% of the portfolio) get clean imports.
+    # Skipped: "Heating" (ambiguous — Fuel vs Steam per building),
+    # "Assessment-Tax Abatement" (Operating Assessment vs Tax Credits),
+    # "Other Sources of Funds" (no canonical target yet — working
+    # session item), "Operating Assessment (Painting)" (sub-line, FA
+    # decides). 4520-style per-building GL overrides are also deferred.
+
+    # Assessment family
+    "Operating Assessment": "Assessment - Operating",
+    "Assessment": "Assessment - Operating",
+    "Reserve Funding From Operations": "Reserve Funding",
+    "Funding from Operating": "Reserve Funding",
+    "Reserve Fund Contribution": "Reserve Funding",
+    # Storage variants
+    "Storage Room": "Storage Income",
+    # Gas variants
+    "Gas-Cooking": "Gas Cooking / Heating",
+    "Gas-Heating": "Gas Cooking / Heating",
+    "Gas-Cooking & Heating": "Gas Cooking / Heating",
+    "Gas-Cooking / Laundry": "Gas Cooking / Heating",
+    # Parking → Garage
+    "Parking": "Garage",
+    # Claim/Claims Proceeds (typo + spacing variants)
+    "Claim Proceeds - Insurance Repairs": "Claims Proceeds - Insurance Repairs",
+    "Claim Proceeds-Insurance Repairs": "Claims Proceeds - Insurance Repairs",
+    "Claims proceeds - Insurance Repairs": "Claims Proceeds - Insurance Repairs",
+    "Claims Proceeds- Insurance Repairs": "Claims Proceeds - Insurance Repairs",
+    "Claim Proceeds -  Insurance Repairs": "Claims Proceeds - Insurance Repairs",
+    # Common Charges variants (cascade to Maintenance)
+    "Common Charges-Residential": "Common Charges",
+    "Common Charge": "Common Charges",
+    # Corporate Taxes
+    "Corporation Tax": "Corporate Taxes",
+    # Working Capital
+    "Working Capital Equity": "Working Capital Contribution",
+    "Working Capital Contributions": "Working Capital Contribution",
+    # Steam
+    "Steam": "Steam Heating",
+    # Financial Expenses
+    "Financial Expense": "Financial Expenses",
+    "Financial Expenses-Mortgage": "Financial Expenses",
+    # SBA-PPP variants
+    "SBA-PPP Loan Proceeds": "SBA - PPP Loan Proceeds",
+    "PPP Loan": "SBA - PPP Loan Proceeds",
+    # Laundry / Electric / Transfer
+    "Laundry Income": "Laundry",
+    "Electricity": "Electric",
+    "Transfer from Reserve": "Transfer to Reserve",
+    "Transfer From Reserve": "Transfer to Reserve",
+    # Real Estate Tax refund
+    "Prior year RE Tax Refund": "Real Estate Tax refund",
+    # Flip Tax — new canonical row added below (manual GL per building)
+    "Flip Tax/Transfer Fees": "Flip Tax",
+    "Flip Tax - Transfer Fees": "Flip Tax",
     # Assessment / commercial label variants seen on 168
     "Assessment-Operating": "Assessment - Operating",
     # Energy variants
@@ -404,6 +462,24 @@ SUMMARY_ROW_MAP = {
         "section": "non_operating_expense",
         "special": "manual",
         "notes": "Tax certiorari fees. Often zero. No GL in most years."
+    },
+    # FA directive 2026-05-14 (from portfolio scan #1): 9 buildings have
+    # "Flip Tax/Transfer Fees", 6 have "Flip Tax", 4 have "Flip Tax -
+    # Transfer Fees". All alias here. Manual prefix because the GL
+    # varies per building — 4818 (above-the-line) seen on some coops,
+    # 7025 (below-the-line) on others, plus some buildings use both.
+    # FA sets the prefix per-building via Add Row → Specific GL until
+    # the working-session decides above-vs-below the line.
+    "Flip Tax": {
+        "sheet": None,
+        "gl_prefix": [],
+        "section": "non_operating_income",
+        "special": "manual",
+        "notes": "Apartment sale transfer fees. GL varies per building: "
+                 "4818 (above-the-line / operating) seen on some coops, "
+                 "7025 (below-the-line / non-operating) on others. FA "
+                 "attaches the right GL prefix per-building via the "
+                 "summary tab's Add Row → Specific GL mode."
     },
 }
 
