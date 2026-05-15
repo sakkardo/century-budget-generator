@@ -7484,6 +7484,197 @@ def create_workflow_blueprint(db):
         })
 
 
+    # ─── Tenant CRUD (Phase 2a) ──────────────────────────────────────
+    # Add / edit / delete commercial tenants. Endpoints follow the existing
+    # patterns from other CRUD endpoints in this file.
+
+    @bp.route("/api/commercial/<entity_code>/tenant", methods=["POST"])
+    def api_commercial_tenant_create(entity_code):
+        data = request.get_json(silent=True) or {}
+        name = (data.get("tenant_name") or "").strip()
+        if not name:
+            return jsonify({"error": "tenant_name required"}), 400
+        max_sort = db.session.query(db.func.max(CommercialTenant.sort_order)).filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).scalar() or 0
+        t = CommercialTenant(
+            entity_code=entity_code,
+            budget_year=BUDGET_YEAR,
+            tenant_name=name[:200],
+            unit_label=(data.get("unit_label") or None) and str(data["unit_label"])[:100],
+            lease_notes=data.get("lease_notes"),
+            escalation_model=data.get("escalation_model") or "none",
+            tenant_share_pct=data.get("tenant_share_pct"),
+            base_year_re_tax=data.get("base_year_re_tax"),
+            base_year_opex=data.get("base_year_opex"),
+            sort_order=max_sort + 1,
+            imported_from_excel=False,
+        )
+        db.session.add(t)
+        db.session.commit()
+        return jsonify(t.to_dict())
+
+    @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>", methods=["PUT"])
+    def api_commercial_tenant_update(entity_code, tenant_id):
+        t = CommercialTenant.query.filter_by(id=tenant_id, entity_code=entity_code).first()
+        if not t:
+            return jsonify({"error": "tenant not found"}), 404
+        data = request.get_json(silent=True) or {}
+        # Whitelisted fields the FA can edit. Skip None values so callers can
+        # send partial updates without clearing fields.
+        UPDATABLE = {
+            "tenant_name", "unit_label", "lease_notes",
+            "escalation_model", "tenant_share_pct",
+            "base_year_re_tax", "base_year_opex",
+            "lease_start", "lease_end",
+        }
+        for k, v in data.items():
+            if k not in UPDATABLE:
+                continue
+            if k in ("lease_start", "lease_end") and v:
+                try:
+                    from datetime import date as _date
+                    setattr(t, k, _date.fromisoformat(str(v)[:10]))
+                except Exception:
+                    pass
+            else:
+                setattr(t, k, v)
+        t.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify(t.to_dict())
+
+    @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>", methods=["DELETE"])
+    def api_commercial_tenant_delete(entity_code, tenant_id):
+        t = CommercialTenant.query.filter_by(id=tenant_id, entity_code=entity_code).first()
+        if not t:
+            return jsonify({"error": "tenant not found"}), 404
+        # Explicit cascade — don't rely on FK ondelete (SQLite may not honor it)
+        CommercialRentPeriod.query.filter_by(tenant_id=t.id).delete()
+        CommercialTenantBillback.query.filter_by(tenant_id=t.id).delete()
+        db.session.delete(t)
+        db.session.commit()
+        return jsonify({"status": "deleted", "id": tenant_id})
+
+    @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period", methods=["POST"])
+    def api_commercial_period_create(entity_code, tenant_id):
+        t = CommercialTenant.query.filter_by(id=tenant_id, entity_code=entity_code).first()
+        if not t:
+            return jsonify({"error": "tenant not found"}), 404
+        data = request.get_json(silent=True) or {}
+        year = int(data.get("year") or 0)
+        if not year:
+            return jsonify({"error": "year required"}), 400
+        max_sort = db.session.query(db.func.max(CommercialRentPeriod.sort_order)).filter_by(
+            tenant_id=t.id).scalar() or 0
+        p = CommercialRentPeriod(
+            tenant_id=t.id,
+            year=year,
+            period_label=(data.get("period_label") or "Jan-Dec")[:50],
+            monthly_rent=float(data.get("monthly_rent") or 0),
+            months_count=int(data.get("months_count") or 12),
+            sort_order=max_sort + 1,
+        )
+        db.session.add(p)
+        db.session.commit()
+        return jsonify(p.to_dict())
+
+    @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period/<int:period_id>",
+             methods=["PUT"])
+    def api_commercial_period_update(entity_code, tenant_id, period_id):
+        p = CommercialRentPeriod.query.filter_by(id=period_id, tenant_id=tenant_id).first()
+        if not p:
+            return jsonify({"error": "period not found"}), 404
+        # Verify tenant belongs to entity
+        t = CommercialTenant.query.filter_by(id=tenant_id, entity_code=entity_code).first()
+        if not t:
+            return jsonify({"error": "tenant not found"}), 404
+        data = request.get_json(silent=True) or {}
+        if "year" in data and data["year"]:
+            p.year = int(data["year"])
+        if "period_label" in data and data["period_label"] is not None:
+            p.period_label = str(data["period_label"])[:50]
+        if "monthly_rent" in data:
+            p.monthly_rent = float(data["monthly_rent"] or 0)
+        if "months_count" in data:
+            p.months_count = int(data["months_count"] or 12)
+        db.session.commit()
+        return jsonify(p.to_dict())
+
+    @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period/<int:period_id>",
+             methods=["DELETE"])
+    def api_commercial_period_delete(entity_code, tenant_id, period_id):
+        p = CommercialRentPeriod.query.filter_by(id=period_id, tenant_id=tenant_id).first()
+        if not p:
+            return jsonify({"error": "period not found"}), 404
+        db.session.delete(p)
+        db.session.commit()
+        return jsonify({"status": "deleted", "id": period_id})
+
+    @bp.route("/api/commercial/<entity_code>/project-year", methods=["POST"])
+    def api_commercial_project_year(entity_code):
+        """Project rent periods from a source year to a target year by cloning
+        each tenant's source-year periods, optionally multiplied by an
+        increase percentage. If target-year periods already exist for a
+        tenant, they are skipped (use ?overwrite=1 to replace).
+
+        Body: {
+            "from_year": 2026,
+            "to_year": 2027,
+            "increase_pct": 0.03,        # decimal (3% = 0.03), optional, default 0
+            "tenant_ids": [1,2,3],        # optional; default all tenants for building
+            "overwrite": false            # optional; default false
+        }
+        """
+        data = request.get_json(silent=True) or {}
+        from_year = int(data.get("from_year") or (BUDGET_YEAR - 1))
+        to_year = int(data.get("to_year") or BUDGET_YEAR)
+        increase_pct = float(data.get("increase_pct") or 0)
+        overwrite = bool(data.get("overwrite", False))
+        tenant_ids = data.get("tenant_ids")
+
+        q = CommercialTenant.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR)
+        if tenant_ids:
+            q = q.filter(CommercialTenant.id.in_(tenant_ids))
+        tenants = q.all()
+
+        created_total = 0
+        skipped_tenants = []
+        for t in tenants:
+            existing_to = CommercialRentPeriod.query.filter_by(
+                tenant_id=t.id, year=to_year).all()
+            if existing_to and not overwrite:
+                skipped_tenants.append(t.id)
+                continue
+            if existing_to and overwrite:
+                for p in existing_to:
+                    db.session.delete(p)
+                db.session.flush()
+            source_periods = CommercialRentPeriod.query.filter_by(
+                tenant_id=t.id, year=from_year).order_by(
+                CommercialRentPeriod.sort_order).all()
+            if not source_periods:
+                continue
+            for sp in source_periods:
+                new_rent = (sp.monthly_rent or 0) * (1 + increase_pct)
+                db.session.add(CommercialRentPeriod(
+                    tenant_id=t.id,
+                    year=to_year,
+                    period_label=sp.period_label,
+                    monthly_rent=round(new_rent, 2),
+                    months_count=sp.months_count,
+                    sort_order=sp.sort_order,
+                ))
+                created_total += 1
+        db.session.commit()
+        return jsonify({
+            "status": "ok",
+            "from_year": from_year,
+            "to_year": to_year,
+            "increase_pct": increase_pct,
+            "periods_created": created_total,
+            "skipped_tenants": skipped_tenants,
+        })
+
+
     @bp.route("/api/commercial/<entity_code>/import", methods=["POST"])
     def api_commercial_import(entity_code):
         """Force a re-import from Excel. WARNING: skips if tenants already
@@ -9506,6 +9697,12 @@ BUILDING_DETAIL_TEMPLATE = r"""
   tr[data-type="d"] .row-del-btn { opacity: 0; transition: opacity 0.15s; }
   tr[data-type="d"]:hover .row-del-btn { opacity: 1; }
   tr[data-type="d"] .row-del-btn:hover { color: var(--red); }
+
+  /* Commercial tab — period table inline-edit affordances (Phase 5.2). */
+  .comm-period-table tr:hover .comm-period-del { opacity: 1; }
+  .comm-period-del:hover { color: var(--red) !important; }
+  .comm-period-table input:hover { border-color: var(--gray-200) !important; background: white !important; }
+  .comm-period-table input:focus { border-color: var(--blue) !important; outline: none; background: white !important; }
 
   /* Hide every workbook element whose content is FULLY duplicated in the drawer.
      The populator JS for each one keeps running, but visually the workbook is
@@ -12043,20 +12240,44 @@ async function renderCommercialTab(contentDiv) {
   // Render tenant cards
   let html = '<div style="padding:18px 24px;">';
 
-  // Header strip
-  const totalAnnual2026 = tenants.reduce((sum, t) => {
-    return sum + (t.rent_periods || [])
-      .filter(p => p.year === {{ budget_year }} - 1)  // Show 2026 (BUDGET_YEAR - 1 is the approved year)
+  // Header strip — show prior, current, projected totals
+  const BUDGET_Y = {{ budget_year }};           // e.g. 2027
+  const PRIOR_Y = BUDGET_Y - 1;                 // 2026 (approved budget year)
+  function tenantAnnual(t, year) {
+    return (t.rent_periods || []).filter(p => p.year === year)
       .reduce((s, p) => s + (p.annualized || 0), 0);
-  }, 0);
+  }
+  const totalPrior = tenants.reduce((s, t) => s + tenantAnnual(t, PRIOR_Y), 0);
+  const totalBudget = tenants.reduce((s, t) => s + tenantAnnual(t, BUDGET_Y), 0);
+  const tenantsWithoutProjection = tenants.filter(t => tenantAnnual(t, BUDGET_Y) === 0).length;
   const escModel = tenants[0] ? tenants[0].escalation_model : 'none';
-  html += '<div style="display:flex; align-items:center; gap:14px; margin-bottom:14px;">' +
+  html += '<div style="display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap;">' +
     '<h2 style="font-size:18px; font-weight:700; margin:0;">Commercial Tenants</h2>' +
     '<span style="background:var(--blue-light); color:var(--blue); padding:3px 10px; border-radius:12px; font-size:11px; font-weight:600;">' + tenants.length + ' active</span>' +
-    '<span style="font-size:11px; color:var(--gray-500);">Escalation model auto-detected:</span>' +
+    '<span style="font-size:11px; color:var(--gray-500);">Escalation:</span>' +
     '<span style="font-size:11px; font-weight:600; color:var(--gray-700);">' + (escLabels[escModel] || escModel) + '</span>' +
-    '<span style="margin-left:auto; font-size:11px; color:var(--gray-500);">2026 total: <strong style="color:var(--green); font-size:13px;">$' + Math.round(totalAnnual2026).toLocaleString() + '</strong></span>' +
+    '<div style="margin-left:auto; display:flex; align-items:center; gap:14px; font-size:11px;">' +
+      '<div><span style="color:var(--gray-500);">' + PRIOR_Y + ' total:</span> <strong style="font-size:13px; color:var(--gray-700);">$' + Math.round(totalPrior).toLocaleString() + '</strong></div>' +
+      '<div><span style="color:var(--gray-500);">' + BUDGET_Y + ' projected:</span> <strong style="font-size:13px; color:' + (totalBudget > 0 ? 'var(--green)' : 'var(--gray-400)') + ';">$' + Math.round(totalBudget).toLocaleString() + '</strong></div>' +
+    '</div>' +
     '</div>';
+
+  // Projection toolbar — show prominently if any tenant lacks a BUDGET_Y projection.
+  if (tenantsWithoutProjection > 0) {
+    html += '<div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:12px 14px; margin-bottom:14px;">' +
+      '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">' +
+        '<div style="flex:1; min-width:280px;">' +
+          '<strong style="font-size:13px; color:#9a3412;">📅 Project ' + BUDGET_Y + ' rent</strong>' +
+          '<div style="font-size:11px; color:var(--gray-600); margin-top:2px;">' + tenantsWithoutProjection + ' of ' + tenants.length + ' tenant(s) have no ' + BUDGET_Y + ' rent set yet. Apply a global bump to copy ' + PRIOR_Y + ' periods into ' + BUDGET_Y + '. You can edit individual values afterward.</div>' +
+        '</div>' +
+        '<div style="display:flex; align-items:center; gap:8px;">' +
+          '<label style="font-size:11px; color:var(--gray-700);">Bump %:</label>' +
+          '<input type="number" id="commProjectPct" value="3.0" step="0.1" style="width:60px; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right;">' +
+          '<button onclick="commercialProjectAll()" style="padding:6px 12px; background:#9a3412; color:white; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">Project to ' + BUDGET_Y + ' →</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
 
   // Source attribution
   if (data.import_result && data.import_result.file_name) {
@@ -12105,32 +12326,61 @@ async function renderCommercialTab(contentDiv) {
 
     html += leaseWarning;
 
-    // Rent periods table
+    // Rent periods table — editable inputs (Phase 2). Click into a cell,
+    // change value, blur or Enter saves via PUT. Add/Delete rows too.
     if (periods.length > 0) {
-      html += '<table style="width:100%; border-collapse:collapse; font-size:11px; margin-bottom:8px;">';
-      html += '<thead><tr><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Year</th>' +
+      html += '<table class="comm-period-table" style="width:100%; border-collapse:collapse; font-size:11px; margin-bottom:8px;">';
+      html += '<thead><tr>' +
+              '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Year</th>' +
               '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Period</th>' +
               '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">$/mo</th>' +
               '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">×</th>' +
-              '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Annual</th></tr></thead><tbody>';
+              '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Annual</th>' +
+              '<th style="width:20px; border-bottom:1px solid var(--gray-200);"></th>' +
+              '</tr></thead><tbody>';
       periods.forEach(p => {
-        html += '<tr>' +
-          '<td style="padding:4px 6px; color:var(--gray-600);">' + p.year + '</td>' +
-          '<td style="padding:4px 6px; font-family:monospace; color:var(--gray-700);">' + (p.period_label || '').replace(/</g,'&lt;') + '</td>' +
-          '<td style="padding:4px 6px; text-align:right; font-variant-numeric:tabular-nums;">$' + (p.monthly_rent || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2}) + '</td>' +
-          '<td style="padding:4px 6px; text-align:right; color:var(--gray-500);">' + (p.months_count || 0) + '</td>' +
-          '<td style="padding:4px 6px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">$' + Math.round(p.annualized || 0).toLocaleString() + '</td>' +
+        const isBudget = p.year === BUDGET_Y;
+        const rowBg = isBudget ? 'background:#f0fdf4;' : '';
+        const dataAttrs = 'data-tid="' + t.id + '" data-pid="' + p.id + '"';
+        html += '<tr style="' + rowBg + '" ' + dataAttrs + '>' +
+          '<td style="padding:4px 6px; color:var(--gray-600);">' + p.year + (isBudget ? ' <span style="color:var(--green); font-size:9px; font-weight:700;">BUDGET</span>' : '') + '</td>' +
+          '<td style="padding:2px 4px;">' +
+            '<input type="text" value="' + (p.period_label || '').replace(/"/g,'&quot;') + '" ' +
+            'onblur="commercialUpdatePeriod(' + t.id + ',' + p.id + ',\'period_label\',this.value, this)" ' +
+            'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+            'style="width:100%; padding:2px 4px; border:1px solid transparent; background:transparent; font-family:monospace; font-size:11px; border-radius:3px;">' +
+          '</td>' +
+          '<td style="padding:2px 4px; text-align:right;">' +
+            '<input type="number" step="0.01" value="' + (p.monthly_rent || 0) + '" ' +
+            'onblur="commercialUpdatePeriod(' + t.id + ',' + p.id + ',\'monthly_rent\',parseFloat(this.value)||0, this)" ' +
+            'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+            'style="width:80px; padding:2px 4px; border:1px solid transparent; background:transparent; text-align:right; font-variant-numeric:tabular-nums; font-size:11px; border-radius:3px;">' +
+          '</td>' +
+          '<td style="padding:2px 4px; text-align:right;">' +
+            '<input type="number" min="1" max="12" step="1" value="' + (p.months_count || 12) + '" ' +
+            'onblur="commercialUpdatePeriod(' + t.id + ',' + p.id + ',\'months_count\',parseInt(this.value)||12, this)" ' +
+            'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+            'style="width:36px; padding:2px 4px; border:1px solid transparent; background:transparent; text-align:right; font-size:11px; border-radius:3px;">' +
+          '</td>' +
+          '<td class="ann-cell" style="padding:4px 6px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">$' + Math.round(p.annualized || 0).toLocaleString() + '</td>' +
+          '<td style="text-align:center;">' +
+            '<button onclick="commercialDeletePeriod(' + t.id + ',' + p.id + ',this)" ' +
+            'class="comm-period-del" title="Delete period" ' +
+            'style="background:transparent; border:none; color:var(--gray-400); cursor:pointer; font-size:14px; line-height:1; padding:0 4px; opacity:0; transition:opacity 0.15s;">×</button>' +
+          '</td>' +
           '</tr>';
       });
       html += '</tbody></table>';
     }
 
-    // Annual summary
-    if (latestYear) {
-      html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px; text-align:center; font-size:13px; font-weight:700; color:var(--green);">' +
-        latestYear + ' annual: $' + Math.round(latestAnnual).toLocaleString() +
-        '</div>';
+    // Per-tenant actions: add period, project budget year, delete tenant.
+    html += '<div style="display:flex; gap:6px; margin:6px 0 8px; flex-wrap:wrap;">';
+    html += '<button onclick="commercialAddPeriodPrompt(' + t.id + ',' + BUDGET_Y + ')" style="font-size:11px; padding:4px 10px; background:white; color:var(--brown); border:1px dashed var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600;">+ Add ' + BUDGET_Y + ' period</button>';
+    if (tenantAnnual(t, BUDGET_Y) === 0 && tenantAnnual(t, PRIOR_Y) > 0) {
+      html += '<button onclick="commercialProjectOne(' + t.id + ')" style="font-size:11px; padding:4px 10px; background:#9a3412; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">📅 Project ' + BUDGET_Y + ' from ' + PRIOR_Y + '</button>';
     }
+    html += '<button onclick="commercialDeleteTenant(' + t.id + ',\'' + (t.tenant_name || '').replace(/\'/g,"\\'") + '\')" style="font-size:11px; padding:4px 10px; margin-left:auto; background:transparent; color:var(--red); border:1px solid transparent; border-radius:4px; cursor:pointer;">🗑 Delete tenant</button>';
+    html += '</div>';
 
     // Lease notes
     if (t.lease_notes) {
@@ -12152,6 +12402,144 @@ async function renderCommercialTab(contentDiv) {
     '</div>';
 
   contentDiv.innerHTML = html;
+}
+
+// ── Commercial CRUD handlers (Phase 2) ──
+
+// Inline-edit a single field on a rent period. Called from onblur on the
+// editable inputs in the period table. Saves to DB, recomputes the
+// "Annual" cell, and updates the tenant card totals.
+async function commercialUpdatePeriod(tenantId, periodId, field, value, inputEl) {
+  if (inputEl) {
+    inputEl.style.borderColor = 'var(--blue)';
+  }
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant/' + tenantId + '/period/' + periodId, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[field]: value}),
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      alert('Save failed: ' + (e.error || resp.status));
+      return;
+    }
+    const updated = await resp.json();
+    // Recompute the Annual cell in this row
+    if (inputEl) {
+      const row = inputEl.closest('tr');
+      if (row) {
+        const annCell = row.querySelector('.ann-cell');
+        if (annCell) annCell.textContent = '$' + Math.round(updated.annualized || 0).toLocaleString();
+      }
+      inputEl.style.borderColor = 'transparent';
+      // Flash green briefly to show save succeeded
+      inputEl.style.background = '#dcfce7';
+      setTimeout(() => { inputEl.style.background = 'transparent'; }, 300);
+    }
+    // Re-render the whole tab to refresh totals + budget/prior badges
+    // (debounced — only refresh after no edits for 1.5s)
+    if (window._commRerenderTimer) clearTimeout(window._commRerenderTimer);
+    window._commRerenderTimer = setTimeout(() => {
+      renderCommercialTab(document.getElementById('sheetContent'));
+    }, 1500);
+  } catch (err) {
+    alert('Save error: ' + (err.message || err));
+    if (inputEl) inputEl.style.borderColor = 'var(--red)';
+  }
+}
+
+async function commercialDeletePeriod(tenantId, periodId, btnEl) {
+  if (!confirm('Delete this rent period?')) return;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant/' + tenantId + '/period/' + periodId, {method: 'DELETE'});
+    if (!resp.ok) {
+      alert('Delete failed');
+      return;
+    }
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) { alert('Delete error: ' + e.message); }
+}
+
+async function commercialAddPeriodPrompt(tenantId, year) {
+  const label = prompt('Period label (e.g. "Jan-Dec", "Jan-Feb"):', 'Jan-Dec');
+  if (!label) return;
+  const rentStr = prompt('Monthly rent ($):', '0');
+  if (rentStr === null) return;
+  const monthsStr = prompt('Number of months (1-12):', label.toLowerCase().includes('jan-dec') ? '12' : '1');
+  if (monthsStr === null) return;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant/' + tenantId + '/period', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        year: year,
+        period_label: label,
+        monthly_rent: parseFloat(rentStr) || 0,
+        months_count: parseInt(monthsStr) || 12,
+      }),
+    });
+    if (!resp.ok) { alert('Add failed'); return; }
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) { alert('Add error: ' + e.message); }
+}
+
+async function commercialDeleteTenant(tenantId, name) {
+  if (!confirm('Delete tenant "' + name + '" and all rent periods?')) return;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant/' + tenantId, {method: 'DELETE'});
+    if (!resp.ok) { alert('Delete failed'); return; }
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) { alert('Delete error: ' + e.message); }
+}
+
+// Global "Project to BUDGET_YEAR" — applies bump % across all tenants.
+async function commercialProjectAll() {
+  const pctInput = document.getElementById('commProjectPct');
+  const pct = (parseFloat(pctInput.value) || 0) / 100;
+  const conf = pct === 0
+    ? 'Copy ' + ({{ budget_year }} - 1) + ' rent periods unchanged into ' + {{ budget_year }} + ' for every tenant that doesn\'t already have a ' + {{ budget_year }} + ' projection?'
+    : 'Copy ' + ({{ budget_year }} - 1) + ' rent periods × ' + (pct * 100).toFixed(1) + '% increase into ' + {{ budget_year }} + ' for every tenant that doesn\'t already have a projection?';
+  if (!confirm(conf)) return;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/project-year', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        from_year: {{ budget_year }} - 1,
+        to_year: {{ budget_year }},
+        increase_pct: pct,
+        overwrite: false,
+      }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) { alert('Projection failed: ' + (d.error || resp.status)); return; }
+    showToast('Projected ' + d.periods_created + ' periods to ' + d.to_year, 'success');
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) { alert('Project error: ' + e.message); }
+}
+
+async function commercialProjectOne(tenantId) {
+  // Per-tenant projection. Same default 3% bump; FA can adjust afterward.
+  const pctStr = prompt('Annual increase % for this tenant?\n(Use 0 for flat, or enter lease-specific bump.)', '3.0');
+  if (pctStr === null) return;
+  const pct = (parseFloat(pctStr) || 0) / 100;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/project-year', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        from_year: {{ budget_year }} - 1,
+        to_year: {{ budget_year }},
+        increase_pct: pct,
+        tenant_ids: [tenantId],
+        overwrite: false,
+      }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) { alert('Projection failed: ' + (d.error || resp.status)); return; }
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) { alert('Project error: ' + e.message); }
 }
 
 async function commercialReimport() {
