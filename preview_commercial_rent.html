@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Commercial Rent + Escalations — Design Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f1eb; --card: white; --border: #e5e0d5; --text: #1a1714;
+    --muted: #8a7e72; --brown: #5a4a3f; --brown-light: #f5efe7;
+    --red: #e02424; --green: #057a55; --green-light: #def7ec;
+    --amber: #d97706; --amber-light: #fef3c7;
+    --gray-100: #ede9e1; --gray-200: #e5e0d5; --gray-300: #d5cfc5;
+    --blue: #2563eb; --blue-light: #dbeafe;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5;
+  }
+  .top-nav {
+    background: white; border-bottom: 1px solid var(--gray-200);
+    padding: 12px 24px; display: flex; align-items: center; gap: 18px;
+    position: sticky; top: 0; z-index: 50;
+  }
+  .top-nav .brand { font-weight: 700; font-size: 15px; }
+  .top-nav .design-tag {
+    background: var(--brown); color: white; padding: 3px 10px;
+    border-radius: 4px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .top-nav .meta { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+  h3 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+  .lede { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+
+  .section { background: white; border-radius: 12px; border: 1px solid var(--gray-200); padding: 20px 24px; margin-bottom: 20px; }
+  .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .section-head .num { background: var(--brown); color: white; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+  .section-head h2 { margin: 0; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge.red { background: var(--red); color: white; }
+  .badge.green { background: var(--green); color: white; }
+  .badge.amber { background: var(--amber); color: white; }
+  .badge.blue { background: var(--blue); color: white; }
+  .badge.gray { background: var(--gray-200); color: var(--muted); }
+
+  .tab-bar {
+    display: flex; gap: 0; border-bottom: 2px solid var(--gray-200);
+    background: white; padding: 0 24px;
+  }
+  .tab {
+    padding: 12px 18px; font-size: 13px; font-weight: 600;
+    color: var(--muted); border-bottom: 2px solid transparent;
+    margin-bottom: -2px; cursor: pointer;
+  }
+  .tab.active { color: var(--brown); border-bottom-color: var(--brown); }
+  .tab.new {
+    background: var(--amber-light); color: var(--amber);
+    border-radius: 4px 4px 0 0; padding: 12px 14px;
+    position: relative;
+  }
+  .tab.new::after {
+    content: 'NEW'; position: absolute; top: 4px; right: 4px;
+    font-size: 8px; background: var(--amber); color: white;
+    padding: 1px 4px; border-radius: 2px;
+  }
+
+  /* Tenant cards */
+  .tenants { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+  .tenant-card {
+    background: #fafaf7; border: 1px solid var(--gray-200);
+    border-radius: 8px; padding: 14px;
+  }
+  .tenant-card.warn { border-color: #fde68a; background: #fffbeb; }
+  .tenant-card .name { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+  .tenant-card .unit { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  .tenant-card .lease { font-size: 11px; color: var(--muted); background: white; padding: 4px 8px; border-radius: 4px; margin-bottom: 10px; border: 1px solid var(--gray-200); }
+  .tenant-card .lease.expires-soon { background: #fef2f2; color: var(--red); border-color: #fecaca; font-weight: 600; }
+  .tenant-card .rent-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    font-size: 11px; padding: 8px; background: white; border-radius: 4px;
+    border: 1px solid var(--gray-200); margin-bottom: 8px;
+  }
+  .tenant-card .rent-grid .lbl { color: var(--muted); }
+  .tenant-card .rent-grid .v { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+  .tenant-card .annual { text-align: center; font-size: 16px; font-weight: 700; padding: 6px; background: white; border-radius: 4px; border: 1px solid var(--green-light); color: var(--green); }
+  .tenant-card .edit-btn { margin-top: 8px; width: 100%; background: white; border: 1px solid var(--gray-200); padding: 5px; border-radius: 4px; font-size: 11px; cursor: pointer; color: var(--brown); font-weight: 600; }
+  .tenant-card .edit-btn:hover { background: var(--brown-light); }
+
+  .add-tenant {
+    background: white; border: 2px dashed var(--gray-300); border-radius: 8px;
+    padding: 14px; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); cursor: pointer; min-height: 100px;
+  }
+  .add-tenant:hover { border-color: var(--brown); color: var(--brown); }
+
+  /* Escalation engine */
+  .esc-modes { display: flex; gap: 8px; margin-bottom: 14px; background: var(--gray-100); padding: 4px; border-radius: 8px; }
+  .esc-mode {
+    flex: 1; padding: 10px; text-align: center; cursor: pointer;
+    border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--muted);
+    border: 1px solid transparent;
+  }
+  .esc-mode.active { background: white; color: var(--text); border-color: var(--gray-200); }
+  .esc-mode .title { font-weight: 700; font-size: 13px; display: block; }
+  .esc-mode .sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .esc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .esc-table th { background: #fafaf7; text-align: right; padding: 8px 10px; font-size: 10px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--gray-200); }
+  .esc-table th:first-child { text-align: left; }
+  .esc-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--gray-100); font-variant-numeric: tabular-nums; }
+  .esc-table td:first-child { text-align: left; color: var(--muted); }
+  .esc-table td.compute { color: var(--blue); font-weight: 600; }
+  .esc-table tr.total td { background: #fafaf7; font-weight: 700; }
+  .esc-table tr.total td:last-child { color: var(--green); }
+
+  /* Summary feed */
+  .feed-row {
+    display: grid; grid-template-columns: 100px 1fr 140px 140px 140px;
+    gap: 10px; padding: 10px 12px;
+    border-bottom: 1px solid var(--gray-100); font-size: 12px;
+    align-items: center;
+  }
+  .feed-row.head { background: #fafaf7; font-size: 10px; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 6px 12px; }
+  .feed-row .gl { font-family: monospace; color: var(--muted); }
+  .feed-row .label { font-weight: 600; }
+  .feed-row .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .feed-row .delta { font-size: 10px; color: var(--green); }
+
+  /* How it maps panel */
+  .mapping { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .mapping-side { background: #fafaf7; border-radius: 8px; padding: 14px; border: 1px solid var(--gray-200); }
+  .mapping-side h3 { display: flex; align-items: center; gap: 8px; }
+  .mapping-side h3 .icon { width: 22px; height: 22px; border-radius: 4px; background: var(--brown); color: white; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
+  .mapping-side h3.excel .icon { background: #217346; }
+  .formula { font-family: monospace; font-size: 11px; background: white; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--gray-200); margin: 4px 0; word-break: break-all; }
+  .arrow { text-align: center; font-size: 24px; color: var(--brown); margin: 8px 0; }
+
+  /* Pattern coverage */
+  .patterns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .pattern {
+    background: #fafaf7; border-radius: 8px; padding: 12px;
+    border: 1px solid var(--gray-200);
+  }
+  .pattern .count { font-size: 22px; font-weight: 800; color: var(--brown); }
+  .pattern .name { font-weight: 700; font-size: 12px; margin: 2px 0 4px; }
+  .pattern .desc { font-size: 10px; color: var(--muted); line-height: 1.4; }
+
+  /* Recommendation */
+  .rec-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .rec {
+    background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 16px;
+  }
+  .rec.recommended { border-color: var(--green); border-width: 2px; background: #f6fefa; }
+  .rec h3 { font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; }
+  .rec .effort { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .rec .desc { font-size: 12px; line-height: 1.5; color: #3a3530; margin-bottom: 10px; }
+  .rec .pros { font-size: 11px; }
+  .rec .pros li { margin: 3px 0; }
+  .rec.recommended .badge.green { font-size: 9px; }
+
+  .meta-bar { background: #15110f; color: #f5efe7; padding: 12px 24px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <span class="brand">Century Management</span>
+  <span class="design-tag">Design Preview</span>
+  <span class="meta">FA Dashboard › Building 148 › Commercial Rent</span>
+</nav>
+
+<div class="container">
+
+  <h1>Commercial Rent + Escalations</h1>
+  <p class="lede">Design preview for integrating the Excel <code>Comm Rent &amp; Escalations</code> sheet into the product. Below: what the feature would look like, how data flows, and three integration options ranked by scope.</p>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- SECTION 1: PORTFOLIO COVERAGE -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-head"><span class="num">1</span><h2>Portfolio coverage — what we found</h2></div>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 14px;">Scanned all 143 buildings' 2026 approved Excel files. 20 have commercial rent / escalation rows. Four distinct patterns:</p>
+
+    <div class="patterns">
+      <div class="pattern">
+        <div class="count">~7</div>
+        <div class="name">Multi-tenant + RE Tax escalation</div>
+        <div class="desc">e.g. <strong>148</strong>: 3 tenants with multi-year rent schedules; RE Tax pass-through math (total tax × applied rate × tenant share)</div>
+      </div>
+      <div class="pattern">
+        <div class="count">~5</div>
+        <div class="name">Single tenant + utility/insurance billback</div>
+        <div class="desc">e.g. <strong>212</strong>: one garage tenant; tenant pays share of (actual − base year) on Gas, Electric, Steam, Insurance</div>
+      </div>
+      <div class="pattern">
+        <div class="count">~3</div>
+        <div class="name">Multi-tenant + OpEx escalation</div>
+        <div class="desc">e.g. <strong>829</strong>: modified-gross lease — tenant pays share of total operating expenses minus base year</div>
+      </div>
+      <div class="pattern">
+        <div class="count">~5</div>
+        <div class="name">Other (common charges, no commercial)</div>
+        <div class="desc">e.g. <strong>842</strong> (Citarella in Apt 8J), <strong>869</strong> (condo) — commercial flows through different rows, not this sheet</div>
+      </div>
+    </div>
+
+    <p style="font-size: 11px; color: var(--muted); margin-top: 12px;">All 20 buildings feed into the same Summary rows: <code>4040-0000 Commercial Rent</code> and <code>4520-0000 Commercial RE Tax Escalation</code>. Some also use <code>4250-0000 Utility Income</code> and <code>4515-0010 Property Insurance</code> billbacks. Today the system aggregates these into a single Summary number with zero per-tenant detail. The Excel sheet stays the source of truth, invisible to the product.</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- SECTION 2: PROPOSED TAB LOOK -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-head"><span class="num">2</span><h2>Proposed product UI — new "Commercial" tab</h2></div>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 14px;">Sits next to existing workbook tabs (Summary / Income / Payroll / ...). Conditionally appears for buildings that have commercial rent rows. Below: the mockup using <strong>real Building 148 data</strong>.</p>
+
+    <!-- Mock tab bar -->
+    <div class="tab-bar" style="margin: 0 -24px 18px; border-radius: 0; background: var(--gray-100);">
+      <span class="tab">Summary</span>
+      <span class="tab">Income</span>
+      <span class="tab">Payroll</span>
+      <span class="tab">Energy</span>
+      <span class="tab">Water &amp; Sewer</span>
+      <span class="tab new active" style="background: white;">Commercial</span>
+      <span class="tab">Repairs</span>
+      <span class="tab">RE Taxes</span>
+    </div>
+
+    <!-- 2a. Tenant cards -->
+    <h3 style="margin-bottom: 10px;">Tenants <span class="badge gray" style="font-weight: 500; text-transform: none; font-size: 11px;">3 active</span></h3>
+    <div class="tenants">
+
+      <!-- Tenant 1: Mack Dermatology -->
+      <div class="tenant-card warn">
+        <div class="name">Dr. Lian Mack <span class="badge amber">Lease expiring</span></div>
+        <div class="unit">Mack Dermatology · Ground floor</div>
+        <div class="lease expires-soon">Lease ends 02/28/2025 · new lease in progress</div>
+        <div class="rent-grid">
+          <span class="lbl">2025 Jan–Feb</span><span class="v">$7,408 / mo</span>
+          <span class="lbl">2025 Mar–Dec</span><span class="v">$7,593 / mo</span>
+          <span class="lbl">2026 Jan–Feb</span><span class="v">$7,593 / mo</span>
+          <span class="lbl">2026 Mar–Dec</span><span class="v">$7,783 / mo</span>
+        </div>
+        <div class="annual">2026 annual rent · $93,018</div>
+        <button class="edit-btn">✎ Edit lease schedule</button>
+      </div>
+
+      <!-- Tenant 2: Integrated Aesthetic Dentistry -->
+      <div class="tenant-card">
+        <div class="name">Integrated Aesthetic Dentistry</div>
+        <div class="unit">Lease 12/01/23 – 11/30/33</div>
+        <div class="lease">Annual bump every December · already scheduled through 2033</div>
+        <div class="rent-grid">
+          <span class="lbl">2025 Jan–Nov</span><span class="v">$5,174 / mo</span>
+          <span class="lbl">2025 Dec</span><span class="v">$5,329 / mo</span>
+          <span class="lbl">2026 Jan–Nov</span><span class="v">$5,329 / mo</span>
+          <span class="lbl">2026 Dec</span><span class="v">$5,489 / mo</span>
+        </div>
+        <div class="annual">2026 annual rent · $64,111</div>
+        <button class="edit-btn">✎ Edit lease schedule</button>
+      </div>
+
+      <!-- Tenant 3: Garage -->
+      <div class="tenant-card">
+        <div class="name">130 East 18th Garage Corp</div>
+        <div class="unit">Garage · Sub-basement</div>
+        <div class="lease">Lease 04/01/21 – 12/31/30 · Schedule locked through 2030</div>
+        <div class="rent-grid">
+          <span class="lbl">2024</span><span class="v">$22,317 / mo</span>
+          <span class="lbl">2025</span><span class="v">$22,986 / mo</span>
+          <span class="lbl">2026</span><span class="v">$22,986 / mo</span>
+          <span class="lbl">2027 (sched.)</span><span class="v">$23,676 / mo</span>
+        </div>
+        <div class="annual">2026 annual rent · $275,834</div>
+        <button class="edit-btn">✎ Edit lease schedule</button>
+      </div>
+
+      <!-- Add new tenant -->
+      <div class="add-tenant">+ Add tenant</div>
+    </div>
+
+    <!-- 2b. Escalation engine -->
+    <h3 style="margin: 18px 0 10px;">Escalations</h3>
+    <div class="esc-modes">
+      <div class="esc-mode active">
+        <span class="title">RE Tax escalation</span>
+        <span class="sub">Tenant pays share of (current tax − base year). Used by 148.</span>
+      </div>
+      <div class="esc-mode">
+        <span class="title">Utility / insurance billback</span>
+        <span class="sub">Tenant pays share of (actual − base year). Used by 212.</span>
+      </div>
+      <div class="esc-mode">
+        <span class="title">Operating expense escalation</span>
+        <span class="sub">Modified gross — tenant pays share of full OpEx − base. Used by 829.</span>
+      </div>
+    </div>
+
+    <table class="esc-table">
+      <thead>
+        <tr>
+          <th>Tenant</th>
+          <th>Total RE Tax 2025/26</th>
+          <th>Base year</th>
+          <th>Escalatable</th>
+          <th>Tenant share</th>
+          <th>Escalation due</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Lian Mack</td>
+          <td>$2,653,543 <span style="color: var(--muted); font-size: 10px;">← RE Taxes!G11 × G12</span></td>
+          <td>$1,844,323</td>
+          <td class="compute">$809,220</td>
+          <td>1.04%</td>
+          <td class="compute">$8,416</td>
+        </tr>
+        <tr>
+          <td>Integrated Aesthetic</td>
+          <td>$2,653,543</td>
+          <td>$1,725,302</td>
+          <td class="compute">$928,241</td>
+          <td>1.03%</td>
+          <td class="compute">$9,561</td>
+        </tr>
+        <tr>
+          <td>Garage</td>
+          <td colspan="4" style="text-align: left; color: var(--muted); font-size: 11px; font-style: italic;">Lease has no tax escalation clause — $0</td>
+          <td>$0</td>
+        </tr>
+        <tr class="total">
+          <td>Total 2026 RE Tax escalation</td>
+          <td colspan="4"></td>
+          <td>$21,498</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="font-size: 11px; color: var(--muted); margin-top: 10px;">Base years and tenant share % live on each tenant card (editable). Total RE Tax pulls from the existing RE Taxes tab automatically — same wire as the Excel formula <code>='RE Taxes'!G11 × G12</code>.</p>
+
+    <!-- 2c. Summary feed -->
+    <h3 style="margin: 20px 0 10px;">How this flows into the Summary tab</h3>
+    <div style="background: #fafaf7; border-radius: 8px; padding: 0; border: 1px solid var(--gray-200);">
+      <div class="feed-row head">
+        <span>GL</span><span>Line item</span><span>2025 Forecast</span><span>2026 Budget</span><span>Source</span>
+      </div>
+      <div class="feed-row">
+        <span class="gl">4040-0000</span>
+        <span class="label">Commercial Rent</span>
+        <span class="num">$428,827</span>
+        <span class="num">$432,964</span>
+        <span style="font-size: 10px; color: var(--muted);">Sum of all tenant annual rents</span>
+      </div>
+      <div class="feed-row">
+        <span class="gl">4520-0000</span>
+        <span class="label">Commercial RE Tax Escalation</span>
+        <span class="num">$17,977</span>
+        <span class="num">$21,498</span>
+        <span style="font-size: 10px; color: var(--muted);">Sum of per-tenant escalation calcs</span>
+      </div>
+      <div class="feed-row">
+        <span class="gl">4250-0000</span>
+        <span class="label">Utility Income <span style="color: var(--muted); font-weight: 400;">(billback)</span></span>
+        <span class="num">—</span>
+        <span class="num">—</span>
+        <span style="font-size: 10px; color: var(--muted);">Not used by 148</span>
+      </div>
+      <div class="feed-row">
+        <span class="gl">4515-0010</span>
+        <span class="label">Property Insurance <span style="color: var(--muted); font-weight: 400;">(billback)</span></span>
+        <span class="num">—</span>
+        <span class="num">—</span>
+        <span style="font-size: 10px; color: var(--muted);">Not used by 148</span>
+      </div>
+    </div>
+    <p style="font-size: 11px; color: var(--muted); margin-top: 10px;">When the FA changes a tenant's rent or escalation %, these Summary rows auto-recalculate — same way the Energy / Water tabs already feed Summary today. <strong>No double-entry.</strong></p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- SECTION 3: EXCEL → PRODUCT MAPPING -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-head"><span class="num">3</span><h2>Excel ↔ product mapping</h2></div>
+    <p style="font-size: 13px; color: var(--muted); margin-bottom: 14px;">The Excel formulas map cleanly to the product's existing data model. No new GL infrastructure needed.</p>
+
+    <div class="mapping">
+
+      <!-- Excel side -->
+      <div class="mapping-side">
+        <h3 class="excel"><span class="icon">X</span> Excel today</h3>
+        <p style="font-size: 11px; color: var(--muted); margin-bottom: 8px;">Sheet: <code>Comm Rent &amp; Escalations</code></p>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>Section 1 — Tenant rent table</strong> (rows 6–37)</p>
+        <div class="formula">B: tenant | C: period | D: $/mo | E: =D*months</div>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>Section 2 — RE Tax escalation</strong> (rows 39–52)</p>
+        <div class="formula">total = ='RE Taxes'!G11 × G12<br>esc_portion = total − base_year<br>tenant_due = esc_portion × share%</div>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>Section 3 — Summary feed</strong> (rows 55–61)</p>
+        <div class="formula">4040 forecast = E12+E22+E31<br>4520 forecast = C52+D52</div>
+      </div>
+
+      <!-- Product side -->
+      <div class="mapping-side">
+        <h3><span class="icon">P</span> Product mapping</h3>
+        <p style="font-size: 11px; color: var(--muted); margin-bottom: 8px;">New DB tables + reuse existing GL summary infrastructure</p>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>New: <code>commercial_tenants</code> table</strong></p>
+        <div class="formula">id, entity_code, name, unit, lease_start, lease_end, share_pct, base_year_re_tax, base_year_opex, ...</div>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>New: <code>commercial_rent_schedule</code> table</strong></p>
+        <div class="formula">tenant_id, year, period_label, monthly_rent, months</div>
+
+        <p style="font-size: 11px; margin-top: 10px;"><strong>Reuse: existing summary row flow</strong></p>
+        <div class="formula">BudgetSummaryRow{4040,4520} col6/col7 updated by trigger when tenant rent changes</div>
+      </div>
+    </div>
+
+    <div class="arrow">⇣</div>
+
+    <p style="font-size: 12px; color: #3a3530; text-align: center;"><strong>One-time importer</strong> parses the existing Excel sheet on first open, populates the new tables, and the FA confirms. After that, the system is the source of truth and exports back to Excel format on demand.</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- SECTION 4: INTEGRATION OPTIONS -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-head"><span class="num">4</span><h2>Three integration options — pick scope</h2></div>
+
+    <div class="rec-options">
+
+      <!-- Option 1 -->
+      <div class="rec">
+        <h3>A · Viewer only</h3>
+        <p class="effort">Effort: <strong>1–2 days CC</strong> · Completeness: <strong>4/10</strong></p>
+        <p class="desc">Parse the Excel <code>Comm Rent &amp; Escalations</code> sheet on dashboard load. Display tenant cards read-only inside a new tab. <strong>No editing.</strong> Excel remains the source of truth.</p>
+        <p style="font-size: 11px; font-weight: 600; color: var(--green);">Pros</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>Smallest lift, fastest ship</li>
+          <li>FA sees lease detail without opening Excel</li>
+          <li>Zero risk of data divergence</li>
+        </ul>
+        <p style="font-size: 11px; font-weight: 600; color: var(--red); margin-top: 8px;">Cons</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>FA still maintains Excel as source — no time savings</li>
+          <li>No write-back to Summary — duplicates the current pain</li>
+        </ul>
+      </div>
+
+      <!-- Option 2 (recommended) -->
+      <div class="rec recommended">
+        <h3>B · Edit + auto-feed Summary <span class="badge green">Recommended</span></h3>
+        <p class="effort">Effort: <strong>1–2 weeks CC</strong> · Completeness: <strong>8/10</strong></p>
+        <p class="desc">New <code>Commercial</code> tab with editable tenant cards + escalation engine. Auto-feeds Summary rows (4040, 4520, etc.). One-time importer pulls from existing Excel. <strong>System becomes the source of truth.</strong></p>
+        <p style="font-size: 11px; font-weight: 600; color: var(--green);">Pros</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>Replaces ~50% of the time spent in the commercial rent Excel sheet</li>
+          <li>Tenant detail finally visible to the system (notes, lease expiry alerts, etc.)</li>
+          <li>Eliminates the "Why is Commercial Rent showing $432K?" inspection trip</li>
+          <li>Fits the existing pattern (like Payroll / Energy tabs)</li>
+          <li>Handles all 3 escalation models with one UI</li>
+        </ul>
+        <p style="font-size: 11px; font-weight: 600; color: var(--red); margin-top: 8px;">Cons</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>Some buildings (842, 869) need separate handling — different commercial models</li>
+          <li>Edge cases on lease expiry mid-year</li>
+        </ul>
+      </div>
+
+      <!-- Option 3 -->
+      <div class="rec">
+        <h3>C · Full lease management</h3>
+        <p class="effort">Effort: <strong>1–2 months CC</strong> · Completeness: <strong>10/10</strong></p>
+        <p class="desc">B + multi-year scheduling, lease expiry alerts (drawer integration), tenant payment tracking, full audit trail, export back to legacy Excel format. <strong>Excel disappears entirely</strong> for commercial rent.</p>
+        <p style="font-size: 11px; font-weight: 600; color: var(--green);">Pros</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>FA never touches Excel for commercial rent</li>
+          <li>Auto-alerts on upcoming lease expirations (huge for Mack Dermatology cases)</li>
+          <li>Full historical visibility</li>
+        </ul>
+        <p style="font-size: 11px; font-weight: 600; color: var(--red); margin-top: 8px;">Cons</p>
+        <ul class="pros" style="margin-left: 16px; color: var(--muted);">
+          <li>Scope creep risk — lease management is its own product</li>
+          <li>Audit / legal review may be needed before going source-of-truth</li>
+          <li>Tenant payment tracking is out of scope of the budget app</li>
+        </ul>
+      </div>
+    </div>
+
+    <div style="background: var(--brown-light); border-left: 4px solid var(--brown); padding: 14px; margin-top: 18px; border-radius: 6px;">
+      <p style="font-weight: 700; font-size: 13px; margin-bottom: 4px;">Recommendation: ship <strong>Option B</strong> in two phases.</p>
+      <p style="font-size: 12px; line-height: 1.6;">
+        <strong>Phase 1 (3–4 days):</strong> read-only viewer (Option A) for the 20 buildings with the sheet. Validates the data model + UI without write risk.<br>
+        <strong>Phase 2 (1 week):</strong> edit + auto-feed to Summary for the 3 patterns we've identified. Skip the condo/Citarella cases initially — handle in a follow-up.<br>
+        After Phase 2 the FA can stop touching the Excel sheet for the 15 buildings that fit the patterns cleanly. The other 5 stay Excel-based for now.
+      </p>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- SECTION 5: OPEN QUESTIONS -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-head"><span class="num">5</span><h2>Open questions for you</h2></div>
+    <ol style="margin-left: 20px; line-height: 2; font-size: 13px;">
+      <li><strong>Source of truth flip.</strong> If the system becomes authoritative, do we need to also produce an Excel export so legal/audit reviews stay on the same format?</li>
+      <li><strong>Base year handling.</strong> Base year tax/opex is hardcoded per tenant in current Excels. Should this be editable by FA, or admin-only?</li>
+      <li><strong>Lease document storage.</strong> Excel has plain-text comments about lease terms. Should the new feature also store / link to the actual lease PDFs?</li>
+      <li><strong>Mid-year lease changes.</strong> When a new lease is signed mid-year (Mack Dermatology pattern), the rent table needs a "from this date" rollover. Worth special UI?</li>
+      <li><strong>Tenant share calculation.</strong> Most leases hardcode the share %. Some pull from a building "Tenant Schedule" doc. Source for share %?</li>
+      <li><strong>Building 842 (Citarella in Apt 8J) + 869 (condo) patterns.</strong> These don't fit the "Comm Rent &amp; Escalations sheet" pattern. Handle in this scope or defer?</li>
+    </ol>
+  </div>
+
+</div>
+
+<div class="meta-bar">
+  <span>Design preview · Building 148 real data · 5 buildings inspected from 143-building portfolio</span>
+  <span>Ready for your direction before any build</span>
+</div>
+
+</body>
+</html>
