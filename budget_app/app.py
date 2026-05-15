@@ -10513,68 +10513,82 @@ def admin_research_comm_rent(entity_code):
     escalations sheets. Used by the design phase for the commercial rent
     feature. Safe to delete after the feature is built.
     """
-    import tempfile, openpyxl
+    import tempfile, traceback
     try:
-        files = _sharepoint_list_approved_budgets(entity_code)
+        import openpyxl
     except Exception as e:
-        return jsonify({"error": f"list: {str(e)[:200]}"}), 500
-    if not files:
-        return jsonify({"error": "no approved 2026 budget file"}), 404
-    files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
-    target = files[0]
-    item_id = target.get("item_id")
-    if not item_id:
-        return jsonify({"error": "no item_id"}), 500
+        return jsonify({"error": f"openpyxl import failed: {e!r}"}), 500
     try:
-        _name, file_bytes = _sharepoint_download_item(item_id)
-    except Exception as e:
-        return jsonify({"error": f"download: {str(e)[:200]}"}), 500
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-    try:
-        wb = openpyxl.load_workbook(tmp_path, data_only=False)  # keep formulas
-        wb_v = openpyxl.load_workbook(tmp_path, data_only=True)  # also load values
-        result = {"entity_code": entity_code, "file_name": target.get("name"), "sheets": []}
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            ws_v = wb_v[sheet_name]
-            # Skip yrlycomp - we already know that one
-            if "yrlycomp" in sheet_name.lower():
-                result["sheets"].append({"name": sheet_name, "skipped": "already-known"})
-                continue
-            # Capture sheet shape + a sample of cells (formulas + values)
-            max_r = min(ws.max_row or 0, 80)
-            max_c = min(ws.max_column or 0, 20)
-            grid = []
-            for r in range(1, max_r + 1):
-                row_cells = []
-                empty = True
-                for c in range(1, max_c + 1):
-                    f_cell = ws.cell(row=r, column=c)
-                    v_cell = ws_v.cell(row=r, column=c)
-                    formula = f_cell.value
-                    value = v_cell.value
-                    is_formula = isinstance(formula, str) and formula.startswith("=")
-                    if value is not None or formula is not None:
-                        empty = False
-                    row_cells.append({
-                        "v": str(value)[:120] if value is not None else None,
-                        "f": str(formula)[:200] if is_formula else None,
+        try:
+            files = _sharepoint_list_approved_budgets(entity_code)
+        except Exception as e:
+            return jsonify({"error": f"list failed: {str(e)[:300]}", "trace": traceback.format_exc()[-800:]}), 500
+        if not files:
+            return jsonify({"error": "no approved 2026 budget file"}), 404
+        files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+        target = files[0]
+        item_id = target.get("item_id")
+        if not item_id:
+            return jsonify({"error": "no item_id on file", "file": target}), 500
+        try:
+            _name, file_bytes = _sharepoint_download_item(item_id)
+        except Exception as e:
+            return jsonify({"error": f"download failed: {str(e)[:300]}", "trace": traceback.format_exc()[-800:]}), 500
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
+            try:
+                wb = openpyxl.load_workbook(tmp_path, data_only=False)
+                wb_v = openpyxl.load_workbook(tmp_path, data_only=True)
+            except Exception as e:
+                return jsonify({"error": f"openpyxl load failed: {str(e)[:300]}", "trace": traceback.format_exc()[-800:]}), 500
+            result = {"entity_code": entity_code, "file_name": target.get("name"), "sheets": []}
+            for sheet_name in wb.sheetnames:
+                try:
+                    ws = wb[sheet_name]
+                    ws_v = wb_v[sheet_name]
+                    if "yrlycomp" in sheet_name.lower():
+                        result["sheets"].append({"name": sheet_name, "skipped": "already-known"})
+                        continue
+                    max_r = min(ws.max_row or 0, 80)
+                    max_c = min(ws.max_column or 0, 20)
+                    grid = []
+                    for r in range(1, max_r + 1):
+                        row_cells = []
+                        empty = True
+                        for c in range(1, max_c + 1):
+                            try:
+                                f_cell = ws.cell(row=r, column=c)
+                                v_cell = ws_v.cell(row=r, column=c)
+                                formula = f_cell.value
+                                value = v_cell.value
+                                is_formula = isinstance(formula, str) and formula.startswith("=")
+                                if value is not None or formula is not None:
+                                    empty = False
+                                row_cells.append({
+                                    "v": str(value)[:120] if value is not None else None,
+                                    "f": str(formula)[:200] if is_formula else None,
+                                })
+                            except Exception as _ce:
+                                row_cells.append({"v": None, "f": None, "err": str(_ce)[:80]})
+                        if not empty:
+                            grid.append({"r": r, "cells": row_cells})
+                    result["sheets"].append({
+                        "name": sheet_name,
+                        "max_row": ws.max_row,
+                        "max_col": ws.max_column,
+                        "non_empty_rows": len(grid),
+                        "grid_sample": grid,
                     })
-                if not empty:
-                    grid.append({"r": r, "cells": row_cells})
-            result["sheets"].append({
-                "name": sheet_name,
-                "max_row": ws.max_row,
-                "max_col": ws.max_column,
-                "non_empty_rows": len(grid),
-                "grid_sample": grid,
-            })
-        return jsonify(result)
-    finally:
-        try: os.unlink(tmp_path)
-        except: pass
+                except Exception as _se:
+                    result["sheets"].append({"name": sheet_name, "sheet_error": str(_se)[:300]})
+            return jsonify(result)
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+    except Exception as e:
+        return jsonify({"error": f"unexpected: {str(e)[:300]}", "trace": traceback.format_exc()[-800:]}), 500
 
 
 @app.route("/api/admin/fix-subtotal-misclassification", methods=["POST"])
