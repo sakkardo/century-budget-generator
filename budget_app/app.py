@@ -10506,6 +10506,53 @@ def admin_delete_summary_row():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@app.route("/api/admin/fix-subtotal-misclassification", methods=["POST"])
+def admin_fix_subtotal_misclassification():
+    """One-shot migration: fix BudgetSummaryRow entries whose row_type was
+    incorrectly set to 'subtotal' by the old parser's greedy "surplus" match.
+
+    Background: budget_summary_parser.classify_row() used to return 'subtotal'
+    for any label containing the word "surplus". That caught true subtotals
+    ("Net Operating Surplus", "Total Surplus") but also caught data rows like
+    "Prior Year Surplus" — a real line item showing accumulated surplus brought
+    forward from prior years. Parser fixed 2026-05-14 Phase 4.4.2; this
+    endpoint cleans up rows that were imported under the old logic.
+
+    True subtotals contain "total" or "net operating" in the label. Anything
+    else currently classified as subtotal is re-classified as data so the FA
+    can edit it. Idempotent — safe to run multiple times.
+
+    Returns: { "fixed_count": N, "fixed_sample": [{"entity_code": "...",
+                                                     "label": "..."}, ...] }
+    """
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+
+    def is_true_subtotal(label):
+        if not label:
+            return False
+        l = label.strip().lower()
+        return ('total' in l) or ('net operating' in l)
+
+    candidates = BudgetSummaryRow.query.filter_by(row_type="subtotal").all()
+    fixed = []
+    for r in candidates:
+        if not is_true_subtotal(r.label):
+            r.row_type = "data"
+            fixed.append({
+                "entity_code": r.entity_code,
+                "label": r.label,
+                "budget_year": r.budget_year,
+                "id": r.id,
+            })
+    if fixed:
+        db.session.commit()
+    return jsonify({
+        "fixed_count": len(fixed),
+        "fixed_sample": fixed[:50],
+        "scanned": len(candidates),
+    })
+
+
 @app.route("/api/admin/summary-row-options", methods=["GET"])
 def admin_summary_row_options():
     """Return canonical SUMMARY_ROW_MAP labels grouped by section, used to

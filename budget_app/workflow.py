@@ -19805,13 +19805,17 @@ let _scanFindingsCache = null;
 let _summaryRowsCache = null;
 
 // Build a Set of label strings (normalized lowercase) currently on this
-// building's summary tab. Used to mark each unmapped label with whether
-// the FA has already added a row for it manually.
+// building's summary tab. Counts ANY row with a label — including subtotal
+// and section_header rows. Reason: the import sometimes misclassifies rows
+// (e.g., Building 148's "Prior Year Surplus" came in as row_type='subtotal'
+// instead of 'data'). The FA still sees the row on the summary; we shouldn't
+// tell them it's "Missing" just because of an internal row_type quirk.
+// FA directive 2026-05-14 Phase 4.4.1.
 function _buildCurrentLabelSet(summaryData) {
   const s = new Set();
   if (!summaryData || !Array.isArray(summaryData.rows)) return s;
   summaryData.rows.forEach(r => {
-    if (r && r.row_type === 'data' && r.label) {
+    if (r && r.label) {
       s.add(String(r.label).trim().toLowerCase());
     }
   });

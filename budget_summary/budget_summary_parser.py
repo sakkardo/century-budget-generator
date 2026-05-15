@@ -121,8 +121,15 @@ def classify_row(label):
     if 'total' in label_lower:
         return "subtotal"
 
-    # Net operating line
-    if 'net operating' in label_lower or 'surplus' in label_lower:
+    # Net operating line / total-surplus / total-deficit lines (computed subtotals).
+    # FA directive 2026-05-14 Phase 4.4.2: tightened from the old greedy
+    # "surplus in label_lower" match, which mis-classified rows like
+    # "Prior Year Surplus" as a subtotal. Prior Year Surplus is a data line
+    # (last year's accumulated surplus carried into the budget), not a
+    # computed total. Require the full subtotal phrase.
+    if 'net operating' in label_lower:
+        return "subtotal"
+    if 'total surplus' in label_lower or 'total deficit' in label_lower:
         return "subtotal"
 
     # Footnote lines
