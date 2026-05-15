@@ -8871,18 +8871,30 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .ac-btn:hover { opacity: 0.85; }
   .complete-collapsed .ac-item { display: none; }
 
-  /* Hide every workbook element whose content is now duplicated in the drawer.
-     The populator JS for each one keeps running (they feed other things or
-     stay around as fallbacks), but visually the workbook is clean. The drawer
-     is the single surface for: KPIs, readiness gates, period status, audit
-     status, duplicate-row warnings, unmapped-GL warnings.
-     FA directive 2026-05-14 Phase 4 (Variant A: Quiet Pill). */
+  /* Inline-expand inside an ac-item — used by approved_file_labels to show
+     the full list of unmapped labels without navigating away from the drawer.
+     FA directive 2026-05-14 Phase 4.2. */
+  .ac-expand { margin: 6px 0 0; border-radius: 6px; overflow: hidden; }
+  .ac-expand table th, .ac-expand table td { font-family: inherit; }
+  .ac-expand .ac-btn { font-size: 11px; padding: 5px 12px; }
+
+  /* Hide every workbook element whose content is FULLY duplicated in the drawer.
+     The populator JS for each one keeps running, but visually the workbook is
+     clean. The drawer is the single surface for: KPIs + readiness gate summary.
+     FA directive 2026-05-14 Phase 4 (Variant A: Quiet Pill).
+
+     NOTE: #sumWarningsBanner is intentionally NOT hidden — it contains the
+     "+ Add Row" buttons for unmapped GLs (the only place that action lives).
+     Hiding it broke the FA's ability to add a summary row for an orphan GL.
+     The drawer's "No orphan GLs" warning routes to #tab=Summary which scrolls
+     here, so the duplication is intentional: drawer = "what's wrong",
+     workbook banner = "here's the row-creation action you came for."
+     FA directive 2026-05-14 Phase 4.1 (regression fix). */
   .summary-cards,
   #readinessInspector,
   #periodBanner,
   #auditStatusBanner,
-  #unifiedStatusBlock,
-  #sumWarningsBanner { display: none !important; }
+  #unifiedStatusBlock { display: none !important; }
 </style>
 </head>
 <body>
@@ -19649,6 +19661,141 @@ function populateHealthDrawerKpis(totalPrior, totalBudget, variance, pctChange, 
     '<div class="drawer-kpi ' + varClass + '"><div class="num">' + (totalForecast ? pctChange.toFixed(1) + '%' + arrow : '—') + '</div><div class="lbl">% Change</div></div>';
 }
 
+// Plain-English overrides for the readiness API's terse gate copy.
+// The FA can't act on "Approved-file labels" — they need to know it means
+// "row labels in last year's Excel that this system can't auto-match."
+// Keyed by gate.key. Each override is { label, detail(count) -> string }.
+// detail() takes the original detail string from the API so we can pull
+// counts/values back out without re-engineering the API.
+// FA directive 2026-05-14 Phase 4.2 — plain-English drawer copy.
+const DRAWER_GATE_COPY = {
+  source_files: {
+    label: 'Last year\'s budget file located',
+    detail: (orig) => orig || 'We found the 2026 approved budget Excel in SharePoint.'
+  },
+  audit_confirmed: {
+    label: 'FY2025 audit confirmed',
+    detail: (orig) => orig || 'Prior-year actuals are locked in for Column 1.'
+  },
+  period_set: {
+    label: 'Tell me the last completed month',
+    detail: (orig) => 'Pick the last month with actual numbers. Everything after that is forecast. Without this, the forecast defaults to "January through February" which is almost always wrong.'
+  },
+  building_type_set: {
+    label: 'Building type set',
+    detail: (orig) => orig || 'Co-op / Condo / Rental — drives which line items show up.'
+  },
+  no_orphans: {
+    label: 'Add summary rows for unmapped GLs',
+    detail: (orig) => {
+      // Original is like "1 GL with data not aggregated"
+      const m = (orig || '').match(/(\d+)\s+GL/);
+      const n = m ? m[1] : '?';
+      return n + ' GL code(s) have data in the ledger but no matching summary row, so they aren\'t aggregating anywhere. Open the Summary tab and click "+ Add Row" next to each one.';
+    }
+  },
+  no_duplicates: {
+    label: 'Resolve duplicate summary rows',
+    detail: (orig) => {
+      const m = (orig || '').match(/(\d+)\s+duplicate/);
+      const n = m ? m[1] : '?';
+      return n + ' pair(s) of summary rows share the same GL prefix. The data will get split or double-counted. Open the Summary tab to see which rows and decide which to keep.';
+    }
+  },
+  payroll_reviewed: {
+    label: 'Add payroll positions',
+    detail: (orig) => 'There are no payroll positions configured for this building, so the payroll forecast can\'t run. Open the Payroll tab and add at least one position.'
+  },
+  approved_file_labels: {
+    label: 'Map last year\'s row labels to summary rows',
+    detail: (orig) => {
+      // Original: "6 labels won't aggregate — multiple summary rows will be $0"
+      const m = (orig || '').match(/(\d+)\s+label/);
+      const n = m ? m[1] : '?';
+      return n + ' row label(s) in last year\'s approved budget Excel don\'t match this system\'s canonical summary rows. If you import the file without mapping them, those rows of data drop to $0. Click "Show labels" to see which ones.';
+    }
+  },
+  generated: {
+    label: 'Generate the proposed budget',
+    detail: (orig) => 'Once everything above is green, click Generate to build the proposed 2027 budget from your data and assumptions.'
+  }
+};
+
+// Cache for /api/wizard/<ec>/scan-findings so opening the
+// approved_file_labels expand a second time doesn't re-fetch.
+let _scanFindingsCache = null;
+
+// Expand-toggle handler for drawer items that show inline detail.
+// Used by approved_file_labels — clicking "Show labels" expands to
+// reveal the actual list of unmapped labels with suggestions.
+function toggleDrawerExpand(gateKey) {
+  const wrap = document.getElementById('acExpand-' + gateKey);
+  if (!wrap) return;
+  const isOpen = wrap.style.display === 'block';
+  if (isOpen) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'block';
+  if (gateKey === 'approved_file_labels') {
+    // Fetch + render the unmapped labels list inline.
+    const render = (data) => {
+      const labels = (data && data.unmapped_labels) || [];
+      const file = data && data.file_name;
+      if (!labels.length) {
+        wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">No unmapped labels — looks clean.</div>';
+        return;
+      }
+      let html = '<div style="padding:10px 14px 12px; background:#fafaf7; border-top:1px solid var(--gray-200);">';
+      if (file) {
+        html += '<div style="font-size:10px; color:var(--gray-500); margin-bottom:6px;">From file: <code style="font-size:10px; background:rgba(0,0,0,0.05); padding:1px 5px; border-radius:3px;">' + file.replace(/</g,'&lt;') + '</code></div>';
+      }
+      html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
+      html += '<thead><tr><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Label in approved file</th><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Suggested mapping</th></tr></thead><tbody>';
+      labels.forEach(u => {
+        const lbl = (u.label || '').replace(/</g,'&lt;');
+        const sug = u.suggested ? u.suggested.replace(/</g,'&lt;') : '<span style="color:var(--gray-400);">— no match —</span>';
+        html += '<tr>' +
+          '<td style="padding:5px 6px; border-bottom:1px solid var(--gray-100); font-family:monospace; font-size:11px;">' + lbl + '</td>' +
+          '<td style="padding:5px 6px; border-bottom:1px solid var(--gray-100); color:var(--gray-700); font-size:11px;">' + sug + '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+      html += '<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">';
+      html += '<a href="/admin/portfolio-health" target="_blank" class="ac-btn">Open canonical label map →</a>';
+      html += '<button onclick="rescanLabels(\'' + entityCode + '\')" class="ac-btn">Re-scan after fixing</button>';
+      html += '</div>';
+      html += '<div style="margin-top:8px; font-size:10px; color:var(--gray-500); line-height:1.5;">For each label above, either (a) add a canonical row that matches, or (b) rename the row in the Excel so it matches an existing canonical. Then re-scan to refresh this list.</div>';
+      html += '</div>';
+      wrap.innerHTML = html;
+    };
+    if (_scanFindingsCache) {
+      render(_scanFindingsCache);
+      return;
+    }
+    wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">Loading labels…</div>';
+    fetch('/api/wizard/' + entityCode + '/scan-findings').then(r => r.json()).then(d => {
+      _scanFindingsCache = d;
+      render(d);
+    }).catch(err => {
+      wrap.innerHTML = '<div style="padding:10px 14px; color:var(--red); font-size:11px;">Failed to load labels: ' + err.message + '</div>';
+    });
+  }
+}
+
+// Force-refresh the scan-findings (after the FA fixed labels in admin).
+function rescanLabels(ec) {
+  const wrap = document.getElementById('acExpand-approved_file_labels');
+  if (wrap) wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">Re-scanning…</div>';
+  _scanFindingsCache = null;
+  fetch('/api/wizard/' + ec + '/scan-findings?refresh=1', {method:'POST'}).then(() => {
+    // Re-render the entire readiness inspector (and the drawer with it).
+    renderReadinessInspector();
+    // Re-open the expand on the new content.
+    setTimeout(() => toggleDrawerExpand('approved_file_labels'), 300);
+  });
+}
+
 function populateHealthDrawerActions(gates, summary) {
   const s = summary || {};
   const fail = s.fail || 0;
@@ -19683,9 +19830,21 @@ function populateHealthDrawerActions(gates, summary) {
   function renderGate(g, severity) {
     const iconClass = severity === 'fail' ? 'bad' : severity === 'warn' ? 'warn' : 'ok';
     const icon = severity === 'fail' ? '✕' : severity === 'warn' ? '!' : '✓';
-    let btnHtml = '';
     const btnClass = severity === 'fail' ? 'ac-btn primary' : 'ac-btn';
-    if (g.action_url && g.action_label) {
+
+    // Plain-English copy override per gate key. Falls back to API copy when
+    // no override exists. FA directive 2026-05-14 Phase 4.2.
+    const ov = (g.key && DRAWER_GATE_COPY[g.key]) || null;
+    const displayLabel = ov ? ov.label : (g.label || '');
+    const displayDetail = ov ? ov.detail(g.detail || '') : (g.detail || '');
+
+    let btnHtml = '';
+    // Special case: approved_file_labels uses an inline expand pattern, not
+    // a navigation. The FA wanted to see the actual list of unmapped labels
+    // in the drawer, not be routed to another page.
+    if (g.key === 'approved_file_labels' && severity !== 'ok') {
+      btnHtml = '<a class="' + btnClass + '" onclick="toggleDrawerExpand(\'approved_file_labels\')">Show labels</a>';
+    } else if (g.action_url && g.action_label) {
       const isHash = String(g.action_url).startsWith('#');
       if (isHash) {
         const safeUrl = String(g.action_url).replace(/'/g, "\\'");
@@ -19700,13 +19859,21 @@ function populateHealthDrawerActions(gates, summary) {
       const safeKey = String(g.key).replace(/'/g, "\\'");
       btnHtml = '<a class="' + btnClass + '" onclick="drawerGateAction(\'' + safeKey + '\')">' + g.action_label + '</a>';
     }
+
+    // Inline-expand container — rendered empty, populated by toggleDrawerExpand.
+    // Used today by approved_file_labels; available to any future gate that
+    // wants in-drawer detail instead of a page navigation.
+    const expandHtml = (g.key === 'approved_file_labels' && severity !== 'ok')
+      ? '<div class="ac-expand" id="acExpand-' + g.key + '" style="display:none;"></div>'
+      : '';
+
     return '<div class="ac-item">' +
       '<span class="ac-icon ' + iconClass + '">' + icon + '</span>' +
       '<div class="ac-text">' +
-        '<div class="ac-label">' + (g.label || '') + '</div>' +
-        (g.detail ? '<div class="ac-detail">' + g.detail + '</div>' : '') +
+        '<div class="ac-label">' + displayLabel + '</div>' +
+        (displayDetail ? '<div class="ac-detail">' + displayDetail + '</div>' : '') +
       '</div>' + btnHtml +
-    '</div>';
+    '</div>' + expandHtml;
   }
 
   let html = '';
