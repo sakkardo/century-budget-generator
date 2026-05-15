@@ -5041,25 +5041,78 @@ def create_workflow_blueprint(db):
                 "action_label": None,
             })
         else:
+            # FA directive 2026-05-14 Phase 4.5: severity is now computed from
+            # the "truly missing" count, not raw unmapped count. Reason: the
+            # Excel import auto-creates a summary row for every label it sees.
+            # If an unmapped Excel label already has a matching row on the
+            # building's summary, that data WILL aggregate on next import —
+            # the gate shouldn't scream about it. The "needs new standard row
+            # in the master list" cleanup is a separate (admin-level) concern,
+            # not a per-building blocker.
             unmapped_n = int(label_row[2] or 0)
-            if unmapped_n == 0:
+            truly_missing_n = unmapped_n
+            unmapped_already_on_summary = 0
+            if unmapped_n > 0:
+                try:
+                    import json as _json
+                    # Pull the unmapped labels from the scan's stored JSON.
+                    ul_row = db.session.execute(db.text(
+                        "SELECT unmapped_labels_json FROM building_scan_findings "
+                        "WHERE entity_code = :ec ORDER BY scanned_at DESC LIMIT 1"
+                    ), {"ec": entity_code}).fetchone()
+                    ul_blob = _json.loads((ul_row[0] if ul_row else None) or '{"unmapped":[]}')
+                    unmapped_label_set = {
+                        str((u.get("label") if isinstance(u, dict) else u) or "").strip().lower()
+                        for u in (ul_blob.get("unmapped") or [])
+                    }
+                    # Pull every label currently on this building's summary
+                    # (any row_type — the FA sees the row regardless).
+                    rows_now = BudgetSummaryRow.query.filter_by(
+                        entity_code=entity_code, budget_year=BUDGET_YEAR
+                    ).all()
+                    current_label_set = {
+                        (r.label or "").strip().lower() for r in rows_now if r.label
+                    }
+                    unmapped_already_on_summary = sum(
+                        1 for l in unmapped_label_set if l in current_label_set
+                    )
+                    truly_missing_n = max(0, unmapped_n - unmapped_already_on_summary)
+                except Exception as _e_truly:
+                    logger.warning(
+                        f"approved_file_labels: truly-missing calc failed for {entity_code}: {_e_truly}"
+                    )
+
+            if truly_missing_n == 0:
+                # Two sub-cases:
+                #   - unmapped_n == 0: clean import, nothing to fix
+                #   - unmapped_n > 0 but all already on summary: data will land,
+                #     the only "fix" is adding labels to the master list which
+                #     is an admin concern, not an FA blocker.
+                if unmapped_n == 0:
+                    detail_text = "All labels match standard summary rows — import will be clean"
+                else:
+                    detail_text = (
+                        f"{unmapped_n} label(s) in the approved file aren't in the master list, "
+                        f"but every one already has a matching row on this building's summary. "
+                        f"Data will aggregate cleanly on import."
+                    )
                 gates.append({
                     "key": "approved_file_labels",
                     "label": "Approved-file labels",
                     "status": "ok",
-                    "detail": "All labels match standard summary rows — import will be clean",
-                    "action_url": None,
-                    "action_label": None,
+                    "detail": detail_text,
+                    "action_url": f"/action/{entity_code}#expand-labels" if unmapped_n > 0 else None,
+                    "action_label": "View" if unmapped_n > 0 else None,
                 })
-            elif unmapped_n <= 2:
+            elif truly_missing_n <= 2:
                 gates.append({
                     "key": "approved_file_labels",
                     "label": "Approved-file labels",
                     "status": "warn",
-                    "detail": f"{unmapped_n} label{'s' if unmapped_n != 1 else ''} won't aggregate — review before import",
-                    # FA directive 2026-05-14: was /api/.../scan-findings (JSON page —
-                    # broken click-through). The Action Center handles this with
-                    # inline expand via the `#expand-labels` anchor pattern.
+                    "detail": (
+                        f"{truly_missing_n} label(s) in the approved file have no matching summary row yet — "
+                        f"add a row or rename in the Excel before import"
+                    ),
                     "action_url": f"/action/{entity_code}#expand-labels",
                     "action_label": "Review",
                 })
@@ -5068,7 +5121,10 @@ def create_workflow_blueprint(db):
                     "key": "approved_file_labels",
                     "label": "Approved-file labels",
                     "status": "fail",
-                    "detail": f"{unmapped_n} labels won't aggregate — multiple summary rows will be $0",
+                    "detail": (
+                        f"{truly_missing_n} labels have no matching summary row — multiple "
+                        f"summary rows would be $0 on import"
+                    ),
                     "action_url": f"/action/{entity_code}#expand-labels",
                     "action_label": "Review",
                 })
@@ -8877,6 +8933,13 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .ac-expand { margin: 6px 0 0; border-radius: 6px; overflow: hidden; }
   .ac-expand table th, .ac-expand table td { font-family: inherit; }
   .ac-expand .ac-btn { font-size: 11px; padding: 5px 12px; }
+
+  /* Per-row × Delete button on Summary data rows. CSS-only hover reveal
+     (was JS onmouseenter handlers — those misfire when the cursor enters
+     between cells). FA directive 2026-05-14 Phase 4.5. */
+  tr[data-type="d"] .row-del-btn { opacity: 0; transition: opacity 0.15s; }
+  tr[data-type="d"]:hover .row-del-btn { opacity: 1; }
+  tr[data-type="d"] .row-del-btn:hover { color: var(--red); }
 
   /* Hide every workbook element whose content is FULLY duplicated in the drawer.
      The populator JS for each one keeps running, but visually the workbook is
@@ -15667,13 +15730,13 @@ async function renderBudgetSummary(contentDiv) {
         '</td></tr>';
     } else if (r.row_type === 'data') {
       const fn = r.footnote_marker ? '<span style="color:var(--gray-500);font-size:11px;font-weight:600;vertical-align:super;margin-left:2px;">'+r.footnote_marker+'</span>' : '';
-      // Per-row × Delete button (FA directive 2026-05-14 Phase 4.3). Visible
-      // on hover only to keep the label cell quiet. Click → confirm dialog →
-      // /api/admin/delete-summary-row. The endpoint refuses to delete
-      // subtotal/section_header rows and imported rows (col6 set) — those
-      // failures bubble up as toasts.
-      const delBtn = '<button onclick="sumDeleteRow(this,\''+r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')" class="row-del-btn" title="Delete this row" style="opacity:0;margin-left:6px;background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;vertical-align:middle;transition:opacity 0.15s;">&times;</button>';
-      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'" onmouseenter="this.querySelector(\'.row-del-btn\').style.opacity=\'1\'" onmouseleave="this.querySelector(\'.row-del-btn\').style.opacity=\'0\'">' +
+      // Per-row × Delete button (FA directive 2026-05-14 Phase 4.3, hover
+      // CSS-ified in Phase 4.5). Click → confirm dialog → /api/admin/delete-
+      // summary-row. The endpoint refuses to delete subtotal/section_header
+      // rows and imported rows (col6 set) — those failures bubble up as
+      // toasts. Hover-reveal is handled by CSS rules in the style block.
+      const delBtn = '<button onclick="sumDeleteRow(this,\''+r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')" class="row-del-btn" title="Delete this row" style="margin-left:6px;background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;vertical-align:middle;">&times;</button>';
+      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'">' +
         '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
@@ -19735,67 +19798,71 @@ function populateHealthDrawerKpis(totalPrior, totalBudget, variance, pctChange, 
 }
 
 // Plain-English overrides for the readiness API's terse gate copy.
-// The FA can't act on "Approved-file labels" — they need to know it means
-// "row labels in last year's Excel that this system can't auto-match."
-// Keyed by gate.key. Each override is { label, detail(count) -> string }.
-// detail() takes the original detail string from the API so we can pull
-// counts/values back out without re-engineering the API.
-// FA directive 2026-05-14 Phase 4.2 — plain-English drawer copy.
+// Status-aware: shows action-style labels for fail/warn, past-tense for ok.
+// FA directive 2026-05-14 Phase 4.2 (overrides) + Phase 4.5 (status-aware).
+// Each override has:
+//   { labelFor: (status) -> string, detail: (origDetail, status) -> string }
 const DRAWER_GATE_COPY = {
   source_files: {
-    label: 'Last year\'s budget file located',
+    labelFor: () => 'Last year\'s budget file located',
     detail: (orig) => orig || 'We found the 2026 approved budget Excel in SharePoint.'
   },
   audit_confirmed: {
-    label: 'FY2025 audit confirmed',
+    labelFor: (s) => s === 'fail' ? 'Upload FY2025 audit' : 'FY2025 audit confirmed',
     detail: (orig) => orig || 'Prior-year actuals are locked in for Column 1.'
   },
   period_set: {
-    label: 'Tell me the last completed month',
-    detail: (orig) => 'Pick the last month with actual numbers. Everything after that is forecast. Without this, the forecast defaults to "January through February" which is almost always wrong.'
+    labelFor: (s) => s === 'fail' ? 'Tell me the last completed month' : 'Period set',
+    detail: (orig, s) => s === 'fail'
+      ? 'Pick the last month with actual numbers. Everything after that is forecast. Without this, the forecast defaults to "January through February" which is almost always wrong.'
+      : (orig || 'The last completed month is set; YTD vs. forecast split is correct.')
   },
   building_type_set: {
-    label: 'Building type set',
+    labelFor: () => 'Building type set',
     detail: (orig) => orig || 'Co-op / Condo / Rental — drives which line items show up.'
   },
   no_orphans: {
-    label: 'Add summary rows for unmapped GLs',
-    detail: (orig) => {
-      // Original is like "1 GL with data not aggregated"
+    labelFor: (s) => s === 'ok' ? 'No unmapped GLs' : 'Add summary rows for unmapped GLs',
+    detail: (orig, s) => {
+      if (s === 'ok') return orig || 'Every GL with data aggregates into a summary row.';
       const m = (orig || '').match(/(\d+)\s+GL/);
       const n = m ? m[1] : '?';
       return n + ' GL code(s) have data in the ledger but no matching summary row, so they aren\'t aggregating anywhere. Open the Summary tab and click "+ Add Row" next to each one.';
     }
   },
   no_duplicates: {
-    label: 'Resolve duplicate summary rows',
-    detail: (orig) => {
+    labelFor: (s) => s === 'ok' ? 'No duplicate summary rows' : 'Resolve duplicate summary rows',
+    detail: (orig, s) => {
+      if (s === 'ok') return orig || 'No two summary rows share the same GL prefix.';
       const m = (orig || '').match(/(\d+)\s+duplicate/);
       const n = m ? m[1] : '?';
       return n + ' pair(s) of summary rows share the same GL prefix. The data will get split or double-counted. Open the Summary tab to see which rows and decide which to keep.';
     }
   },
   payroll_reviewed: {
-    label: 'Add payroll positions',
-    detail: (orig) => 'There are no payroll positions configured for this building, so the payroll forecast can\'t run. Open the Payroll tab and add at least one position.'
+    labelFor: (s) => s === 'ok' ? 'Payroll positions configured' : 'Add payroll positions',
+    detail: (orig, s) => s === 'ok'
+      ? (orig || 'Payroll has at least one position so the forecast can run.')
+      : 'There are no payroll positions configured for this building, so the payroll forecast can\'t run. Open the Payroll tab and add at least one position.'
   },
   approved_file_labels: {
-    label: 'Match last year\'s row labels to summary rows',
-    detail: (orig) => {
-      // Original: "6 labels won't aggregate — multiple summary rows will be $0"
-      // OK-case original: "All labels map to canonical rows — import will be clean"
-      const m = (orig || '').match(/(\d+)\s+label/);
-      if (!m) {
-        // OK case (or anything without a number) — pass through clean text.
-        return 'All row labels in last year\'s approved budget Excel match a standard summary row. Import will be clean.';
+    labelFor: (s) => s === 'ok' ? 'Approved-file labels look good' : 'Match last year\'s row labels to summary rows',
+    detail: (orig, s) => {
+      // OK case: pass through the (now-improved) server detail text — it
+      // already explains both the all-clean and all-already-handled cases.
+      if (s === 'ok') {
+        return orig || 'All row labels in last year\'s approved budget Excel have a matching row.';
       }
-      const n = m[1];
-      return n + ' row label(s) in last year\'s approved budget Excel don\'t match any of this system\'s standard summary rows. If you import the file without matching them, those rows of data drop to $0. Click "Show labels" to see which ones, then either rename them in the Excel or add a new standard row to match.';
+      const m = (orig || '').match(/(\d+)\s+label/);
+      const n = m ? m[1] : '?';
+      return n + ' row label(s) in last year\'s approved budget Excel don\'t have a matching summary row yet. Click "Show labels" to see which ones, then either rename them in the Excel or add a new row to match.';
     }
   },
   generated: {
-    label: 'Generate the proposed budget',
-    detail: (orig) => 'Once everything above is green, click Generate to build the proposed 2027 budget from your data and assumptions.'
+    labelFor: (s) => s === 'ok' ? 'Budget generated' : 'Generate the proposed budget',
+    detail: (orig, s) => s === 'ok'
+      ? (orig || 'The proposed 2027 budget has been generated.')
+      : 'Once everything above is green, click Generate to build the proposed 2027 budget from your data and assumptions.'
   }
 };
 
@@ -19964,11 +20031,14 @@ function populateHealthDrawerActions(gates, summary) {
     const icon = severity === 'fail' ? '✕' : severity === 'warn' ? '!' : '✓';
     const btnClass = severity === 'fail' ? 'ac-btn primary' : 'ac-btn';
 
-    // Plain-English copy override per gate key. Falls back to API copy when
-    // no override exists. FA directive 2026-05-14 Phase 4.2.
+    // Plain-English copy override per gate key. Status-aware so the OK group
+    // doesn't show imperative labels like "Tell me the last completed month"
+    // on a gate that's already complete. Falls back to API copy when no
+    // override exists. FA directive 2026-05-14 Phase 4.2 + 4.5.
     const ov = (g.key && DRAWER_GATE_COPY[g.key]) || null;
-    const displayLabel = ov ? ov.label : (g.label || '');
-    const displayDetail = ov ? ov.detail(g.detail || '') : (g.detail || '');
+    const gStatus = (g.status || '').toLowerCase();
+    const displayLabel = ov ? ov.labelFor(gStatus) : (g.label || '');
+    const displayDetail = ov ? ov.detail(g.detail || '', gStatus) : (g.detail || '');
 
     let btnHtml = '';
     // Special case: approved_file_labels uses an inline expand pattern, not
