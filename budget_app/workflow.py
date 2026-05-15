@@ -7529,38 +7529,142 @@ def create_workflow_blueprint(db):
                         return r
         return None
 
-    def _commercial_recompute_summary(entity_code):
-        """Sum every BUDGET_YEAR rent period for this building and write the
-        total into the Commercial Rent summary row's col7_proposed_budget.
-        No-op (returns None) if no Commercial Rent row exists on the Summary.
-        Idempotent — safe to call after every CRUD.
+    def _commercial_compute_escalations(entity_code):
+        """Compute every commercial tenant's BUDGET_YEAR escalation amount.
+        Returns: [{tenant_id, tenant_name, model, amount, breakdown}].
+        breakdown includes the inputs so the UI can show the math.
         """
-        row = _commercial_find_summary_row(entity_code)
-        if not row:
-            return None
-        total = (db.session.query(
-            db.func.coalesce(
-                db.func.sum(CommercialRentPeriod.monthly_rent
-                            * CommercialRentPeriod.months_count),
-                0,
-            )
+        tenants = CommercialTenant.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        if not tenants:
+            return []
+
+        # Pull "Real Estate Taxes" row col7 once (used by re_tax model)
+        re_tax_row = _commercial_find_summary_row(
+            entity_code,
+            label_candidates=["Real Estate Taxes", "Real Estate Tax"],
+            gl_prefix_candidates=["6310", "6311", "6315", "6320"],
         )
-        .join(CommercialTenant,
-              CommercialTenant.id == CommercialRentPeriod.tenant_id)
-        .filter(
-            CommercialTenant.entity_code == entity_code,
-            CommercialTenant.budget_year == BUDGET_YEAR,
-            CommercialRentPeriod.year == BUDGET_YEAR,
-        ).scalar()) or 0
-        old = row.col7_proposed_budget
-        row.col7_proposed_budget = float(total) if total else None
-        row.updated_at = datetime.utcnow()
+        re_tax_current = (re_tax_row.col7_proposed_budget
+                          or re_tax_row.col6_approved_budget
+                          or 0) if re_tax_row else 0
+
+        # Sum all expense-section rows col7 (used by opex model)
+        expense_rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        total_expense = 0
+        for r in expense_rows:
+            if (r.section or "").lower() in ("expenses",) and r.row_type == "data":
+                total_expense += (r.col7_proposed_budget
+                                  or r.col6_approved_budget or 0)
+
+        results = []
+        for t in tenants:
+            model = t.escalation_model or "none"
+            share = t.tenant_share_pct or 0
+            amount = 0.0
+            breakdown = {"model": model, "share_pct": share}
+            if model == "re_tax" and share and t.base_year_re_tax:
+                escalatable = max(0, re_tax_current - t.base_year_re_tax)
+                amount = escalatable * share
+                breakdown.update({
+                    "current_re_tax": re_tax_current,
+                    "base_year": t.base_year_re_tax,
+                    "escalatable": escalatable,
+                })
+            elif model == "opex" and share and t.base_year_opex:
+                escalatable = max(0, total_expense - t.base_year_opex)
+                amount = escalatable * share
+                breakdown.update({
+                    "current_opex": total_expense,
+                    "base_year": t.base_year_opex,
+                    "escalatable": escalatable,
+                })
+            # utility_billback handled in Phase 3b.3 (per-category)
+            results.append({
+                "tenant_id": t.id,
+                "tenant_name": t.tenant_name,
+                "model": model,
+                "amount": round(amount, 2),
+                "breakdown": breakdown,
+            })
+        return results
+
+
+    def _commercial_recompute_summary(entity_code):
+        """Recompute the Commercial Rent (4040) AND Commercial Escalations
+        (4520) summary rows from current commercial tenant data.
+
+        Sums:
+          - 4040 col7 = total of BUDGET_YEAR rent periods across all tenants
+          - 4520 col7 = total of per-tenant escalation amounts (re_tax + opex)
+
+        No-op (returns sync stub) if the row isn't on Summary. Idempotent.
+        """
+        # ── Row 4040: Commercial Rent ─────────────────────────────────
+        rent_row = _commercial_find_summary_row(entity_code)
+        rent_sync = None
+        if rent_row:
+            total_rent = (db.session.query(
+                db.func.coalesce(
+                    db.func.sum(CommercialRentPeriod.monthly_rent
+                                * CommercialRentPeriod.months_count),
+                    0,
+                )
+            )
+            .join(CommercialTenant,
+                  CommercialTenant.id == CommercialRentPeriod.tenant_id)
+            .filter(
+                CommercialTenant.entity_code == entity_code,
+                CommercialTenant.budget_year == BUDGET_YEAR,
+                CommercialRentPeriod.year == BUDGET_YEAR,
+            ).scalar()) or 0
+            old_rent = rent_row.col7_proposed_budget
+            rent_row.col7_proposed_budget = float(total_rent) if total_rent else None
+            rent_row.updated_at = datetime.utcnow()
+            rent_sync = {
+                "row_id": rent_row.id, "label": rent_row.label,
+                "old_col7": old_rent, "new_col7": rent_row.col7_proposed_budget,
+                "total_periods_summed": total_rent,
+            }
+
+        # ── Row 4520: Commercial Escalations ─────────────────────────
+        # Match on label OR GL prefix. Different buildings use different
+        # labels ("Commercial Rent Escalations", "Commercial RE Tax
+        # Escalation", "Commercial RE Tax", etc.) — the GL prefix 4520
+        # is the consistent identifier.
+        esc_row = _commercial_find_summary_row(
+            entity_code,
+            label_candidates=[
+                "Commercial Rent Escalations",
+                "Commercial RE Tax Escalation",
+                "Commercial R/E Tax Escalation",
+                "Commercial R/E Tax Escalation  (A)",
+                "Comercial RE Tax",
+                "Commercial Operating Tax Escalation",
+                "Commercial Tenant Escalation",
+                "Commercial Escalations",
+            ],
+            gl_prefix_candidates=["4520"],
+        )
+        esc_sync = None
+        if esc_row:
+            escalations = _commercial_compute_escalations(entity_code)
+            esc_total = sum(e["amount"] for e in escalations)
+            old_esc = esc_row.col7_proposed_budget
+            esc_row.col7_proposed_budget = float(esc_total) if esc_total else None
+            esc_row.updated_at = datetime.utcnow()
+            esc_sync = {
+                "row_id": esc_row.id, "label": esc_row.label,
+                "old_col7": old_esc, "new_col7": esc_row.col7_proposed_budget,
+                "total_escalations": esc_total,
+                "per_tenant": escalations,
+            }
+
         db.session.commit()
-        return {
-            "row_id": row.id, "label": row.label,
-            "old_col7": old, "new_col7": row.col7_proposed_budget,
-            "total_periods_summed": total,
-        }
+        return {"rent": rent_sync, "escalations": esc_sync}
 
 
     # ─── Tenant CRUD (Phase 2a) ──────────────────────────────────────
@@ -7619,7 +7723,11 @@ def create_workflow_blueprint(db):
                 setattr(t, k, v)
         t.updated_at = datetime.utcnow()
         db.session.commit()
-        return jsonify(t.to_dict())
+        # Recompute Summary in case escalation config or share % changed.
+        sync = _commercial_recompute_summary(entity_code)
+        result = t.to_dict()
+        result["summary_sync"] = sync
+        return jsonify(result)
 
     @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>", methods=["DELETE"])
     def api_commercial_tenant_delete(entity_code, tenant_id):
@@ -12350,27 +12458,29 @@ async function renderCommercialTab(contentDiv) {
     '</div>' +
     '</div>';
 
-  // Summary sync indicator — shows whether the BUDGET_Y total has been pushed
-  // to the Summary tab's Commercial Rent row (col7_proposed_budget).
-  const sync = data.summary_sync;
-  if (sync && sync.row_id) {
-    const newCol7 = sync.new_col7 || 0;
-    const synced = Math.abs((newCol7 || 0) - (totalBudget || 0)) < 1.0;
-    const color = synced ? 'var(--green)' : '#d97706';
-    const icon = synced ? '✓' : '⚠';
-    html += '<div style="background:' + (synced ? '#f0fdf4' : '#fffbeb') +
-      '; border:1px solid ' + (synced ? '#bbf7d0' : '#fde68a') +
-      '; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
-      '<span style="color:' + color + '; font-weight:700; font-size:14px;">' + icon + '</span>' +
-      '<span><strong>Summary tab synced:</strong> ' + BUDGET_Y + ' Commercial Rent (row "' +
-        (sync.label || '').replace(/</g,'&lt;') + '") col7 = <strong>$' + Math.round(newCol7).toLocaleString() +
-        '</strong>. Open the Summary tab to confirm. Any edit here auto-updates that cell.</span>' +
+  // Summary sync indicator — two Summary rows are auto-fed:
+  //   row 4040 Commercial Rent (from rent periods)
+  //   row 4520 Commercial Escalations (from per-tenant escalation calc)
+  const sync = data.summary_sync || {};
+  const rentSync = sync.rent;
+  const escSync = sync.escalations;
+  if (rentSync && rentSync.row_id) {
+    const newCol7 = rentSync.new_col7 || 0;
+    html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px 12px; margin-bottom:8px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
+      '<span style="color:var(--green); font-weight:700; font-size:14px;">✓</span>' +
+      '<span><strong>Summary row "' + (rentSync.label || '').replace(/</g,'&lt;') + '" (GL 4040)</strong> ' + BUDGET_Y + ' col7 = <strong>$' + Math.round(newCol7).toLocaleString() + '</strong> &mdash; auto-synced from rent periods.</span>' +
       '</div>';
-  } else if (sync && sync.error) {
-    html += '<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:var(--red);">⚠ Summary sync error: ' + sync.error + '</div>';
   } else if (totalBudget > 0) {
-    // No matching Summary row found at all.
-    html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:#92400e;">⚠ No "Commercial Rent" row found on Summary tab. The ' + BUDGET_Y + ' projected total won\'t flow into the workbook until one is added (Summary tab → Add Row).</div>';
+    html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#92400e;">⚠ No "Commercial Rent" (4040) row on Summary tab. ' + BUDGET_Y + ' rent total won\'t flow until one is added.</div>';
+  }
+  if (escSync && escSync.row_id) {
+    const newCol7 = escSync.new_col7 || 0;
+    html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
+      '<span style="color:var(--green); font-weight:700; font-size:14px;">✓</span>' +
+      '<span><strong>Summary row "' + (escSync.label || '').replace(/</g,'&lt;') + '" (GL 4520)</strong> ' + BUDGET_Y + ' col7 = <strong>$' + Math.round(newCol7).toLocaleString() + '</strong> &mdash; auto-synced from per-tenant escalation math.</span>' +
+      '</div>';
+  } else if ((escSync === null || escSync === undefined) && tenants.some(t => t.escalation_model && t.escalation_model !== 'none')) {
+    html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:#92400e;">⚠ No Commercial Escalations (4520) row on Summary tab. Escalation totals won\'t flow until one is added.</div>';
   }
 
   // Projection toolbar — show prominently if any tenant lacks a BUDGET_Y projection.
@@ -12484,6 +12594,81 @@ async function renderCommercialTab(contentDiv) {
       html += '</tbody></table>';
     }
 
+    // Escalation panel — collapsed by default. Click to edit.
+    const escConfigured = t.escalation_model && t.escalation_model !== 'none' && t.tenant_share_pct;
+    const escAmount = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant
+      ? (data.summary_sync.escalations.per_tenant.find(e => e.tenant_id === t.id) || {}).amount || 0
+      : 0);
+    html += '<details style="margin:6px 0; border:1px solid var(--gray-200); border-radius:6px; background:#fafaf7;">';
+    html += '<summary style="padding:6px 10px; cursor:pointer; font-size:11px; color:var(--gray-700); user-select:none; display:flex; align-items:center; gap:8px;">' +
+      '<span>📈 Escalation config</span>' +
+      (escConfigured
+        ? '<span style="background:var(--green-light); color:var(--green); padding:1px 6px; border-radius:3px; font-weight:600;">' + escLabels[t.escalation_model] + '</span>' +
+          '<span style="margin-left:auto; color:var(--green); font-weight:700;">' + BUDGET_Y + ' escalation: $' + Math.round(escAmount).toLocaleString() + '</span>'
+        : '<span style="color:var(--gray-400); font-style:italic;">Not configured</span>') +
+      '</summary>';
+    html += '<div style="padding:10px 12px;">';
+    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:11px;">';
+
+    // Escalation model select
+    html += '<div><label style="display:block; color:var(--gray-500); margin-bottom:2px; font-weight:600;">Model</label>';
+    html += '<select onchange="commercialUpdateTenantField(' + t.id + ',\'escalation_model\',this.value)" style="width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:11px;">';
+    ['none', 're_tax', 'opex', 'utility_billback'].forEach(m => {
+      const sel = (t.escalation_model === m) ? ' selected' : '';
+      const lbl = {none: 'None', re_tax: 'RE Tax escalation', opex: 'Operating expense escalation', utility_billback: 'Utility / insurance billback (deferred)'}[m];
+      html += '<option value="' + m + '"' + sel + '>' + lbl + '</option>';
+    });
+    html += '</select></div>';
+
+    // Tenant share %
+    const sharePct = t.tenant_share_pct ? (t.tenant_share_pct * 100).toFixed(3) : '';
+    html += '<div><label style="display:block; color:var(--gray-500); margin-bottom:2px; font-weight:600;">Tenant share (%)</label>';
+    html += '<input type="number" step="0.001" value="' + sharePct + '" placeholder="e.g. 1.040" ' +
+      'onblur="commercialUpdateTenantField(' + t.id + ',\'tenant_share_pct\',this.value === \'\' ? null : parseFloat(this.value)/100)" ' +
+      'style="width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:11px; text-align:right; font-variant-numeric:tabular-nums;"></div>';
+
+    // Conditional base-year inputs
+    if (t.escalation_model === 're_tax') {
+      const baseRe = t.base_year_re_tax || '';
+      html += '<div style="grid-column: 1 / -1;"><label style="display:block; color:var(--gray-500); margin-bottom:2px; font-weight:600;">Base year Real Estate Tax ($)</label>';
+      html += '<input type="number" step="1" value="' + baseRe + '" placeholder="e.g. 1844323" ' +
+        'onblur="commercialUpdateTenantField(' + t.id + ',\'base_year_re_tax\',this.value === \'\' ? null : parseFloat(this.value))" ' +
+        'style="width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:11px; text-align:right; font-variant-numeric:tabular-nums;">';
+      html += '<div style="font-size:10px; color:var(--gray-500); margin-top:2px;">From lease: the RE Tax amount in the year the lease was signed. Tenant pays a share of any increase since then.</div>';
+      html += '</div>';
+    } else if (t.escalation_model === 'opex') {
+      const baseOp = t.base_year_opex || '';
+      html += '<div style="grid-column: 1 / -1;"><label style="display:block; color:var(--gray-500); margin-bottom:2px; font-weight:600;">Base year operating expenses ($)</label>';
+      html += '<input type="number" step="1" value="' + baseOp + '" placeholder="e.g. 852891" ' +
+        'onblur="commercialUpdateTenantField(' + t.id + ',\'base_year_opex\',this.value === \'\' ? null : parseFloat(this.value))" ' +
+        'style="width:100%; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:11px; text-align:right; font-variant-numeric:tabular-nums;">';
+      html += '<div style="font-size:10px; color:var(--gray-500); margin-top:2px;">From lease: total operating expenses in the year the lease was signed. Tenant pays a share of any increase.</div>';
+      html += '</div>';
+    } else if (t.escalation_model === 'utility_billback') {
+      html += '<div style="grid-column: 1 / -1; padding:8px; background:#fffbeb; border:1px solid #fde68a; border-radius:4px; font-size:10px; color:#92400e;">⏳ Utility / insurance billback (per-category base years) is deferred to Phase 3b.3. Existing Excel data is preserved; no auto-feed yet.</div>';
+    }
+
+    // Live math preview
+    if (escConfigured) {
+      const b = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant
+        ? (data.summary_sync.escalations.per_tenant.find(e => e.tenant_id === t.id) || {}).breakdown || {}
+        : {});
+      if (t.escalation_model === 're_tax' && b.current_re_tax) {
+        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.6;">';
+        html += '(current RE Tax $' + Math.round(b.current_re_tax).toLocaleString() + ' − base $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
+        html += '<br>= $' + Math.round(b.escalatable).toLocaleString() + ' × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
+        html += '<br>= <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong>';
+        html += '</div>';
+      } else if (t.escalation_model === 'opex' && b.current_opex) {
+        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.6;">';
+        html += '(current OpEx $' + Math.round(b.current_opex).toLocaleString() + ' − base $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
+        html += '<br>= <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong>';
+        html += '</div>';
+      }
+    }
+
+    html += '</div></div></details>';
+
     // Per-tenant actions: add period, project budget year, delete tenant.
     html += '<div style="display:flex; gap:6px; margin:6px 0 8px; flex-wrap:wrap;">';
     html += '<button onclick="commercialAddPeriodPrompt(' + t.id + ',' + BUDGET_Y + ')" style="font-size:11px; padding:4px 10px; background:white; color:var(--brown); border:1px dashed var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600;">+ Add ' + BUDGET_Y + ' period</button>';
@@ -12513,6 +12698,31 @@ async function renderCommercialTab(contentDiv) {
     '</div>';
 
   contentDiv.innerHTML = html;
+}
+
+// Update a single field on a tenant (escalation model, share %, base years,
+// lease dates, notes, etc.). Calls PUT /api/commercial/<ec>/tenant/<id>.
+// Phase 3b: triggers a Summary recompute server-side via the GET reload.
+async function commercialUpdateTenantField(tenantId, field, value) {
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant/' + tenantId, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[field]: value}),
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      alert('Save failed: ' + (e.error || resp.status));
+      return;
+    }
+    // Debounced full re-render so escalation math + sync banner update.
+    if (window._commRerenderTimer) clearTimeout(window._commRerenderTimer);
+    window._commRerenderTimer = setTimeout(() => {
+      renderCommercialTab(document.getElementById('sheetContent'));
+    }, 600);
+  } catch (e) {
+    alert('Save error: ' + (e.message || e));
+  }
 }
 
 // ── Commercial CRUD handlers (Phase 2) ──
