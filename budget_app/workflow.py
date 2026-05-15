@@ -7186,6 +7186,16 @@ def create_workflow_blueprint(db):
         current_year = None
         section = "rent"  # rent | re_tax | utility_billback | opex | summary
         pending_unit_label = None  # buffered unit code waiting for a tenant
+        # Periods seen before any year was detected for the current tenant.
+        # When the first year is discovered, these are assigned to that year.
+        # Fixes building 212 where rent row precedes year-total row.
+        pending_yearless_periods = []
+
+        def assign_pending(tenant, year):
+            for p in pending_yearless_periods:
+                p["year"] = year
+                tenant["rent_periods"].append(p)
+            pending_yearless_periods.clear()
 
         for idx, rd in enumerate(rows):
             b_str, c_str = rd["b_str"], rd["c_str"]
@@ -7213,7 +7223,12 @@ def create_workflow_blueprint(db):
             ymatch = YEAR_RE.search(c_str)
             if ymatch:
                 try:
-                    current_year = int(ymatch.group(1))
+                    new_year = int(ymatch.group(1))
+                    # If we have pending yearless periods buffered, assign them
+                    # to this year now. Fixes 212 (rent row precedes year row).
+                    if current is not None and pending_yearless_periods:
+                        assign_pending(current, new_year)
+                    current_year = new_year
                 except Exception:
                     pass
 
@@ -7250,24 +7265,48 @@ def create_workflow_blueprint(db):
                     current = new_tenant
                     pending_unit_label = None
 
-            # Rent period row: requires current tenant, current year,
-            # a non-year period label in C, and numeric monthly rent in D.
-            # Skip if the c_str IS a pure year (e.g., "2025") — those are
-            # year headers not periods. But "2025 Total" / "2026 Budget" are
-            # also skipped because they have a year in them (and the year
-            # detection above already handled them).
-            looks_like_year_header = bool(ymatch)
-            if (current is not None and current_year is not None
-                and c_str and not looks_like_year_header
-                and isinstance(cd, (int, float)) and cd):
-                months = infer_months(c_str)
-                if months > 0:
+            # Rent period detection — three sub-cases:
+            #
+            # (a) Year-only header row (e.g., c="2025"). Skip — period rows
+            #     come on subsequent rows.
+            # (b) Year + label + rent value on same row (e.g., c="2026 Budget"
+            #     d=$16,666). Create a 12-month period for that year.
+            # (c) Normal period row (e.g., c="Jan-Feb" d=$7,593). Period
+            #     label is c_str; months_count from label parsing.
+            looks_like_pure_year = bool(ymatch and YEAR_RE.fullmatch(c_str))
+            has_rent_value = isinstance(cd, (int, float)) and cd and cd > 0
+
+            if current is not None and has_rent_value and c_str and not looks_like_pure_year:
+                if ymatch:
+                    # Case (b): year+label+rent in same row → 12-month period.
+                    # Use the year from the match (which may not be current_year
+                    # if multiple years appear — prefer the one in this row's c_str).
+                    try:
+                        row_year = int(ymatch.group(1))
+                    except Exception:
+                        row_year = current_year
+                    label_clean = YEAR_RE.sub("", c_str).strip(" -:") or "Annual"
                     current["rent_periods"].append({
-                        "year": current_year,
-                        "period_label": c_str,
+                        "year": row_year,
+                        "period_label": label_clean[:50],
                         "monthly_rent": float(cd),
-                        "months_count": months,
+                        "months_count": 12,
                     })
+                else:
+                    # Case (c): normal period row.
+                    months = infer_months(c_str)
+                    if months > 0:
+                        period = {
+                            "year": current_year if current_year is not None else 0,
+                            "period_label": c_str,
+                            "monthly_rent": float(cd),
+                            "months_count": months,
+                        }
+                        if current_year is None:
+                            # Buffer — assign when first year seen.
+                            pending_yearless_periods.append(period)
+                        else:
+                            current["rent_periods"].append(period)
 
             # Capture lease notes from columns I / K (commentary)
             if current is not None:
@@ -7296,11 +7335,29 @@ def create_workflow_blueprint(db):
         else:
             esc_model = "none"
 
-        # Flatten notes into a single text field
+        # Trim periods to a sensible year window. The Excel may include deep
+        # history (829 has 2020-2026). For budget work, only the prior +
+        # current + near-future commitments matter. Also helps mask the
+        # cross-tenant-block pollution that affects buildings like 829
+        # where tenant names appear mid-block (years before the name belong
+        # to a previous tenant that's already finished its block).
+        year_lo = BUDGET_YEAR - 2  # 2025 if BUDGET_YEAR=2027
+        year_hi = BUDGET_YEAR + 3
+        for t in tenants:
+            t["rent_periods"] = [
+                p for p in t.get("rent_periods", [])
+                if year_lo <= p.get("year", 0) <= year_hi
+            ]
+
+        # Flatten notes into a single text field, fill escalation model.
         for t in tenants:
             t["escalation_model"] = esc_model
             t["lease_notes"] = "\n".join(t.get("notes_lines", []))[:2000] or None
             t.pop("notes_lines", None)
+
+        # Drop tenants with no usable rent periods AFTER trimming. Better to
+        # show a clean empty state than misleading entries.
+        tenants = [t for t in tenants if t.get("rent_periods")]
 
         return tenants
 
