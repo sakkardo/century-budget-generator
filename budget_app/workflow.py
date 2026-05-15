@@ -7140,27 +7140,57 @@ def create_workflow_blueprint(db):
             "escalated portion", "commercial rent escalations",
         }
 
+        # Strategy: do a two-pass parse so we know all tenant rows BEFORE
+        # detecting unit codes (fixes the "1AB before Cobblestone" issue on
+        # building 829). Also extract years from inside strings like
+        # "2025 Total" / "2026 Budget" (fixes 212 which has no pure year rows).
+
+        import re as _re
+        YEAR_RE = _re.compile(r"\b(20\d{2})\b")  # any 4-digit year 2000-2099
+
+        # ── Pass 1: collect rows ─────────────────────────────────────
+        rows = []
+        for r in range(1, min((sheet.max_row or 0) + 1, 120)):
+            def cell(c, _row=r):
+                try:
+                    return sheet.cell(row=_row, column=c).value
+                except Exception:
+                    return None
+            cb, cc, cd, ce = cell(2), cell(3), cell(4), cell(5)
+            ci, ck = cell(9), cell(11)
+            b_str = str(cb).strip() if cb is not None else ""
+            c_str = str(cc).strip() if cc is not None else ""
+            rows.append({
+                "r": r, "cb": cb, "cc": cc, "cd": cd, "ce": ce, "ci": ci, "ck": ck,
+                "b_str": b_str, "c_str": c_str,
+                "b_low": b_str.lower(), "c_low": c_str.lower(),
+            })
+
+        def is_real_tenant_name(rd):
+            """True if column B looks like a tenant name (not a unit code,
+            not a header). A unit code is short + has no whitespace +
+            mostly digits (e.g. '1AB', '1C', '2A')."""
+            s = rd["b_str"]
+            if not s or s.startswith("="):
+                return False
+            if rd["b_low"] in HEADER_TOKENS:
+                return False
+            # Unit code: short, no spaces, starts with digit
+            if len(s) <= 5 and not any(ch.isspace() for ch in s) and s[0].isdigit():
+                return False
+            return True
+
+        # ── Pass 2: walk rows in order with state ────────────────────
         tenants = []
         current = None
         current_year = None
         section = "rent"  # rent | re_tax | utility_billback | opex | summary
+        pending_unit_label = None  # buffered unit code waiting for a tenant
 
-        for r in range(1, min((sheet.max_row or 0) + 1, 120)):
-            def cell(c):
-                try:
-                    return sheet.cell(row=r, column=c).value
-                except Exception:
-                    return None
-            cb = cell(2)
-            cc = cell(3)
-            cd = cell(4)
-            ce = cell(5)
-            ci = cell(9)
-            ck = cell(11)
-            b_str = str(cb).strip() if cb is not None else ""
-            c_str = str(cc).strip() if cc is not None else ""
-            b_low = b_str.lower()
-            c_low = c_str.lower()
+        for idx, rd in enumerate(rows):
+            b_str, c_str = rd["b_str"], rd["c_str"]
+            b_low, c_low = rd["b_low"], rd["c_low"]
+            cb, cd, ci, ck = rd["cb"], rd["cd"], rd["ci"], rd["ck"]
 
             # Section transitions
             if "real estate tax" in c_low and "escal" in c_low:
@@ -7173,21 +7203,42 @@ def create_workflow_blueprint(db):
                 section = "utility_billback"
                 continue
 
-            # Tenant detection — only valid in 'rent' section. Column B has a
-            # non-header string that doesn't start with '='. Excludes pure-numeric
-            # codes like "1AB", "1C" — those are unit codes following a name.
-            if section == "rent" and b_str and not b_str.startswith("=") and b_low not in HEADER_TOKENS:
-                # If short alphanumeric like "1AB" / "1C", it's a unit label —
-                # attach to previous tenant rather than create a new one.
-                is_unit_code = (len(b_str) <= 4 and not any(ch.isspace() for ch in b_str))
-                if is_unit_code and current is not None:
-                    if not current.get("unit_label"):
+            if section != "rent":
+                # Stop attaching to tenants once we exit the rent section.
+                continue
+
+            # Year detection (handles "2025", "2025 Total", "2026 Budget").
+            # Important: do this BEFORE tenant creation so a tenant row that
+            # also carries period data sees the year set earlier.
+            ymatch = YEAR_RE.search(c_str)
+            if ymatch:
+                try:
+                    current_year = int(ymatch.group(1))
+                except Exception:
+                    pass
+
+            # Tenant / unit code detection
+            if b_str and not b_str.startswith("=") and b_low not in HEADER_TOKENS:
+                is_unit_code = (
+                    len(b_str) <= 5
+                    and not any(ch.isspace() for ch in b_str)
+                    and b_str[0].isdigit()
+                )
+                if is_unit_code:
+                    # Look ahead: does the next row have a real tenant name?
+                    # If yes, this unit code is a label for that tenant.
+                    next_rd = rows[idx + 1] if idx + 1 < len(rows) else None
+                    if next_rd and is_real_tenant_name(next_rd):
+                        pending_unit_label = b_str
+                    elif current is not None and not current.get("unit_label"):
                         current["unit_label"] = b_str
                 else:
-                    # New tenant
-                    current = {
+                    # Real tenant name. Create new tenant.
+                    # CRITICAL: don't reset current_year — same-row period data
+                    # depends on the year set earlier (Mack r10 case).
+                    new_tenant = {
                         "tenant_name": b_str,
-                        "unit_label": None,
+                        "unit_label": pending_unit_label,  # consume any pending
                         "rent_periods": [],
                         "notes_lines": [],
                         "tenant_share_pct": None,
@@ -7195,21 +7246,19 @@ def create_workflow_blueprint(db):
                         "base_year_opex": None,
                         "escalation_model": "none",
                     }
-                    tenants.append(current)
-                    current_year = None
+                    tenants.append(new_tenant)
+                    current = new_tenant
+                    pending_unit_label = None
 
-            # Year detection
-            if c_str.isdigit() and len(c_str) == 4:
-                try:
-                    current_year = int(c_str)
-                except Exception:
-                    pass
-
-            # Rent period row: requires current tenant, current year, period label
-            # in C, and a numeric monthly rent in D.
+            # Rent period row: requires current tenant, current year,
+            # a non-year period label in C, and numeric monthly rent in D.
+            # Skip if the c_str IS a pure year (e.g., "2025") — those are
+            # year headers not periods. But "2025 Total" / "2026 Budget" are
+            # also skipped because they have a year in them (and the year
+            # detection above already handled them).
+            looks_like_year_header = bool(ymatch)
             if (current is not None and current_year is not None
-                and section == "rent" and c_str
-                and not c_str.isdigit()
+                and c_str and not looks_like_year_header
                 and isinstance(cd, (int, float)) and cd):
                 months = infer_months(c_str)
                 if months > 0:
@@ -7220,7 +7269,7 @@ def create_workflow_blueprint(db):
                         "months_count": months,
                     })
 
-            # Capture lease notes from column I / K (commentary columns)
+            # Capture lease notes from columns I / K (commentary)
             if current is not None:
                 for note_cell in (ci, ck):
                     if note_cell and isinstance(note_cell, str) and len(note_cell) > 5:
