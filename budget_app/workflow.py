@@ -9899,6 +9899,13 @@ BUILDING_DETAIL_TEMPLATE = r"""
   .comm-period-del:hover { color: var(--red) !important; }
   .comm-period-table input:hover { border-color: var(--gray-200) !important; background: white !important; }
   .comm-period-table input:focus { border-color: var(--blue) !important; outline: none; background: white !important; }
+  /* All-fields inline-edit affordances (Phase 5.3) — every editable field on
+     a tenant card hints on hover, focuses on click. Keeps the card quiet
+     until you interact. */
+  .comm-edit-input:hover { border-color: var(--gray-200) !important; background: white !important; cursor: text; }
+  .comm-edit-input:focus { border-color: var(--blue) !important; outline: none; background: white !important; }
+  .comm-period-year:hover { border-color: var(--gray-200) !important; background: white !important; }
+  .comm-period-year:focus { border-color: var(--blue) !important; outline: none; background: white !important; }
 
   /* Hide every workbook element whose content is FULLY duplicated in the drawer.
      The populator JS for each one keeps running, but visually the workbook is
@@ -12535,14 +12542,37 @@ async function renderCommercialTab(contentDiv) {
     html += '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:14px;">';
     html += '<div style="display:flex; align-items:flex-start; gap:10px; margin-bottom:8px;">';
     html += '<div style="flex:1; min-width:0;">';
-    html += '<div style="font-weight:700; font-size:14px;">' + (t.tenant_name || 'Unnamed').replace(/</g,'&lt;') + '</div>';
-    if (t.unit_label) {
-      html += '<div style="font-size:11px; color:var(--gray-500); font-family:monospace;">Unit ' + t.unit_label.replace(/</g,'&lt;') + '</div>';
-    }
+    // Editable tenant name (FA can rename) — inline input, click to edit, blur to save.
+    html += '<input type="text" value="' + (t.tenant_name || 'Unnamed').replace(/"/g,'&quot;') + '" ' +
+      'onblur="commercialUpdateTenantField(' + t.id + ',\'tenant_name\',this.value)" ' +
+      'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+      'class="comm-edit-input" ' +
+      'style="font-weight:700; font-size:14px; width:100%; padding:2px 4px; border:1px solid transparent; background:transparent; border-radius:3px;">';
+    // Editable unit label
+    html += '<input type="text" value="' + (t.unit_label || '').replace(/"/g,'&quot;') + '" ' +
+      'placeholder="Unit (e.g. 1A, Ground floor, Garage)" ' +
+      'onblur="commercialUpdateTenantField(' + t.id + ',\'unit_label\',this.value || null)" ' +
+      'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+      'class="comm-edit-input" ' +
+      'style="font-size:11px; color:var(--gray-500); font-family:monospace; width:100%; padding:2px 4px; border:1px solid transparent; background:transparent; border-radius:3px; margin-top:2px;">';
     html += '</div>';
     if (t.imported_from_excel) {
       html += '<span style="background:var(--gray-100); color:var(--gray-600); font-size:9px; font-weight:600; padding:2px 6px; border-radius:3px;">FROM EXCEL</span>';
     }
+    html += '</div>';
+
+    // Editable lease dates (FA can set/change) — small row of two date inputs.
+    html += '<div style="display:flex; gap:8px; margin-bottom:8px; font-size:11px;">';
+    html += '<div style="flex:1;"><label style="display:block; color:var(--gray-500); font-size:10px; margin-bottom:1px;">Lease start</label>' +
+      '<input type="date" value="' + (t.lease_start || '') + '" ' +
+      'onblur="commercialUpdateTenantField(' + t.id + ',\'lease_start\',this.value || null)" ' +
+      'class="comm-edit-input" ' +
+      'style="width:100%; padding:3px 6px; border:1px solid var(--gray-200); background:white; border-radius:4px; font-size:11px;"></div>';
+    html += '<div style="flex:1;"><label style="display:block; color:var(--gray-500); font-size:10px; margin-bottom:1px;">Lease end</label>' +
+      '<input type="date" value="' + (t.lease_end || '') + '" ' +
+      'onblur="commercialUpdateTenantField(' + t.id + ',\'lease_end\',this.value || null)" ' +
+      'class="comm-edit-input" ' +
+      'style="width:100%; padding:3px 6px; border:1px solid var(--gray-200); background:white; border-radius:4px; font-size:11px;"></div>';
     html += '</div>';
 
     html += leaseWarning;
@@ -12564,7 +12594,14 @@ async function renderCommercialTab(contentDiv) {
         const rowBg = isBudget ? 'background:#f0fdf4;' : '';
         const dataAttrs = 'data-tid="' + t.id + '" data-pid="' + p.id + '"';
         html += '<tr style="' + rowBg + '" ' + dataAttrs + '>' +
-          '<td style="padding:4px 6px; color:var(--gray-600);">' + p.year + (isBudget ? ' <span style="color:var(--green); font-size:9px; font-weight:700;">BUDGET</span>' : '') + '</td>' +
+          '<td style="padding:2px 4px;">' +
+            '<input type="number" min="2020" max="2040" step="1" value="' + p.year + '" ' +
+            'onblur="commercialUpdatePeriod(' + t.id + ',' + p.id + ',\'year\',parseInt(this.value)||0, this)" ' +
+            'onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+            'class="comm-period-year" ' +
+            'style="width:54px; padding:2px 4px; border:1px solid transparent; background:transparent; font-size:11px; border-radius:3px;">' +
+            (isBudget ? ' <span style="color:var(--green); font-size:9px; font-weight:700;">BUDGET</span>' : '') +
+          '</td>' +
           '<td style="padding:2px 4px;">' +
             '<input type="text" value="' + (p.period_label || '').replace(/"/g,'&quot;') + '" ' +
             'onblur="commercialUpdatePeriod(' + t.id + ',' + p.id + ',\'period_label\',this.value, this)" ' +
@@ -12678,12 +12715,20 @@ async function renderCommercialTab(contentDiv) {
     html += '<button onclick="commercialDeleteTenant(' + t.id + ',\'' + (t.tenant_name || '').replace(/\'/g,"\\'") + '\')" style="font-size:11px; padding:4px 10px; margin-left:auto; background:transparent; color:var(--red); border:1px solid transparent; border-radius:4px; cursor:pointer;">🗑 Delete tenant</button>';
     html += '</div>';
 
-    // Lease notes
-    if (t.lease_notes) {
-      html += '<details style="margin-top:8px;"><summary style="font-size:11px; color:var(--gray-500); cursor:pointer;">📝 Lease notes</summary>' +
-        '<div style="font-size:11px; color:var(--gray-700); margin-top:4px; padding:8px; background:#fafaf7; border-radius:6px; white-space:pre-wrap; max-height:160px; overflow:auto;">' +
-          (t.lease_notes).replace(/</g,'&lt;') +
-        '</div></details>';
+    // Lease notes — editable textarea. Always rendered (so FA can ADD notes
+    // even to imported tenants that don't have any yet).
+    {
+      const notesText = (t.lease_notes || '').replace(/</g,'&lt;');
+      const hasNotes = !!(t.lease_notes && t.lease_notes.trim());
+      const noteCount = hasNotes ? t.lease_notes.split('\n').filter(l => l.trim()).length : 0;
+      html += '<details style="margin-top:8px;"' + (hasNotes ? '' : '') + '><summary style="font-size:11px; color:var(--gray-500); cursor:pointer;">📝 Lease notes' + (noteCount > 0 ? ' <span style="color:var(--gray-400);">(' + noteCount + ')</span>' : ' <span style="color:var(--gray-400); font-style:italic;">— click to add —</span>') + '</summary>' +
+        '<textarea ' +
+          'placeholder="Lease term, renewal options, escalation clauses, contact info, ..." ' +
+          'onblur="commercialUpdateTenantField(' + t.id + ',\'lease_notes\',this.value || null)" ' +
+          'class="comm-edit-input" ' +
+          'style="display:block; width:100%; min-height:80px; font-size:11px; color:var(--gray-700); margin-top:4px; padding:8px; background:#fafaf7; border:1px solid var(--gray-200); border-radius:6px; font-family:inherit; resize:vertical;">' +
+            notesText +
+        '</textarea></details>';
     }
 
     html += '</div>';
