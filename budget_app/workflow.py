@@ -19856,7 +19856,7 @@ function toggleDrawerExpand(gateKey) {
       if (alreadyCount > 0) {
         html += '<div style="margin:4px 0 8px; padding:6px 10px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:11px; color:#166534; line-height:1.5;">' +
           '<strong>' + alreadyCount + '</strong> of these are already a row on your summary tab (added manually). The scan still flags them because they\'re not in the system\'s master list. ' +
-          (trulyMissing > 0 ? '<strong>' + trulyMissing + '</strong> still need attention.' : 'Nothing else to do — these will import into the existing rows.') +
+          (trulyMissing > 0 ? '<strong>' + trulyMissing + '</strong> ' + (trulyMissing === 1 ? 'still needs' : 'still need') + ' attention.' : 'Nothing else to do — these will import into the existing rows.') +
           '</div>';
       }
       html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
