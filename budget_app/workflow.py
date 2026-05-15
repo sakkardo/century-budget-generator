@@ -12490,22 +12490,11 @@ async function renderCommercialTab(contentDiv) {
     html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:#92400e;">⚠ No Commercial Escalations (4520) row on Summary tab. Escalation totals won\'t flow until one is added.</div>';
   }
 
-  // Projection toolbar — show prominently if any tenant lacks a BUDGET_Y projection.
-  if (tenantsWithoutProjection > 0) {
-    html += '<div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:12px 14px; margin-bottom:14px;">' +
-      '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">' +
-        '<div style="flex:1; min-width:280px;">' +
-          '<strong style="font-size:13px; color:#9a3412;">📅 Project ' + BUDGET_Y + ' rent</strong>' +
-          '<div style="font-size:11px; color:var(--gray-600); margin-top:2px;">' + tenantsWithoutProjection + ' of ' + tenants.length + ' tenant(s) have no ' + BUDGET_Y + ' rent set yet. Apply a global bump to copy ' + PRIOR_Y + ' periods into ' + BUDGET_Y + '. You can edit individual values afterward.</div>' +
-        '</div>' +
-        '<div style="display:flex; align-items:center; gap:8px;">' +
-          '<label style="font-size:11px; color:var(--gray-700);">Bump %:</label>' +
-          '<input type="number" id="commProjectPct" value="3.0" step="0.1" style="width:60px; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:12px; text-align:right;">' +
-          '<button onclick="commercialProjectAll()" style="padding:6px 12px; background:#9a3412; color:white; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">Project to ' + BUDGET_Y + ' →</button>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-  }
+  // Top-of-tab projection toolbar removed (FA directive 2026-05-15) — the
+  // per-tenant "Project from prior year" button on each card is enough.
+  // Variable retained because the global commercialProjectAll() handler
+  // still references it for future "Project all" workflows.
+  void tenantsWithoutProjection;
 
   // Source attribution
   if (data.import_result && data.import_result.file_name) {
