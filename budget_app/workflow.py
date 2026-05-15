@@ -1349,6 +1349,149 @@ def create_workflow_blueprint(db):
 
     # ─── Budget Summary Table ───────────────────────────────────────────────
 
+    # ─── Commercial Rent (Phase 1) ──────────────────────────────────
+    # Models for the new Commercial tab. Mirrors the Excel
+    # "Comm Rent & Escalations" sheet structure: per-tenant lease
+    # schedules + per-tenant escalation config + per-tenant utility/
+    # insurance billback base-year amounts.
+    # FA directive 2026-05-14 Phase 5 (commercial rent integration).
+
+    class CommercialTenant(db.Model):
+        """One commercial tenant in a building.
+
+        Identity: tenant_name + unit_label.
+        Lease: start/end dates + plain-text notes.
+        Escalation: model + share% + base years.
+        """
+        __tablename__ = "commercial_tenants"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False, index=True)
+        budget_year = db.Column(db.Integer, nullable=False, default=BUDGET_YEAR)
+
+        # Identity
+        tenant_name = db.Column(db.String(200), nullable=False)
+        unit_label = db.Column(db.String(100), nullable=True)
+
+        # Lease
+        lease_start = db.Column(db.Date, nullable=True)
+        lease_end = db.Column(db.Date, nullable=True)
+        lease_notes = db.Column(db.Text, nullable=True)
+
+        # Escalation config — model: 're_tax' | 'utility_billback' | 'opex' | 'none'
+        escalation_model = db.Column(db.String(30), nullable=False, default="none")
+        # Tenant share is stored as decimal: 0.0104 = 1.04%
+        tenant_share_pct = db.Column(db.Float, nullable=True)
+        # Base years used by escalation math:
+        #   - re_tax: total RE tax in the base year (frozen in lease)
+        #   - opex: total operating expenses in the base year
+        #   - utility_billback: per-category amounts in CommercialTenantBillback
+        base_year_re_tax = db.Column(db.Float, nullable=True)
+        base_year_opex = db.Column(db.Float, nullable=True)
+
+        sort_order = db.Column(db.Integer, default=0)
+        imported_from_excel = db.Column(db.Boolean, default=False)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        def to_dict(self, include_periods=True, include_billbacks=True):
+            d = {
+                "id": self.id,
+                "entity_code": self.entity_code,
+                "budget_year": self.budget_year,
+                "tenant_name": self.tenant_name,
+                "unit_label": self.unit_label,
+                "lease_start": self.lease_start.isoformat() if self.lease_start else None,
+                "lease_end": self.lease_end.isoformat() if self.lease_end else None,
+                "lease_notes": self.lease_notes,
+                "escalation_model": self.escalation_model,
+                "tenant_share_pct": self.tenant_share_pct,
+                "base_year_re_tax": self.base_year_re_tax,
+                "base_year_opex": self.base_year_opex,
+                "sort_order": self.sort_order,
+                "imported_from_excel": bool(self.imported_from_excel),
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            }
+            if include_periods:
+                d["rent_periods"] = [p.to_dict() for p in
+                    CommercialRentPeriod.query.filter_by(tenant_id=self.id)
+                    .order_by(CommercialRentPeriod.year, CommercialRentPeriod.sort_order).all()]
+            if include_billbacks:
+                d["billbacks"] = [b.to_dict() for b in
+                    CommercialTenantBillback.query.filter_by(tenant_id=self.id)
+                    .order_by(CommercialTenantBillback.sort_order).all()]
+            return d
+
+
+    class CommercialRentPeriod(db.Model):
+        """One period of rent for a tenant.
+
+        Mirrors the Excel pattern of multi-row rent schedules per year
+        (e.g., Mack Dermatology Jan-Feb at $7,408/mo + Mar-Dec at $7,593/mo).
+        Annual rent for the tenant in a year = sum(monthly_rent * months_count)
+        across all periods for that year.
+        """
+        __tablename__ = "commercial_rent_periods"
+
+        id = db.Column(db.Integer, primary_key=True)
+        tenant_id = db.Column(db.Integer,
+            db.ForeignKey("commercial_tenants.id", ondelete="CASCADE"),
+            nullable=False, index=True)
+        year = db.Column(db.Integer, nullable=False)
+        period_label = db.Column(db.String(50), nullable=False)
+        monthly_rent = db.Column(db.Float, nullable=False, default=0)
+        months_count = db.Column(db.Integer, nullable=False, default=12)
+        sort_order = db.Column(db.Integer, default=0)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        def annualized(self):
+            return (self.monthly_rent or 0) * (self.months_count or 0)
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "tenant_id": self.tenant_id,
+                "year": self.year,
+                "period_label": self.period_label,
+                "monthly_rent": self.monthly_rent,
+                "months_count": self.months_count,
+                "annualized": self.annualized(),
+                "sort_order": self.sort_order,
+            }
+
+
+    class CommercialTenantBillback(db.Model):
+        """Per-tenant utility/insurance billback base year amounts.
+        Used when tenant.escalation_model = 'utility_billback'.
+
+        E.g., Building 212 City Parking:
+          'Gas & Electric' base=$61,800
+          'Steam'          base=$172,291
+          'Insurance'      base=$56,217
+        Tenant's annual billback per category = (current_year_amount - base) * tenant_share_pct
+        """
+        __tablename__ = "commercial_tenant_billbacks"
+
+        id = db.Column(db.Integer, primary_key=True)
+        tenant_id = db.Column(db.Integer,
+            db.ForeignKey("commercial_tenants.id", ondelete="CASCADE"),
+            nullable=False, index=True)
+        category = db.Column(db.String(50), nullable=False)
+        base_year_amount = db.Column(db.Float, nullable=False, default=0)
+        sort_order = db.Column(db.Integer, default=0)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "tenant_id": self.tenant_id,
+                "category": self.category,
+                "base_year_amount": self.base_year_amount,
+                "sort_order": self.sort_order,
+            }
+
+
     class BudgetSummaryRow(db.Model):
         """
         Budget Summary row — one per line item per building.
@@ -6940,6 +7083,323 @@ def create_workflow_blueprint(db):
         return jsonify({"status": "ok", "updated": updated})
 
 
+    # ─── Commercial Rent Routes (FA directive 2026-05-14 Phase 5) ──────────
+    # Read API + one-time importer for the new Commercial tab. The importer
+    # parses the Excel "Comm Rent & Escalations" sheet on first request and
+    # populates CommercialTenant + CommercialRentPeriod tables. Subsequent
+    # requests just read from the DB. Phase 2 will add edit endpoints.
+
+    def _comm_rent_parse_excel(workbook):
+        """Parse the Comm Rent & Escalations sheet into structured tenant data.
+        Best-effort — handles the 148 / 212 / 829 patterns observed in research.
+        Returns: [{tenant_name, unit_label, rent_periods: [...], lease_notes,
+                   escalation_model, ...}]
+        """
+        sheet = None
+        for name in workbook.sheetnames:
+            n = name.lower().strip()
+            if "comm" in n and ("rent" in n or "escal" in n):
+                sheet = workbook[name]
+                break
+        if not sheet:
+            return []
+
+        months_short = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
+        month_idx = {m: i + 1 for i, m in enumerate(months_short)}
+
+        def infer_months(period_label):
+            s = (period_label or "").lower().replace("—", "-").replace("–", "-").replace(" ", "")
+            if not s:
+                return 0
+            if "-" not in s:
+                for m in months_short:
+                    if s.startswith(m):
+                        return 1
+                return 0
+            parts = s.split("-")
+            if len(parts) != 2:
+                return 0
+            def find_idx(p):
+                for m in months_short:
+                    if p.startswith(m):
+                        return month_idx[m]
+                return 0
+            a, b = find_idx(parts[0]), find_idx(parts[1])
+            if a == 0 or b == 0:
+                return 0
+            return (b - a + 1) if b >= a else 0
+
+        HEADER_TOKENS = {
+            "tenant", "tenant ", "category", "annual expense", "base year",
+            "difference", "tenants share", "balance due from tenant",
+            "schedule a-1", "commercial rent", "commercial(garage rent)",
+            "real estate taxes", "operating expenses", "escalatable portion",
+            "less:  base year", "less: base year", "tenant's proportionate share",
+            "real estate tax escalations", "operating escalations",
+            "tenant escalations", "less abatements and credits", "base amount",
+            "escalated portion", "commercial rent escalations",
+        }
+
+        tenants = []
+        current = None
+        current_year = None
+        section = "rent"  # rent | re_tax | utility_billback | opex | summary
+
+        for r in range(1, min((sheet.max_row or 0) + 1, 120)):
+            def cell(c):
+                try:
+                    return sheet.cell(row=r, column=c).value
+                except Exception:
+                    return None
+            cb = cell(2)
+            cc = cell(3)
+            cd = cell(4)
+            ce = cell(5)
+            ci = cell(9)
+            ck = cell(11)
+            b_str = str(cb).strip() if cb is not None else ""
+            c_str = str(cc).strip() if cc is not None else ""
+            b_low = b_str.lower()
+            c_low = c_str.lower()
+
+            # Section transitions
+            if "real estate tax" in c_low and "escal" in c_low:
+                section = "re_tax"
+                continue
+            if "operating escal" in c_low or "operating expense" in c_low:
+                section = "opex"
+                continue
+            if "tenant escal" in c_low:
+                section = "utility_billback"
+                continue
+
+            # Tenant detection — only valid in 'rent' section. Column B has a
+            # non-header string that doesn't start with '='. Excludes pure-numeric
+            # codes like "1AB", "1C" — those are unit codes following a name.
+            if section == "rent" and b_str and not b_str.startswith("=") and b_low not in HEADER_TOKENS:
+                # If short alphanumeric like "1AB" / "1C", it's a unit label —
+                # attach to previous tenant rather than create a new one.
+                is_unit_code = (len(b_str) <= 4 and not any(ch.isspace() for ch in b_str))
+                if is_unit_code and current is not None:
+                    if not current.get("unit_label"):
+                        current["unit_label"] = b_str
+                else:
+                    # New tenant
+                    current = {
+                        "tenant_name": b_str,
+                        "unit_label": None,
+                        "rent_periods": [],
+                        "notes_lines": [],
+                        "tenant_share_pct": None,
+                        "base_year_re_tax": None,
+                        "base_year_opex": None,
+                        "escalation_model": "none",
+                    }
+                    tenants.append(current)
+                    current_year = None
+
+            # Year detection
+            if c_str.isdigit() and len(c_str) == 4:
+                try:
+                    current_year = int(c_str)
+                except Exception:
+                    pass
+
+            # Rent period row: requires current tenant, current year, period label
+            # in C, and a numeric monthly rent in D.
+            if (current is not None and current_year is not None
+                and section == "rent" and c_str
+                and not c_str.isdigit()
+                and isinstance(cd, (int, float)) and cd):
+                months = infer_months(c_str)
+                if months > 0:
+                    current["rent_periods"].append({
+                        "year": current_year,
+                        "period_label": c_str,
+                        "monthly_rent": float(cd),
+                        "months_count": months,
+                    })
+
+            # Capture lease notes from column I / K (commentary columns)
+            if current is not None:
+                for note_cell in (ci, ck):
+                    if note_cell and isinstance(note_cell, str) and len(note_cell) > 5:
+                        if note_cell not in current["notes_lines"]:
+                            current["notes_lines"].append(note_cell)
+
+        # Determine escalation model from sheet content (single-mode for now)
+        sheet_text_lower = ""
+        for r in range(1, min((sheet.max_row or 0) + 1, 100)):
+            for c in range(1, 16):
+                v = None
+                try:
+                    v = sheet.cell(row=r, column=c).value
+                except Exception:
+                    pass
+                if isinstance(v, str):
+                    sheet_text_lower += v.lower() + " "
+        if "real estate tax escal" in sheet_text_lower:
+            esc_model = "re_tax"
+        elif "operating escal" in sheet_text_lower:
+            esc_model = "opex"
+        elif "tenant escal" in sheet_text_lower and ("gas" in sheet_text_lower or "steam" in sheet_text_lower):
+            esc_model = "utility_billback"
+        else:
+            esc_model = "none"
+
+        # Flatten notes into a single text field
+        for t in tenants:
+            t["escalation_model"] = esc_model
+            t["lease_notes"] = "\n".join(t.get("notes_lines", []))[:2000] or None
+            t.pop("notes_lines", None)
+
+        return tenants
+
+
+    def _comm_rent_run_import(entity_code):
+        """One-time importer: parse the building's approved Excel and create
+        CommercialTenant + CommercialRentPeriod rows. Idempotent: returns
+        existing data if any tenants already exist for this building/year.
+        """
+        existing = CommercialTenant.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).count()
+        if existing > 0:
+            return {"status": "exists", "imported": 0, "tenant_count": existing}
+
+        # Use the app.py SharePoint helpers via the registered models — we can't
+        # import them directly from here without a circular dep, so go through
+        # current_app's view of the existing scan endpoint plumbing.
+        import sys, tempfile
+        from pathlib import Path
+        try:
+            import openpyxl
+        except Exception as e:
+            return {"status": "error", "error": f"openpyxl not available: {e!r}"}
+
+        # The SharePoint helpers live in app.py — pull them via current_app.
+        from flask import current_app
+        sp_list = current_app.view_functions.get("admin_research_comm_rent")
+        # We need _sharepoint_list_approved_budgets + _sharepoint_download_item.
+        # They're not bound to the route directly; they exist in app.py globals.
+        try:
+            import app as _app_mod  # type: ignore
+            files = _app_mod._sharepoint_list_approved_budgets(entity_code)
+        except Exception as e:
+            return {"status": "error", "error": f"sharepoint list failed: {str(e)[:200]}"}
+
+        if not files:
+            return {"status": "no_file", "error": "no approved 2026 budget file"}
+
+        files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+        target = files[0]
+        item_id = target.get("item_id")
+        if not item_id:
+            return {"status": "error", "error": "no item_id on file"}
+
+        try:
+            _name, file_bytes = _app_mod._sharepoint_download_item(item_id)
+        except Exception as e:
+            return {"status": "error", "error": f"download failed: {str(e)[:200]}"}
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            wb = openpyxl.load_workbook(tmp_path, data_only=True)
+            parsed = _comm_rent_parse_excel(wb)
+        except Exception as e:
+            return {"status": "error", "error": f"parse failed: {str(e)[:200]}"}
+        finally:
+            if tmp_path:
+                try:
+                    import os as _os
+                    _os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        # Persist
+        imported = 0
+        for i, t in enumerate(parsed):
+            tenant = CommercialTenant(
+                entity_code=entity_code,
+                budget_year=BUDGET_YEAR,
+                tenant_name=t["tenant_name"][:200],
+                unit_label=(t.get("unit_label") or None) and t["unit_label"][:100],
+                lease_notes=t.get("lease_notes"),
+                escalation_model=t.get("escalation_model") or "none",
+                sort_order=i,
+                imported_from_excel=True,
+            )
+            db.session.add(tenant)
+            db.session.flush()  # need tenant.id for periods
+            for j, p in enumerate(t.get("rent_periods") or []):
+                db.session.add(CommercialRentPeriod(
+                    tenant_id=tenant.id,
+                    year=p["year"],
+                    period_label=p["period_label"][:50],
+                    monthly_rent=p["monthly_rent"],
+                    months_count=p["months_count"],
+                    sort_order=j,
+                ))
+            imported += 1
+        db.session.commit()
+        return {
+            "status": "imported",
+            "imported": imported,
+            "file_name": target.get("name"),
+        }
+
+
+    @bp.route("/api/commercial/<entity_code>", methods=["GET"])
+    def api_commercial_get(entity_code):
+        """List commercial tenants for a building with their rent periods +
+        billbacks. Auto-imports from Excel on first call (idempotent).
+        Query params:
+          - skip_import=1: don't auto-import (just return whatever's in DB)
+        """
+        skip_import = request.args.get("skip_import", "0") == "1"
+        if not skip_import:
+            import_result = _comm_rent_run_import(entity_code)
+        else:
+            import_result = {"status": "skipped"}
+
+        tenants = CommercialTenant.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(CommercialTenant.sort_order, CommercialTenant.id).all()
+
+        return jsonify({
+            "entity_code": entity_code,
+            "budget_year": BUDGET_YEAR,
+            "tenant_count": len(tenants),
+            "tenants": [t.to_dict() for t in tenants],
+            "import_result": import_result,
+        })
+
+
+    @bp.route("/api/commercial/<entity_code>/import", methods=["POST"])
+    def api_commercial_import(entity_code):
+        """Force a re-import from Excel. WARNING: skips if tenants already
+        exist — use ?force=1 to wipe + reimport (admin action)."""
+        force = request.args.get("force", "0") == "1"
+        if force:
+            tenants = CommercialTenant.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR
+            ).all()
+            for t in tenants:
+                # Cascading delete handles periods + billbacks via ondelete=CASCADE
+                # but Flask-SQLAlchemy may not pass through to SQLite-style FKs
+                # in all setups. Explicitly delete children first to be safe.
+                CommercialRentPeriod.query.filter_by(tenant_id=t.id).delete()
+                CommercialTenantBillback.query.filter_by(tenant_id=t.id).delete()
+                db.session.delete(t)
+            db.session.commit()
+
+        result = _comm_rent_run_import(entity_code)
+        return jsonify(result)
+
+
     # ─── Presentation Routes ───────────────────────────────────────────────
 
     @bp.route("/api/presentation/generate/<entity_code>", methods=["POST"])
@@ -7004,7 +7464,7 @@ def create_workflow_blueprint(db):
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
 
-    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "BuildingVisit": BuildingVisit, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow, "BuildingInfo": BuildingInfo, "AuditSyncRun": AuditSyncRun, "DataSource": DataSource},
+    return (bp, {"User": User, "BuildingAssignment": BuildingAssignment, "Budget": Budget, "BudgetLine": BudgetLine, "BudgetRevision": BudgetRevision, "BuildingVisit": BuildingVisit, "PayrollPosition": PayrollPosition, "PayrollAssumption": PayrollAssumption, "BudgetSummaryRow": BudgetSummaryRow, "BuildingInfo": BuildingInfo, "AuditSyncRun": AuditSyncRun, "DataSource": DataSource, "CommercialTenant": CommercialTenant, "CommercialRentPeriod": CommercialRentPeriod, "CommercialTenantBillback": CommercialTenantBillback},
             {"store_rm_lines": store_rm_lines, "store_all_lines": store_all_lines,
              "get_pm_projections": get_pm_projections,
              "compute_forecast": compute_forecast, "compute_proposed_budget": compute_proposed_budget})
