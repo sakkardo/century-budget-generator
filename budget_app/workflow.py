@@ -7475,13 +7475,92 @@ def create_workflow_blueprint(db):
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).order_by(CommercialTenant.sort_order, CommercialTenant.id).all()
 
+        # Ensure the Summary row is in sync — cheap idempotent op, makes the
+        # auto-feed visible to FAs reading building dashboards that haven't
+        # had any commercial edits since this code shipped.
+        try:
+            sync = _commercial_recompute_summary(entity_code)
+        except Exception as _se:
+            sync = {"error": str(_se)[:200]}
+
         return jsonify({
             "entity_code": entity_code,
             "budget_year": BUDGET_YEAR,
             "tenant_count": len(tenants),
             "tenants": [t.to_dict() for t in tenants],
             "import_result": import_result,
+            "summary_sync": sync,
         })
+
+
+    # ─── Summary auto-feed helper (Phase 3a) ─────────────────────────
+    # After any commercial rent change, recompute the BudgetSummaryRow
+    # for Commercial Rent (GL 4040) and write the budget-year total into
+    # col7_proposed_budget. Called from every CRUD endpoint below.
+
+    def _commercial_find_summary_row(entity_code, label_candidates=None, gl_prefix_candidates=None):
+        """Find the BudgetSummaryRow that represents Commercial Rent for a
+        building. Match by label first (alias map flattens to "Commercial"
+        canonical, but some imports leave "Commercial Rent" intact), then
+        by GL prefix in the row's stored prefix list. Returns the row or None.
+        """
+        labels = {(l or "").strip().lower() for l in (label_candidates or ["Commercial Rent", "Commercial"])}
+        prefixes_want = gl_prefix_candidates or ["4040"]
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        # Pass 1: label match
+        for r in rows:
+            if (r.label or "").strip().lower() in labels:
+                return r
+        # Pass 2: GL prefix match
+        import json as _j
+        for r in rows:
+            try:
+                stored = _j.loads(r.gl_prefixes_json or "[]")
+            except Exception:
+                continue
+            if not isinstance(stored, list):
+                continue
+            for p in stored:
+                base = str(p).split("-")[0].strip()
+                for cand in prefixes_want:
+                    if base == cand:
+                        return r
+        return None
+
+    def _commercial_recompute_summary(entity_code):
+        """Sum every BUDGET_YEAR rent period for this building and write the
+        total into the Commercial Rent summary row's col7_proposed_budget.
+        No-op (returns None) if no Commercial Rent row exists on the Summary.
+        Idempotent — safe to call after every CRUD.
+        """
+        row = _commercial_find_summary_row(entity_code)
+        if not row:
+            return None
+        total = (db.session.query(
+            db.func.coalesce(
+                db.func.sum(CommercialRentPeriod.monthly_rent
+                            * CommercialRentPeriod.months_count),
+                0,
+            )
+        )
+        .join(CommercialTenant,
+              CommercialTenant.id == CommercialRentPeriod.tenant_id)
+        .filter(
+            CommercialTenant.entity_code == entity_code,
+            CommercialTenant.budget_year == BUDGET_YEAR,
+            CommercialRentPeriod.year == BUDGET_YEAR,
+        ).scalar()) or 0
+        old = row.col7_proposed_budget
+        row.col7_proposed_budget = float(total) if total else None
+        row.updated_at = datetime.utcnow()
+        db.session.commit()
+        return {
+            "row_id": row.id, "label": row.label,
+            "old_col7": old, "new_col7": row.col7_proposed_budget,
+            "total_periods_summed": total,
+        }
 
 
     # ─── Tenant CRUD (Phase 2a) ──────────────────────────────────────
@@ -7552,7 +7631,8 @@ def create_workflow_blueprint(db):
         CommercialTenantBillback.query.filter_by(tenant_id=t.id).delete()
         db.session.delete(t)
         db.session.commit()
-        return jsonify({"status": "deleted", "id": tenant_id})
+        sync = _commercial_recompute_summary(entity_code)
+        return jsonify({"status": "deleted", "id": tenant_id, "summary_sync": sync})
 
     @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period", methods=["POST"])
     def api_commercial_period_create(entity_code, tenant_id):
@@ -7575,7 +7655,8 @@ def create_workflow_blueprint(db):
         )
         db.session.add(p)
         db.session.commit()
-        return jsonify(p.to_dict())
+        sync = _commercial_recompute_summary(entity_code)
+        return jsonify({"period": p.to_dict(), "summary_sync": sync})
 
     @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period/<int:period_id>",
              methods=["PUT"])
@@ -7597,7 +7678,11 @@ def create_workflow_blueprint(db):
         if "months_count" in data:
             p.months_count = int(data["months_count"] or 12)
         db.session.commit()
-        return jsonify(p.to_dict())
+        sync = _commercial_recompute_summary(entity_code)
+        # to_dict() already includes annualized for client-side update.
+        result = p.to_dict()
+        result["summary_sync"] = sync
+        return jsonify(result)
 
     @bp.route("/api/commercial/<entity_code>/tenant/<int:tenant_id>/period/<int:period_id>",
              methods=["DELETE"])
@@ -7607,7 +7692,8 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "period not found"}), 404
         db.session.delete(p)
         db.session.commit()
-        return jsonify({"status": "deleted", "id": period_id})
+        sync = _commercial_recompute_summary(entity_code)
+        return jsonify({"status": "deleted", "id": period_id, "summary_sync": sync})
 
     @bp.route("/api/commercial/<entity_code>/project-year", methods=["POST"])
     def api_commercial_project_year(entity_code):
@@ -7665,6 +7751,7 @@ def create_workflow_blueprint(db):
                 ))
                 created_total += 1
         db.session.commit()
+        sync = _commercial_recompute_summary(entity_code)
         return jsonify({
             "status": "ok",
             "from_year": from_year,
@@ -7672,6 +7759,7 @@ def create_workflow_blueprint(db):
             "increase_pct": increase_pct,
             "periods_created": created_total,
             "skipped_tenants": skipped_tenants,
+            "summary_sync": sync,
         })
 
 
@@ -12261,6 +12349,29 @@ async function renderCommercialTab(contentDiv) {
       '<div><span style="color:var(--gray-500);">' + BUDGET_Y + ' projected:</span> <strong style="font-size:13px; color:' + (totalBudget > 0 ? 'var(--green)' : 'var(--gray-400)') + ';">$' + Math.round(totalBudget).toLocaleString() + '</strong></div>' +
     '</div>' +
     '</div>';
+
+  // Summary sync indicator — shows whether the BUDGET_Y total has been pushed
+  // to the Summary tab's Commercial Rent row (col7_proposed_budget).
+  const sync = data.summary_sync;
+  if (sync && sync.row_id) {
+    const newCol7 = sync.new_col7 || 0;
+    const synced = Math.abs((newCol7 || 0) - (totalBudget || 0)) < 1.0;
+    const color = synced ? 'var(--green)' : '#d97706';
+    const icon = synced ? '✓' : '⚠';
+    html += '<div style="background:' + (synced ? '#f0fdf4' : '#fffbeb') +
+      '; border:1px solid ' + (synced ? '#bbf7d0' : '#fde68a') +
+      '; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
+      '<span style="color:' + color + '; font-weight:700; font-size:14px;">' + icon + '</span>' +
+      '<span><strong>Summary tab synced:</strong> ' + BUDGET_Y + ' Commercial Rent (row "' +
+        (sync.label || '').replace(/</g,'&lt;') + '") col7 = <strong>$' + Math.round(newCol7).toLocaleString() +
+        '</strong>. Open the Summary tab to confirm. Any edit here auto-updates that cell.</span>' +
+      '</div>';
+  } else if (sync && sync.error) {
+    html += '<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:var(--red);">⚠ Summary sync error: ' + sync.error + '</div>';
+  } else if (totalBudget > 0) {
+    // No matching Summary row found at all.
+    html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:#92400e;">⚠ No "Commercial Rent" row found on Summary tab. The ' + BUDGET_Y + ' projected total won\'t flow into the workbook until one is added (Summary tab → Add Row).</div>';
+  }
 
   // Projection toolbar — show prominently if any tenant lacks a BUDGET_Y projection.
   if (tenantsWithoutProjection > 0) {
