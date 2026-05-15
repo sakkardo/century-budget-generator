@@ -19799,13 +19799,34 @@ const DRAWER_GATE_COPY = {
   }
 };
 
-// Cache for /api/wizard/<ec>/scan-findings so opening the
-// approved_file_labels expand a second time doesn't re-fetch.
+// Cache for /api/wizard/<ec>/scan-findings + /api/summary/<ec> so opening
+// the approved_file_labels expand a second time doesn't re-fetch.
 let _scanFindingsCache = null;
+let _summaryRowsCache = null;
+
+// Build a Set of label strings (normalized lowercase) currently on this
+// building's summary tab. Used to mark each unmapped label with whether
+// the FA has already added a row for it manually.
+function _buildCurrentLabelSet(summaryData) {
+  const s = new Set();
+  if (!summaryData || !Array.isArray(summaryData.rows)) return s;
+  summaryData.rows.forEach(r => {
+    if (r && r.row_type === 'data' && r.label) {
+      s.add(String(r.label).trim().toLowerCase());
+    }
+  });
+  return s;
+}
 
 // Expand-toggle handler for drawer items that show inline detail.
 // Used by approved_file_labels — clicking "Show labels" expands to
-// reveal the actual list of unmapped labels with suggestions.
+// reveal the actual list of unmapped labels, each marked with whether
+// the FA has already added a custom row for it on this building's
+// summary tab (✓) or whether it's still missing entirely (✕). The
+// scan compares the Excel against a global master list; this column
+// compares against THIS building's current rows. FA directive
+// 2026-05-14 Phase 4.4 (clarifying the "already added but still
+// flagged" confusion).
 function toggleDrawerExpand(gateKey) {
   const wrap = document.getElementById('acExpand-' + gateKey);
   if (!wrap) return;
@@ -19816,47 +19837,75 @@ function toggleDrawerExpand(gateKey) {
   }
   wrap.style.display = 'block';
   if (gateKey === 'approved_file_labels') {
-    // Fetch + render the unmapped labels list inline.
-    const render = (data) => {
-      const labels = (data && data.unmapped_labels) || [];
-      const file = data && data.file_name;
+    const render = (scanData, summaryData) => {
+      const labels = (scanData && scanData.unmapped_labels) || [];
+      const file = scanData && scanData.file_name;
+      const currentSet = _buildCurrentLabelSet(summaryData);
       if (!labels.length) {
         wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">No unmapped labels — looks clean.</div>';
         return;
       }
+      const alreadyCount = labels.filter(u => currentSet.has(String(u.label || '').trim().toLowerCase())).length;
+      const trulyMissing = labels.length - alreadyCount;
+
       let html = '<div style="padding:10px 14px 12px; background:#fafaf7; border-top:1px solid var(--gray-200);">';
       if (file) {
         html += '<div style="font-size:10px; color:var(--gray-500); margin-bottom:6px;">From file: <code style="font-size:10px; background:rgba(0,0,0,0.05); padding:1px 5px; border-radius:3px;">' + file.replace(/</g,'&lt;') + '</code></div>';
       }
+      // Summary chip: how many are real problems vs already-handled.
+      if (alreadyCount > 0) {
+        html += '<div style="margin:4px 0 8px; padding:6px 10px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:11px; color:#166534; line-height:1.5;">' +
+          '<strong>' + alreadyCount + '</strong> of these are already a row on your summary tab (added manually). The scan still flags them because they\'re not in the system\'s master list. ' +
+          (trulyMissing > 0 ? '<strong>' + trulyMissing + '</strong> still need attention.' : 'Nothing else to do — these will import into the existing rows.') +
+          '</div>';
+      }
       html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
-      html += '<thead><tr><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Label in approved file</th><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Suggested mapping</th></tr></thead><tbody>';
+      html += '<thead><tr>' +
+        '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Label in approved file</th>' +
+        '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">On your summary?</th>' +
+        '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; font-size:9px; border-bottom:1px solid var(--gray-200);">Suggested mapping</th>' +
+        '</tr></thead><tbody>';
       labels.forEach(u => {
-        const lbl = (u.label || '').replace(/</g,'&lt;');
-        const sug = u.suggested ? u.suggested.replace(/</g,'&lt;') : '<span style="color:var(--gray-400);">— no match —</span>';
+        const lblRaw = (u.label || '').trim();
+        const lbl = lblRaw.replace(/</g,'&lt;');
+        const isAlready = currentSet.has(lblRaw.toLowerCase());
+        const statusCell = isAlready
+          ? '<span style="display:inline-flex; align-items:center; gap:4px; color:#166534; font-weight:600; font-size:11px;">&#10003; Already added</span>'
+          : '<span style="display:inline-flex; align-items:center; gap:4px; color:var(--red); font-weight:600; font-size:11px;">&#10007; Missing</span>';
+        const sug = u.suggested ? u.suggested.replace(/</g,'&lt;') : '<span style="color:var(--gray-400);">&mdash; no match &mdash;</span>';
         html += '<tr>' +
           '<td style="padding:5px 6px; border-bottom:1px solid var(--gray-100); font-family:monospace; font-size:11px;">' + lbl + '</td>' +
+          '<td style="padding:5px 6px; border-bottom:1px solid var(--gray-100);">' + statusCell + '</td>' +
           '<td style="padding:5px 6px; border-bottom:1px solid var(--gray-100); color:var(--gray-700); font-size:11px;">' + sug + '</td>' +
           '</tr>';
       });
       html += '</tbody></table>';
       html += '<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">';
-      html += '<a href="/admin/portfolio-health" target="_blank" class="ac-btn">Open standard label map →</a>';
+      html += '<a href="/admin/portfolio-health" target="_blank" class="ac-btn">Open standard label map &rarr;</a>';
       html += '<button onclick="rescanLabels(\'' + entityCode + '\')" class="ac-btn">Re-scan after fixing</button>';
       html += '</div>';
-      html += '<div style="margin-top:8px; font-size:10px; color:var(--gray-500); line-height:1.5;">For each label above, either (a) add a standard row with that name, or (b) rename the row in the Excel so it matches an existing standard row. Then re-scan to refresh this list.</div>';
+      html += '<div style="margin-top:8px; font-size:10px; color:var(--gray-500); line-height:1.5;">' +
+        '<strong>Already added</strong> rows already exist on your summary tab (with a custom name), so the data will land there on import. The gate still flags them because the system\'s master row list doesn\'t recognize the name. To silence the alert permanently for these, the label needs to be added to the master list (admin change).<br>' +
+        '<strong>Missing</strong> rows have no home on your summary yet. For each one, either (a) click + Add Row on the Summary tab and add a row with that name, or (b) rename the row in the Excel to match an existing standard label. Then re-scan to refresh this list.' +
+        '</div>';
       html += '</div>';
       wrap.innerHTML = html;
     };
-    if (_scanFindingsCache) {
-      render(_scanFindingsCache);
+
+    if (_scanFindingsCache && _summaryRowsCache) {
+      render(_scanFindingsCache, _summaryRowsCache);
       return;
     }
-    wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">Loading labels…</div>';
-    fetch('/api/wizard/' + entityCode + '/scan-findings').then(r => r.json()).then(d => {
-      _scanFindingsCache = d;
-      render(d);
+    wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">Loading labels&hellip;</div>';
+    Promise.all([
+      fetch('/api/wizard/' + entityCode + '/scan-findings').then(r => r.json()),
+      fetch('/api/summary/' + entityCode).then(r => r.json()).catch(() => ({rows: []}))
+    ]).then(([scan, summary]) => {
+      _scanFindingsCache = scan;
+      _summaryRowsCache = summary;
+      render(scan, summary);
     }).catch(err => {
-      wrap.innerHTML = '<div style="padding:10px 14px; color:var(--red); font-size:11px;">Failed to load labels: ' + err.message + '</div>';
+      wrap.innerHTML = '<div style="padding:10px 14px; color:var(--red); font-size:11px;">Failed to load labels: ' + (err.message || err) + '</div>';
     });
   }
 }
@@ -19866,6 +19915,7 @@ function rescanLabels(ec) {
   const wrap = document.getElementById('acExpand-approved_file_labels');
   if (wrap) wrap.innerHTML = '<div style="padding:10px 14px; color:var(--gray-500); font-size:11px;">Re-scanning…</div>';
   _scanFindingsCache = null;
+  _summaryRowsCache = null;  // FA may have added rows since last view — re-fetch on rescan.
   fetch('/api/wizard/' + ec + '/scan-findings?refresh=1', {method:'POST'}).then(() => {
     // Re-render the entire readiness inspector (and the drawer with it).
     renderReadinessInspector();
