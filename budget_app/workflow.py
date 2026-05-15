@@ -11360,6 +11360,25 @@ function renderDetail(data) {
       tabsDiv.appendChild(tab);
     });
 
+    // Add Commercial Rent tab (FA directive 2026-05-14 Phase 5).
+    // Shown for every building. If the building has no commercial rent rows
+    // in its approved Excel, the tab shows a clean empty state with an
+    // "Add tenant" affordance (Phase 2). Until Phase 2 lands, FAs viewing
+    // an empty-state building can still confirm the system correctly
+    // detected "no commercial rent here."
+    const commTab = document.createElement('button');
+    commTab.textContent = '\ud83c\udfe2 Commercial';
+    commTab.className = 'sheet-tab';
+    commTab.dataset.sheet = '__commercial__';
+    commTab.style.background = '#fff7ed';
+    commTab.style.color = '#9a3412';
+    commTab.onclick = () => {
+      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+      commTab.classList.add('active');
+      renderCommercialTab(contentDiv);
+    };
+    tabsDiv.appendChild(commTab);
+
     // Add Assumptions tab
     const assumTab = document.createElement('button');
     assumTab.textContent = '\u2699 Assumptions';
@@ -11968,6 +11987,187 @@ function renderAssumptionsTab(assumptions, contentDiv) {
   const taxesSection = sectionWrap('taxes', 'Taxes', 'real estate tax rate inputs', 'single', taxCard);
 
   contentDiv.innerHTML = '<div class="asm-portal">' + payrollSection + operatingSection + taxesSection + '</div>';
+}
+
+// ── Commercial Rent Tab (Phase 5.1 read-only viewer) ──
+// Fetches /api/commercial/<ec> which auto-imports from the approved Excel
+// on first call. Renders: tenant cards (one per commercial tenant) with
+// rent periods + lease notes + escalation model badge.
+// Phase 2 will add: edit buttons, escalation engine UI, Summary feed.
+async function renderCommercialTab(contentDiv) {
+  contentDiv.innerHTML =
+    '<div style="padding:40px 24px; text-align:center; color:var(--gray-500);">' +
+    '<div style="display:inline-block; width:32px; height:32px; border:3px solid var(--gray-200); border-top-color:var(--blue); border-radius:50%; animation:spin 0.6s linear infinite;"></div>' +
+    '<p style="margin-top:12px; font-size:13px;">Loading commercial rent data&hellip; (first load imports from Excel)</p>' +
+    '</div>';
+  let data;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode);
+    data = await resp.json();
+  } catch (err) {
+    contentDiv.innerHTML = '<div style="padding:24px; color:var(--red);">Failed to load: ' + (err.message || err) + '</div>';
+    return;
+  }
+
+  const tenants = data.tenants || [];
+  const impStatus = (data.import_result && data.import_result.status) || 'unknown';
+
+  // Empty state
+  if (tenants.length === 0) {
+    let msg = 'No commercial rent set up for this building yet.';
+    let sub = 'Phase 2 will add a "+ Add tenant" button so you can create one manually.';
+    if (impStatus === 'no_file') {
+      msg = 'No approved 2026 budget Excel found in SharePoint.';
+      sub = 'Upload one and re-import, or check the file name pattern.';
+    } else if (impStatus === 'error') {
+      msg = 'Could not parse the approved Excel.';
+      sub = (data.import_result.error || '').slice(0, 200);
+    }
+    contentDiv.innerHTML =
+      '<div style="padding:48px 24px; text-align:center; max-width:520px; margin:24px auto; background:#fff7ed; border:1px solid #fed7aa; border-radius:12px;">' +
+        '<div style="font-size:36px; margin-bottom:8px;">🏢</div>' +
+        '<h3 style="margin:0 0 4px; font-size:16px; color:#9a3412;">' + msg + '</h3>' +
+        '<p style="margin:4px 0 0; font-size:12px; color:var(--gray-500);">' + sub + '</p>' +
+      '</div>';
+    return;
+  }
+
+  // Compute escalation-model label
+  const escLabels = {
+    re_tax: '🏛 RE Tax Escalation',
+    utility_billback: '⚡ Utility / Insurance Billback',
+    opex: '💰 Operating Expense Escalation',
+    none: '— No escalation —',
+  };
+
+  // Render tenant cards
+  let html = '<div style="padding:18px 24px;">';
+
+  // Header strip
+  const totalAnnual2026 = tenants.reduce((sum, t) => {
+    return sum + (t.rent_periods || [])
+      .filter(p => p.year === {{ budget_year }} - 1)  // Show 2026 (BUDGET_YEAR - 1 is the approved year)
+      .reduce((s, p) => s + (p.annualized || 0), 0);
+  }, 0);
+  const escModel = tenants[0] ? tenants[0].escalation_model : 'none';
+  html += '<div style="display:flex; align-items:center; gap:14px; margin-bottom:14px;">' +
+    '<h2 style="font-size:18px; font-weight:700; margin:0;">Commercial Tenants</h2>' +
+    '<span style="background:var(--blue-light); color:var(--blue); padding:3px 10px; border-radius:12px; font-size:11px; font-weight:600;">' + tenants.length + ' active</span>' +
+    '<span style="font-size:11px; color:var(--gray-500);">Escalation model auto-detected:</span>' +
+    '<span style="font-size:11px; font-weight:600; color:var(--gray-700);">' + (escLabels[escModel] || escModel) + '</span>' +
+    '<span style="margin-left:auto; font-size:11px; color:var(--gray-500);">2026 total: <strong style="color:var(--green); font-size:13px;">$' + Math.round(totalAnnual2026).toLocaleString() + '</strong></span>' +
+    '</div>';
+
+  // Source attribution
+  if (data.import_result && data.import_result.file_name) {
+    html += '<div style="font-size:11px; color:var(--gray-500); margin-bottom:14px;">' +
+      '📄 Imported from: <code style="background:rgba(0,0,0,0.05); padding:1px 6px; border-radius:3px; font-size:11px;">' + data.import_result.file_name.replace(/</g,'&lt;') + '</code></div>';
+  }
+
+  // Tenant grid
+  html += '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:14px;">';
+
+  tenants.forEach(t => {
+    const periods = t.rent_periods || [];
+    const years = [...new Set(periods.map(p => p.year))].sort();
+    const annualByYear = {};
+    years.forEach(y => {
+      annualByYear[y] = periods.filter(p => p.year === y).reduce((s, p) => s + (p.annualized || 0), 0);
+    });
+    const latestYear = years.length ? years[years.length - 1] : null;
+    const latestAnnual = latestYear ? annualByYear[latestYear] : 0;
+    const escLabel = escLabels[t.escalation_model] || t.escalation_model;
+
+    // Lease expiry warning
+    let leaseWarning = '';
+    if (t.lease_end) {
+      try {
+        const d = new Date(t.lease_end);
+        const monthsLeft = (d.getFullYear() * 12 + d.getMonth()) - (new Date().getFullYear() * 12 + new Date().getMonth());
+        if (monthsLeft < 12 && monthsLeft >= 0) {
+          leaseWarning = '<div style="background:var(--red-light); color:var(--red); padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-bottom:8px;">⚠ Lease ends ' + t.lease_end + '</div>';
+        }
+      } catch (e) {}
+    }
+
+    html += '<div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:14px;">';
+    html += '<div style="display:flex; align-items:flex-start; gap:10px; margin-bottom:8px;">';
+    html += '<div style="flex:1; min-width:0;">';
+    html += '<div style="font-weight:700; font-size:14px;">' + (t.tenant_name || 'Unnamed').replace(/</g,'&lt;') + '</div>';
+    if (t.unit_label) {
+      html += '<div style="font-size:11px; color:var(--gray-500); font-family:monospace;">Unit ' + t.unit_label.replace(/</g,'&lt;') + '</div>';
+    }
+    html += '</div>';
+    if (t.imported_from_excel) {
+      html += '<span style="background:var(--gray-100); color:var(--gray-600); font-size:9px; font-weight:600; padding:2px 6px; border-radius:3px;">FROM EXCEL</span>';
+    }
+    html += '</div>';
+
+    html += leaseWarning;
+
+    // Rent periods table
+    if (periods.length > 0) {
+      html += '<table style="width:100%; border-collapse:collapse; font-size:11px; margin-bottom:8px;">';
+      html += '<thead><tr><th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Year</th>' +
+              '<th style="text-align:left; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Period</th>' +
+              '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">$/mo</th>' +
+              '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">×</th>' +
+              '<th style="text-align:right; padding:4px 6px; color:var(--gray-500); font-weight:600; text-transform:uppercase; font-size:9px; border-bottom:1px solid var(--gray-200);">Annual</th></tr></thead><tbody>';
+      periods.forEach(p => {
+        html += '<tr>' +
+          '<td style="padding:4px 6px; color:var(--gray-600);">' + p.year + '</td>' +
+          '<td style="padding:4px 6px; font-family:monospace; color:var(--gray-700);">' + (p.period_label || '').replace(/</g,'&lt;') + '</td>' +
+          '<td style="padding:4px 6px; text-align:right; font-variant-numeric:tabular-nums;">$' + (p.monthly_rent || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2}) + '</td>' +
+          '<td style="padding:4px 6px; text-align:right; color:var(--gray-500);">' + (p.months_count || 0) + '</td>' +
+          '<td style="padding:4px 6px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums;">$' + Math.round(p.annualized || 0).toLocaleString() + '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+
+    // Annual summary
+    if (latestYear) {
+      html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px; text-align:center; font-size:13px; font-weight:700; color:var(--green);">' +
+        latestYear + ' annual: $' + Math.round(latestAnnual).toLocaleString() +
+        '</div>';
+    }
+
+    // Lease notes
+    if (t.lease_notes) {
+      html += '<details style="margin-top:8px;"><summary style="font-size:11px; color:var(--gray-500); cursor:pointer;">📝 Lease notes</summary>' +
+        '<div style="font-size:11px; color:var(--gray-700); margin-top:4px; padding:8px; background:#fafaf7; border-radius:6px; white-space:pre-wrap; max-height:160px; overflow:auto;">' +
+          (t.lease_notes).replace(/</g,'&lt;') +
+        '</div></details>';
+    }
+
+    html += '</div>';
+  });
+
+  html += '</div>';  // end grid
+
+  // Footer with status + actions
+  html += '<div style="margin-top:20px; padding:14px; background:#fafaf7; border:1px solid var(--gray-200); border-radius:8px; font-size:12px; color:var(--gray-600);">' +
+    '<strong>Phase 1 — Read-only viewer.</strong> Phase 2 (next ship) adds: editable tenant cards, rent-period add/delete, escalation engine UI, and Summary tab auto-feed (so changes here update rows 4040 / 4520 / 4250 / 4515-0010 on the Summary tab automatically). ' +
+    '<button onclick="commercialReimport()" style="margin-left:8px; padding:4px 10px; border:1px solid var(--gray-300); background:white; border-radius:4px; font-size:11px; cursor:pointer;">↻ Re-import from Excel</button>' +
+    '</div>';
+
+  contentDiv.innerHTML = html;
+}
+
+async function commercialReimport() {
+  if (!confirm('Re-import overwrites all current tenant data for this building with what is in the Excel. Continue?')) return;
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/import?force=1', {method: 'POST'});
+    const d = await resp.json();
+    if (d.status === 'imported' || d.status === 'exists') {
+      showToast('Re-imported ' + (d.imported || 0) + ' tenants', 'success');
+      renderCommercialTab(document.getElementById('sheetContent'));
+    } else {
+      alert('Re-import failed: ' + (d.error || d.status));
+    }
+  } catch (e) {
+    alert('Re-import error: ' + (e.message || e));
+  }
 }
 
 // ── History Tab ──
