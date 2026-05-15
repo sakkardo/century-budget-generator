@@ -7754,8 +7754,8 @@ def wizard_scan_findings(entity_code):
             if "operating assessment" in l_low: suggestion = "Assessment - Operating"; suggestion_kind = "alias_target"
             elif "storage room" in l_low: suggestion = "Storage Income"; suggestion_kind = "alias_target"
             elif "parking" == l_low: suggestion = "Garage"; suggestion_kind = "alias_target"
-            elif "cable" == l_low or "cable tv" in l_low: suggestion = "Cable TV (new canonical row needed)"; suggestion_kind = "new_canonical"
-            elif "flip tax" in l_low: suggestion = "Flip Tax (new canonical row needed)"; suggestion_kind = "new_canonical"
+            elif "cable" == l_low or "cable tv" in l_low: suggestion = "Cable TV (needs new standard row)"; suggestion_kind = "new_canonical"
+            elif "flip tax" in l_low: suggestion = "Flip Tax (needs new standard row)"; suggestion_kind = "new_canonical"
         unmapped_with_suggestions.append({
             "label": lbl,
             "suggested": suggestion,

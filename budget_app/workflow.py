@@ -5047,7 +5047,7 @@ def create_workflow_blueprint(db):
                     "key": "approved_file_labels",
                     "label": "Approved-file labels",
                     "status": "ok",
-                    "detail": "All labels map to canonical rows — import will be clean",
+                    "detail": "All labels match standard summary rows — import will be clean",
                     "action_url": None,
                     "action_label": None,
                 })
@@ -8472,7 +8472,7 @@ Promise.all([
         '<strong>' + scanFindings.length + ' unmapped label' + (scanFindings.length === 1 ? '' : 's') +
         (scan.file_name ? ' in <code>' + scan.file_name.replace(/</g, '&lt;') + '</code>' : '') + ':</strong>' +
         '<ul>' + lis + more + '</ul>' +
-        '<a class="ac-button" href="/admin/portfolio-health">Open canonical map</a> ' +
+        '<a class="ac-button" href="/admin/portfolio-health">Open standard label map</a> ' +
         '<a class="ac-button" href="/api/wizard/' + entityCode + '/scan-findings?refresh=1" onclick="event.preventDefault(); fetch(this.href, {method: \'POST\'}).then(()=>location.reload());">Re-scan</a>' +
       '</div>';
     }
@@ -15667,8 +15667,14 @@ async function renderBudgetSummary(contentDiv) {
         '</td></tr>';
     } else if (r.row_type === 'data') {
       const fn = r.footnote_marker ? '<span style="color:var(--gray-500);font-size:11px;font-weight:600;vertical-align:super;margin-left:2px;">'+r.footnote_marker+'</span>' : '';
-      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'">' +
-        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+'</td>' +
+      // Per-row × Delete button (FA directive 2026-05-14 Phase 4.3). Visible
+      // on hover only to keep the label cell quiet. Click → confirm dialog →
+      // /api/admin/delete-summary-row. The endpoint refuses to delete
+      // subtotal/section_header rows and imported rows (col6 set) — those
+      // failures bubble up as toasts.
+      const delBtn = '<button onclick="sumDeleteRow(this,\''+r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')" class="row-del-btn" title="Delete this row" style="opacity:0;margin-left:6px;background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;vertical-align:middle;transition:opacity 0.15s;">&times;</button>';
+      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'" onmouseenter="this.querySelector(\'.row-del-btn\').style.opacity=\'1\'" onmouseleave="this.querySelector(\'.row-del-btn\').style.opacity=\'0\'">' +
+        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
         makeInput(r.col2, r.label, 'c2', '#f9f9f7') +
@@ -15686,8 +15692,15 @@ async function renderBudgetSummary(contentDiv) {
       const bgStyle = isGrand ? 'background:#1e3a5f;color:white;' : isNet ? 'background:#f0f4f8;border-top:2px solid var(--gray-400);border-bottom:2px solid var(--gray-400);' : 'background:var(--gray-100);border-top:2px solid var(--gray-300);';
       const tdFrozen = isGrand ? 'background:#1e3a5f;color:white;' : isNet ? 'background:#f0f4f8;' : 'background:var(--gray-100);';
 
+      // Append manual "+ Add Row" button to sectional subtotals so every
+      // building (with or without section_header rows) gets row-creation
+      // affordance. Skip Net Operating + Total Surplus — those are computed,
+      // not editable. FA directive 2026-05-14 Phase 4.3.
+      const addRowBtn = (!isNet && !isGrand && r._sk)
+        ? ' <button onclick="event.stopPropagation();sumShowInsert(\''+r._sk+'\',\''+r.label.replace(/'/g,"\\'")+'\')" style="margin-left:10px;padding:3px 10px;border:1px dashed var(--gray-400);border-radius:6px;font-size:11px;font-weight:600;color:var(--gray-700);background:white;cursor:pointer;vertical-align:middle;">+ Add Row</button>'
+        : '';
       html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
-        '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+'</td>' +
+        '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+addRowBtn+'</td>' +
         '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
       // Option F: green fill for computed cells (subtotal + net), light-green text on dark blue for grand total. No fx badge.
       const computedCellStyle = isGrand
@@ -16657,17 +16670,18 @@ async function sumShowInsert(secKey, secLabel) {
   //   2) custom name (one-off, no GL auto-pull)
   //   3) specific GL (search the building's own GL codes)
   modal.innerHTML = '<h3 style="font-size:15px;font-weight:700;color:var(--blue-dark);margin-bottom:6px;">Add Row to '+secLabel+'</h3>' +
-    '<div style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">Choose how to identify the new row. Canonical rows pull GL data automatically; specific GLs let you target a single GL code; custom names are manual-entry.</div>' +
+    '<div style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">Pick how to identify the new row. Standard rows pull GL data automatically; specific GLs let you target a single GL code; custom names are manual-entry only.</div>' +
     '<div style="display:flex;gap:6px;margin-bottom:12px;font-size:12px;background:var(--gray-100);padding:4px;border-radius:8px;">' +
-      '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;background:white;font-weight:600;border:1px solid transparent;" id="sumInsModeLbl_canonical"><input type="radio" name="sumInsMode" value="canonical" checked style="margin-right:4px;">Canonical row</label>' +
+      '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;background:white;font-weight:600;border:1px solid transparent;" id="sumInsModeLbl_canonical"><input type="radio" name="sumInsMode" value="canonical" checked style="margin-right:4px;">Standard row</label>' +
       '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid transparent;" id="sumInsModeLbl_gl"><input type="radio" name="sumInsMode" value="gl" style="margin-right:4px;">Specific GL</label>' +
       '<label style="flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid transparent;" id="sumInsModeLbl_custom"><input type="radio" name="sumInsMode" value="custom" style="margin-right:4px;">Custom name</label>' +
     '</div>' +
-    // Mode 1: canonical row dropdown
+    // Mode 1: standard row dropdown (the system\'s pre-built list of summary
+    // row labels — formerly called "canonical". Renamed for FA clarity.)
     '<div id="sumInsCanonicalBlock">' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Canonical row</label>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:4px;">Pick from the standard row list</label>' +
       dropdownHtml +
-      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">'+available.length+' available canonical labels for this section. New row auto-pulls GL data via the canonical map.</div>' +
+      '<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">'+available.length+' standard label(s) available for this section. The new row will auto-pull GL data from the standard mapping.</div>' +
     '</div>' +
     // Mode 2: specific GL search
     '<div id="sumInsGLBlock" style="display:none;">' +
@@ -16799,6 +16813,65 @@ function sumCloseInsert() {
   if (o) o.style.display = 'none';
 }
 
+// Delete a summary row. Calls /api/admin/delete-summary-row (FA-callable,
+// no admin auth required since 2026-05-11). The endpoint:
+//   - refuses subtotal/section_header rows (returns 403)
+//   - refuses imported rows with col6_approved_budget set unless merge_into_label given
+//   - succeeds for FA-created data rows
+// On 403 or any error, show a toast and leave the row in place.
+// FA directive 2026-05-14 Phase 4.3.
+async function sumDeleteRow(btnEl, label) {
+  if (!label) return;
+  if (!confirm('Delete row "' + label + '"? This cannot be undone (re-import the approved file to restore).')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '…'; }
+  try {
+    const resp = await fetch('/api/admin/delete-summary-row', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_code: entityCode, label: label})
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      const msg = data.error || ('HTTP ' + resp.status);
+      // Endpoint returns 403 with "Cannot delete a row imported..." when the row has
+      // imported budget values (col6_approved_budget set). Offer the merge path.
+      const isImportedRowRefusal = resp.status === 403 && /imported|approved/i.test(msg);
+      if (isImportedRowRefusal) {
+        const target = prompt(
+          'This row was imported from the approved budget file and has values that would be lost on delete.\n\n' +
+          'Type the EXACT label of another row to merge this one INTO (its values get added to that row, then this row is removed). Or click Cancel.'
+        );
+        if (target && target.trim()) {
+          const merged = await fetch('/api/admin/delete-summary-row', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({entity_code: entityCode, label: label, merge_into_label: target.trim()})
+          });
+          const md = await merged.json();
+          if (!merged.ok || md.error) {
+            alert('Merge failed: ' + (md.error || merged.status));
+            if (btnEl) { btnEl.disabled = false; btnEl.textContent = '×'; }
+            return;
+          }
+          showToast('Merged "' + label + '" into "' + target.trim() + '"', 'success');
+          loadDetail();
+          return;
+        }
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '×'; }
+        return;
+      }
+      alert('Delete failed: ' + msg);
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = '×'; }
+      return;
+    }
+    showToast('Row "' + label + '" deleted', 'success');
+    loadDetail();
+  } catch (e) {
+    alert('Delete error: ' + (e.message || e));
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '×'; }
+  }
+}
+
 // FA directive 2026-05-05: one-click "Add Row" for an orphan GL surfaced in
 // the warnings banner. Pre-fills label = description, prefix = GL 4-digit
 // base, section = inferred from category. Skips the modal entirely.
@@ -16872,7 +16945,7 @@ async function sumDoInsert(secKey) {
   if (mode === 'canonical') {
     const sel = document.getElementById('sumInsCanonical');
     const choice = sel ? sel.value : '';
-    if (!choice) { alert('Pick a canonical row from the dropdown.'); return; }
+    if (!choice) { alert('Pick a standard row from the dropdown.'); return; }
     label = choice;
     isCanonical = true;
   } else if (mode === 'gl') {
@@ -19707,12 +19780,17 @@ const DRAWER_GATE_COPY = {
     detail: (orig) => 'There are no payroll positions configured for this building, so the payroll forecast can\'t run. Open the Payroll tab and add at least one position.'
   },
   approved_file_labels: {
-    label: 'Map last year\'s row labels to summary rows',
+    label: 'Match last year\'s row labels to summary rows',
     detail: (orig) => {
       // Original: "6 labels won't aggregate — multiple summary rows will be $0"
+      // OK-case original: "All labels map to canonical rows — import will be clean"
       const m = (orig || '').match(/(\d+)\s+label/);
-      const n = m ? m[1] : '?';
-      return n + ' row label(s) in last year\'s approved budget Excel don\'t match this system\'s canonical summary rows. If you import the file without mapping them, those rows of data drop to $0. Click "Show labels" to see which ones.';
+      if (!m) {
+        // OK case (or anything without a number) — pass through clean text.
+        return 'All row labels in last year\'s approved budget Excel match a standard summary row. Import will be clean.';
+      }
+      const n = m[1];
+      return n + ' row label(s) in last year\'s approved budget Excel don\'t match any of this system\'s standard summary rows. If you import the file without matching them, those rows of data drop to $0. Click "Show labels" to see which ones, then either rename them in the Excel or add a new standard row to match.';
     }
   },
   generated: {
@@ -19762,10 +19840,10 @@ function toggleDrawerExpand(gateKey) {
       });
       html += '</tbody></table>';
       html += '<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">';
-      html += '<a href="/admin/portfolio-health" target="_blank" class="ac-btn">Open canonical label map →</a>';
+      html += '<a href="/admin/portfolio-health" target="_blank" class="ac-btn">Open standard label map →</a>';
       html += '<button onclick="rescanLabels(\'' + entityCode + '\')" class="ac-btn">Re-scan after fixing</button>';
       html += '</div>';
-      html += '<div style="margin-top:8px; font-size:10px; color:var(--gray-500); line-height:1.5;">For each label above, either (a) add a canonical row that matches, or (b) rename the row in the Excel so it matches an existing canonical. Then re-scan to refresh this list.</div>';
+      html += '<div style="margin-top:8px; font-size:10px; color:var(--gray-500); line-height:1.5;">For each label above, either (a) add a standard row with that name, or (b) rename the row in the Excel so it matches an existing standard row. Then re-scan to refresh this list.</div>';
       html += '</div>';
       wrap.innerHTML = html;
     };
