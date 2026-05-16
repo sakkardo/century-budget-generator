@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Excel Export — Full Data Mapping Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#f4f1eb; --card:white; --border:#e5e0d5; --text:#1a1714;
+    --muted:#8a7e72; --brown:#5a4a3f; --brown-light:#f5efe7;
+    --red:#e02424; --green:#057a55; --green-light:#def7ec;
+    --amber:#d97706; --amber-light:#fef3c7;
+    --gray-100:#ede9e1; --gray-200:#e5e0d5; --gray-300:#d5cfc5;
+    --blue:#2563eb; --blue-light:#dbeafe;
+    --excel:#217346; --excel-light:#dcfce7;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Plus Jakarta Sans', system-ui, sans-serif; background:var(--bg); color:var(--text); font-size:13px; line-height:1.55; }
+  code, .mono { font-family:'JetBrains Mono', monospace; font-size:11.5px; }
+
+  .top-nav { background:white; border-bottom:1px solid var(--gray-200); padding:12px 24px; display:flex; align-items:center; gap:18px; position:sticky; top:0; z-index:50; }
+  .top-nav .brand { font-weight:700; font-size:15px; }
+  .top-nav .design-tag { background:var(--excel); color:white; padding:3px 10px; border-radius:4px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
+  .top-nav .meta { color:var(--muted); font-size:12px; margin-left:auto; }
+  .container { max-width:1400px; margin:0 auto; padding:24px; }
+  h1 { font-size:24px; font-weight:800; margin-bottom:6px; }
+  h2 { font-size:18px; font-weight:700; margin:24px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--brown); }
+  h3 { font-size:14px; font-weight:700; margin:12px 0 8px; }
+  h4 { font-size:12px; font-weight:700; margin:8px 0 6px; }
+  .lede { color:var(--muted); font-size:14px; margin-bottom:24px; max-width:900px; }
+
+  .section { background:white; border-radius:12px; border:1px solid var(--gray-200); padding:20px 24px; margin-bottom:20px; }
+  .section-head { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .section-head .num { background:var(--brown); color:white; width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; }
+  .section-head h2 { margin:0; border:none; padding:0; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:4px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; }
+  .badge.red { background:var(--red); color:white; }
+  .badge.green { background:var(--green); color:white; }
+  .badge.amber { background:var(--amber); color:white; }
+  .badge.blue { background:var(--blue); color:white; }
+  .badge.gray { background:var(--gray-200); color:var(--muted); }
+  .badge.excel { background:var(--excel); color:white; }
+  .badge.outline-amber { background:transparent; color:var(--amber); border:1px solid var(--amber); }
+  .badge.outline-red { background:transparent; color:var(--red); border:1px solid var(--red); }
+
+  table { width:100%; border-collapse:collapse; margin:6px 0 12px; }
+  table th { background:#fafaf7; text-align:left; padding:6px 10px; font-size:10.5px; text-transform:uppercase; color:var(--muted); font-weight:600; border-bottom:1px solid var(--gray-200); }
+  table td { padding:6px 10px; font-size:12px; border-bottom:1px solid var(--gray-100); vertical-align:top; }
+  table td.mono { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--gray-700); }
+  table tr:hover td { background:rgba(0,0,0,0.02); }
+
+  /* Mapping table */
+  .map-row { display:grid; grid-template-columns: 1.3fr 28px 1.5fr 80px; gap:10px; padding:8px 10px; border-bottom:1px solid var(--gray-100); align-items:center; }
+  .map-row.head { background:#fafaf7; font-size:10px; text-transform:uppercase; color:var(--muted); font-weight:600; padding:6px 10px; }
+  .map-row .arrow { font-size:18px; color:var(--brown); text-align:center; }
+  .map-row .product { font-size:12px; }
+  .map-row .product .src { color:var(--muted); font-size:10.5px; font-family:'JetBrains Mono', monospace; }
+  .map-row .excel { font-size:12px; }
+  .map-row .excel .dest { color:var(--muted); font-size:10.5px; }
+
+  .status-pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+  .status-clear { background:var(--green-light); color:var(--green); }
+  .status-partial { background:var(--amber-light); color:var(--amber); }
+  .status-unknown { background:#fee2e2; color:var(--red); }
+  .status-static { background:var(--gray-200); color:var(--gray-700); }
+
+  .question { background:#fffbeb; border-left:4px solid var(--amber); border-radius:6px; padding:10px 14px; margin:10px 0; font-size:12.5px; }
+  .question .qhead { font-weight:700; font-size:13px; color:#9a3412; margin-bottom:4px; }
+  .question .qopts { color:var(--gray-700); }
+
+  .toc { background:#fafaf7; padding:14px 18px; border-radius:8px; margin-bottom:24px; }
+  .toc a { color:var(--brown); text-decoration:none; }
+  .toc a:hover { text-decoration:underline; }
+
+  .legend { display:flex; gap:14px; padding:10px 14px; background:#fafaf7; border-radius:8px; font-size:11px; margin-bottom:14px; flex-wrap:wrap; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .dot-clear { background:var(--green); }
+  .dot-partial { background:var(--amber); }
+  .dot-unknown { background:var(--red); }
+  .dot-static { background:var(--gray-300); }
+
+  .meta-bar { background:#15110f; color:#f5efe7; padding:12px 24px; font-size:12px; display:flex; justify-content:space-between; align-items:center; margin-top:24px; }
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <span class="brand">Century Management</span>
+  <span class="design-tag">Excel Export Mapping</span>
+  <span class="meta">Building 148 reference data · Pre-build review</span>
+</nav>
+
+<div class="container">
+
+<h1>Excel Export — Full Mapping Preview</h1>
+<p class="lede">
+  Goal: when the FA hits Download, the resulting Excel mirrors the product 100%. Every cell either matches the product, computes from a formula, or is left untouched as static reference data. <strong>Before any build</strong>, this document maps every Excel tab to its data source in the product (or flags it as unknown / formula / static), and surfaces decisions you need to make.
+</p>
+
+<div class="toc">
+  <strong>Contents:</strong>
+  <a href="#A">A. Product data inventory</a> ·
+  <a href="#B">B. Excel tabs (Building 148)</a> ·
+  <a href="#C">C. Full mapping</a> ·
+  <a href="#D">D. Open questions</a> ·
+  <a href="#E">E. Proposed build plan</a>
+</div>
+
+<div class="legend">
+  <strong>Status legend:</strong>
+  <span><span class="dot dot-clear"></span> <strong>Clear</strong> — product owns this, mapping is obvious</span>
+  <span><span class="dot dot-partial"></span> <strong>Partial</strong> — product has some of it, gaps remain</span>
+  <span><span class="dot dot-unknown"></span> <strong>Unknown</strong> — needs your call</span>
+  <span><span class="dot dot-static"></span> <strong>Static / formula</strong> — leave the Excel cell as-is</span>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<!-- SECTION A: PRODUCT DATA INVENTORY -->
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<div class="section" id="A">
+  <div class="section-head"><span class="num">A</span><h2>Product data inventory — what we own in the DB</h2></div>
+  <p style="margin-bottom:10px; color:var(--muted);">Every table in the app that holds budget-related data. The Excel export needs to source from these.</p>
+
+  <table>
+    <thead>
+      <tr><th>Table</th><th>What it holds</th><th>148 example</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">budgets</td>
+        <td>Per-building budget record: status, FA notes, <code>assumptions_json</code>, <code>payroll_settings_json</code>, presentation token</td>
+        <td>entity 148, year 2027, status "not_started", assumptions contain <code>budget_period</code>, rate increases, etc.</td>
+      </tr>
+      <tr>
+        <td class="mono">budget_lines</td>
+        <td>Raw GL line items: gl_code, sheet_name, description, ytd_actual, prior_year, ytd_budget, current_budget, accruals/unpaid, FA overrides (proposed_budget, estimate_override, forecast_override, etc.)</td>
+        <td>~1,500 lines per building. E.g. <code>4040-0000 Commercial Rent</code> with ytd_actual=$316K, current_budget=$429K</td>
+      </tr>
+      <tr>
+        <td class="mono">budget_summary_rows</td>
+        <td>The 9-column Summary tab: label, section, row_type, footnote, <strong>col1_prior_actual</strong>, <strong>col6_approved_budget</strong>, <strong>col7_proposed_budget</strong>, col3/4/5 overrides, gl_prefixes_json, source_tab</td>
+        <td>39 rows for 148 covering Income / Expenses / Non-Op / Grand Total</td>
+      </tr>
+      <tr>
+        <td class="mono">building_info</td>
+        <td>Address, BBL block/lot, building type (Co-op/Condo/Rental), property class, units count, year built, etc.</td>
+        <td>148 = 130 East 18th Street Owners Corp, Co-op</td>
+      </tr>
+      <tr>
+        <td class="mono">commercial_tenants</td>
+        <td>NEW: tenant_name, unit_label, lease_start/end, lease_notes, escalation_model, tenant_share_pct, base_year_re_tax, base_year_opex</td>
+        <td>3 tenants for 148: Mack Dermatology, Integrated Aesthetic Dentistry, Garage</td>
+      </tr>
+      <tr>
+        <td class="mono">commercial_rent_periods</td>
+        <td>NEW: per-tenant rent schedule by year + period (Jan-Feb, Mar-Dec, etc.) with monthly_rent + months_count</td>
+        <td>148 has 8 rent periods spanning 2025/2026 across the 3 tenants</td>
+      </tr>
+      <tr>
+        <td class="mono">commercial_tenant_billbacks</td>
+        <td>NEW: per-tenant utility billback categories + base year amounts (deferred, schema exists but not yet populated)</td>
+        <td>Would hold 212's "Gas&amp;Electric base $61,800" etc.</td>
+      </tr>
+      <tr>
+        <td class="mono">payroll_positions</td>
+        <td>Per-position headcount, hourly_rate, bonus, wage_increase_mode/value, extra_bonuses_json, benefit_adjustments_json</td>
+        <td>148: ~6 positions (Super, Porter, Doorman 1-4, etc.)</td>
+      </tr>
+      <tr>
+        <td class="mono">payroll_assumptions</td>
+        <td>Per-building payroll assumption overrides: weeks_worked, bonuses, benefit rates</td>
+        <td>Per-building seeded from defaults</td>
+      </tr>
+      <tr>
+        <td class="mono">audit_uploads</td>
+        <td>FY-end audited financials: pdf_filename, mapped_data (auditor categories → values), raw_extraction, summary_overrides (FA edits), confirmed_at</td>
+        <td>148 has FY2025 confirmed by system 2026-05-13</td>
+      </tr>
+      <tr>
+        <td class="mono">data_sources</td>
+        <td>Audit confirmation tracking (which audit row is "the" col2 source per building)</td>
+        <td>148 has fy2025 confirmed</td>
+      </tr>
+      <tr>
+        <td class="mono">maint_proof_reports + units</td>
+        <td>Maintenance proof of values: per-unit monthly maintenance/common charges schedule</td>
+        <td>148 has ~120 units worth of maint proof data</td>
+      </tr>
+      <tr>
+        <td class="mono">open_ap_reports + invoices</td>
+        <td>Open AP at year end (accruals): per-invoice amounts by GL</td>
+        <td>Used to populate "Unpaid" column on input sheets</td>
+      </tr>
+      <tr>
+        <td class="mono">repository_files</td>
+        <td>Supporting documents: insurance schedules, mortgage statements, leases, etc.</td>
+        <td>Per-building file uploads</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<!-- SECTION B: EXCEL TABS INVENTORY -->
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<div class="section" id="B">
+  <div class="section-head"><span class="num">B</span><h2>Excel structure — what's in Building 148's approved Excel</h2></div>
+  <p style="margin-bottom:10px; color:var(--muted);">26 tabs total. Tab name (rows × cols) and what it appears to hold based on inspection.</p>
+
+  <table>
+    <thead>
+      <tr><th style="width:200px;">Tab</th><th>Rows × Cols</th><th>Purpose</th><th>Formula-heavy?</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="mono"><strong>yrlycomp</strong></td><td>~95 × 15</td><td>The summary tab — 9-column budget overview. Income, Expenses, Non-Operating, Grand Total. This is the LEGAL artifact.</td><td>Heavy — cross-sheet SUMIFs</td></tr>
+      <tr><td class="mono">VLookup Data</td><td>752 × 8</td><td>SUMIF aggregations from yardi_data per GL code. Intermediate.</td><td>Pure formula</td></tr>
+      <tr><td class="mono">yardi_data (2)</td><td>663 × 12</td><td>Raw GL data straight from Yardi (the accounting system).</td><td>Static data</td></tr>
+      <tr><td class="mono">COV</td><td>41 × 8</td><td>Cover page — building name, FA, PM, year. Branding.</td><td>Light formulas</td></tr>
+      <tr><td class="mono">contents</td><td>80 × 6</td><td>Table of contents / sheet index.</td><td>Static</td></tr>
+      <tr><td class="mono">bud</td><td>84 × 15</td><td>Board presentation summary — condensed version for board review.</td><td>Formulas from yrlycomp</td></tr>
+      <tr><td class="mono">Income</td><td>125 × 22</td><td>Income detail by line item with all 9 columns + notes.</td><td>Heavy</td></tr>
+      <tr><td class="mono"><strong>Comm Rent &amp; Escalations</strong></td><td>71 × 13</td><td>Per-tenant rent schedule + escalation math (the new Commercial tab data).</td><td>Heavy — pulls from RE Taxes tab</td></tr>
+      <tr><td class="mono">EXP-Pie</td><td>chart</td><td>Visual chart of expense breakdown.</td><td>Chart object</td></tr>
+      <tr><td class="mono">pyrl</td><td>108 × 15</td><td>Payroll detail data — per-position calculations.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Payroll</td><td>122 × 20</td><td>Payroll worksheet — formatted summary version.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Gas</td><td>64 × 17</td><td>Gas heating detail — per-month usage + rate escalations.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Electric</td><td>86 × 14</td><td>Electric detail by service period.</td><td>Heavy</td></tr>
+      <tr><td class="mono">elect</td><td>87 × 13</td><td>Electric data source (raw).</td><td>Formula-driven</td></tr>
+      <tr><td class="mono">Gas Cooking</td><td>83 × 14</td><td>Cooking gas detail (separate from heating gas).</td><td>Heavy</td></tr>
+      <tr><td class="mono">Steam</td><td>140 × 31</td><td>Steam heating detail — per-month usage.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Repairs &amp; Supplies</td><td>80 × 15</td><td>R&amp;S line item detail.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Gen &amp; Admin</td><td>80 × 19</td><td>G&amp;A line items.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Mortgage Info and Amort(NO PDF)</td><td>31 × 13</td><td>Mortgage schedule + amortization.</td><td>Heavy</td></tr>
+      <tr><td class="mono">Insurance-Sched(No PDF)</td><td>70 × 11</td><td>Per-policy insurance schedule.</td><td>Light</td></tr>
+      <tr><td class="mono">Water</td><td>156 × 22</td><td>Water &amp; sewer detail.</td><td>Heavy</td></tr>
+      <tr><td class="mono">wtrswr</td><td>51 × 14</td><td>W&amp;S data source.</td><td>Formula-driven</td></tr>
+      <tr><td class="mono">Water Usage</td><td>91 × 23</td><td>Per-period water usage.</td><td>Heavy</td></tr>
+      <tr><td class="mono">RE Taxes</td><td>68 × 13</td><td>Real estate tax schedule — feeds escalation math.</td><td>Heavy</td></tr>
+      <tr><td class="mono">CAP</td><td>112 × 9</td><td>Capital expenses schedule.</td><td>Light</td></tr>
+      <tr><td class="mono">maint proof</td><td>283 × 12</td><td>Per-unit maintenance/common-charge proof.</td><td>Heavy</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<!-- SECTION C: THE MAPPING -->
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<div class="section" id="C">
+  <div class="section-head"><span class="num">C</span><h2>The mapping — Excel tab × product data</h2></div>
+  <p style="margin-bottom:14px; color:var(--muted);">For each tab, where the values come from + recommended export action.</p>
+
+  <!-- yrlycomp -->
+  <h3>1. <code>yrlycomp</code> &mdash; the summary <span class="status-pill status-clear">Clear</span></h3>
+  <div class="map-row head"><span>PRODUCT</span><span></span><span>EXCEL</span><span>STATUS</span></div>
+  <div class="map-row">
+    <div class="product">BudgetSummaryRow.label / section / row_type<div class="src">budget_summary_rows table</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Column A row labels<div class="dest">e.g. A6 "Maintenance"</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">col1_prior_actual<div class="src">budget_summary_rows.col1_prior_actual</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Col 1 (BY-3 Actual)<div class="dest">e.g. C6 for Maintenance</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">Audit data (auditor mapped_data + FA summary_overrides)<div class="src">audit_uploads.mapped_data / summary_overrides</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Col 2 (BY-2 Actual)<div class="dest">Audit-aware computed</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">GL aggregation from budget_lines (col3=YTD, col4=Estimate, col5=Forecast). Also col3/4/5 overrides.<div class="src">budget_lines (raw) + col3/4/5 overrides on summary_rows</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Col 3-5 (YTD / Est / Forecast)<div class="dest">Computed via SUMIF in Excel today; we can write values OR formulas</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">col6_approved_budget (the imported 2026 budget)<div class="src">budget_summary_rows.col6_approved_budget</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Col 6 (Prior Year Budget)<div class="dest">e.g. K6 for Maintenance</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">col7_proposed_budget (the FA's 2027 budget)<div class="src">budget_summary_rows.col7_proposed_budget</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Col 7 (Budget Year)<div class="dest">e.g. M6 for Maintenance</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+
+  <!-- VLookup Data + yardi_data -->
+  <h3 style="margin-top:24px;">2-3. <code>VLookup Data</code> + <code>yardi_data (2)</code> &mdash; raw + intermediate <span class="status-pill status-unknown">Decision needed</span></h3>
+  <div class="map-row">
+    <div class="product">budget_lines (raw GL data)<div class="src">budget_lines table — ~1,500 rows per building</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">yardi_data (2)<div class="dest">Cols A-L: GL code, descr, period_1 through period_n</div></div>
+    <div><span class="status-pill status-partial">Partial</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">none — Excel formula-driven<div class="src">=SUMIF('yardi_data (2)'!$A:$A, ...)</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">VLookup Data<div class="dest">Computed from yardi_data</div></div>
+    <div><span class="status-pill status-static">Formula</span></div>
+  </div>
+
+  <div class="question">
+    <div class="qhead">Q1: yardi_data refresh — write from product OR leave as imported?</div>
+    <div class="qopts">
+      The product stores <code>budget_lines</code> which is essentially what's in <code>yardi_data (2)</code> at the time of import. After the FA does YTD updates / accruals / unpaid edits, the product is the source of truth, but the Excel's yardi_data tab still reflects the original import.
+      <br><br>
+      <strong>Options:</strong>
+      <br>(A) Rewrite yardi_data on export from budget_lines current state — VLookup formulas auto-recompute and the file is self-consistent.
+      <br>(B) Leave yardi_data as imported, only overwrite specific cells. Faster, less risky, but yardi_data lags.
+      <br>(C) Add a third "yardi_data_current" tab with the product's current state, leave the original. Auditor sees both.
+    </div>
+  </div>
+
+  <!-- Comm Rent -->
+  <h3 style="margin-top:24px;">4. <code>Comm Rent &amp; Escalations</code> &mdash; rewrite from product <span class="status-pill status-clear">Clear</span></h3>
+  <div class="map-row">
+    <div class="product">CommercialTenant.tenant_name / unit_label<div class="src">commercial_tenants</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Tenant header rows (col B)<div class="dest">e.g. B10 "Dr. Lian Mack"</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">CommercialRentPeriod.year / period_label / monthly_rent / months_count<div class="src">commercial_rent_periods</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Rent table rows<div class="dest">cols C/D/E (period / $/mo / annualized)</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">CommercialTenant.tenant_share_pct / base_year_re_tax<div class="src">commercial_tenants escalation fields</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Escalation math rows<div class="dest">Base / Share / Escalation Due</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">lease_notes (text)<div class="src">commercial_tenants.lease_notes</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Comment column I/K<div class="dest">Plain text lease commentary</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">Auto-computed sum of all periods × months<div class="src">SQL aggregation</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Summary feed rows (4040, 4520)<div class="dest">Bottom of sheet — pulls into yrlycomp</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+
+  <div class="question">
+    <div class="qhead">Q2: Comm Rent sheet — formulas or hardcoded values?</div>
+    <div class="qopts">
+      The Excel today has formulas like <code>=D10*2</code> (rent × months) and <code>=SUMIF('VLookup Data'!...)</code> for the summary feed.
+      <br><br>
+      <strong>Options:</strong>
+      <br>(A) Write live Excel formulas — auditor can see the math and click cells to follow it.
+      <br>(B) Hardcode computed values from product — simpler, but auditor sees "magic numbers."
+      <br><br>
+      <strong>Rec:</strong> A — match the Excel's existing style. We have all the inputs.
+    </div>
+  </div>
+
+  <!-- Payroll -->
+  <h3 style="margin-top:24px;">5. <code>Payroll</code> + <code>pyrl</code> &mdash; payroll detail <span class="status-pill status-partial">Partial</span></h3>
+  <div class="map-row">
+    <div class="product">PayrollPosition (employees, hourly, bonuses, benefits)<div class="src">payroll_positions</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Position rows in Payroll tab<div class="dest">Per-row position detail</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">PayrollAssumption (weeks, rates, bonuses)<div class="src">payroll_assumptions</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Assumption cells in Payroll<div class="dest">Header rows of payroll sheet</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">Computed payroll total (per-position wages + benefits)<div class="src">Internal calc</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Payroll total row<div class="dest">Feeds yrlycomp row 21 (Payroll)</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+
+  <div class="question">
+    <div class="qhead">Q3: Payroll worksheet vs Payroll data — which to overwrite?</div>
+    <div class="qopts">
+      The Excel has TWO tabs: <code>Payroll</code> (formatted worksheet) and <code>pyrl</code> (data table). They probably have a producer/consumer relationship.
+      <br><br>
+      <strong>Options:</strong>
+      <br>(A) Write to <code>pyrl</code> (data), let formulas in <code>Payroll</code> recompute.
+      <br>(B) Write directly to <code>Payroll</code> (visible worksheet) — overwrites formulas.
+      <br>(C) Write to both consistently — most correct, most code.
+      <br><br>
+      <strong>Need your input on the source-of-truth relationship between these two tabs.</strong>
+    </div>
+  </div>
+
+  <!-- Energy / Water / etc. -->
+  <h3 style="margin-top:24px;">6. <code>Gas / Electric / Steam / Water / Gas Cooking</code> &mdash; energy + utilities <span class="status-pill status-partial">Partial</span></h3>
+  <div class="map-row">
+    <div class="product">Assumptions: electric_rate_increase, gas_rate_increase, water_rate_increase, oil_rate_increase, etc.<div class="src">budgets.assumptions_json</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Rate-bump cells on each energy sheet<div class="dest">e.g. Electric!H5</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">Per-line YTD / forecast / proposed budget overrides<div class="src">budget_lines.forecast_override / proposed_budget</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Computed cells on each sheet<div class="dest">Worksheet formulas use rate × baseline</div></div>
+    <div><span class="status-pill status-partial">Partial</span></div>
+  </div>
+
+  <div class="question">
+    <div class="qhead">Q4: Energy sheets — write per-line overrides explicitly, or just assumptions?</div>
+    <div class="qopts">
+      Most energy sheets are "rate × prior year usage = forecast" formulas. The FA mostly edits the rate (an assumption). Sometimes FA overrides a specific line's forecast.
+      <br><br>
+      <strong>Options:</strong>
+      <br>(A) Only write the rate assumption; let the Excel formulas do the rest. Cleanest.
+      <br>(B) Write both rate AND every line override the FA made.
+      <br><br>
+      <strong>Rec:</strong> B — the FA's overrides are part of the product's truth and need to land somewhere on the worksheet (probably the "Forecast" column with a "FA edit" comment marker).
+    </div>
+  </div>
+
+  <!-- RE Taxes -->
+  <h3 style="margin-top:24px;">7. <code>RE Taxes</code> &mdash; real estate tax schedule <span class="status-pill status-unknown">Unknown</span></h3>
+  <div class="question">
+    <div class="qhead">Q5: Who owns RE Tax data?</div>
+    <div class="qopts">
+      The product has a <code>re_taxes</code> field but I haven't traced where it comes from end-to-end. The Excel has a full RE Taxes sheet that the Comm Rent escalation math references.
+      <br><br>
+      <strong>Need your input:</strong> Is RE Tax data sourced from (a) the audit, (b) DOF (Department of Finance) data we pull, (c) FA manual entry, or (d) a mix? Once known I can map it cleanly.
+    </div>
+  </div>
+
+  <!-- maint proof -->
+  <h3 style="margin-top:24px;">8. <code>maint proof</code> &mdash; per-unit maintenance schedule <span class="status-pill status-clear">Clear</span></h3>
+  <div class="map-row">
+    <div class="product">MaintenanceProofUnit (per-unit monthly maintenance + common charge)<div class="src">maint_proof_units</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">Per-unit rows in maint proof tab<div class="dest">~120 rows × 12 cols for 148</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+
+  <!-- CAP -->
+  <h3 style="margin-top:24px;">9. <code>CAP</code> &mdash; capital expenses <span class="status-pill status-partial">Partial</span></h3>
+  <div class="map-row">
+    <div class="product">budget_lines where sheet_name = 'Capital' (or similar)<div class="src">budget_lines</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">CAP tab rows<div class="dest">Capital line items with proposed amounts</div></div>
+    <div><span class="status-pill status-partial">Partial</span></div>
+  </div>
+
+  <div class="question">
+    <div class="qhead">Q6: Capital is treated specially in the product (separate section). Should the CAP tab in Excel auto-flow from those lines, or stay as a manual FA artifact?</div>
+  </div>
+
+  <!-- Mortgage + Insurance -->
+  <h3 style="margin-top:24px;">10. <code>Mortgage Info and Amort</code> + <code>Insurance-Sched</code> <span class="status-pill status-unknown">Unknown</span></h3>
+  <div class="question">
+    <div class="qhead">Q7: Mortgage + Insurance schedules — does the product track these?</div>
+    <div class="qopts">
+      The product has <code>repository_files</code> for supporting docs but I don't see structured mortgage/insurance data in any table.
+      <br><br>
+      <strong>Options:</strong>
+      <br>(A) Leave these tabs as-is from the imported Excel (no rewrite, FA edits in Excel afterward).
+      <br>(B) Build new product tables to capture this data so it can roundtrip.
+      <br><br>
+      <strong>Rec:</strong> A for now. Wrap into a future phase if we want full round-trip fidelity.
+    </div>
+  </div>
+
+  <!-- Cover / Contents / EXP-Pie / bud -->
+  <h3 style="margin-top:24px;">11. <code>COV</code> + <code>contents</code> + <code>bud</code> + <code>EXP-Pie</code> &mdash; presentation tabs <span class="status-pill status-static">Mostly static</span></h3>
+  <div class="map-row">
+    <div class="product">BuildingInfo (name, FA, PM, year)<div class="src">building_info + budgets.assignments</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">COV / bud header cells<div class="dest">Branding + FA/PM identity</div></div>
+    <div><span class="status-pill status-clear">Clear</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">none<div class="src">—</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">contents (table of contents)<div class="dest">Pure metadata about sheet positions</div></div>
+    <div><span class="status-pill status-static">Static</span></div>
+  </div>
+  <div class="map-row">
+    <div class="product">none<div class="src">—</div></div>
+    <div class="arrow">→</div>
+    <div class="excel">EXP-Pie chart<div class="dest">Recomputes automatically from yrlycomp values when Excel opens</div></div>
+    <div><span class="status-pill status-static">Auto</span></div>
+  </div>
+
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<!-- SECTION D: OPEN QUESTIONS -->
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<div class="section" id="D">
+  <div class="section-head"><span class="num">D</span><h2>All open questions in one place</h2></div>
+  <p style="margin-bottom:14px; color:var(--muted);">Answers to these unblock the build. Numbered to match the inline questions above.</p>
+
+  <table>
+    <thead>
+      <tr><th style="width:40px;">#</th><th style="width:240px;">Question</th><th>My recommendation</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Q1</td><td>yardi_data refresh — write from product OR leave as imported?</td><td><strong>A</strong> — rewrite from current <code>budget_lines</code>. Lets VLookup formulas auto-recompute. The file is fully self-consistent.</td></tr>
+      <tr><td>Q2</td><td>Comm Rent — formulas or hardcoded values?</td><td><strong>A</strong> — write Excel formulas. Auditor can click cells to follow the math.</td></tr>
+      <tr><td>Q3</td><td>Payroll worksheet vs pyrl data — which to write?</td><td>Need your input on which is the source-of-truth. Most likely write to both consistently.</td></tr>
+      <tr><td>Q4</td><td>Energy sheets — write per-line overrides or just assumption rate?</td><td><strong>B</strong> — write both. FA's line overrides need to land somewhere so they don't vanish.</td></tr>
+      <tr><td>Q5</td><td>RE Tax data source?</td><td>Need your input. Is it audit / DOF / FA manual / mix?</td></tr>
+      <tr><td>Q6</td><td>CAP — auto-flow from product or manual FA artifact?</td><td>Probably auto-flow. Capital lines have <code>category=capital</code> in product.</td></tr>
+      <tr><td>Q7</td><td>Mortgage + Insurance — track in product?</td><td><strong>A</strong> — leave as-is for v1. Phase later if needed.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:18px;">Cross-cutting decisions</h3>
+  <table>
+    <thead>
+      <tr><th style="width:40px;">#</th><th style="width:280px;">Question</th><th>My recommendation</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Q8</td><td>Template source — use the building's own approved Excel as the starting point, OR maintain a single master template we update each year?</td><td><strong>Use the building's own.</strong> Every building has structural quirks (sheet ordering, custom sections). Starting from theirs guarantees we match THEIR auditor's expectations.</td></tr>
+      <tr><td>Q9</td><td>FA-edit markers — when we overwrite a cell that used to have a formula, do we add a comment marker (e.g., a yellow fill or a cell comment "edited by FA Smith 2026-05-15")?</td><td><strong>Yes.</strong> Cell comment with FA name + timestamp + source. Critical for audit trail.</td></tr>
+      <tr><td>Q10</td><td>Re-export — if FA downloads, edits in Excel, then re-imports, do we update the product from those Excel edits? Or treat Excel as one-way export?</td><td><strong>One-way export for v1.</strong> Round-trip import is a separate phase and risks data conflicts.</td></tr>
+      <tr><td>Q11</td><td>What happens if the building has NO approved Excel (new building or skipped year)? No template to start from.</td><td>Fall back to <code>Budget_Final_Template_v2.xlsx</code> (the generic template we already have).</td></tr>
+      <tr><td>Q12</td><td>"Open in Excel" should produce a file with the budget year in the filename (e.g., <code>148 - 130 East 18 - 2027 Budget.xlsx</code>). Or different naming?</td><td>Match approved-file pattern: <code>148 - 130 East 18 - 2027 Operating Budget.xlsx</code></td></tr>
+      <tr><td>Q13</td><td>Status restriction — should the FA only be able to download when budget status is "approved" or "fa_review"? Or anytime?</td><td><strong>Anytime</strong> — but maybe add a "DRAFT" watermark on the file if status != approved.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<!-- SECTION E: PROPOSED BUILD PLAN -->
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<div class="section" id="E">
+  <div class="section-head"><span class="num">E</span><h2>Proposed build plan</h2></div>
+
+  <p style="margin-bottom:10px;">Once you've answered the open questions, here's the build sequencing. Each pass is a deployable checkpoint with QA.</p>
+
+  <table>
+    <thead>
+      <tr><th style="width:80px;">Pass</th><th style="width:160px;">Scope</th><th>What ships</th><th style="width:120px;">Effort (CC)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Pass 1</strong></td><td>Foundation</td><td>New <code>/api/export-excel/&lt;ec&gt;</code> endpoint. Pulls building's approved Excel as template. Writes <strong>yrlycomp</strong> (Summary) + <strong>Comm Rent &amp; Escalations</strong> only. Round-trip test harness. Removes old <code>/api/download-budget</code>.</td><td>~2 days</td></tr>
+      <tr><td><strong>Pass 2</strong></td><td>Detail sheets</td><td>Adds <strong>Payroll / pyrl</strong>, <strong>Income</strong>, <strong>Gen &amp; Admin</strong>, <strong>Repairs &amp; Supplies</strong>. All assumption-driven rate cells. FA overrides land on the right cells with comment markers.</td><td>~3 days</td></tr>
+      <tr><td><strong>Pass 3</strong></td><td>Energy + Water</td><td><strong>Gas / Electric / Steam / Gas Cooking / Water / Water Usage</strong> — all assumption rates + per-line FA overrides.</td><td>~2 days</td></tr>
+      <tr><td><strong>Pass 4</strong></td><td>yardi_data refresh</td><td>Rewrite <strong>yardi_data (2)</strong> from current <code>budget_lines</code>. VLookup formulas now self-consistent. This is what makes the file fully roundtrip-safe.</td><td>~1 day</td></tr>
+      <tr><td><strong>Pass 5</strong></td><td>maint proof + CAP</td><td><strong>maint proof</strong> from <code>maint_proof_units</code>. <strong>CAP</strong> from capital-category budget lines.</td><td>~1 day</td></tr>
+      <tr><td><strong>Pass 6</strong></td><td>Polish + audit trail</td><td>FA-edit cell comments (yellow fill + comment "edited by X on Y"). DRAFT watermark when status != approved. Filename pattern.</td><td>~1 day</td></tr>
+      <tr><td><strong>Pass 7</strong></td><td>QA pipeline</td><td>Round-trip pytest. Portfolio scan (all 143 buildings export + re-parse). <code>/codex review</code> the whole export module. <code>/qa</code> on prod.</td><td>~1 day</td></tr>
+    </tbody>
+  </table>
+
+  <p style="margin-top:14px; padding:10px 12px; background:#fafaf7; border-left:4px solid var(--brown); border-radius:4px; font-size:12.5px;">
+    <strong>Total: ~11 days CC, broken into 7 verifiable checkpoints.</strong> Each pass is independently shippable — if you want to stop after Pass 3 with a "Summary + Commercial + Income + Payroll + Energy" Excel, the rest remain as a phase 2 follow-up.
+  </p>
+</div>
+
+</div>
+
+<div class="meta-bar">
+  <span>Excel export mapping · Building 148 reference · 7 passes · 13 open questions for you</span>
+  <span>No code shipped until you approve</span>
+</div>
+
+</body>
+</html>
