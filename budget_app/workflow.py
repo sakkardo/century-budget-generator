@@ -5889,24 +5889,31 @@ def create_workflow_blueprint(db):
         lap("budget_lookup")
 
         # ── Find template source ─────────────────────────────────────
-        # Prefer the building's own approved Excel from SharePoint. Fall back
-        # to the generic master template if no building-specific file exists.
+        # FA directive 2026-05-15: Phase 1a uses the generic master template.
+        # Building-specific Excel from SharePoint is ~5-10MB with 26 sheets
+        # and openpyxl load+save exceeds gunicorn's 120s timeout. Phase 1.5
+        # will add the SharePoint overlay (likely via zipfile-based XML
+        # surgery so we don't load the whole workbook).
+        # Use ?source=sharepoint query param to opt in to the slow path
+        # during testing.
         file_bytes = None
         template_source = None
-        try:
-            import app as _app_mod  # type: ignore
-            files = _app_mod._sharepoint_list_approved_budgets(entity_code)
-            if files:
-                files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
-                target = files[0]
-                if target.get("item_id"):
-                    _name, file_bytes = _app_mod._sharepoint_download_item(target["item_id"])
-                    template_source = f"sharepoint:{target.get('name', '?')}"
-        except Exception as _e:
-            logger.warning(f"export-excel sharepoint fetch failed for {entity_code}: {_e}")
+        use_sharepoint = request.args.get("source") == "sharepoint"
+        if use_sharepoint:
+            try:
+                import app as _app_mod  # type: ignore
+                files = _app_mod._sharepoint_list_approved_budgets(entity_code)
+                if files:
+                    files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+                    target = files[0]
+                    if target.get("item_id"):
+                        _name, file_bytes = _app_mod._sharepoint_download_item(target["item_id"])
+                        template_source = f"sharepoint:{target.get('name', '?')}"
+            except Exception as _e:
+                logger.warning(f"export-excel sharepoint fetch failed for {entity_code}: {_e}")
 
         if not file_bytes:
-            # Fallback: generic master template
+            # Default: generic master template (fast, proven by old endpoint)
             try:
                 gen = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
                 if gen.exists():
@@ -5917,7 +5924,7 @@ def create_workflow_blueprint(db):
                 logger.warning(f"export-excel generic template load failed: {_e}")
 
         if not file_bytes:
-            return jsonify({"error": "No template available (SharePoint failed and no generic fallback)"}), 500
+            return jsonify({"error": "No template available"}), 500
         lap("template_fetch")
 
         # ── Load workbook ────────────────────────────────────────────
