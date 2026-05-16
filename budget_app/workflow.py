@@ -5851,6 +5851,366 @@ def create_workflow_blueprint(db):
             )
 
 
+    # ─── New Excel Export (Phase 6, FA directive 2026-05-15) ────────────────
+    # Replaces the old /api/download-budget. Starts from the building's OWN
+    # approved Excel (from SharePoint), so structure/formulas/cross-sheet
+    # refs all carry through. We selectively rewrite the sheets we own
+    # in the product. Pass 1a: Commercial Rent & Escalations + DRAFT
+    # watermark + FA-edit cell markers. Pass 1b: yrlycomp summary cols.
+    # Future passes: Payroll, Energy, yardi_data refresh, maint proof, etc.
+
+    @bp.route("/api/export-excel/<entity_code>", methods=["GET"])
+    def api_export_excel(entity_code):
+        """Generate a building's Excel budget by starting from its approved
+        2026 file and overlaying product data. Streams as download."""
+        import tempfile, traceback
+        from pathlib import Path as _Path
+        from flask import send_file as _send_file
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            from openpyxl.comments import Comment
+        except Exception as e:
+            return jsonify({"error": f"openpyxl unavailable: {e!r}"}), 500
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+
+        # ── Find template source ─────────────────────────────────────
+        # Prefer the building's own approved Excel from SharePoint. Fall back
+        # to the generic master template if no building-specific file exists.
+        file_bytes = None
+        template_source = None
+        try:
+            import app as _app_mod  # type: ignore
+            files = _app_mod._sharepoint_list_approved_budgets(entity_code)
+            if files:
+                files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+                target = files[0]
+                if target.get("item_id"):
+                    _name, file_bytes = _app_mod._sharepoint_download_item(target["item_id"])
+                    template_source = f"sharepoint:{target.get('name', '?')}"
+        except Exception as _e:
+            logger.warning(f"export-excel sharepoint fetch failed for {entity_code}: {_e}")
+
+        if not file_bytes:
+            # Fallback: generic master template
+            try:
+                gen = _Path(__file__).parent.parent / "budget_system" / "Budget_Final_Template_v2.xlsx"
+                if gen.exists():
+                    with open(gen, "rb") as f:
+                        file_bytes = f.read()
+                    template_source = "generic_master_template"
+            except Exception as _e:
+                logger.warning(f"export-excel generic template load failed: {_e}")
+
+        if not file_bytes:
+            return jsonify({"error": "No template available (SharePoint failed and no generic fallback)"}), 500
+
+        # ── Load workbook ────────────────────────────────────────────
+        in_path = tempfile.mktemp(suffix=".xlsx")
+        out_path = tempfile.mktemp(suffix=".xlsx")
+        try:
+            with open(in_path, "wb") as f:
+                f.write(file_bytes)
+            try:
+                wb = openpyxl.load_workbook(in_path, data_only=False)
+            except Exception as e:
+                return jsonify({"error": f"workbook load failed: {str(e)[:300]}"}), 500
+
+            # ── Apply rewrites ────────────────────────────────────
+            edit_log = []
+            try:
+                _export_rewrite_comm_rent(wb, entity_code, edit_log)
+            except Exception as e:
+                edit_log.append({"sheet": "Comm Rent & Escalations", "error": str(e)[:200]})
+                logger.warning(f"export-excel comm rent rewrite failed: {traceback.format_exc()[-500:]}")
+
+            # DRAFT watermark on yrlycomp if budget isn't approved
+            if (budget.status or "").lower() not in ("approved",):
+                try:
+                    _export_apply_draft_watermark(wb, edit_log)
+                except Exception as e:
+                    edit_log.append({"sheet": "yrlycomp watermark", "error": str(e)[:200]})
+
+            # ── Save + stream ────────────────────────────────────
+            wb.save(out_path)
+
+            # Filename: "148 - 130 East 18 Owners Corp - 2027 Operating Budget.xlsx"
+            building_name = (budget.building_name or "Building").strip()
+            # Strip filesystem-unsafe chars
+            safe_name = "".join(c for c in building_name if c.isalnum() or c in " -_.,")[:80]
+            filename = f"{entity_code} - {safe_name} - {BUDGET_YEAR} Operating Budget.xlsx"
+
+            return _send_file(
+                out_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        finally:
+            try:
+                import os as _os
+                _os.unlink(in_path)
+            except Exception:
+                pass
+
+    # ─── Excel Export helpers (Pass 1a) ──────────────────────────────────
+    # These are module-level (not nested in routes) so future passes can
+    # extend them. Kept in this file for proximity to the models.
+
+    def _export_apply_draft_watermark(wb, edit_log=None):
+        """Add a DRAFT marker to the yrlycomp sheet's top row when the
+        budget isn't yet approved. Yellow fill + bold red text.
+        """
+        from openpyxl.styles import PatternFill, Font
+        target = None
+        for name in wb.sheetnames:
+            if name.lower().strip() == "yrlycomp":
+                target = wb[name]
+                break
+        if not target:
+            return
+        # Insert a row at the top with DRAFT marker
+        target.insert_rows(1)
+        cell = target.cell(row=1, column=1)
+        cell.value = f"DRAFT — exported from product, not yet approved. Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}."
+        cell.fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+        cell.font = Font(bold=True, color="9A3412", size=11)
+        # Merge across first ~10 cols if possible (safe even if sheet is narrow)
+        try:
+            target.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
+        except Exception:
+            pass
+        if edit_log is not None:
+            edit_log.append({"sheet": "yrlycomp", "action": "draft_watermark"})
+
+    def _export_rewrite_comm_rent(wb, entity_code, edit_log=None):
+        """Pass 1a: rewrite the Comm Rent & Escalations sheet from product
+        tenant data. Drops the existing sheet contents and writes a fresh
+        layout from CommercialTenant + CommercialRentPeriod. Includes
+        Excel formulas for annual totals and summary feed rows.
+
+        Structure written (per tenant block):
+          - Tenant name header
+          - Year / Period / $/mo / Months / Annualized columns
+          - Sum row per tenant per year
+        Followed by a summary section that totals across all tenants for
+        each year. Numbers match what the Commercial tab shows.
+
+        FA-edit marker: every cell we write gets a yellow fill + comment.
+        """
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.comments import Comment
+
+        target_name = None
+        for name in wb.sheetnames:
+            n = name.lower().strip()
+            if "comm" in n and ("rent" in n or "escal" in n):
+                target_name = name
+                break
+        if not target_name:
+            # No existing sheet — create one
+            ws = wb.create_sheet("Comm Rent & Escalations")
+            target_name = ws.title
+        else:
+            # Clear the existing sheet so we can rebuild cleanly.
+            ws = wb[target_name]
+            # openpyxl: delete all rows by deleting from max_row down to 1
+            try:
+                ws.delete_rows(1, ws.max_row or 1)
+            except Exception:
+                pass
+
+        tenants = CommercialTenant.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(CommercialTenant.sort_order, CommercialTenant.id).all()
+
+        # Styling tokens
+        TITLE_FONT = Font(name="Plus Jakarta Sans", size=14, bold=True, color="5A4A3F")
+        SECTION_FONT = Font(name="Plus Jakarta Sans", size=11, bold=True, color="9A3412")
+        TENANT_FONT = Font(name="Plus Jakarta Sans", size=12, bold=True)
+        HEADER_FONT = Font(name="Plus Jakarta Sans", size=10, bold=True, color="8A7E72")
+        EDIT_FILL = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")
+        TOTAL_FILL = PatternFill(start_color="F0FDF4", end_color="F0FDF4", fill_type="solid")
+        thin = Side(border_style="thin", color="E5E0D5")
+        BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        gen_stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        edit_comment = Comment(
+            f"Generated by Century Budget product on {gen_stamp}. Source: commercial_tenants table.",
+            "Century Product",
+        )
+
+        def stamp(cell, fill=True):
+            if fill:
+                cell.fill = EDIT_FILL
+            cell.border = BORDER
+
+        # ── Title rows ────────────────────────────────────────────
+        r = 1
+        ws.cell(row=r, column=2, value=f"Commercial Rent & Escalations").font = TITLE_FONT
+        r += 1
+        ws.cell(row=r, column=2, value="Schedule A-1").font = Font(italic=True, color="8A7E72")
+        ws.cell(row=r, column=4, value=f"For Year Ending 12/31/{BUDGET_YEAR}")
+        r += 2
+
+        if not tenants:
+            ws.cell(row=r, column=2, value="No commercial tenants configured for this building.")
+            ws.cell(row=r, column=2).font = Font(italic=True, color="8A7E72")
+            if edit_log is not None:
+                edit_log.append({"sheet": target_name, "tenants": 0})
+            return
+
+        # ── COMMERCIAL RENT section ──────────────────────────────
+        ws.cell(row=r, column=3, value="COMMERCIAL RENT").font = SECTION_FONT
+        r += 1
+        # Column headers
+        headers = ["", "Tenant", "Period", "$/Month", "Months", "Annualized"]
+        for col_i, h in enumerate(headers, start=1):
+            c = ws.cell(row=r, column=col_i, value=h)
+            c.font = HEADER_FONT
+            c.alignment = Alignment(horizontal="right" if col_i >= 4 else "left")
+        r += 1
+
+        # Per-tenant rent table
+        from sqlalchemy import asc as _asc
+        for t in tenants:
+            # Tenant header row
+            name_cell = ws.cell(row=r, column=2, value=t.tenant_name + (f"  ({t.unit_label})" if t.unit_label else ""))
+            name_cell.font = TENANT_FONT
+            stamp(name_cell)
+            name_cell.comment = edit_comment
+            if t.lease_end:
+                ws.cell(row=r, column=9, value=f"Lease ends {t.lease_end.isoformat()}").font = Font(italic=True, size=10, color="8A7E72")
+            r += 1
+
+            # Rent periods — grouped by year
+            periods = CommercialRentPeriod.query.filter_by(tenant_id=t.id).order_by(
+                _asc(CommercialRentPeriod.year), _asc(CommercialRentPeriod.sort_order)
+            ).all()
+            if not periods:
+                ws.cell(row=r, column=3, value="(no rent periods)").font = Font(italic=True, color="8A7E72")
+                r += 1
+                continue
+            current_year = None
+            year_start_row = None
+            for p in periods:
+                if p.year != current_year:
+                    # Close previous year subtotal if any
+                    if year_start_row is not None and year_start_row < r:
+                        sub_cell = ws.cell(row=r, column=6,
+                                           value=f"=SUM(F{year_start_row}:F{r-1})")
+                        sub_cell.font = Font(bold=True)
+                        sub_cell.fill = TOTAL_FILL
+                        ws.cell(row=r, column=2, value=f"  {current_year} total").font = Font(italic=True, color="8A7E72")
+                        r += 1
+                    current_year = p.year
+                    ws.cell(row=r, column=3, value=str(current_year)).font = Font(bold=True, color="8A7E72")
+                    r += 1
+                    year_start_row = r
+                # Period row
+                ws.cell(row=r, column=3, value=p.period_label)
+                # Monthly rent (FA-editable input)
+                rent_cell = ws.cell(row=r, column=4, value=float(p.monthly_rent or 0))
+                rent_cell.number_format = "$#,##0.00"
+                stamp(rent_cell)
+                rent_cell.comment = edit_comment
+                # Months count (FA-editable input)
+                months_cell = ws.cell(row=r, column=5, value=int(p.months_count or 0))
+                stamp(months_cell)
+                # Annualized = formula referencing the row's rent × months
+                ann_cell = ws.cell(row=r, column=6, value=f"=D{r}*E{r}")
+                ann_cell.number_format = "$#,##0"
+                r += 1
+            # Close final year for this tenant
+            if year_start_row is not None and year_start_row < r:
+                sub_cell = ws.cell(row=r, column=6, value=f"=SUM(F{year_start_row}:F{r-1})")
+                sub_cell.font = Font(bold=True)
+                sub_cell.fill = TOTAL_FILL
+                ws.cell(row=r, column=2, value=f"  {current_year} total").font = Font(italic=True, color="8A7E72")
+                r += 1
+            r += 1  # blank row between tenants
+
+        # ── ESCALATIONS section (if any tenant has a real model) ─
+        active_escalation_tenants = [t for t in tenants if (t.escalation_model or "none") != "none"
+                                     and t.tenant_share_pct]
+        if active_escalation_tenants:
+            r += 1
+            ws.cell(row=r, column=3, value="ESCALATIONS").font = SECTION_FONT
+            r += 1
+            # Headers
+            esc_headers = ["", "Tenant", "Model", "Share %", "Base year", "Escalation Due"]
+            for col_i, h in enumerate(esc_headers, start=1):
+                c = ws.cell(row=r, column=col_i, value=h)
+                c.font = HEADER_FONT
+                c.alignment = Alignment(horizontal="right" if col_i >= 4 else "left")
+            r += 1
+            for t in active_escalation_tenants:
+                ws.cell(row=r, column=2, value=t.tenant_name)
+                ws.cell(row=r, column=3, value=t.escalation_model)
+                share_cell = ws.cell(row=r, column=4,
+                                     value=float(t.tenant_share_pct or 0))
+                share_cell.number_format = "0.0000%"
+                stamp(share_cell)
+                base = (t.base_year_re_tax if t.escalation_model == "re_tax"
+                        else t.base_year_opex if t.escalation_model == "opex"
+                        else None)
+                if base is not None:
+                    bc = ws.cell(row=r, column=5, value=float(base))
+                    bc.number_format = "$#,##0"
+                    stamp(bc)
+                # Escalation amount (server-computed snapshot — Pass 2 will
+                # author a real formula that references the relevant
+                # current-year RE Tax / OpEx cell elsewhere in the workbook)
+                computed = _commercial_compute_escalations(entity_code)
+                amt = next((e["amount"] for e in computed if e["tenant_id"] == t.id), 0)
+                ac = ws.cell(row=r, column=6, value=float(amt))
+                ac.number_format = "$#,##0"
+                ac.fill = TOTAL_FILL
+                ac.font = Font(bold=True)
+                ac.comment = Comment(
+                    f"Computed by Century Budget product: ({(t.escalation_model or 'none')}) "
+                    f"base = {base}, share = {t.tenant_share_pct}. "
+                    f"Pass 2 will replace this with a live Excel formula.",
+                    "Century Product",
+                )
+                r += 1
+            r += 1
+
+        # ── Lease notes appendix (collapsed at the bottom) ────────
+        tenants_with_notes = [t for t in tenants if t.lease_notes]
+        if tenants_with_notes:
+            ws.cell(row=r, column=3, value="LEASE NOTES").font = SECTION_FONT
+            r += 1
+            for t in tenants_with_notes:
+                ws.cell(row=r, column=2, value=t.tenant_name).font = Font(bold=True)
+                r += 1
+                for line in (t.lease_notes or "").split("\n"):
+                    if line.strip():
+                        ws.cell(row=r, column=3, value=line.strip()).font = Font(italic=True, color="8A7E72")
+                        r += 1
+                r += 1
+
+        # Column widths
+        ws.column_dimensions["A"].width = 2
+        ws.column_dimensions["B"].width = 28
+        ws.column_dimensions["C"].width = 16
+        ws.column_dimensions["D"].width = 12
+        ws.column_dimensions["E"].width = 8
+        ws.column_dimensions["F"].width = 14
+        for col_letter in ["G", "H", "I", "J", "K"]:
+            ws.column_dimensions[col_letter].width = 14
+
+        if edit_log is not None:
+            edit_log.append({
+                "sheet": target_name,
+                "tenants": len(tenants),
+                "with_escalation": len(active_escalation_tenants),
+            })
+
+
     # ─── Budget Summary API ──────────────────────────────────────────────
 
     def _gl_matches_prefixes(gl_code, prefixes):
@@ -11724,7 +12084,11 @@ function renderDetail(data) {
   })();
 
   // Download Excel button
-  document.getElementById('downloadExcelBtn').href = '/api/download-budget/' + entityCode;
+  // FA directive 2026-05-15 (Phase 6): point Download Excel at the new
+  // /api/export-excel endpoint. Starts from the building's approved 2026
+  // Excel and overlays product data. Old /api/download-budget kept for now
+  // as a fallback path; will be removed in Pass 1b verification.
+  document.getElementById('downloadExcelBtn').href = '/api/export-excel/' + entityCode;
 
   // Budget Workbook Tabs
   allSheets = data.sheets || {};  // global for Budget Summary access
