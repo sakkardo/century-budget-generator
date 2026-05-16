@@ -5862,20 +5862,31 @@ def create_workflow_blueprint(db):
     @bp.route("/api/export-excel/<entity_code>", methods=["GET"])
     def api_export_excel(entity_code):
         """Generate a building's Excel budget by starting from its approved
-        2026 file and overlaying product data. Streams as download."""
-        import tempfile, traceback
+        2026 file and overlaying product data. Streams as download.
+
+        Add ?debug=timing to get a JSON timing report instead of the file.
+        """
+        import tempfile, traceback, time
         from pathlib import Path as _Path
         from flask import send_file as _send_file
+        t0 = time.time()
+        timings = {}
+        def lap(label):
+            timings[label] = round(time.time() - t0, 3)
+        debug_timing = request.args.get("debug") == "timing"
+
         try:
             import openpyxl
             from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
             from openpyxl.comments import Comment
         except Exception as e:
             return jsonify({"error": f"openpyxl unavailable: {e!r}"}), 500
+        lap("imports")
 
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
+        lap("budget_lookup")
 
         # ── Find template source ─────────────────────────────────────
         # Prefer the building's own approved Excel from SharePoint. Fall back
@@ -5907,6 +5918,7 @@ def create_workflow_blueprint(db):
 
         if not file_bytes:
             return jsonify({"error": "No template available (SharePoint failed and no generic fallback)"}), 500
+        lap("template_fetch")
 
         # ── Load workbook ────────────────────────────────────────────
         in_path = tempfile.mktemp(suffix=".xlsx")
@@ -5914,10 +5926,12 @@ def create_workflow_blueprint(db):
         try:
             with open(in_path, "wb") as f:
                 f.write(file_bytes)
+            lap("write_template_tmp")
             try:
                 wb = openpyxl.load_workbook(in_path, data_only=False)
             except Exception as e:
                 return jsonify({"error": f"workbook load failed: {str(e)[:300]}"}), 500
+            lap("openpyxl_load")
 
             # ── Apply rewrites ────────────────────────────────────
             edit_log = []
@@ -5926,6 +5940,7 @@ def create_workflow_blueprint(db):
             except Exception as e:
                 edit_log.append({"sheet": "Comm Rent & Escalations", "error": str(e)[:200]})
                 logger.warning(f"export-excel comm rent rewrite failed: {traceback.format_exc()[-500:]}")
+            lap("rewrite_comm_rent")
 
             # DRAFT watermark on yrlycomp if budget isn't approved
             if (budget.status or "").lower() not in ("approved",):
@@ -5933,9 +5948,20 @@ def create_workflow_blueprint(db):
                     _export_apply_draft_watermark(wb, edit_log)
                 except Exception as e:
                     edit_log.append({"sheet": "yrlycomp watermark", "error": str(e)[:200]})
+            lap("watermark")
+
+            if debug_timing:
+                return jsonify({
+                    "timings_s": timings,
+                    "total_s": round(time.time() - t0, 3),
+                    "template_source": template_source,
+                    "edit_log": edit_log,
+                    "skipped_save": True,
+                })
 
             # ── Save + stream ────────────────────────────────────
             wb.save(out_path)
+            lap("save")
 
             # Filename: "148 - 130 East 18 Owners Corp - 2027 Operating Budget.xlsx"
             building_name = (budget.building_name or "Building").strip()
@@ -6004,24 +6030,24 @@ def create_workflow_blueprint(db):
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
         from openpyxl.comments import Comment
 
-        target_name = None
-        for name in wb.sheetnames:
+        # Find any existing Comm Rent sheet to replace. openpyxl's delete_rows
+        # is O(N×cells) and was hanging on heavyweight workbooks — instead
+        # we delete the old sheet entirely and create a fresh one at the
+        # same index in the tab order.
+        old_index = None
+        old_name = None
+        for i, name in enumerate(wb.sheetnames):
             n = name.lower().strip()
             if "comm" in n and ("rent" in n or "escal" in n):
-                target_name = name
+                old_name = name
+                old_index = i
                 break
-        if not target_name:
-            # No existing sheet — create one
-            ws = wb.create_sheet("Comm Rent & Escalations")
-            target_name = ws.title
-        else:
-            # Clear the existing sheet so we can rebuild cleanly.
-            ws = wb[target_name]
-            # openpyxl: delete all rows by deleting from max_row down to 1
-            try:
-                ws.delete_rows(1, ws.max_row or 1)
-            except Exception:
-                pass
+        if old_name is not None:
+            del wb[old_name]
+        # Create new sheet at the same position
+        new_title = old_name or "Comm Rent & Escalations"
+        ws = wb.create_sheet(new_title, index=old_index if old_index is not None else None)
+        target_name = ws.title
 
         tenants = CommercialTenant.query.filter_by(
             entity_code=entity_code, budget_year=BUDGET_YEAR
