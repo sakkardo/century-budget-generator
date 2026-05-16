@@ -5994,15 +5994,25 @@ def create_workflow_blueprint(db):
     # extend them. Kept in this file for proximity to the models.
 
     def _export_apply_draft_watermark(wb, edit_log=None):
-        """Add a DRAFT marker to the yrlycomp sheet's top row when the
-        budget isn't yet approved. Yellow fill + bold red text.
+        """Add a DRAFT marker to the summary sheet's top row when the budget
+        isn't yet approved. Looks for "yrlycomp" (building-specific Excels)
+        OR "Budget Summary" (generic master template) OR the first sheet
+        named like a summary. Yellow fill + bold red text.
         """
         from openpyxl.styles import PatternFill, Font
         target = None
-        for name in wb.sheetnames:
-            if name.lower().strip() == "yrlycomp":
-                target = wb[name]
+        candidates = ("yrlycomp", "budget summary", "summary", "cover sheet")
+        for cand in candidates:
+            for name in wb.sheetnames:
+                if name.lower().strip() == cand:
+                    target = wb[name]
+                    break
+            if target:
                 break
+        if not target:
+            # Last resort: first sheet in the workbook
+            if wb.sheetnames:
+                target = wb[wb.sheetnames[0]]
         if not target:
             return
         # Insert a row at the top with DRAFT marker
