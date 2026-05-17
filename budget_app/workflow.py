@@ -5889,16 +5889,17 @@ def create_workflow_blueprint(db):
         lap("budget_lookup")
 
         # ── Find template source ─────────────────────────────────────
-        # FA directive 2026-05-15: Phase 1a uses the generic master template.
-        # Building-specific Excel from SharePoint is ~5-10MB with 26 sheets
-        # and openpyxl load+save exceeds gunicorn's 120s timeout. Phase 1.5
-        # will add the SharePoint overlay (likely via zipfile-based XML
-        # surgery so we don't load the whole workbook).
-        # Use ?source=sharepoint query param to opt in to the slow path
-        # during testing.
+        # FA directive 2026-05-17: prefer the building's OWN approved Excel
+        # from SharePoint. Each building has its own GL chart of accounts
+        # and the generic template only covers ~200 standard GLs (vs ~576
+        # actual lines per building). Building-specific Excel gives 100%
+        # GL coverage. Gunicorn timeout bumped from 120s to 300s to handle
+        # the ~10MB workbook load+save.
+        # Use ?source=generic to force the small template (faster, used
+        # for testing or when building has no SharePoint file).
         file_bytes = None
         template_source = None
-        use_sharepoint = request.args.get("source") == "sharepoint"
+        use_sharepoint = request.args.get("source") != "generic"
         if use_sharepoint:
             try:
                 import app as _app_mod  # type: ignore
@@ -6035,11 +6036,28 @@ def create_workflow_blueprint(db):
             lap("openpyxl_load")
 
             # ── Apply rewrites ────────────────────────────────────
-            try:
-                _export_rewrite_budget_summary(wb, entity_code, edit_log)
-            except Exception as e:
-                edit_log.append({"sheet": "Budget Summary", "error": str(e)[:200]})
-                logger.warning(f"export-excel budget summary rewrite failed: {traceback.format_exc()[-500:]}")
+            # When using the building's own SharePoint Excel, the original
+            # yrlycomp already has 40+ rows of detailed line items with
+            # cross-sheet formulas. Replacing it with my product-derived
+            # version would LOSE that detail. Instead, only update col7
+            # cells in the existing yrlycomp via overlay.
+            # When using the generic template, the Budget Summary is
+            # simplified — my rewrite produces a richer version that
+            # mirrors product detail.
+            is_sharepoint = template_source and template_source.startswith("sharepoint:")
+            if not is_sharepoint:
+                try:
+                    _export_rewrite_budget_summary(wb, entity_code, edit_log)
+                except Exception as e:
+                    edit_log.append({"sheet": "Budget Summary", "error": str(e)[:200]})
+                    logger.warning(f"export-excel budget summary rewrite failed: {traceback.format_exc()[-500:]}")
+            else:
+                # SharePoint path: overlay product col7 onto existing yrlycomp
+                try:
+                    _export_overlay_yrlycomp_col7(wb, entity_code, edit_log)
+                except Exception as e:
+                    edit_log.append({"sheet": "yrlycomp overlay", "error": str(e)[:200]})
+                    logger.warning(f"export-excel yrlycomp overlay failed: {traceback.format_exc()[-500:]}")
             lap("rewrite_budget_summary")
             try:
                 _export_rewrite_comm_rent(wb, entity_code, edit_log)
@@ -6098,6 +6116,97 @@ def create_workflow_blueprint(db):
     # ─── Excel Export helpers (Pass 1a) ──────────────────────────────────
     # These are module-level (not nested in routes) so future passes can
     # extend them. Kept in this file for proximity to the models.
+
+    def _export_overlay_yrlycomp_col7(wb, entity_code, edit_log=None):
+        """SharePoint path: take the building's existing yrlycomp tab AS-IS
+        but overlay product col7_proposed_budget values into the right cells.
+        Match rows by label (case-insensitive, whitespace-normalized).
+
+        Detects the col7 column by reading the header row (looks for a year
+        match against BUDGET_YEAR or a "Budget" heading). Yellow-fill +
+        comment marker on every overlaid cell.
+        FA directive 2026-05-17 Phase 2 (SharePoint overlay).
+        """
+        from openpyxl.styles import PatternFill, Font
+        from openpyxl.comments import Comment
+
+        target = None
+        for name in wb.sheetnames:
+            n = name.lower().strip()
+            if n == "yrlycomp" or n.startswith("yrlycomp"):
+                target = wb[name]
+                break
+        if not target:
+            return
+        EDIT_FILL = PatternFill(start_color="FEF9C3", end_color="FEF9C3", fill_type="solid")
+        gen_stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        edit_comment = Comment(
+            f"Updated by Century Budget product on {gen_stamp} from budget_summary_rows.col7_proposed_budget.",
+            "Century Product",
+        )
+
+        # ── Find header row + col7 column ────────────────────────
+        # Look for a row whose cells contain the BUDGET_YEAR string or
+        # "Budget" heading. Typical yrlycomp header is around row 5-8.
+        header_row = None
+        col7_col = None
+        for r in range(1, min(target.max_row or 0, 20) + 1):
+            for c in range(1, min(target.max_column or 0, 16) + 1):
+                v = target.cell(row=r, column=c).value
+                if isinstance(v, str) and str(BUDGET_YEAR) in v and "budget" in v.lower():
+                    header_row = r
+                    col7_col = c
+                    break
+            if header_row is not None:
+                break
+        if header_row is None:
+            edit_log and edit_log.append({"yrlycomp_overlay": "header not detected"})
+            return
+
+        # ── Build product col7 lookup by normalized label ────────
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).all()
+        def norm(s):
+            return "".join((s or "").lower().split())
+        col7_by_label = {norm(r.label): r.col7_proposed_budget for r in rows
+                          if r.col7_proposed_budget is not None}
+
+        # ── Walk yrlycomp rows below the header; match labels ───
+        updated = 0
+        unmatched_labels = []
+        # Labels in yrlycomp are usually in column A or B. Try both.
+        for r in range(header_row + 1, (target.max_row or 0) + 1):
+            label_val = None
+            for c in (1, 2):
+                v = target.cell(row=r, column=c).value
+                if isinstance(v, str) and len(v.strip()) > 2:
+                    label_val = v.strip()
+                    break
+            if not label_val:
+                continue
+            key = norm(label_val)
+            if key in col7_by_label:
+                cell = target.cell(row=r, column=col7_col)
+                cell.value = float(col7_by_label[key])
+                cell.number_format = "$#,##0"
+                cell.fill = EDIT_FILL
+                cell.comment = edit_comment
+                updated += 1
+            else:
+                unmatched_labels.append(label_val[:50])
+
+        if edit_log is not None:
+            edit_log.append({
+                "yrlycomp_overlay": {
+                    "header_row": header_row,
+                    "col7_column": col7_col,
+                    "rows_updated": updated,
+                    "unmatched_label_sample": unmatched_labels[:10],
+                    "product_labels_total": len(col7_by_label),
+                }
+            })
+
 
     def _export_apply_branding(wb, edit_log=None):
         """Apply Century brand styling across the whole workbook.
