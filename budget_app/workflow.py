@@ -6268,8 +6268,19 @@ def create_workflow_blueprint(db):
         ws.row_dimensions[5].height = 36
 
         # ── Data rows ────────────────────────────────────────────
+        # Filter out lines with no values at all — skip writing them.
+        # The FA can still find them in the (hidden) yardi_data tab.
+        # Cleaner than hiding because Excel sometimes ignores openpyxl's
+        # hidden flag.
+        def line_has_data(l):
+            return any([l.prior_year, l.ytd_actual, l.accrual_adj,
+                        l.unpaid_bills, l.ytd_budget, l.current_budget,
+                        l.proposed_budget])
+        visible_lines = [l for l in lines if line_has_data(l)]
+        skipped_count = len(lines) - len(visible_lines)
+
         r = 6
-        for i, l in enumerate(lines):
+        for i, l in enumerate(visible_lines):
             alt = (i % 2 == 1)
             row_fill = FILL_ALT_ROW if alt else None
 
@@ -6326,16 +6337,6 @@ def create_workflow_blueprint(db):
             # O: % Change
             set_cell(15, f"=IFERROR(M{r}/D{r}-1,0)", fmt=FMT_PERCENT, font=FONT_FORMULA)
 
-            # Auto-hide rows with no values: if all source columns are 0 in
-            # product, hide this row to keep visible workbook clean. FA
-            # can unhide if they want to use the empty row for new data.
-            all_zero = all([
-                not l.prior_year, not l.ytd_actual, not l.accrual_adj,
-                not l.unpaid_bills, not l.ytd_budget, not l.current_budget,
-                not l.proposed_budget,
-            ])
-            if all_zero:
-                ws.row_dimensions[r].hidden = True
             r += 1
 
         # ── Subtotal row ─────────────────────────────────────────
@@ -6387,7 +6388,9 @@ def create_workflow_blueprint(db):
             edit_log.append({
                 "sheet": tab_name,
                 "filter": sheet_filters,
-                "lines_written": len(lines),
+                "lines_written": len(visible_lines),
+                "lines_skipped_empty": skipped_count,
+                "lines_total_in_db": len(lines),
             })
 
 
