@@ -3767,6 +3767,35 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"success": False, "error": "No budget found"}), 404
 
+        # ── FA #3 gate (148 working session 2026-05-13): budget_period MUST be
+        # set before Generate. Without it, dashboard falls back to ytd_months=2
+        # and every forecast inflates 6× ("Mar-Dec estimate" wrong-period bug).
+        # We check the staged value (Step 3) — same source the merge below uses.
+        try:
+            _staged_for_gate = json.loads(budget.wizard_selections_json or "{}")
+            _staged_period = (_staged_for_gate.get("assumptions") or {}).get("budget_period")
+        except Exception:
+            _staged_period = None
+        # Accept "MM/YYYY" only — explicit format so we don't accept "" or junk.
+        _valid_period = False
+        if isinstance(_staged_period, str) and "/" in _staged_period:
+            _mm, _, _yyyy = _staged_period.partition("/")
+            try:
+                _mm_i = int(_mm); _yyyy_i = int(_yyyy)
+                _valid_period = 1 <= _mm_i <= 12 and 2000 <= _yyyy_i <= 2100
+            except Exception:
+                _valid_period = False
+        if not _valid_period:
+            return jsonify({
+                "success": False,
+                "error": "missing_budget_period",
+                "message": (
+                    "Set the budget period (Step 3) before generating. "
+                    "Without it, all forecasts default to a 2-month YTD window "
+                    "and inflate ~6×. Pick the month YTD actuals run through."
+                ),
+            }), 400
+
         # CFO defaults + per-building overrides (file-based)
         merged = merge_assumptions(entity_code)
 
@@ -7759,6 +7788,10 @@ def create_workflow_blueprint(db):
                 pass
 
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
+        # `warnings` is initialized HERE (was previously initialized later for
+        # duplicate-row scan) because the Col 2 logic now emits a warning when
+        # a confirmed audit has empty mapped_data — see FA #2 fix below.
+        warnings = []
         col2_lookup = {}
         col2_meta = {}        # {summary_label: {matched_category, match_type}}
         # source_lines per summary label = the auditor's raw line items that
@@ -7789,6 +7822,43 @@ def create_workflow_blueprint(db):
                 "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
                 "ORDER BY confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
+            # FA #2 (148 working session 2026-05-13): an audit row can land at
+            # status='confirmed' with an EMPTY mapped_data ({}). Pre-fd0d170
+            # confirms allowed this, and re-extract paths can leave a corrupted
+            # row behind on failure. Surface this state as a high-severity
+            # warning so the FA sees the actual problem instead of a silently
+            # empty Col 2. This is the "AFS confirmed but not on summary"
+            # symptom the FA reported.
+            if row_au:
+                try:
+                    md_probe = _json.loads(row_au[1]) if row_au[1] else {}
+                except Exception:
+                    md_probe = {}
+                try:
+                    re_probe = _json.loads(row_au[6]) if row_au[6] else {}
+                except Exception:
+                    re_probe = {}
+                md_empty = (isinstance(md_probe, dict) and len(md_probe) == 0)
+                re_empty = (isinstance(re_probe, dict) and len(re_probe) == 0) \
+                    or (isinstance(re_probe, list) and len(re_probe) == 0)
+                if md_empty:
+                    warnings.append({
+                        "type": "audit_confirmed_but_empty",
+                        "severity": "high",
+                        "title": "Audit confirmed but has no mapped data",
+                        "message": (
+                            "The 2025 audit upload is marked confirmed but its category mapping is empty, "
+                            "so Col 2 (audited actuals) cannot populate. "
+                            + ("The raw extraction is also empty — re-run audit extraction from the Foundation step. "
+                                if re_empty
+                                else "Open the audit review page and re-run mapping. ")
+                            + f"Upload ID: {row_au[0]}."
+                        ),
+                        "audit_id": row_au[0],
+                        "review_url": f"/audited-financials/review/{row_au[0]}",
+                        "mapped_data_keys": 0,
+                        "raw_extraction_empty": re_empty,
+                    })
             if row_au and row_au[1]:
                 audit_info = {
                     "id": row_au[0],
@@ -8241,7 +8311,7 @@ def create_workflow_blueprint(db):
         #     section (guaranteed identical aggregation = duplicate)
         #   - Identical non-zero col3/col5 values across data rows (weaker
         #     signal — could be coincidence but worth flagging)
-        warnings = []
+        # NB: `warnings` already initialized above (Col 2 path also writes to it).
         try:
             data_rows = [r for r in summary_rows if r.row_type == "data"]
             # 1) Group by canonicalized gl_prefixes_json (same prefixes = same agg)
