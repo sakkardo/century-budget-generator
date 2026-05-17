@@ -5889,17 +5889,15 @@ def create_workflow_blueprint(db):
         lap("budget_lookup")
 
         # ── Find template source ─────────────────────────────────────
-        # FA directive 2026-05-17: prefer the building's OWN approved Excel
-        # from SharePoint. Each building has its own GL chart of accounts
-        # and the generic template only covers ~200 standard GLs (vs ~576
-        # actual lines per building). Building-specific Excel gives 100%
-        # GL coverage. Gunicorn timeout bumped from 120s to 300s to handle
-        # the ~10MB workbook load+save.
-        # Use ?source=generic to force the small template (faster, used
-        # for testing or when building has no SharePoint file).
+        # FA directive 2026-05-17: default back to generic template.
+        # SharePoint overlay was attempted but openpyxl load+save on the
+        # building's full Excel (~10MB, 26 sheets, thousands of formulas)
+        # exceeds even a 300s timeout. The full-fidelity SharePoint path
+        # needs async job processing OR zipfile/XML surgery (deferred).
+        # Use ?source=sharepoint to opt in (still likely to time out).
         file_bytes = None
         template_source = None
-        use_sharepoint = request.args.get("source") != "generic"
+        use_sharepoint = request.args.get("source") == "sharepoint"
         if use_sharepoint:
             try:
                 import app as _app_mod  # type: ignore
