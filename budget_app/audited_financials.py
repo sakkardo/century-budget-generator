@@ -521,32 +521,63 @@ RULES:
 - Revenue total and expense total must equal the audited totals in the PDF.
 """
 
-            message = client.messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
-                max_tokens=4096,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "document",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "application/pdf",
-                                    "data": pdf_data
+            # max_tokens=16384: full audit extraction with source_lines for 30+
+            # line items easily exceeds 4096 (the prior cap). Hitting the cap
+            # produces truncated JSON → json.loads fails AND ("Expecting value:
+            # line 1 column 1") if the response is somehow empty. 16384 is the
+            # safe ceiling for current Claude models.
+            # One retry on empty/truncated response — transient API issues happen.
+            last_err = None
+            response_text = ""
+            stop_reason = None
+            for attempt in range(2):
+                message = client.messages.create(
+                    model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+                    max_tokens=16384,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf_data
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": extraction_prompt
                                 }
-                            },
-                            {
-                                "type": "text",
-                                "text": extraction_prompt
-                            }
-                        ]
-                    }
-                ]
-            )
+                            ]
+                        }
+                    ]
+                )
+                stop_reason = getattr(message, "stop_reason", None)
+                # Pull the first text block. content can be a list of TextBlock /
+                # ToolUseBlock / ThinkingBlock; only TextBlock has .text.
+                response_text = ""
+                for block in (message.content or []):
+                    t = getattr(block, "text", None)
+                    if isinstance(t, str) and t.strip():
+                        response_text = t.strip()
+                        break
+                if response_text:
+                    break  # got a non-empty response, exit retry loop
+                last_err = f"empty Claude response (attempt {attempt+1}, stop_reason={stop_reason})"
+                logger.warning(f"extract_from_pdf: {last_err}")
 
-            response_text = message.content[0].text.strip()
-            # Clean markdown code blocks if present
+            if not response_text:
+                # Two attempts in, still empty. Give a real error message.
+                raise RuntimeError(
+                    f"Claude returned no text content for this PDF "
+                    f"(stop_reason={stop_reason}). The PDF was {len(pdf_data)//1024} KB base64. "
+                    f"Try splitting the PDF or check the model name."
+                )
+
+            # Strip markdown code fences if Claude wrapped the JSON (despite the
+            # "ONLY valid JSON" instruction — it sometimes still does).
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
             if response_text.startswith("```"):
@@ -555,7 +586,22 @@ RULES:
                 response_text = response_text[:-3]
             response_text = response_text.strip()
 
-            extracted = json.loads(response_text)
+            try:
+                extracted = json.loads(response_text)
+            except json.JSONDecodeError as jde:
+                # Truncated JSON usually has a specific column number. If
+                # stop_reason was "max_tokens", we know it was truncation.
+                hint = ""
+                if stop_reason == "max_tokens":
+                    hint = " (response was truncated — JSON cut off mid-generation)"
+                head = response_text[:200].replace("\n", " ")
+                tail = response_text[-200:].replace("\n", " ")
+                raise RuntimeError(
+                    f"Claude returned non-JSON response{hint}. "
+                    f"JSON error: {jde}. "
+                    f"First 200 chars: {head!r} ... last 200 chars: {tail!r}"
+                ) from jde
+
             return extracted
 
         except Exception as e:
