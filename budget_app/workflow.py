@@ -5949,16 +5949,35 @@ def create_workflow_blueprint(db):
                         from template_populator import TemplatePopulator
                     except ImportError:
                         from budget_system.template_populator import TemplatePopulator
-                    # Build gl_data dict from budget_lines
+                    # Build gl_data dict from budget_lines. Aggregate sub-accounts
+                    # (5406-0001, 5406-0002, ...) into canonical (5406-0000) form
+                    # so the generic template's fixed GL list matches. The
+                    # template was designed around canonical -0000 GLs;
+                    # building-specific sub-accounts otherwise get dropped.
+                    # FA directive 2026-05-15 Phase 2 Option A.
                     lines = BudgetLine.query.filter_by(budget_id=budget.id).all() if budget else []
                     gl_data = {}
+                    agg_stats = {"raw_lines": 0, "canonical_keys": 0, "subaccount_rollups": 0}
                     for l in lines:
-                        gl_data[l.gl_code] = {
-                            "period_2": l.prior_year or 0,
-                            "period_3": l.ytd_actual or 0,
-                            "period_4": l.ytd_budget or 0,
-                            "period_5": l.current_budget or 0,
-                        }
+                        full = (l.gl_code or "").strip()
+                        if not full:
+                            continue
+                        agg_stats["raw_lines"] += 1
+                        prefix = full.split("-")[0]
+                        if len(prefix) == 4 and prefix.isdigit():
+                            canonical = f"{prefix}-0000"
+                        else:
+                            canonical = full
+                        if canonical not in gl_data:
+                            gl_data[canonical] = {"period_2": 0, "period_3": 0, "period_4": 0, "period_5": 0}
+                            agg_stats["canonical_keys"] += 1
+                        if canonical != full:
+                            agg_stats["subaccount_rollups"] += 1
+                        gl_data[canonical]["period_2"] += float(l.prior_year or 0)
+                        gl_data[canonical]["period_3"] += float(l.ytd_actual or 0)
+                        gl_data[canonical]["period_4"] += float(l.ytd_budget or 0)
+                        gl_data[canonical]["period_5"] += float(l.current_budget or 0)
+                    edit_log.append({"gl_aggregation": agg_stats})
                     property_info = {
                         "property_code": entity_code,
                         "property_name": (budget.building_name if budget else "") or "",
@@ -6026,6 +6045,13 @@ def create_workflow_blueprint(db):
                     edit_log.append({"sheet": "yrlycomp watermark", "error": str(e)[:200]})
             lap("watermark")
 
+            # Apply Century branding (tab colors, freeze panes, page setup)
+            try:
+                _export_apply_branding(wb, edit_log)
+            except Exception as e:
+                edit_log.append({"action": "branding", "error": str(e)[:200]})
+            lap("branding")
+
             if debug_timing:
                 return jsonify({
                     "timings_s": timings,
@@ -6061,6 +6087,85 @@ def create_workflow_blueprint(db):
     # ─── Excel Export helpers (Pass 1a) ──────────────────────────────────
     # These are module-level (not nested in routes) so future passes can
     # extend them. Kept in this file for proximity to the models.
+
+    def _export_apply_branding(wb, edit_log=None):
+        """Apply Century brand styling across the whole workbook.
+        - Sheet tab colors (income green, expenses orange, summary brown)
+        - Frozen panes on detail sheets (header + GL Code column)
+        - Page setup (landscape, fit-to-page width)
+        - Default font tweak where not already styled
+        FA directive 2026-05-15 Phase 2 polish.
+        """
+        TAB_COLORS = [
+            ("budget summary", "5A4A3F"),    # brown — primary
+            ("yrlycomp",       "5A4A3F"),
+            ("summary",        "5A4A3F"),
+            ("cover sheet",    "5A4A3F"),
+            ("cov",            "5A4A3F"),
+            ("setup",          "8A7E72"),    # neutral
+            ("contents",       "8A7E72"),
+            ("income",         "16A34A"),    # green — income
+            ("comm rent",      "16A34A"),
+            ("bud",            "5A4A3F"),
+            ("payroll",        "9A3412"),    # orange — expense detail
+            ("pyrl",           "9A3412"),
+            ("energy",         "9A3412"),
+            ("water",          "9A3412"),
+            ("wtrswr",         "9A3412"),
+            ("gas",            "9A3412"),
+            ("electric",       "9A3412"),
+            ("elect",          "9A3412"),
+            ("steam",          "9A3412"),
+            ("repairs",        "9A3412"),
+            ("gen & admin",    "9A3412"),
+            ("re taxes",       "9A3412"),
+            ("insurance",      "9A3412"),
+            ("mortgage",       "9A3412"),
+            ("cap",            "1E40AF"),    # blue — capital
+            ("exp-pie",        "5A4A3F"),
+            ("vlookup",        "8A7E72"),
+            ("yardi",          "8A7E72"),
+            ("maint proof",    "8A7E72"),
+        ]
+        for sheet_name in wb.sheetnames:
+            try:
+                ws = wb[sheet_name]
+                low = sheet_name.lower().strip()
+                for key, color in TAB_COLORS:
+                    if key in low:
+                        ws.sheet_properties.tabColor = color
+                        break
+                # Page setup: landscape + fit to 1 wide, no height limit
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToWidth = 1
+                ws.page_setup.fitToHeight = 0
+                ws.sheet_properties.pageSetUpPr.fitToPage = True
+                # Margins (narrow)
+                ws.page_margins.left = 0.4
+                ws.page_margins.right = 0.4
+                ws.page_margins.top = 0.5
+                ws.page_margins.bottom = 0.5
+            except Exception:
+                continue
+
+        # Freeze panes on detail sheets (header row + GL column)
+        for sheet_name in wb.sheetnames:
+            low = sheet_name.lower().strip()
+            if any(k in low for k in ("income", "payroll", "energy", "water",
+                                       "repairs", "gen & admin", "insurance schedule",
+                                       "comm rent", "budget summary", "yrlycomp",
+                                       "gas", "electric", "steam")):
+                try:
+                    ws = wb[sheet_name]
+                    if not ws.freeze_panes:
+                        ws.freeze_panes = "C6"
+                except Exception:
+                    pass
+
+        if edit_log is not None:
+            edit_log.append({"action": "branding_applied",
+                             "tabs_colored": len(wb.sheetnames)})
+
 
     def _export_apply_draft_watermark(wb, edit_log=None):
         """Add a DRAFT marker to the summary sheet's top row when the budget
