@@ -5946,9 +5946,9 @@ def create_workflow_blueprint(db):
             if template_source == "generic_master_template":
                 try:
                     try:
-                        from template_populator import populate_template
+                        from template_populator import TemplatePopulator
                     except ImportError:
-                        from budget_system.template_populator import populate_template
+                        from budget_system.template_populator import TemplatePopulator
                     # Build gl_data dict from budget_lines
                     lines = BudgetLine.query.filter_by(budget_id=budget.id).all() if budget else []
                     gl_data = {}
@@ -5975,23 +5975,22 @@ def create_workflow_blueprint(db):
                         pass
                     # populate_template writes to a separate output path
                     populated_path = tempfile.mktemp(suffix=".xlsx")
-                    pop_result = populate_template(
-                        template_path=_Path(in_path),
-                        gl_data=gl_data,
-                        property_info=property_info,
-                        output_path=_Path(populated_path),
-                        ytd_months=ytd_months,
-                        remaining_months=12 - ytd_months,
-                    )
-                    # Capture populator stats so the timing endpoint can show
-                    # match/unmatched counts.
-                    try:
-                        if isinstance(pop_result, dict):
-                            edit_log.append({"populate_template": pop_result})
-                        else:
-                            edit_log.append({"populate_template": "result type " + type(pop_result).__name__, "gl_count_sent": len(gl_data)})
-                    except Exception:
-                        pass
+                    populator = TemplatePopulator(_Path(in_path), _Path(populated_path))
+                    success = populator.populate(gl_data, property_info, ytd_months, 12 - ytd_months)
+                    if success:
+                        populator.save()
+                    pop_stats = populator.get_stats()
+                    populator.close()
+                    edit_log.append({
+                        "populate_template": {
+                            "success": bool(success),
+                            "gl_count_sent": len(gl_data),
+                            "matched": pop_stats.get("gl_codes_matched"),
+                            "unmatched": pop_stats.get("gl_codes_unmatched"),
+                            "cells_filled": pop_stats.get("cells_filled"),
+                            "errors": (pop_stats.get("errors") or [])[:5],
+                        }
+                    })
                     # Reroute: use the populated file as our new working file
                     if _Path(populated_path).exists():
                         in_path = populated_path
