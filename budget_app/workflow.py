@@ -5949,34 +5949,45 @@ def create_workflow_blueprint(db):
                         from template_populator import TemplatePopulator
                     except ImportError:
                         from budget_system.template_populator import TemplatePopulator
-                    # Build gl_data dict from budget_lines. Aggregate sub-accounts
-                    # (5406-0001, 5406-0002, ...) into canonical (5406-0000) form
-                    # so the generic template's fixed GL list matches. The
-                    # template was designed around canonical -0000 GLs;
-                    # building-specific sub-accounts otherwise get dropped.
-                    # FA directive 2026-05-15 Phase 2 Option A.
+                    # Build gl_data smartly: query template's GL map FIRST, then
+                    # for each line decide: keep as-is if template knows the
+                    # exact GL, else aggregate into canonical -0000 form. This
+                    # preserves direct matches AND captures sub-account data
+                    # the template's specific row mapping would otherwise drop.
+                    # FA directive 2026-05-15 Pass 2 (Option A — smart variant).
                     lines = BudgetLine.query.filter_by(budget_id=budget.id).all() if budget else []
+                    # Peek at template's known GLs (one-time read; cheap)
+                    try:
+                        peek = TemplatePopulator(_Path(in_path), _Path(in_path + ".peek"))
+                        known_gls = set(peek.gl_mapping.keys())
+                        peek.close()
+                    except Exception:
+                        known_gls = set()
                     gl_data = {}
-                    agg_stats = {"raw_lines": 0, "canonical_keys": 0, "subaccount_rollups": 0}
+                    agg_stats = {"raw_lines": 0, "exact_match_kept": 0,
+                                  "aggregated_to_canonical": 0,
+                                  "template_known_gls": len(known_gls)}
                     for l in lines:
                         full = (l.gl_code or "").strip()
                         if not full:
                             continue
                         agg_stats["raw_lines"] += 1
-                        prefix = full.split("-")[0]
-                        if len(prefix) == 4 and prefix.isdigit():
-                            canonical = f"{prefix}-0000"
+                        if full in known_gls:
+                            target = full
+                            agg_stats["exact_match_kept"] += 1
                         else:
-                            canonical = full
-                        if canonical not in gl_data:
-                            gl_data[canonical] = {"period_2": 0, "period_3": 0, "period_4": 0, "period_5": 0}
-                            agg_stats["canonical_keys"] += 1
-                        if canonical != full:
-                            agg_stats["subaccount_rollups"] += 1
-                        gl_data[canonical]["period_2"] += float(l.prior_year or 0)
-                        gl_data[canonical]["period_3"] += float(l.ytd_actual or 0)
-                        gl_data[canonical]["period_4"] += float(l.ytd_budget or 0)
-                        gl_data[canonical]["period_5"] += float(l.current_budget or 0)
+                            prefix = full.split("-")[0]
+                            if len(prefix) == 4 and prefix.isdigit():
+                                target = f"{prefix}-0000"
+                            else:
+                                target = full
+                            agg_stats["aggregated_to_canonical"] += 1
+                        if target not in gl_data:
+                            gl_data[target] = {"period_2": 0, "period_3": 0, "period_4": 0, "period_5": 0}
+                        gl_data[target]["period_2"] += float(l.prior_year or 0)
+                        gl_data[target]["period_3"] += float(l.ytd_actual or 0)
+                        gl_data[target]["period_4"] += float(l.ytd_budget or 0)
+                        gl_data[target]["period_5"] += float(l.current_budget or 0)
                     edit_log.append({"gl_aggregation": agg_stats})
                     property_info = {
                         "property_code": entity_code,
