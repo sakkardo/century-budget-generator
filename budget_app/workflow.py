@@ -8467,27 +8467,39 @@ def create_workflow_blueprint(db):
             ), {"ec": ec, "y": BUDGET_YEAR})
             counts["summary_rows"] = r5.rowcount or 0
 
-            # Drop commercial rent data (escalations + periods cascade by FK)
+            # Drop commercial rent data. Use SAVEPOINTs because the
+            # escalation / period tables may differ across deployments
+            # (column rename, ondelete CASCADE on the FK), and a failed
+            # raw-SQL DELETE in Postgres aborts the WHOLE outer transaction.
+            # SAVEPOINT lets us roll back the failed sub-delete and continue.
             tenant_rows = db.session.execute(db.text(
                 "SELECT id FROM commercial_tenants WHERE entity_code = :ec AND budget_year = :y"
             ), {"ec": ec, "y": BUDGET_YEAR}).fetchall()
             if tenant_rows:
                 t_ids = ",".join(str(r[0]) for r in tenant_rows)
-                # Most schemas cascade; do them explicitly to be safe
+                # Escalations: use SAVEPOINT so a failure doesn't poison the outer txn.
+                sp = db.session.begin_nested()
                 try:
                     re_ = db.session.execute(db.text(
                         f"DELETE FROM commercial_rent_escalations WHERE tenant_id IN ({t_ids})"
                     ))
                     counts["commercial_escalations"] = re_.rowcount or 0
-                except Exception:
-                    pass
+                    sp.commit()
+                except Exception as _e:
+                    sp.rollback()
+                    logger.warning(f"soft-reset escalations skipped: {_e}")
+                # Periods: same pattern.
+                sp = db.session.begin_nested()
                 try:
                     rp_ = db.session.execute(db.text(
                         f"DELETE FROM commercial_rent_periods WHERE tenant_id IN ({t_ids})"
                     ))
                     counts["commercial_periods"] = rp_.rowcount or 0
-                except Exception:
-                    pass
+                    sp.commit()
+                except Exception as _e:
+                    sp.rollback()
+                    logger.warning(f"soft-reset periods skipped: {_e}")
+                # Tenants themselves: rely on ondelete CASCADE if it's wired.
                 rt_ = db.session.execute(db.text(
                     f"DELETE FROM commercial_tenants WHERE id IN ({t_ids})"
                 ))
