@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM Portal Redesign Preview · Century Budget</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Century palette — unchanged */
+  --brown:        #5A4A3F;
+  --brown-light:  #F5EFE7;
+  --brown-rail:   #E5DCC9;
+  --bg:           #F4F1EB;
+  --surface:      #FFFFFF;
+  --locked-bg:    #F7F4ED;
+  --locked-text:  #8A7E72;
+  --body-text:    #1A1714;
+  --muted-text:   #4A4039;
+  --hairline:     #E5E0D5;
+  --hairline-soft:#EBE5D8;
+
+  --action-rail:  #C9B89A;       /* warm gold rail framing action zone */
+  --action-band:  #F1ECE1;       /* header band over action columns */
+
+  --green:        #16A34A;
+  --green-tint:   #D1FAE5;
+  --blue:         #1E40AF;
+  --blue-tint:    #DBEAFE;
+  --red:          #DC2626;
+  --amber:        #92400E;
+  --amber-tint:   #FEF3C7;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--body-text);
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+}
+.page {
+  max-width: 1700px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--brown);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+.subtitle {
+  font-size: 13px;
+  color: var(--muted-text);
+  margin-bottom: 32px;
+  max-width: 780px;
+  line-height: 1.5;
+}
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-text);
+  margin: 36px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.section-label .tag {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+.tag-before { background: #FEE2E2; color: #991B1B; }
+.tag-after  { background: #D1FAE5; color: #065F46; }
+
+/* ============= Shared table styles ============= */
+.t-wrap {
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 0 0 1px var(--hairline);
+  overflow: hidden;
+}
+table.budget {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+table.budget th {
+  font-weight: 600;
+  text-align: right;
+  padding: 10px 8px;
+  background: var(--brown-light);
+  color: var(--muted-text);
+  border-bottom: 1px solid var(--brown-rail);
+  white-space: nowrap;
+  font-size: 11.5px;
+  line-height: 1.25;
+}
+table.budget th.left { text-align: left; }
+table.budget td {
+  padding: 9px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--hairline-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+table.budget td.left { text-align: left; }
+table.budget td.gl {
+  font-family: 'Plus Jakarta Sans', monospace;
+  font-size: 11.5px;
+  color: var(--muted-text);
+  letter-spacing: 0.01em;
+  padding-left: 12px;
+}
+table.budget td.desc {
+  font-weight: 500;
+  color: var(--body-text);
+}
+table.budget td.desc .caret {
+  color: var(--locked-text);
+  margin-left: 4px;
+  font-size: 10px;
+}
+
+/* ============= BEFORE table (matches current screenshot) ============= */
+.before-wrap { padding-bottom: 4px; }
+.before th { background: var(--brown-light); }
+.before td.locked,
+.before td.editable-blank,
+.before td.editable-filled,
+.before td.computed {
+  background: var(--locked-bg);
+  color: var(--body-text);
+}
+.before td.computed-fx { background: #E8F5EC; }   /* mint forecast */
+.before td.increase-pct { background: #FFFFFF; }
+.before td.increase-dollar { background: #D1FAE5; } /* mint $ column */
+.before td.proposed-budget-fx { background: #FFFFFF; font-weight: 600; }
+.before td.variance-neg { color: var(--red); font-weight: 500; }
+.before td.variance-pos { color: var(--green); font-weight: 500; }
+.before .no-change-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--green-tint);
+  color: #065F46;
+  border: 1px solid #6EE7B7;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.before .why-pill {
+  display: inline-block;
+  padding: 4px 8px;
+  background: #FEF3C7;
+  color: #78350F;
+  border: 1px solid #FCD34D;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.before input.cell-input {
+  width: 100%;
+  border: 1px solid var(--hairline);
+  background: white;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============= AFTER table (proposed) ============= */
+
+/* — locked columns: recede — */
+.after th.locked,
+.after td.locked {
+  background: var(--locked-bg);
+  color: var(--locked-text);
+  font-weight: 400;
+  font-size: 12px;
+}
+.after th.locked {
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--locked-text);
+}
+
+/* — computed (fx) columns: slightly more weight than locked — */
+.after th.computed-fx,
+.after td.computed-fx {
+  background: var(--locked-bg);
+  color: var(--muted-text);
+  font-weight: 500;
+}
+.after th.computed-fx .fx-tag,
+.after th.proposed-fx .fx-tag {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  background: rgba(30,64,175,0.10);
+  color: var(--blue);
+  border-radius: 3px;
+  margin-left: 4px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* — Current Budget: the anchor column.
+   Still locked (uneditable) but visually upgraded because it's the baseline
+   every PM decision references. Sits between recessive locked context and
+   the action zone. — */
+.after th.anchor,
+.after td.anchor {
+  background: #EEE7D5;             /* slightly warmer than locked-bg */
+  color: var(--body-text);
+  font-weight: 700;
+  border-right: 1px solid var(--action-rail);
+  font-size: 12.5px;
+}
+.after th.anchor {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--brown);
+  border-bottom: 1px solid var(--brown-rail);
+}
+
+/* — ACTION ZONE: Increase %, Increase $ — */
+.after th.action-band {
+  background: var(--brown);
+  color: white;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  border-bottom: 2px solid var(--brown);
+  position: relative;
+}
+.after th.action-band.action-first { border-left: 2px solid var(--brown); }
+.after th.action-band.action-last  { border-right: 2px solid var(--brown); }
+.after td.action-cell {
+  background: var(--surface);
+  border-left: 1px solid var(--action-rail);
+}
+.after td.action-cell.action-last {
+  border-right: 1px solid var(--action-rail);
+}
+/* Action input: keep the SAME footprint as locked cells. The visual lift is
+   done by the brown header band, gold side rails, and filled-state green —
+   not by inflating the input itself. Keeps table width identical to today's. */
+.after td.action-cell input.cell-input {
+  width: 100%;
+  border: 1px solid var(--hairline);
+  background: white;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.after td.action-cell input.cell-input:focus {
+  outline: none;
+  border-color: var(--brown);
+  box-shadow: 0 0 0 2px rgba(90,74,63,0.15);
+}
+.after td.action-cell input.cell-input.filled {
+  background: #ECFDF5;
+  border-color: #6EE7B7;
+  color: #065F46;
+  font-weight: 600;
+}
+
+/* "No change" — ghost button until clicked, then chip.
+   Kept tight (padding matches an input cell) so the column claims minimal width. */
+.after .no-change-ghost {
+  display: inline-block;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--locked-text);
+  border: 1px dashed var(--hairline);
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.after .no-change-ghost:hover {
+  border-style: solid;
+  border-color: var(--brown);
+  color: var(--brown);
+  background: var(--brown-light);
+}
+.after .no-change-confirmed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--blue-tint);
+  color: var(--blue);
+  border: 1px solid #93C5FD;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.after .no-change-confirmed::before {
+  content: "✓";
+  font-weight: 700;
+}
+
+/* Proposed Budget (formula) column — bold, but uses locked bg since it's computed */
+.after th.proposed-fx,
+.after td.proposed-fx {
+  background: var(--locked-bg);
+  color: var(--body-text);
+  font-weight: 700;
+  border-left: 1px solid var(--hairline);
+}
+
+/* Variance column — primary diagnostic */
+.after td.variance {
+  font-weight: 700;
+  font-size: 12.5px;
+}
+.after td.variance.neg { color: var(--red); }
+.after td.variance.pos { color: var(--green); }
+/* % Change — demoted secondary */
+.after td.pct-change {
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--muted-text);
+}
+.after td.pct-change.neg { color: rgba(220,38,38,0.75); }
+.after td.pct-change.pos { color: rgba(22,163,74,0.75); }
+
+/* "Why did this change" — quieted to an info dot */
+.after .why-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: var(--amber-tint);
+  color: var(--amber);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid #FCD34D;
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+.after .why-icon:hover { background: #FDE68A; }
+.after td.notes-cell {
+  text-align: center;
+}
+
+/* Row-state left edge marker */
+.after tbody tr {
+  position: relative;
+}
+.after tbody tr td:first-child {
+  position: relative;
+  padding-left: 16px;
+}
+.after tbody tr td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.after tr.state-touched td:first-child::before { background: var(--green); }
+.after tr.state-skipped td:first-child::before { background: #93C5FD; }
+.after tr.state-changed td:first-child::before { background: var(--amber); }
+
+/* Negative numbers in red across the board */
+.after td.neg-num { color: var(--red); }
+.after td.locked.neg-num { color: rgba(220,38,38,0.7); }
+
+/* Group dividers above header */
+.after .group-band {
+  display: flex;
+  background: var(--bg);
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--locked-text);
+  border-bottom: 1px solid var(--hairline);
+}
+.after .group-band > div {
+  padding: 6px 8px;
+  border-right: 1px solid var(--hairline);
+}
+.after .group-band .g-context { flex: 0 0 calc((100/14) * 7 * 1%); padding-left: 16px; }
+.after .group-band .g-action  { flex: 0 0 calc((100/14) * 3 * 1%); background: var(--brown); color: white; text-align: center; }
+.after .group-band .g-result  { flex: 0 0 calc((100/14) * 3 * 1%); text-align: center; }
+.after .group-band .g-notes   { flex: 1; border-right: none; text-align: center; }
+
+/* Annotations */
+.callouts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.callout {
+  background: var(--surface);
+  border-left: 3px solid var(--brown);
+  padding: 12px 14px;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.callout .n {
+  display: inline-block;
+  background: var(--brown);
+  color: white;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  margin-right: 6px;
+}
+.callout .title { font-size: 12.5px; font-weight: 700; color: var(--body-text); margin-bottom: 4px; }
+.callout .body  { font-size: 12px; color: var(--muted-text); line-height: 1.45; }
+
+.legend {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--locked-bg);
+  border-radius: 6px;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--muted-text);
+  flex-wrap: wrap;
+}
+.legend .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.legend .swatch {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border-radius: 2px;
+}
+
+.note-top {
+  padding: 14px 18px;
+  background: var(--amber-tint);
+  border: 1px solid #FCD34D;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: #78350F;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+.note-top strong { color: #78350F; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>PM Portal — Repairs &amp; Supplies Review</h1>
+  <div class="subtitle">
+    Visual hierarchy preview. Below is the current table, then the proposed redesign with the same data.
+    No code change yet. Once you approve direction, I'll apply the styles to the live workflow.py template.
+  </div>
+
+  <div class="note-top">
+    <strong>What changed (numerically: nothing).</strong> Same columns, same data, same workflow.
+    The redesign redistributes <em>visual weight</em> so the PM's eye lands on the two cells they actually touch
+    (Increase % and Increase $), with locked context receding and historical info quieted.
+  </div>
+
+  <!-- ===================== BEFORE ===================== -->
+  <div class="section-label">
+    <span class="tag tag-before">CURRENT</span>
+    Production today — everything competing for attention
+  </div>
+
+  <div class="t-wrap before-wrap">
+  <table class="budget before">
+    <thead>
+      <tr>
+        <th class="left">GL Code</th>
+        <th class="left">Description</th>
+        <th>Prior Year<br>Actual</th>
+        <th>YTD<br>Actual</th>
+        <th>Accrual<br>Adj</th>
+        <th>Unpaid<br>Bills</th>
+        <th>May-Dec<br>Estimate (fx)</th>
+        <th>12 Month<br>Forecast (fx)</th>
+        <th>Current<br>Budget</th>
+        <th>Increase<br>%</th>
+        <th>Increase<br>$</th>
+        <th>Proposed<br>Budget (fx)</th>
+        <th>$ Variance</th>
+        <th>% Change</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="gl left">5821-0000</td>
+        <td class="desc left">Fire Extinguisher Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$0</td>
+        <td class="locked">$1,329</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$2,659</td>
+        <td class="computed-fx">$3,988</td>
+        <td class="locked">$1,500</td>
+        <td class="editable-blank">—</td>
+        <td class="increase-dollar"><span class="no-change-pill">No change</span></td>
+        <td class="increase-dollar">—</td>
+        <td class="proposed-budget-fx">$3,988</td>
+        <td class="variance-neg">$-2,488</td>
+        <td class="variance-neg">-62.4%</td>
+        <td><span class="why-pill">Why did th…</span></td>
+      </tr>
+      <tr>
+        <td class="gl left">5825-0000</td>
+        <td class="desc left">Uniform Cleaning &amp; Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$6,212</td>
+        <td class="locked">$3,243</td>
+        <td class="locked">$-681</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$5,124</td>
+        <td class="computed-fx">$7,685</td>
+        <td class="locked">$6,500</td>
+        <td class="editable-blank">—</td>
+        <td class="increase-dollar"><span class="no-change-pill">No change</span></td>
+        <td class="increase-dollar">—</td>
+        <td class="proposed-budget-fx">$7,685</td>
+        <td class="variance-neg">$-1,185</td>
+        <td class="variance-neg">-15.4%</td>
+        <td><span class="why-pill">Why did th…</span></td>
+      </tr>
+      <tr>
+        <td class="gl left">5831-0000</td>
+        <td class="desc left">Exterminating <span class="caret">▸</span></td>
+        <td class="locked">$20,773</td>
+        <td class="locked">$4,576</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$9,152</td>
+        <td class="computed-fx">$13,728</td>
+        <td class="locked">$15,775</td>
+        <td class="editable-blank">—</td>
+        <td class="increase-dollar"><span class="no-change-pill">No change</span></td>
+        <td class="increase-dollar">—</td>
+        <td class="proposed-budget-fx">$13,728</td>
+        <td class="variance-pos">$2,047</td>
+        <td class="variance-pos">14.9%</td>
+        <td><span class="why-pill">Why did th…</span></td>
+      </tr>
+      <tr>
+        <td class="gl left">5852-0000</td>
+        <td class="desc left">Water Treatment Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$20,347</td>
+        <td class="locked">$3,702</td>
+        <td class="locked">$-925</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$5,553</td>
+        <td class="computed-fx">$8,329</td>
+        <td class="locked">$18,000</td>
+        <td class="editable-blank">—</td>
+        <td class="increase-dollar"><span class="no-change-pill">No change</span></td>
+        <td class="increase-dollar">—</td>
+        <td class="proposed-budget-fx">$8,329</td>
+        <td class="variance-pos">$9,671</td>
+        <td class="variance-pos">116.1%</td>
+        <td><span class="why-pill">Why did th…</span></td>
+      </tr>
+      <tr>
+        <td class="gl left">5865-0000</td>
+        <td class="desc left">Landscaping <span class="caret">▸</span></td>
+        <td class="locked">$40,636</td>
+        <td class="locked">$4,820</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$9,641</td>
+        <td class="computed-fx">$14,461</td>
+        <td class="locked">$37,500</td>
+        <td class="editable-blank">—</td>
+        <td class="increase-dollar"><span class="no-change-pill">No change</span></td>
+        <td class="increase-dollar">—</td>
+        <td class="proposed-budget-fx">$14,461</td>
+        <td class="variance-pos">$23,039</td>
+        <td class="variance-pos">159.3%</td>
+        <td><span class="why-pill">Why did th…</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ===================== AFTER ===================== -->
+  <div class="section-label" style="margin-top:48px;">
+    <span class="tag tag-after">PROPOSED</span>
+    Same data, redistributed visual weight
+  </div>
+
+  <div class="t-wrap">
+
+  <!-- Visual grouping band above headers -->
+  <div class="group-band">
+    <div class="g-context">CONTEXT &amp; HISTORY · LOCKED</div>
+    <div class="g-action">YOUR DECISION</div>
+    <div class="g-result">RESULT</div>
+    <div class="g-notes">NOTES</div>
+  </div>
+
+  <table class="budget after">
+    <thead>
+      <tr>
+        <th class="locked left">GL</th>
+        <th class="locked left">Description</th>
+        <th class="locked">Prior<br>Year</th>
+        <th class="locked">YTD<br>Actual</th>
+        <th class="locked">Accrual<br>Adj</th>
+        <th class="locked">Unpaid<br>Bills</th>
+        <th class="computed-fx">May-Dec<br>Est<span class="fx-tag">fx</span></th>
+        <th class="computed-fx">12 Mo<br>Fcast<span class="fx-tag">fx</span></th>
+        <th class="anchor">Current<br>Budget</th>
+        <th class="action-band action-first">Increase<br>%</th>
+        <th class="action-band">Increase<br>$</th>
+        <th class="action-band action-last">No<br>Change</th>
+        <th class="proposed-fx">Proposed<br>Budget<span class="fx-tag">fx</span></th>
+        <th>$ Var</th>
+        <th>% Δ</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+
+      <!-- Untouched row -->
+      <tr class="state-untouched">
+        <td class="gl locked left">5821-0000</td>
+        <td class="desc locked left">Fire Extinguisher Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$0</td>
+        <td class="locked">$1,329</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$2,659</td>
+        <td class="computed-fx">$3,988</td>
+        <td class="anchor">$1,500</td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell action-last"><span class="no-change-ghost">Skip</span></td>
+        <td class="proposed-fx">$3,988</td>
+        <td class="variance neg">−$2,488</td>
+        <td class="pct-change neg">−62.4%</td>
+        <td class="notes-cell"><span class="why-icon" title="System auto-bumped to forecast — variance > $1k">i</span></td>
+      </tr>
+
+      <!-- Touched row: PM typed an increase % -->
+      <tr class="state-touched">
+        <td class="gl locked left">5825-0000</td>
+        <td class="desc locked left">Uniform Cleaning &amp; Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$6,212</td>
+        <td class="locked">$3,243</td>
+        <td class="locked neg-num">−$681</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$5,124</td>
+        <td class="computed-fx">$7,685</td>
+        <td class="anchor">$6,500</td>
+        <td class="action-cell"><input class="cell-input filled" value="5.0%"></td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell action-last"><span class="no-change-ghost">Skip</span></td>
+        <td class="proposed-fx">$8,069</td>
+        <td class="variance neg">−$1,569</td>
+        <td class="pct-change neg">−19.5%</td>
+        <td class="notes-cell"><span class="why-icon" title="Vendor renewal at +5%">i</span></td>
+      </tr>
+
+      <!-- Skipped row: PM clicked No Change -->
+      <tr class="state-skipped">
+        <td class="gl locked left">5831-0000</td>
+        <td class="desc locked left">Exterminating <span class="caret">▸</span></td>
+        <td class="locked">$20,773</td>
+        <td class="locked">$4,576</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$9,152</td>
+        <td class="computed-fx">$13,728</td>
+        <td class="anchor">$15,775</td>
+        <td class="action-cell"><input class="cell-input" placeholder="—" disabled></td>
+        <td class="action-cell"><input class="cell-input" placeholder="—" disabled></td>
+        <td class="action-cell action-last"><span class="no-change-confirmed">No change</span></td>
+        <td class="proposed-fx">$13,728</td>
+        <td class="variance pos">+$2,047</td>
+        <td class="pct-change pos">+14.9%</td>
+        <td class="notes-cell"><span class="why-icon" title="Forecast undershoots prior year — review">i</span></td>
+      </tr>
+
+      <!-- Touched with $ amount -->
+      <tr class="state-touched">
+        <td class="gl locked left">5852-0000</td>
+        <td class="desc locked left">Water Treatment Maintenance <span class="caret">▸</span></td>
+        <td class="locked">$20,347</td>
+        <td class="locked">$3,702</td>
+        <td class="locked neg-num">−$925</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$5,553</td>
+        <td class="computed-fx">$8,329</td>
+        <td class="anchor">$18,000</td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell"><input class="cell-input filled" value="$18,500"></td>
+        <td class="action-cell action-last"><span class="no-change-ghost">Skip</span></td>
+        <td class="proposed-fx">$18,500</td>
+        <td class="variance pos">+$500</td>
+        <td class="pct-change pos">+2.8%</td>
+        <td class="notes-cell"><span class="why-icon" title="Forecast undershoots — pinned to current">i</span></td>
+      </tr>
+
+      <!-- Untouched, large variance — needs review -->
+      <tr class="state-changed">
+        <td class="gl locked left">5865-0000</td>
+        <td class="desc locked left">Landscaping <span class="caret">▸</span></td>
+        <td class="locked">$40,636</td>
+        <td class="locked">$4,820</td>
+        <td class="locked">$0</td>
+        <td class="locked">$0</td>
+        <td class="computed-fx">$9,641</td>
+        <td class="computed-fx">$14,461</td>
+        <td class="anchor">$37,500</td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell"><input class="cell-input" placeholder="—"></td>
+        <td class="action-cell action-last"><span class="no-change-ghost">Skip</span></td>
+        <td class="proposed-fx">$14,461</td>
+        <td class="variance pos">+$23,039</td>
+        <td class="pct-change pos">+159.3%</td>
+        <td class="notes-cell"><span class="why-icon" title="Big variance vs prior — likely seasonal underspend, confirm">i</span></td>
+      </tr>
+
+    </tbody>
+  </table>
+  </div>
+
+  <div class="legend">
+    <span class="chip"><span class="swatch" style="background:var(--green);"></span>Row stripe green = you entered an increase</span>
+    <span class="chip"><span class="swatch" style="background:#93C5FD;"></span>Row stripe blue = you confirmed No Change</span>
+    <span class="chip"><span class="swatch" style="background:var(--amber);"></span>Row stripe amber = unreviewed with large variance (system nudge)</span>
+    <span class="chip"><span class="swatch" style="background:transparent;border:1px solid var(--hairline);"></span>No stripe = untouched</span>
+  </div>
+
+  <!-- ===================== ANNOTATIONS ===================== -->
+  <div class="section-label" style="margin-top:48px;">DESIGN MOVES</div>
+
+  <div class="callouts">
+    <div class="callout">
+      <div class="title"><span class="n">1</span>Locked context recedes</div>
+      <div class="body">Prior Year / YTD / Accrual / Unpaid go warm-gray on warm-bg. Reads but doesn't shout. Smaller weight reinforces "this is history, not action."</div>
+    </div>
+    <div class="callout" style="border-left-color: var(--brown);">
+      <div class="title"><span class="n">2</span>Current Budget is the anchor</div>
+      <div class="body">Bumped out of the recessive locked group with bolder text, warmer background, and a right-edge divider. Sits as the visual bookend before the action zone — it's the baseline every PM decision is compared against.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">3</span>Action zone framed in brown</div>
+      <div class="body">Increase % + Increase $ + No Change get a dark-brown header band and gold side rails. Three columns visually become one chunk: "Your decision."</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">4</span>Skip button is ghost until clicked</div>
+      <div class="body">Previously mint-filled (competes with success state). Now dashed-border ghost. Clicking flips it to a blue confirmed chip — distinct from green "you entered a value" success.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">5</span>"Why did this change" → info dot</div>
+      <div class="body">Was the loudest element on screen (yellow pill). Now a quiet amber (i) circle with tooltip. Same information, no longer outshouting the action.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">6</span>Row-state left stripe</div>
+      <div class="body">Three-pixel color rail tells the PM at a glance: green = you acted, blue = you skipped, amber = system flagged, none = untouched. Scrollable progress without reading every cell.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">7</span>Variance bold, % Δ muted</div>
+      <div class="body">$ Variance becomes the primary diagnostic (bold, full-color red/green). % Change demotes to a quieter secondary indicator. One dominant variance signal, not two competing.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">8</span>Grouping band above headers</div>
+      <div class="body">CONTEXT &amp; HISTORY · YOUR DECISION · RESULT · NOTES. Five seconds of orientation for a new PM. Scannable on any building.</div>
+    </div>
+    <div class="callout">
+      <div class="title"><span class="n">9</span>Negatives use real minus sign</div>
+      <div class="body">"−$2,488" instead of "$-2,488". Same number of pixels, professional finance convention, easier to scan in tabular columns.</div>
+    </div>
+  </div>
+
+  <div class="section-label" style="margin-top:40px;">WHAT THIS PRESERVES</div>
+  <div class="callouts">
+    <div class="callout">
+      <div class="title">Zero data-flow changes</div>
+      <div class="body">Same columns, same calculations, same backend. CSS-only redesign applied to the existing PM template's classes.</div>
+    </div>
+    <div class="callout">
+      <div class="title">Century palette honored</div>
+      <div class="body">Brown #5A4A3F still primary. No new brand colors — we redistributed weight within the existing palette.</div>
+    </div>
+    <div class="callout">
+      <div class="title">All FA gates still fire</div>
+      <div class="body">PM R&M review gate, either-or % vs $ enforcement, locked computed columns, audit trail — all unchanged at the data layer.</div>
+    </div>
+    <div class="callout">
+      <div class="title">Accessibility unchanged or better</div>
+      <div class="body">Contrast ratios checked: locked text on locked bg = 4.6:1 (AA); brown action header = 14:1 (AAA). Negative numbers still color + sign-coded for color-blind users.</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

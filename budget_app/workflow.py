@@ -24380,6 +24380,167 @@ PM_EDIT_TEMPLATE = r"""
     .pm-sheet-tab { padding:8px 20px; font-size:13px; font-weight:600; border:1px solid var(--gray-300); border-radius:8px 8px 0 0; cursor:pointer; background:var(--gray-100); color:var(--gray-600); transition:all 0.15s; }
     .pm-sheet-tab:hover { background:var(--gray-200); }
     .pm-sheet-tab.active { background:white; color:var(--blue); border-bottom:2px solid var(--blue); box-shadow:0 -1px 3px rgba(0,0,0,0.06); }
+
+    /* ────────────────────────────────────────────────────────────────────
+       PM Portal v2 — visual-hierarchy redesign (2026-05-17).
+       Activated by adding ?ui=v2 to the URL (or localStorage pm_ui=v2).
+       Zero behavioral change. CSS-only overlay: when body.pm-v2 is absent,
+       the original UI renders unchanged. Approved direction:
+         - Locked context recedes
+         - Current Budget gets visual weight as the comparison anchor
+         - Increase % + Increase $ framed in brown as the action zone
+         - "No change" button is a ghost until clicked (reserves green for "you entered a value")
+         - $ Variance bold, % Change demoted
+         - Existing inline styles on Increase $ get overridden with !important
+       Column positions (15 total):
+         1=GL  2=Desc  3=Prior  4=YTD  5=Accrual  6=Unpaid  7=Estimate(fx)
+         8=Forecast(fx)  9=Current Budget [ANCHOR]
+         10=Increase %  11=Increase $  [ACTION]
+         12=Proposed(fx)  13=$ Var  14=% Δ  15=Notes
+       ──────────────────────────────────────────────────────────────────── */
+
+    /* Locked context — Prior, YTD, Accrual, Unpaid (cols 3–6) */
+    body.pm-v2 #linesTable thead th:nth-child(3),
+    body.pm-v2 #linesTable thead th:nth-child(4),
+    body.pm-v2 #linesTable thead th:nth-child(5),
+    body.pm-v2 #linesTable thead th:nth-child(6) {
+      color: var(--gray-500);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(3),
+    body.pm-v2 #linesTable tbody td:nth-child(4),
+    body.pm-v2 #linesTable tbody td:nth-child(5),
+    body.pm-v2 #linesTable tbody td:nth-child(6) {
+      background: #F7F4ED;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(3) input.pm-cell[disabled],
+    body.pm-v2 #linesTable tbody td:nth-child(4) input.pm-cell[disabled],
+    body.pm-v2 #linesTable tbody td:nth-child(5) input.pm-cell[disabled],
+    body.pm-v2 #linesTable tbody td:nth-child(6) input.pm-cell[disabled] {
+      color: var(--gray-500);
+      font-weight: 400;
+      background: transparent;
+    }
+
+    /* Current Budget — the anchor (col 9). Still locked, but visually upgraded
+       to bridge between locked context and the action zone. */
+    body.pm-v2 #linesTable thead th:nth-child(9) {
+      background: #EEE7D5 !important;
+      color: var(--blue) !important;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-right: 1px solid #c9b89a;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(9) {
+      background: #EEE7D5;
+      border-right: 1px solid #c9b89a;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(9) input.pm-cell[disabled] {
+      color: var(--gray-900);
+      font-weight: 700;
+      background: transparent;
+    }
+
+    /* Action zone — Increase % + Increase $ (cols 10–11). Brown header band,
+       gold side rails, white cell background. Filled inputs glow green.
+       !important overrides the inline mint green styles on the Increase $ column. */
+    body.pm-v2 #linesTable thead th:nth-child(10),
+    body.pm-v2 #linesTable thead th:nth-child(11) {
+      background: var(--blue) !important;
+      color: white !important;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 10.5px;
+      letter-spacing: 0.06em;
+      border-bottom: 2px solid var(--blue);
+    }
+    body.pm-v2 #linesTable thead th:nth-child(10) { border-left: 2px solid var(--blue); }
+    body.pm-v2 #linesTable thead th:nth-child(11) { border-right: 2px solid var(--blue); }
+    body.pm-v2 #linesTable tbody td:nth-child(10) {
+      background: white !important;
+      border-left: 1px solid #c9b89a;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(11) {
+      background: white !important;     /* override inline #f0fdf4 */
+      border-right: 1px solid #c9b89a;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(10) input.pm-cell-pct,
+    body.pm-v2 #linesTable tbody td:nth-child(11) input.pm-cell-dollar {
+      background: white !important;     /* override inline mint #d1fae5 */
+      border: 1px solid var(--gray-300) !important;
+      color: var(--gray-900);
+      font-weight: 500;
+    }
+    body.pm-v2 #linesTable tbody td:nth-child(10) input.pm-cell-pct:focus,
+    body.pm-v2 #linesTable tbody td:nth-child(11) input.pm-cell-dollar:focus {
+      border-color: var(--blue) !important;
+      box-shadow: 0 0 0 2px rgba(90,74,63,0.18);
+    }
+    /* Mirror cells stay italic-dimmed (existing pm-cell-mirror styling untouched) */
+
+    /* Filled state: when input has a non-mirror value, glow green (success).
+       Detection via aria-style attribute or class — fallback uses :not(:placeholder-shown). */
+    body.pm-v2 #linesTable tbody td:nth-child(10) input.pm-cell-pct:not(.pm-cell-mirror):not([value=""]):not([value]),
+    body.pm-v2 #linesTable tbody td:nth-child(11) input.pm-cell-dollar:not(.pm-cell-mirror):not([value=""]):not([value]) {
+      /* CSS attribute selectors can't reliably detect "value has content" so we
+         rely on inline JS to add .pm-v2-filled when a value is committed. */
+    }
+    body.pm-v2 #linesTable tbody td input.pm-v2-filled {
+      background: #ECFDF5 !important;
+      border-color: #6EE7B7 !important;
+      color: #065F46 !important;
+      font-weight: 600;
+    }
+
+    /* "No change" button — ghost until clicked. Existing class is .pm-no-change-btn. */
+    body.pm-v2 .pm-no-change-btn {
+      padding: 3px 8px !important;
+      background: transparent !important;
+      color: var(--gray-500) !important;
+      border: 1px dashed var(--gray-300) !important;
+      border-radius: 3px !important;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      white-space: nowrap !important;
+      box-shadow: none !important;
+    }
+    body.pm-v2 .pm-no-change-btn:hover {
+      border-style: solid !important;
+      border-color: var(--blue) !important;
+      color: var(--blue) !important;
+      background: var(--blue-light) !important;
+    }
+    /* When the row is stamped no_change, the badge already renders via .pm-rm-state-badge.no-change
+       (line 24161) — keep that, but tighten its visual weight in v2. */
+    body.pm-v2 .pm-rm-state-badge.no-change {
+      background: #dbeafe !important;
+      color: #1e40af !important;
+      border: 1px solid #93c5fd !important;
+    }
+
+    /* $ Variance (col 13) — bold primary diagnostic. */
+    body.pm-v2 #linesTable tbody td:nth-child(13) {
+      font-weight: 700;
+    }
+    /* % Change (col 14) — demoted secondary, smaller + muted. */
+    body.pm-v2 #linesTable tbody td:nth-child(14) {
+      font-size: 11.5px;
+      opacity: 0.75;
+    }
+
+    /* Default table header (non-action columns) — slightly tighter, muted text */
+    body.pm-v2 #linesTable thead th {
+      font-size: 11px;
+    }
+
+    /* Subtle improvement: real minus sign hint via tabular-nums for all numeric cells.
+       Existing template already uses font-variant-numeric tabular-nums via .number,
+       so this is a no-op but documented for completeness. */
   </style>
 
   <div class="pm-sheet-tabs">
@@ -24449,6 +24610,21 @@ const LINES = {{ lines_json | safe }};
 const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
 const REMAINING_MONTHS = {{ remaining_months }};
+
+// PM Portal v2 — visual-hierarchy redesign (2026-05-17).
+// Opt-in via ?ui=v2 (one-shot) or localStorage pm_ui=v2 (persistent).
+// Adding ?ui=v2 to the URL also stickies the choice in localStorage so
+// subsequent navigations keep v2. ?ui=v1 unsticks. Removes guesswork
+// when sharing URLs to other PMs/FAs. Zero behavioral change.
+(function _pmV2Init() {
+  try {
+    const q = new URLSearchParams(location.search).get('ui');
+    if (q === 'v2') localStorage.setItem('pm_ui', 'v2');
+    if (q === 'v1') localStorage.removeItem('pm_ui');
+    const v2 = (q === 'v2') || (localStorage.getItem('pm_ui') === 'v2');
+    if (v2) document.body.classList.add('pm-v2');
+  } catch (_e) {}
+})();
 
 // Sheet tab config
 let _pmActiveSheet = 'Repairs & Supplies';
@@ -24832,6 +25008,19 @@ function _pmUpdateMirror(gl, line) {
         pctEl.classList.remove('pm-cell-mirror');
         dollarEl.classList.remove('pm-cell-mirror');
     }
+    // v2 visual: glow green when the cell is the source-of-truth (has a
+    // real, non-mirror value). No-op when body.pm-v2 is absent (the CSS
+    // rules guard on body.pm-v2 anyway, but skipping the class write keeps
+    // the DOM clean for legacy UI). 2026-05-17.
+    try {
+      const v2 = document.body && document.body.classList.contains('pm-v2');
+      if (v2) {
+        const _pctReal = pctEl.value && !pctEl.classList.contains('pm-cell-mirror');
+        const _dollarReal = dollarEl.value && !dollarEl.classList.contains('pm-cell-mirror');
+        pctEl.classList.toggle('pm-v2-filled', !!_pctReal);
+        dollarEl.classList.toggle('pm-v2-filled', !!_dollarReal);
+      }
+    } catch (_e) {}
 }
 
 function pmCellFocus(el) {
@@ -25702,6 +25891,18 @@ function renderTable() {
     tbody.appendChild(grandRow);
     // Auto-size numeric columns after render
     autoSizeColumns(document.querySelector('#linesBody')?.closest('table'));
+
+    // v2 visual: seed .pm-v2-filled on cells that already have a real
+    // (non-mirror) value at initial render. _pmUpdateMirror runs the
+    // toggle internally based on body.pm-v2; the call is cheap and the
+    // function no-ops for lines without both cells. 2026-05-17.
+    try {
+      if (document.body.classList.contains('pm-v2')) {
+        LINES.forEach(function (l) {
+          if (l && l.gl_code) _pmUpdateMirror(l.gl_code, l);
+        });
+      }
+    } catch (_e) {}
 }
 
 // ── Zero-row toggle ──────────────────────────────────────────────────
