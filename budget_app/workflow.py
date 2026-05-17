@@ -7132,6 +7132,21 @@ def create_workflow_blueprint(db):
                 except Exception:
                     pass
 
+            # Fallback: some Budget Summary rows have no gl_prefixes_json on
+            # the DB record but DO have a clean 1:1 GL mapping in the building's
+            # yardi data. Map by label so the Excel stays formula-driven instead
+            # of falling back to a hard-coded value. Add new entries here as
+            # discovered. Rows legitimately not GL-driven (Prior Year Surplus,
+            # Flip Tax/Transfer Fees from audited financials, Commercial Rent
+            # Escalations from the Comm Rent feature) are intentionally omitted.
+            LABEL_PREFIX_FALLBACK = {
+                "cable tv": ["4250-0010"],
+            }
+            if not is_subtotal and not prefixes:
+                key = (row_label or "").strip().lower()
+                if key in LABEL_PREFIX_FALLBACK:
+                    prefixes = LABEL_PREFIX_FALLBACK[key]
+
             def prefix_sumifs(yardi_col):
                 """Build SUMIFS('yardi'!col, 'yardi'!A:A, "PREFIX*") + ... for each prefix."""
                 if not prefixes:
