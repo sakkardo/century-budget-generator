@@ -5927,13 +5927,68 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "No template available"}), 500
         lap("template_fetch")
 
-        # ── Load workbook ────────────────────────────────────────────
+        # ── Pre-populate via template_populator (Pass 2) ─────────────
+        # populate_template handles Income/Payroll/Energy/Water/R&S/Gen&Admin
+        # by mapping budget_lines GL codes to template cells. This is the
+        # existing battle-tested path used by the old endpoint. We layer
+        # our own rewrites (Budget Summary + Comm Rent) on top, which
+        # OVERWRITE the populator's simplified Budget Summary work.
         in_path = tempfile.mktemp(suffix=".xlsx")
         out_path = tempfile.mktemp(suffix=".xlsx")
         try:
             with open(in_path, "wb") as f:
                 f.write(file_bytes)
             lap("write_template_tmp")
+
+            # Pre-populate (Pass 2) — only when using the generic template
+            # (the populator was built for that file layout).
+            if template_source == "generic_master_template":
+                try:
+                    try:
+                        from template_populator import populate_template
+                    except ImportError:
+                        from budget_system.template_populator import populate_template
+                    # Build gl_data dict from budget_lines
+                    lines = BudgetLine.query.filter_by(budget_id=budget.id).all() if budget else []
+                    gl_data = {}
+                    for l in lines:
+                        gl_data[l.gl_code] = {
+                            "period_2": l.prior_year or 0,
+                            "period_3": l.ytd_actual or 0,
+                            "period_4": l.ytd_budget or 0,
+                            "period_5": l.current_budget or 0,
+                        }
+                    property_info = {
+                        "property_code": entity_code,
+                        "property_name": (budget.building_name if budget else "") or "",
+                    }
+                    # YTD months from assumptions
+                    import json as _json_mod
+                    ytd_months = 2
+                    try:
+                        assumptions = _json_mod.loads(budget.assumptions_json) if (budget and budget.assumptions_json) else {}
+                        bp = assumptions.get("budget_period", "")
+                        if "/" in str(bp):
+                            ytd_months = int(str(bp).split("/")[0])
+                    except Exception:
+                        pass
+                    # populate_template writes to a separate output path
+                    populated_path = tempfile.mktemp(suffix=".xlsx")
+                    populate_template(
+                        template_path=_Path(in_path),
+                        gl_data=gl_data,
+                        property_info=property_info,
+                        output_path=_Path(populated_path),
+                        ytd_months=ytd_months,
+                        remaining_months=12 - ytd_months,
+                    )
+                    # Reroute: use the populated file as our new working file
+                    if _Path(populated_path).exists():
+                        in_path = populated_path
+                except Exception as e:
+                    logger.warning(f"export-excel populate_template failed: {str(e)[:300]} — continuing without it")
+            lap("populate_template")
+
             try:
                 wb = openpyxl.load_workbook(in_path, data_only=False)
             except Exception as e:
