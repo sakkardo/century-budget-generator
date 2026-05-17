@@ -5935,6 +5935,7 @@ def create_workflow_blueprint(db):
         # OVERWRITE the populator's simplified Budget Summary work.
         in_path = tempfile.mktemp(suffix=".xlsx")
         out_path = tempfile.mktemp(suffix=".xlsx")
+        edit_log = []
         try:
             with open(in_path, "wb") as f:
                 f.write(file_bytes)
@@ -5974,7 +5975,7 @@ def create_workflow_blueprint(db):
                         pass
                     # populate_template writes to a separate output path
                     populated_path = tempfile.mktemp(suffix=".xlsx")
-                    populate_template(
+                    pop_result = populate_template(
                         template_path=_Path(in_path),
                         gl_data=gl_data,
                         property_info=property_info,
@@ -5982,6 +5983,15 @@ def create_workflow_blueprint(db):
                         ytd_months=ytd_months,
                         remaining_months=12 - ytd_months,
                     )
+                    # Capture populator stats so the timing endpoint can show
+                    # match/unmatched counts.
+                    try:
+                        if isinstance(pop_result, dict):
+                            edit_log.append({"populate_template": pop_result})
+                        else:
+                            edit_log.append({"populate_template": "result type " + type(pop_result).__name__, "gl_count_sent": len(gl_data)})
+                    except Exception:
+                        pass
                     # Reroute: use the populated file as our new working file
                     if _Path(populated_path).exists():
                         in_path = populated_path
@@ -5996,7 +6006,6 @@ def create_workflow_blueprint(db):
             lap("openpyxl_load")
 
             # ── Apply rewrites ────────────────────────────────────
-            edit_log = []
             try:
                 _export_rewrite_budget_summary(wb, entity_code, edit_log)
             except Exception as e:
