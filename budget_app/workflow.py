@@ -8425,87 +8425,97 @@ def create_workflow_blueprint(db):
             "summary_rows": 0,
             "commercial_tenants": 0,
             "commercial_periods": 0,
-            "commercial_escalations": 0,
+            "commercial_billbacks": 0,
             "budget_revisions": 0,
             "presentation_edits": 0,
         }
+        warnings = []
+
+        def _try_delete(sql, params=None, label=""):
+            """Run one DELETE in its own txn. Returns rowcount or 0; never
+            poisons the session. The whole point of the soft-reset is to be
+            tolerant of schema drift across environments."""
+            try:
+                r = db.session.execute(db.text(sql), params or {})
+                db.session.commit()
+                return r.rowcount or 0
+            except Exception as _e:
+                db.session.rollback()
+                warnings.append(f"{label}: {str(_e)[:160]}")
+                logger.warning(f"soft-reset skip {label}: {_e}")
+                return 0
+
+        # 1) Line-scoped dependents
+        line_rows = db.session.execute(
+            db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"),
+            {"bid": budget.id}
+        ).fetchall()
+        line_ids = [r[0] for r in line_rows]
+        db.session.commit()  # close the SELECT txn cleanly
+
+        if line_ids:
+            ids_str = ",".join(str(i) for i in line_ids)
+            counts["presentation_edits"] = _try_delete(
+                f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})",
+                label="presentation_edits"
+            )
+            counts["budget_revisions"] += _try_delete(
+                f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})",
+                label="budget_revisions (line-scoped)"
+            )
+
+        # 2) Budget-scoped revisions
+        counts["budget_revisions"] += _try_delete(
+            "DELETE FROM budget_revisions WHERE budget_id = :bid",
+            {"bid": budget.id},
+            label="budget_revisions (budget-scoped)"
+        )
+
+        # 3) Budget lines
+        counts["budget_lines"] = _try_delete(
+            "DELETE FROM budget_lines WHERE budget_id = :bid",
+            {"bid": budget.id},
+            label="budget_lines"
+        )
+
+        # 4) Summary rows
+        counts["summary_rows"] = _try_delete(
+            "DELETE FROM budget_summary_rows WHERE entity_code = :ec AND budget_year = :y",
+            {"ec": ec, "y": BUDGET_YEAR},
+            label="budget_summary_rows"
+        )
+
+        # 5) Commercial rent data — three sibling tables, any could differ across
+        # environments. Each gets its own committed delete.
         try:
-            # Capture line IDs first so we can drop their dependents
-            line_rows = db.session.execute(
-                db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"),
-                {"bid": budget.id}
-            ).fetchall()
-            line_ids = [r[0] for r in line_rows]
-
-            if line_ids:
-                ids_str = ",".join(str(i) for i in line_ids)
-                r1 = db.session.execute(db.text(
-                    f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})"
-                ))
-                counts["presentation_edits"] = r1.rowcount or 0
-                r2 = db.session.execute(db.text(
-                    f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})"
-                ))
-                counts["budget_revisions"] += r2.rowcount or 0
-
-            # Drop budget-scoped revisions (status changes, summary edits, etc.)
-            r3 = db.session.execute(db.text(
-                "DELETE FROM budget_revisions WHERE budget_id = :bid"
-            ), {"bid": budget.id})
-            counts["budget_revisions"] += r3.rowcount or 0
-
-            # Drop the budget lines themselves
-            r4 = db.session.execute(db.text(
-                "DELETE FROM budget_lines WHERE budget_id = :bid"
-            ), {"bid": budget.id})
-            counts["budget_lines"] = r4.rowcount or 0
-
-            # Drop summary rows for this entity / year
-            r5 = db.session.execute(db.text(
-                "DELETE FROM budget_summary_rows "
-                "WHERE entity_code = :ec AND budget_year = :y"
-            ), {"ec": ec, "y": BUDGET_YEAR})
-            counts["summary_rows"] = r5.rowcount or 0
-
-            # Drop commercial rent data. Use SAVEPOINTs because the
-            # escalation / period tables may differ across deployments
-            # (column rename, ondelete CASCADE on the FK), and a failed
-            # raw-SQL DELETE in Postgres aborts the WHOLE outer transaction.
-            # SAVEPOINT lets us roll back the failed sub-delete and continue.
             tenant_rows = db.session.execute(db.text(
                 "SELECT id FROM commercial_tenants WHERE entity_code = :ec AND budget_year = :y"
             ), {"ec": ec, "y": BUDGET_YEAR}).fetchall()
-            if tenant_rows:
-                t_ids = ",".join(str(r[0]) for r in tenant_rows)
-                # Escalations: use SAVEPOINT so a failure doesn't poison the outer txn.
-                sp = db.session.begin_nested()
-                try:
-                    re_ = db.session.execute(db.text(
-                        f"DELETE FROM commercial_rent_escalations WHERE tenant_id IN ({t_ids})"
-                    ))
-                    counts["commercial_escalations"] = re_.rowcount or 0
-                    sp.commit()
-                except Exception as _e:
-                    sp.rollback()
-                    logger.warning(f"soft-reset escalations skipped: {_e}")
-                # Periods: same pattern.
-                sp = db.session.begin_nested()
-                try:
-                    rp_ = db.session.execute(db.text(
-                        f"DELETE FROM commercial_rent_periods WHERE tenant_id IN ({t_ids})"
-                    ))
-                    counts["commercial_periods"] = rp_.rowcount or 0
-                    sp.commit()
-                except Exception as _e:
-                    sp.rollback()
-                    logger.warning(f"soft-reset periods skipped: {_e}")
-                # Tenants themselves: rely on ondelete CASCADE if it's wired.
-                rt_ = db.session.execute(db.text(
-                    f"DELETE FROM commercial_tenants WHERE id IN ({t_ids})"
-                ))
-                counts["commercial_tenants"] = rt_.rowcount or 0
+            db.session.commit()
+            t_ids = [r[0] for r in tenant_rows]
+        except Exception as _e:
+            db.session.rollback()
+            warnings.append(f"commercial_tenants SELECT: {str(_e)[:160]}")
+            t_ids = []
 
-            # Reset wizard / budget header state, but keep the Budget row itself
+        if t_ids:
+            ids_str = ",".join(str(i) for i in t_ids)
+            counts["commercial_periods"] = _try_delete(
+                f"DELETE FROM commercial_rent_periods WHERE tenant_id IN ({ids_str})",
+                label="commercial_rent_periods"
+            )
+            counts["commercial_billbacks"] = _try_delete(
+                f"DELETE FROM commercial_tenant_billbacks WHERE tenant_id IN ({ids_str})",
+                label="commercial_tenant_billbacks"
+            )
+            counts["commercial_tenants"] = _try_delete(
+                f"DELETE FROM commercial_tenants WHERE id IN ({ids_str})",
+                label="commercial_tenants"
+            )
+
+        # 6) Reset wizard / budget header — its own commit
+        try:
+            budget = Budget.query.get(budget.id)  # re-fetch in case session was cleared
             budget.wizard_step = 0
             budget.wizard_completed_at = None
             budget.status = "draft"
@@ -8514,12 +8524,10 @@ def create_workflow_blueprint(db):
             budget.locked_at = None
             budget.locked_by = None
             budget.updated_at = datetime.utcnow()
-
             db.session.commit()
-        except Exception as e:
+        except Exception as _e:
             db.session.rollback()
-            logger.exception(f"soft-reset failed for {ec}: {e}")
-            return jsonify({"error": f"Soft reset failed: {str(e)}"}), 500
+            warnings.append(f"budget header reset: {str(_e)[:160]}")
 
         # What we deliberately KEPT — for FA reassurance
         kept = {
@@ -8540,8 +8548,14 @@ def create_workflow_blueprint(db):
             })
         except Exception:
             pass
-        logger.info(f"Soft-reset {ec}: deleted={counts} kept={kept}")
-        return jsonify({"status": "ok", "entity_code": ec, "deleted": counts, "kept": kept})
+        logger.info(f"Soft-reset {ec}: deleted={counts} kept={kept} warnings={warnings}")
+        return jsonify({
+            "status": "ok",
+            "entity_code": ec,
+            "deleted": counts,
+            "kept": kept,
+            "warnings": warnings,
+        })
 
 
     @bp.route("/api/admin/resolve-summary-aliases/<entity_code>", methods=["POST"])
