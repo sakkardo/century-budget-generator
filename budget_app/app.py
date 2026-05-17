@@ -487,7 +487,8 @@ def _handle_500(err):
             "path": path
         }), 500
 
-    show_tb = os.environ.get("SHOW_TRACEBACKS", "").lower() in ("1", "true", "yes")
+    # TEMP: always show tracebacks while debugging /wizard 500 — REVERT after fix
+    show_tb = True or os.environ.get("SHOW_TRACEBACKS", "").lower() in ("1", "true", "yes")
     safe_tb = (tb or "").replace("<", "&lt;").replace(">", "&gt;") if show_tb else ""
     tb_block = (
         f"<pre style='background:#111;color:#0f0;padding:12px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:20px;'>{safe_tb}</pre>"
