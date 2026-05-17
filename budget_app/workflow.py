@@ -8399,6 +8399,139 @@ def create_workflow_blueprint(db):
         })
 
 
+    @bp.route("/api/admin/soft-reset/<entity_code>", methods=["POST"])
+    def api_soft_reset_entity(entity_code):
+        """ADMIN: Soft-reset an entity for a fresh wizard run, KEEPING source uploads.
+
+        Clears the computed budget (lines, summary rows, commercial tenants,
+        revisions) and resets wizard state to step 0 / status draft. Does NOT
+        touch source uploads (yardi YSL, expense_reports, open_ap_reports,
+        maint_proof_reports), audited financials (AuditUpload rows),
+        BuildingInfo, payroll_positions, or building assignments. Use this
+        when you want the FA to re-run the wizard from scratch but skip
+        re-uploading source files.
+
+        Returns counts of what was deleted so the caller can verify.
+        Idempotent: safe to call on an already-reset entity (counts return 0).
+        """
+        import json as _json
+        ec = str(entity_code).strip()
+        budget = Budget.query.filter_by(entity_code=ec, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": f"No budget found for {ec} / FY{BUDGET_YEAR}"}), 404
+
+        counts = {
+            "budget_lines": 0,
+            "summary_rows": 0,
+            "commercial_tenants": 0,
+            "commercial_periods": 0,
+            "commercial_escalations": 0,
+            "budget_revisions": 0,
+            "presentation_edits": 0,
+        }
+        try:
+            # Capture line IDs first so we can drop their dependents
+            line_rows = db.session.execute(
+                db.text("SELECT id FROM budget_lines WHERE budget_id = :bid"),
+                {"bid": budget.id}
+            ).fetchall()
+            line_ids = [r[0] for r in line_rows]
+
+            if line_ids:
+                ids_str = ",".join(str(i) for i in line_ids)
+                r1 = db.session.execute(db.text(
+                    f"DELETE FROM presentation_edits WHERE budget_line_id IN ({ids_str})"
+                ))
+                counts["presentation_edits"] = r1.rowcount or 0
+                r2 = db.session.execute(db.text(
+                    f"DELETE FROM budget_revisions WHERE budget_line_id IN ({ids_str})"
+                ))
+                counts["budget_revisions"] += r2.rowcount or 0
+
+            # Drop budget-scoped revisions (status changes, summary edits, etc.)
+            r3 = db.session.execute(db.text(
+                "DELETE FROM budget_revisions WHERE budget_id = :bid"
+            ), {"bid": budget.id})
+            counts["budget_revisions"] += r3.rowcount or 0
+
+            # Drop the budget lines themselves
+            r4 = db.session.execute(db.text(
+                "DELETE FROM budget_lines WHERE budget_id = :bid"
+            ), {"bid": budget.id})
+            counts["budget_lines"] = r4.rowcount or 0
+
+            # Drop summary rows for this entity / year
+            r5 = db.session.execute(db.text(
+                "DELETE FROM budget_summary_rows "
+                "WHERE entity_code = :ec AND budget_year = :y"
+            ), {"ec": ec, "y": BUDGET_YEAR})
+            counts["summary_rows"] = r5.rowcount or 0
+
+            # Drop commercial rent data (escalations + periods cascade by FK)
+            tenant_rows = db.session.execute(db.text(
+                "SELECT id FROM commercial_tenants WHERE entity_code = :ec AND budget_year = :y"
+            ), {"ec": ec, "y": BUDGET_YEAR}).fetchall()
+            if tenant_rows:
+                t_ids = ",".join(str(r[0]) for r in tenant_rows)
+                # Most schemas cascade; do them explicitly to be safe
+                try:
+                    re_ = db.session.execute(db.text(
+                        f"DELETE FROM commercial_rent_escalations WHERE tenant_id IN ({t_ids})"
+                    ))
+                    counts["commercial_escalations"] = re_.rowcount or 0
+                except Exception:
+                    pass
+                try:
+                    rp_ = db.session.execute(db.text(
+                        f"DELETE FROM commercial_rent_periods WHERE tenant_id IN ({t_ids})"
+                    ))
+                    counts["commercial_periods"] = rp_.rowcount or 0
+                except Exception:
+                    pass
+                rt_ = db.session.execute(db.text(
+                    f"DELETE FROM commercial_tenants WHERE id IN ({t_ids})"
+                ))
+                counts["commercial_tenants"] = rt_.rowcount or 0
+
+            # Reset wizard / budget header state, but keep the Budget row itself
+            budget.wizard_step = 0
+            budget.wizard_completed_at = None
+            budget.status = "draft"
+            budget.assumptions_json = None
+            budget.lock_state = None
+            budget.locked_at = None
+            budget.locked_by = None
+            budget.updated_at = datetime.utcnow()
+
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.exception(f"soft-reset failed for {ec}: {e}")
+            return jsonify({"error": f"Soft reset failed: {str(e)}"}), 500
+
+        # What we deliberately KEPT — for FA reassurance
+        kept = {
+            "budget_id": budget.id,
+            "audit_uploads": db.session.execute(db.text(
+                "SELECT COUNT(*) FROM audit_uploads WHERE entity_code = :ec"
+            ), {"ec": ec}).scalar() or 0,
+            "expense_reports": db.session.execute(db.text(
+                "SELECT COUNT(*) FROM expense_reports WHERE entity_code = :ec"
+            ), {"ec": ec}).scalar() or 0,
+            "open_ap_reports": db.session.execute(db.text(
+                "SELECT COUNT(*) FROM open_ap_reports WHERE entity_code = :ec"
+            ), {"ec": ec}).scalar() or 0,
+        }
+        try:
+            _log_wizard_event(ec, step="admin", action="soft_reset", payload={
+                "deleted": counts, "kept": kept,
+            })
+        except Exception:
+            pass
+        logger.info(f"Soft-reset {ec}: deleted={counts} kept={kept}")
+        return jsonify({"status": "ok", "entity_code": ec, "deleted": counts, "kept": kept})
+
+
     @bp.route("/api/admin/resolve-summary-aliases/<entity_code>", methods=["POST"])
     def api_resolve_summary_aliases(entity_code):
         """ADMIN: Re-resolve label aliases for an existing entity's summary rows.
