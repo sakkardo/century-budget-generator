@@ -6034,6 +6034,14 @@ def create_workflow_blueprint(db):
             lap("openpyxl_load")
 
             # ── Apply rewrites ────────────────────────────────────
+            # Cover sheet rebuilt FIRST (so it's the title page)
+            try:
+                _export_rewrite_cover_sheet(wb, entity_code, budget, edit_log)
+            except Exception as e:
+                edit_log.append({"sheet": "Cover Sheet", "error": str(e)[:200]})
+                logger.warning(f"export-excel cover rebuild failed: {traceback.format_exc()[-500:]}")
+            lap("rewrite_cover")
+
             # When using the building's own SharePoint Excel, the original
             # yrlycomp already has 40+ rows of detailed line items with
             # cross-sheet formulas. Replacing it with my product-derived
@@ -6450,6 +6458,129 @@ def create_workflow_blueprint(db):
             })
 
 
+    def _export_rewrite_cover_sheet(wb, entity_code, budget, edit_log=None):
+        """Rebuild Cover Sheet as a real presentation cover. Replaces the
+        template's generic cover with a clean, branded title page that the
+        FA can show first at a board meeting.
+        FA directive 2026-05-17 (presentation quality).
+        """
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.comments import Comment
+        # Find + replace existing
+        old_index = None
+        old_name = None
+        for i, name in enumerate(wb.sheetnames):
+            if name.lower().strip() in ("cover sheet", "cov", "cover"):
+                old_index = i
+                old_name = name
+                del wb[name]
+                break
+        ws = wb.create_sheet(old_name or "Cover Sheet", index=0)
+
+        building_name = (budget.building_name if budget else entity_code) or entity_code
+        status = (budget.status if budget else None) or "draft"
+        gen_stamp = datetime.utcnow().strftime("%B %d, %Y")
+
+        FONT_HUGE = Font(name="Calibri", size=36, bold=True, color="5A4A3F")
+        FONT_BIG = Font(name="Calibri", size=20, color="5A4A3F")
+        FONT_LABEL = Font(name="Calibri", size=10, bold=True, color="8A7E72")
+        FONT_VAL = Font(name="Calibri", size=12, color="1A1714")
+        FONT_FOOT = Font(name="Calibri", size=9, italic=True, color="8A7E72")
+        FONT_DRAFT = Font(name="Calibri", size=14, bold=True, color="9A3412")
+
+        # Column widths for centered look
+        ws.column_dimensions["A"].width = 4
+        ws.column_dimensions["B"].width = 18
+        ws.column_dimensions["C"].width = 50
+        ws.column_dimensions["D"].width = 4
+
+        # Top breathing space
+        for r in range(1, 6):
+            ws.row_dimensions[r].height = 18
+
+        # Brand row 6
+        brand = ws.cell(row=6, column=2, value="CENTURY MANAGEMENT")
+        brand.font = Font(name="Calibri", size=10, bold=True, color="8A7E72")
+        ws.merge_cells(start_row=6, start_column=2, end_row=6, end_column=3)
+        # Subtle brand stripe
+        for c in range(2, 4):
+            ws.cell(row=7, column=c).border = Border(bottom=Side(border_style="medium", color="5A4A3F"))
+
+        # Title rows 9-10
+        ws.row_dimensions[8].height = 12
+        title = ws.cell(row=9, column=2, value="Operating Budget")
+        title.font = FONT_HUGE
+        ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=3)
+        ws.row_dimensions[9].height = 46
+
+        year_cell = ws.cell(row=10, column=2, value=f"Fiscal Year {BUDGET_YEAR}")
+        year_cell.font = FONT_BIG
+        ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=3)
+        ws.row_dimensions[10].height = 28
+
+        # DRAFT marker if not approved
+        ws.row_dimensions[11].height = 12
+        if status.lower() not in ("approved", "fa_approved"):
+            d = ws.cell(row=12, column=2, value="DRAFT  —  Not yet approved")
+            d.font = FONT_DRAFT
+            d.fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+            ws.merge_cells(start_row=12, start_column=2, end_row=12, end_column=3)
+            ws.row_dimensions[12].height = 30
+
+        # Building info block (rows 15-21)
+        info_pairs = [
+            ("Building", building_name),
+            ("Entity Code", entity_code),
+        ]
+        try:
+            BuildingInfo = workflow_models.get("BuildingInfo") if "workflow_models" in globals() else None
+            if BuildingInfo:
+                bi = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+                if bi:
+                    addr_parts = []
+                    if getattr(bi, "address", None): addr_parts.append(bi.address)
+                    if getattr(bi, "city", None): addr_parts.append(bi.city)
+                    if addr_parts: info_pairs.append(("Address", ", ".join(addr_parts)))
+                    btype = getattr(bi, "building_type", None)
+                    if btype: info_pairs.append(("Building Type", btype))
+        except Exception:
+            pass
+        info_pairs.append(("Status", status.replace("_", " ").title()))
+        info_pairs.append(("Generated", gen_stamp))
+
+        r = 15
+        for label, value in info_pairs:
+            lc = ws.cell(row=r, column=2, value=label.upper())
+            lc.font = FONT_LABEL
+            lc.alignment = Alignment(horizontal="left", vertical="center")
+            vc = ws.cell(row=r, column=3, value=value)
+            vc.font = FONT_VAL
+            vc.alignment = Alignment(horizontal="left", vertical="center")
+            # Thin gray underline
+            for c in range(2, 4):
+                ws.cell(row=r, column=c).border = Border(
+                    bottom=Side(border_style="thin", color="E5E0D5")
+                )
+            ws.row_dimensions[r].height = 22
+            r += 1
+
+        # Footer
+        ws.row_dimensions[r + 4].height = 12
+        footer = ws.cell(row=r + 5, column=2,
+                         value="Generated by Century Budget Manager.  All amounts reflect the live product database at the time of export.")
+        footer.font = FONT_FOOT
+        ws.merge_cells(start_row=r + 5, start_column=2, end_row=r + 5, end_column=3)
+
+        # Make cover the first/active sheet
+        ws.sheet_view.showGridLines = False
+        ws.sheet_view.zoomScale = 100
+        ws.print_options.horizontalCentered = True
+        ws.print_options.verticalCentered = True
+
+        if edit_log is not None:
+            edit_log.append({"sheet": ws.title, "action": "cover_rebuilt"})
+
+
     def _export_apply_polish(wb, edit_log=None):
         """Pass 4 polish: hide empty sheets, turn off gridlines workbook-wide,
         consistent print setup. Run after all rewrites so we can detect
@@ -6459,8 +6590,12 @@ def create_workflow_blueprint(db):
         # Sheets we explicitly keep visible even when light on data
         ALWAYS_VISIBLE = {"cover sheet", "budget summary", "yrlycomp",
                           "comm rent & escalations"}
-        # Sheets we explicitly hide (template defaults the product doesn't fill)
-        ALWAYS_HIDE = {"setup", "contents", "exp-pie"}
+        # Sheets we explicitly hide (template defaults the product doesn't
+        # fill from product data). RE Taxes + Insurance Schedule have
+        # template structure but no product-populated values today; once
+        # those data sources are wired (Phase 5) we'll remove from this list.
+        ALWAYS_HIDE = {"setup", "contents", "exp-pie",
+                       "re taxes", "insurance schedule"}
 
         hidden = []
         kept = []
@@ -6577,6 +6712,7 @@ def create_workflow_blueprint(db):
             ("vlookup",        "8A7E72"),
             ("yardi",          "8A7E72"),
             ("maint proof",    "8A7E72"),
+            ("unmapped",       "8A7E72"),    # neutral gray — orphan GLs
         ]
         for sheet_name in wb.sheetnames:
             try:
