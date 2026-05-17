@@ -6034,7 +6034,15 @@ def create_workflow_blueprint(db):
             lap("openpyxl_load")
 
             # ── Apply rewrites ────────────────────────────────────
-            # Cover sheet rebuilt FIRST (so it's the title page)
+            # Foundational source layer FIRST — every other tab references it.
+            try:
+                _export_write_yardi_data(wb, entity_code, budget, edit_log)
+            except Exception as e:
+                edit_log.append({"sheet": "yardi_data (2)", "error": str(e)[:200]})
+                logger.warning(f"export-excel yardi_data write failed: {traceback.format_exc()[-500:]}")
+            lap("write_yardi_data")
+
+            # Cover sheet rebuilt next (so it's the title page)
             try:
                 _export_rewrite_cover_sheet(wb, entity_code, budget, edit_log)
             except Exception as e:
@@ -6284,34 +6292,50 @@ def create_workflow_blueprint(db):
                 set_cell(3, l.notes, align=ALIGN_LEFT, font=FONT_BODY_MUTED)
             else:
                 set_cell(3, None, align=ALIGN_LEFT)
-            # D: Prior year (display-only, no fill)
-            set_cell(4, float(l.prior_year) if l.prior_year is not None else None, fmt=FMT_CURRENCY)
-            # E: YTD Actual
-            set_cell(5, float(l.ytd_actual) if l.ytd_actual is not None else None, fmt=FMT_CURRENCY)
-            # F: Accrual Adj
-            set_cell(6, float(l.accrual_adj) if l.accrual_adj is not None else None, fmt=FMT_CURRENCY)
-            # G: Unpaid Bills
-            set_cell(7, float(l.unpaid_bills) if l.unpaid_bills is not None else None, fmt=FMT_CURRENCY)
-            # H: YTD Budget
-            set_cell(8, float(l.ytd_budget) if l.ytd_budget is not None else None, fmt=FMT_CURRENCY)
-            # I: Remaining Projection (formula)
+            # D-K: SUMIF formulas pointing at yardi_data — the workbook
+            # becomes truly dynamic. Edit yardi_data and these recompute.
+            # GL Code is in our column A, so we match yardi_data column A.
+            yardi = "'yardi_data (2)'"
+            sumif = lambda yardi_col: f"=IFERROR(SUMIF({yardi}!$A:$A,$A{r},{yardi}!${yardi_col}:${yardi_col}),0)"
+            # D: prior_year ← yardi col E
+            set_cell(4, sumif("E"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # E: ytd_actual ← yardi col F
+            set_cell(5, sumif("F"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # F: accrual_adj ← yardi col G
+            set_cell(6, sumif("G"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # G: unpaid_bills ← yardi col H
+            set_cell(7, sumif("H"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # H: ytd_budget ← yardi col I
+            set_cell(8, sumif("I"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # I: Remaining Projection — computed
             set_cell(9, f"=IFERROR(MAX(0,D{r}-(E{r}+F{r}+G{r})),0)", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # J: 12-Month Forecast (formula)
+            # J: 12-Month Forecast — computed
             set_cell(10, f"=E{r}+F{r}+G{r}+I{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # K: Current Year Budget
-            set_cell(11, float(l.current_budget) if l.current_budget is not None else None, fmt=FMT_CURRENCY)
-            # L: Increase % — FA-editable INPUT — yellow fill
-            inc = float(l.increase_pct) if l.increase_pct is not None else 0
-            set_cell(12, inc, fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
-            # M: Proposed Budget — FA-editable INPUT — yellow fill
-            if l.proposed_budget is not None and l.proposed_budget != 0:
-                set_cell(13, float(l.proposed_budget), fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
-            else:
-                set_cell(13, f"=J{r}*(1+L{r})", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # N: $ Var (formula)
+            # K: current_budget ← yardi col J
+            set_cell(11, sumif("J"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # L: increase_pct — yardi col K (FA-editable INPUT, yellow fill)
+            set_cell(12, f"=IFERROR(SUMIF({yardi}!$A:$A,$A{r},{yardi}!$K:$K),0)",
+                     fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
+            # M: Proposed Budget — yardi col L (FA-editable INPUT)
+            #    If FA hasn't set proposed yet, formula falls back to J*(1+L)
+            set_cell(13,
+                     f"=IF(SUMIF({yardi}!$A:$A,$A{r},{yardi}!$L:$L)<>0,SUMIF({yardi}!$A:$A,$A{r},{yardi}!$L:$L),J{r}*(1+L{r}))",
+                     fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
+            # N: $ Var
             set_cell(14, f"=M{r}-D{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # O: % Change (formula)
+            # O: % Change
             set_cell(15, f"=IFERROR(M{r}/D{r}-1,0)", fmt=FMT_PERCENT, font=FONT_FORMULA)
+
+            # Auto-hide rows with no values: if all source columns are 0 in
+            # product, hide this row to keep visible workbook clean. FA
+            # can unhide if they want to use the empty row for new data.
+            all_zero = all([
+                not l.prior_year, not l.ytd_actual, not l.accrual_adj,
+                not l.unpaid_bills, not l.ytd_budget, not l.current_budget,
+                not l.proposed_budget,
+            ])
+            if all_zero:
+                ws.row_dimensions[r].hidden = True
             r += 1
 
         # ── Subtotal row ─────────────────────────────────────────
@@ -6456,6 +6480,126 @@ def create_workflow_blueprint(db):
                     "product_labels_total": len(col7_by_label),
                 }
             })
+
+
+    def _export_write_yardi_data(wb, entity_code, budget, edit_log=None):
+        """Foundational source-layer tab. One row per BudgetLine, all values
+        hardcoded. Every other tab in the workbook references this tab via
+        SUMIF/SUMIFS — so when an FA opens the Excel and edits a cell here,
+        the whole workbook recomputes.
+        FA directive 2026-05-17 (Pass 5 — dynamic formulas).
+        """
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.comments import Comment
+
+        sheet_name = "yardi_data (2)"
+        # Replace existing
+        old_index = None
+        for i, name in enumerate(wb.sheetnames):
+            if name.lower().strip() in ("yardi_data (2)", "yardi_data", "yardi import"):
+                old_index = i
+                del wb[name]
+                break
+        ws = wb.create_sheet(sheet_name, index=old_index if old_index is not None else None)
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(
+            BudgetLine.sheet_name, BudgetLine.row_num, BudgetLine.gl_code
+        ).all() if budget else []
+
+        # Style
+        FONT_HEADER = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+        FONT_BODY = Font(name="Calibri", size=10, color="1A1714")
+        FONT_BODY_MUTED = Font(name="Calibri", size=9, color="8A7E72")
+        FILL_HEADER = PatternFill(start_color="5A4A3F", end_color="5A4A3F", fill_type="solid")
+        FILL_ALT = PatternFill(start_color="FAFAF7", end_color="FAFAF7", fill_type="solid")
+        thin = Side(border_style="thin", color="E5E0D5")
+        ROW_BORDER = Border(bottom=thin)
+        FMT_CURRENCY = '_($* #,##0_);_($* (#,##0);_($* "-"??_);_(@_)'
+
+        # Title
+        ws.cell(row=1, column=1, value="Yardi Data — Source Layer").font = Font(
+            name="Calibri", size=14, bold=True, color="5A4A3F"
+        )
+        ws.cell(row=2, column=1,
+                value=f"Entity {entity_code} · {len(lines)} GL line(s) · Every other tab references this data via SUMIF formulas"
+                ).font = Font(name="Calibri", size=9, italic=True, color="8A7E72")
+
+        # Headers row 4
+        headers = ["GL Code", "Description", "Sheet", "Category",
+                   f"{BUDGET_YEAR-3}\nPrior Actual",
+                   f"{BUDGET_YEAR-1}\nYTD Actual",
+                   "Accrual\nAdj",
+                   "Unpaid\nBills",
+                   f"{BUDGET_YEAR-1}\nYTD Budget",
+                   f"{BUDGET_YEAR-1}\nCurrent Budget",
+                   "Increase\n%",
+                   f"{BUDGET_YEAR}\nProposed",
+                   "Notes"]
+        for col_i, h in enumerate(headers, start=1):
+            c = ws.cell(row=4, column=col_i, value=h)
+            c.font = FONT_HEADER
+            c.fill = FILL_HEADER
+            c.alignment = Alignment(
+                horizontal="right" if col_i >= 5 and col_i <= 12 else "left",
+                vertical="center", wrap_text=True,
+            )
+            c.border = ROW_BORDER
+        ws.row_dimensions[4].height = 32
+
+        # Data rows
+        r = 5
+        for i, l in enumerate(lines):
+            alt = (i % 2 == 1)
+            row_fill = FILL_ALT if alt else None
+
+            def cell(col, value, *, font=None, align=None, fmt=None):
+                c = ws.cell(row=r, column=col, value=value)
+                c.font = font or FONT_BODY
+                c.alignment = align or Alignment(horizontal="right", vertical="center")
+                if fmt: c.number_format = fmt
+                if row_fill: c.fill = row_fill
+                c.border = ROW_BORDER
+                return c
+
+            cell(1, l.gl_code or "", font=FONT_BODY_MUTED,
+                 align=Alignment(horizontal="left", vertical="center"))
+            cell(2, l.description or "",
+                 align=Alignment(horizontal="left", vertical="center"))
+            cell(3, l.sheet_name or "",
+                 font=FONT_BODY_MUTED,
+                 align=Alignment(horizontal="left", vertical="center"))
+            cell(4, l.category or "",
+                 font=FONT_BODY_MUTED,
+                 align=Alignment(horizontal="left", vertical="center"))
+            cell(5, float(l.prior_year) if l.prior_year else None, fmt=FMT_CURRENCY)
+            cell(6, float(l.ytd_actual) if l.ytd_actual else None, fmt=FMT_CURRENCY)
+            cell(7, float(l.accrual_adj) if l.accrual_adj else None, fmt=FMT_CURRENCY)
+            cell(8, float(l.unpaid_bills) if l.unpaid_bills else None, fmt=FMT_CURRENCY)
+            cell(9, float(l.ytd_budget) if l.ytd_budget else None, fmt=FMT_CURRENCY)
+            cell(10, float(l.current_budget) if l.current_budget else None, fmt=FMT_CURRENCY)
+            cell(11, float(l.increase_pct) if l.increase_pct else None,
+                 fmt="0.0%;[Red]-0.0%")
+            cell(12, float(l.proposed_budget) if l.proposed_budget else None, fmt=FMT_CURRENCY)
+            cell(13, l.notes or "",
+                 font=FONT_BODY_MUTED,
+                 align=Alignment(horizontal="left", vertical="center", wrap_text=True))
+            r += 1
+
+        # Column widths
+        widths = {"A": 14, "B": 36, "C": 16, "D": 14,
+                  "E": 14, "F": 14, "G": 12, "H": 12, "I": 14, "J": 14,
+                  "K": 10, "L": 14, "M": 24}
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+        ws.freeze_panes = "C5"
+
+        # Hide this tab by default — FAs don't usually need to see raw data.
+        # Showing it makes the workbook feel cluttered. It's there for power
+        # users who want to inspect or edit the source values.
+        ws.sheet_state = "hidden"
+
+        if edit_log is not None:
+            edit_log.append({"sheet": sheet_name, "lines_written": len(lines), "hidden": True})
 
 
     def _export_rewrite_cover_sheet(wb, entity_code, budget, edit_log=None):
@@ -6972,33 +7116,77 @@ def create_workflow_blueprint(db):
                     cell.fill = row_fill
                 cell.border = row_border
 
-            # C: col1_prior_actual
-            write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
-            # D-G: col2-col5 (not stored, leave blank for now — these are computed at render time)
+            # Build SUMIFS formula by GL prefix list from product (e.g.,
+            # ["4030", "4040"] → sum yardi rows where gl_code starts with
+            # either prefix). For subtotal rows, sum the data rows above.
+            yardi = "'yardi_data (2)'"
+            prefixes = []
+            if not is_subtotal and row.gl_prefixes_json:
+                try:
+                    parsed = _json.loads(row.gl_prefixes_json)
+                    if isinstance(parsed, list):
+                        prefixes = [str(p).strip() for p in parsed if p]
+                except Exception:
+                    pass
+
+            def prefix_sumifs(yardi_col):
+                """Build SUMIFS('yardi'!col, 'yardi'!A:A, "PREFIX*") + ... for each prefix."""
+                if not prefixes:
+                    return None
+                parts = [
+                    f'SUMIFS({yardi}!${yardi_col}:${yardi_col},{yardi}!$A:$A,"{p}*")'
+                    for p in prefixes
+                ]
+                return "=" + "+".join(parts)
+
+            # C: col1_prior_actual — formula from yardi col E
+            if is_subtotal:
+                write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
+            else:
+                formula = prefix_sumifs("E")
+                if formula:
+                    write_num(3, formula, formula=True)
+                else:
+                    write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
+
+            # D-G: col2-col5 (no product source on Summary; leave blank)
             for col_i in [4, 5, 6, 7]:
                 cell = ws.cell(row=r, column=col_i)
                 cell.number_format = FMT_CURRENCY
                 cell.alignment = ALIGN_RIGHT
                 if row_fill: cell.fill = row_fill
                 cell.border = row_border
-            # H: col6
-            write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
-            # I: col7 — the FA's editable proposed budget (yellow input fill)
-            write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
-                      is_input=(not is_grand and not is_subtotal))
-            # J: % variance
-            if row.col6_approved_budget and row.col7_proposed_budget:
-                vc = ws.cell(row=r, column=10, value=f"=IFERROR((I{r}-H{r})/H{r},0)")
-                vc.number_format = FMT_PERCENT
-                vc.alignment = ALIGN_RIGHT
-                vc.font = FONT_GRAND if is_grand else (FONT_SUBTOTAL if is_subtotal else FONT_FORMULA)
-                if row_fill: vc.fill = row_fill
-                vc.border = row_border
+
+            # H: col6_approved_budget — formula from yardi col J
+            if is_subtotal:
+                write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
             else:
-                vc = ws.cell(row=r, column=10)
-                vc.number_format = FMT_PERCENT
-                if row_fill: vc.fill = row_fill
-                vc.border = row_border
+                formula = prefix_sumifs("J")
+                if formula:
+                    write_num(8, formula, formula=True)
+                else:
+                    write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
+
+            # I: col7_proposed_budget — formula from yardi col L
+            #    Subtotals stay as stored values; data rows are live.
+            if is_subtotal:
+                write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
+                          is_input=False)
+            else:
+                formula = prefix_sumifs("L")
+                if formula:
+                    write_num(9, formula, formula=False, is_input=True)
+                else:
+                    write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
+                              is_input=True)
+
+            # J: % variance formula
+            vc = ws.cell(row=r, column=10, value=f"=IFERROR((I{r}-H{r})/H{r},0)")
+            vc.number_format = FMT_PERCENT
+            vc.alignment = ALIGN_RIGHT
+            vc.font = FONT_GRAND if is_grand else (FONT_SUBTOTAL if is_subtotal else FONT_FORMULA)
+            if row_fill: vc.fill = row_fill
+            vc.border = row_border
 
             if is_subtotal:
                 ws.row_dimensions[r].height = 22
