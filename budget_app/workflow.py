@@ -12980,32 +12980,44 @@ function readinessAction(target) {
   // #sumDuplicateRows → switch to Summary tab, scroll to first duplicate, flash all duplicates.
   if (target === '#sumOrphans' || target === '#sumDuplicateRows') {
     _switchToSummaryTab();
-    // Defer to next tick so renderBudgetSummary has time to paint before we
-    // try to find DOM nodes by id / label.
-    setTimeout(function() {
+    // renderBudgetSummary may finish painting AFTER our switch (it can fetch
+    // /api/summary). Poll for the target to exist instead of guessing a
+    // single timeout — up to 2s total, checking every 100ms.
+    let attempts = 0;
+    const maxAttempts = 20;
+    const poll = function() {
+      attempts++;
       if (target === '#sumOrphans') {
         const el = document.getElementById('sumOrphans');
-        if (el) scrollAndFlash(el);
+        if (el) { scrollAndFlash(el); return; }
+        if (attempts < maxAttempts) setTimeout(poll, 100);
         return;
       }
-      // Duplicate rows: read the cached warning payload, scroll to the first
-      // row, flash every row in every duplicate group.
+      // Duplicate-row case: gather labels from cached warnings, find rows.
       const dups = window._sumDuplicateWarnings || [];
       const labels = [];
       dups.forEach(function(w) {
         (w.labels || []).forEach(function(l) { if (l && labels.indexOf(l) < 0) labels.push(l); });
       });
-      if (!labels.length) return;
-      // Scroll to the first matched row, then flash each in sequence.
+      if (!labels.length) {
+        if (attempts < maxAttempts) setTimeout(poll, 100);
+        return;
+      }
       const firstRow = _findSummaryRowByLabel(labels[0]);
-      if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
+      if (!firstRow) {
+        if (attempts < maxAttempts) setTimeout(poll, 100);
+        return;
+      }
+      // Got the rows — scroll once, flash each in sequence.
+      try { firstRow.scrollIntoView({behavior:'smooth', block:'center'}); } catch(e) {}
       labels.forEach(function(l, idx) {
         setTimeout(function() {
           const r = _findSummaryRowByLabel(l);
           if (r) scrollAndFlash(r, false /* don't re-scroll */);
-        }, 200 + idx * 150);
+        }, 250 + idx * 200);
       });
-    }, 80);
+    };
+    setTimeout(poll, 120);
     return;
   }
   if (target.indexOf('#tab=') === 0) {
@@ -13032,22 +13044,15 @@ function _switchToSummaryTab() {
   if (typeof renderSheet === 'function') renderSheet('Summary', null, tab);
 }
 
-// Helper: find a Summary tab row by its label text. Used by deep-links to
-// locate duplicate / orphan rows after a tab switch. Falls back gracefully
-// if the row isn't rendered (e.g. inside a collapsed section).
+// Helper: find a Summary tab row by its label. Reads the data-label
+// attribute set by renderBudgetSummary (2026-05-17). Linear scan keeps
+// us safe from labels containing quotes or other CSS-selector specials.
+// Returns null if the row isn't in the DOM yet — caller should retry.
 function _findSummaryRowByLabel(label) {
   if (!label) return null;
-  // Summary rows are <tr> with a child <td> containing the label text.
-  // The renderBudgetSummary function doesn't tag rows with data-label, so
-  // we look up via window._sumRowMap (populated during render) for the row
-  // object, then locate its DOM element by querying for the label text.
-  const rows = document.querySelectorAll('#sumTable tr, table.sum-table tr, #summaryTable tr');
+  const rows = document.querySelectorAll('#sumTable tr[data-type="d"]');
   for (let i = 0; i < rows.length; i++) {
-    const cells = rows[i].querySelectorAll('td, th');
-    for (let j = 0; j < cells.length; j++) {
-      const t = (cells[j].textContent || '').trim();
-      if (t === label) return rows[i];
-    }
+    if (rows[i].getAttribute('data-label') === label) return rows[i];
   }
   return null;
 }
@@ -19205,7 +19210,11 @@ async function renderBudgetSummary(contentDiv) {
       // rows and imported rows (col6 set) — those failures bubble up as
       // toasts. Hover-reveal is handled by CSS rules in the style block.
       const delBtn = '<button onclick="sumDeleteRow(this,\''+r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')" class="row-del-btn" title="Delete this row" style="margin-left:6px;background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;vertical-align:middle;">&times;</button>';
-      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'">' +
+      // FA directive 2026-05-17: data-label on <tr> so deep-links from the
+      // Health drawer (e.g. duplicate-row Review) can find the right row in
+      // O(1) by attribute, instead of fragile textContent matching that
+      // breaks on footnote markers and the × delete button.
+      html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'" data-label="'+r.label.replace(/"/g,'&quot;')+'">' +
         '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
