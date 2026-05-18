@@ -26355,6 +26355,33 @@ function _pmUpdateDerivedPills(gl, line) {
     }
 }
 
+// FA dir 2026-05-18: hide / show the inline "=" No-change button based on
+// whether the PM has entered a proposed value. Once they take action
+// (type a number OR click "="), the button disappears so it doesn't keep
+// crowding the cell. If they clear the cell back to empty, the button
+// comes back — they may want the shortcut again.
+function _pmToggleNoChangeBtn(gl, line) {
+    if (!line) return;
+    const propEl = document.getElementById('pm_prop_' + gl);
+    if (!propEl) return;
+    const propTd = propEl.parentElement;
+    if (!propTd) return;
+    const hasProposed = line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '';
+    const existing = propTd.querySelector('.pm-no-change-inline');
+    if (hasProposed || line.pm_review_state) {
+        if (existing) existing.remove();
+        return;
+    }
+    if (!existing && (typeof CAN_EDIT === 'undefined' || CAN_EDIT)) {
+        const btn = document.createElement('button');
+        btn.className = 'pm-no-change-inline';
+        btn.textContent = '=';
+        btn.title = 'Set Proposed = Current Budget (' + fmt(line.current_budget || 0) + ')';
+        btn.onclick = () => pmRmNoChange(gl);
+        propTd.appendChild(btn);
+    }
+}
+
 // ── PM R&M review-gate helpers (FA directive 2026-05-11) ────────────────
 // Section-level gate forcing PMs to take an explicit action on every R&M
 // line before submitting back to the FA. None of these functions touch
@@ -26988,6 +27015,7 @@ function pmLineChanged(gl, field, value) {
         propEl.dataset.raw = proposed === null || proposed === undefined ? '' : String(Math.round(proposed));
     }
     _pmUpdateDerivedPills(gl, line);
+    _pmToggleNoChangeBtn(gl, line);
     if (varEl) {
         varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance);
         varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
