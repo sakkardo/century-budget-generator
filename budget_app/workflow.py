@@ -27559,6 +27559,13 @@ function onInput(el) {
         line.notes = el.value;
         console.log('[onInput] notes set on line', gl, '→', line.notes);
         pmUpdateNoteWarn(gl);
+        // FA dir 2026-05-18: refresh "My Notes" panel so the row's note shows
+        // up there immediately (and the count updates). Debounce with a short
+        // timer so we don't re-render on every keystroke.
+        clearTimeout(window._pmMyNotesRefreshTimer);
+        window._pmMyNotesRefreshTimer = setTimeout(() => {
+            try { populateMyChanges(); } catch (e) { console.warn('populateMyChanges error', e); }
+        }, 400);
     } else if (field === 'category') {
         line.category = el.value;
     }
@@ -27929,7 +27936,11 @@ function switchPmMcTab(button, tabId) {
   button.style.background = 'white';
 }
 
-(async function populateMyChanges() {
+// FA dir 2026-05-18: was an IIFE that ran once on page load, so the "My Notes"
+// panel stayed stale when the PM typed notes into rows. Now a named function
+// that onInput() calls whenever a notes field changes (debounced through
+// pmLineChanged's save timer cadence).
+async function populateMyChanges() {
   let totalItems = 0;
   const panel = document.getElementById('pmMyChangesPanel');
 
@@ -28064,12 +28075,18 @@ function switchPmMcTab(button, tabId) {
     reclassCount.textContent = '0';
   }
 
-  // Show panel if there are items
+  // Show panel if there are items; hide otherwise so the panel doesn't linger
+  // empty after a PM clears all notes.
   if (totalItems > 0) {
     panel.style.display = '';
     document.getElementById('pmMyChangesBadge').textContent = totalItems + ' item' + (totalItems !== 1 ? 's' : '');
+  } else {
+    panel.style.display = 'none';
+    document.getElementById('pmMyChangesBadge').textContent = '';
   }
-})();
+}
+// Initial render on page load.
+populateMyChanges();
 
 async function undoSingleReclass(invId, fromGl, toGl, btn) {
   if (!confirm('Undo this invoice reclass?')) return;
