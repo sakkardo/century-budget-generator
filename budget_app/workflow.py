@@ -25089,8 +25089,8 @@ PM_EDIT_TEMPLATE = r"""
   th.frozen, td.frozen { position: sticky; z-index: 15; background: white; }
   thead th.frozen { z-index: 25; background: var(--gray-100); }
   .frozen-gl { left: 0; min-width: 80px; }
-  .frozen-desc { left: 80px; min-width: 200px; max-width: 220px; width: 200px; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  thead th.frozen.frozen-desc { width: 200px; min-width: 200px; max-width: 220px; }
+  .frozen-desc { left: 80px; min-width: 200px; max-width: 200px; width: 200px; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  thead th.frozen.frozen-desc { width: 200px; min-width: 200px; max-width: 200px; }
   .col-notes { color: var(--gray-500); font-size: 12px; min-width: 180px; text-align: center; }
   .col-notes input.note-warn { background: #fef3c7; border-color: #fbbf24; }
   .col-notes input.note-warn::placeholder { color: #92400e; font-weight: 500; }
@@ -25228,10 +25228,10 @@ PM_EDIT_TEMPLATE = r"""
   .pm-pill.flat { background: #f1f5f9; color: #64748b; }
 
   input.pm-cell-proposed {
-    width: 100px;
-    min-width: 90px;
+    width: 90px;
+    min-width: 80px;
     text-align: right;
-    padding: 5px 7px;
+    padding: 5px 6px;
     border: 2px solid #1d4ed8;
     border-radius: 5px;
     font: 600 13px ui-monospace, Menlo, monospace;
