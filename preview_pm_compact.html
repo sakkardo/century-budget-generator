@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PM Portal — Compact Redesign Preview v2 (invoice drill preserved)</title>
+<title>PM Portal — Visual Cleanup Preview (v3, all 14 columns kept)</title>
 <style>
   :root {
     --bg: #faf9f6;
@@ -10,18 +10,20 @@
     --ink: #0f172a;
     --muted: #94a3b8;
     --muted-2: #64748b;
-    --line: #e5e7eb;
-    --line-2: #f1f5f9;
+    --line: #e8eaed;
+    --line-2: #f1f3f5;
     --accent: #1d4ed8;
     --accent-bg: #eff6ff;
     --green: #16a34a;
-    --green-bg: #dcfce7;
+    --green-bg: #ecfdf5;
+    --green-bg-strong: #dcfce7;
     --red: #dc2626;
-    --red-bg: #fee2e2;
+    --red-bg: #fef2f2;
+    --red-bg-strong: #fee2e2;
     --gray-pill: #f1f5f9;
     --gray-pill-ink: #64748b;
     --amber: #d97706;
-    --amber-bg: #fef3c7;
+    --amber-bg: #fef9c3;
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 24px; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
@@ -51,21 +53,46 @@
   .progress-strip .bar-fill { height: 100%; background: var(--accent); width: 18%; border-radius: 999px; }
   .progress-strip .ghost-btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); font: 600 12px -apple-system,sans-serif; cursor: pointer; }
 
-  table { width: 100%; border-collapse: collapse; }
-  thead th { background: #fafbfc; color: var(--muted-2); font: 600 11px -apple-system,sans-serif; text-transform: uppercase; letter-spacing: 0.04em; padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
-  thead th.l { text-align: left; }
-  tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line-2); font-size: 13px; vertical-align: middle; text-align: right; }
-  tbody td.l { text-align: left; }
-  tbody tr.section-head td {
-    background: #fafbfc;
-    font: 700 11px -apple-system,sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted-2);
-    padding: 8px 12px;
+  /* Section header bar — distinct from grid background, anchors the eye */
+  .section-bar {
+    background: linear-gradient(to right, #f0f4ff, #fafbfc);
+    padding: 10px 18px;
     border-bottom: 1px solid var(--line);
-    text-align: left;
+    border-top: 1px solid var(--line);
+    font: 700 12px -apple-system, sans-serif;
+    color: var(--ink);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 1450px; }
+
+  thead th {
+    background: #fafbfc;
+    color: var(--muted-2);
+    font: 600 10px -apple-system,sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--line);
+    text-align: right;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  thead th.l { text-align: left; }
+
+  /* COLUMN GROUPING: subtle borders separate decision/reference/diagnostic zones */
+  thead th.zone-end,
+  tbody td.zone-end {
+    border-right: 1px solid var(--line);
+  }
+
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-2); font-size: 13px; vertical-align: middle; text-align: right; white-space: nowrap; }
+  tbody td.l { text-align: left; }
+
   tbody tr.subtotal td {
     background: #fafbfc;
     font-weight: 600;
@@ -73,84 +100,108 @@
     border-bottom: 2px solid var(--line);
     color: var(--ink);
   }
+  tbody tr.subtotal td.curr,
+  tbody tr.subtotal td.action-col { background: #f1f5f9; }
 
-  td.ref { color: var(--muted-2); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-  td.curr { color: var(--ink); font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+  /* ─── VISUAL REDUCTION: the core change vs live build ─── */
 
-  /* GL code and Description are click targets for the drill */
-  a.drill-link {
-    color: var(--accent);
+  /* Reference columns (Prior/YTD/Accrual/Unpaid/Est/Forecast): plain dim text, no boxes, no chrome */
+  td.ref {
+    color: var(--muted-2);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    background: transparent;
+  }
+  /* Current Budget: slight emphasis as the anchor */
+  td.curr {
+    color: var(--ink);
+    font-family: ui-monospace, Menlo, monospace;
+    font-weight: 600;
+    background: transparent;
+  }
+  /* Diagnostic ($ Variance, % Change vs Forecast): dim, with sign color only */
+  td.diag {
+    color: var(--muted-2);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    background: transparent;
+  }
+  td.diag.up { color: #c2410c; }
+  td.diag.down { color: #166534; }
+
+  /* GL code and Description are click targets for invoice drill — preserved from live build */
+  td.gl { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted-2); }
+  td.gl a, td.desc a {
+    color: inherit;
     text-decoration: none;
     cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+    border-bottom: 1px dotted transparent;
   }
-  a.drill-link:hover { text-decoration: underline; }
-  a.drill-link .drill-arrow {
-    font-size: 10px;
-    color: var(--muted);
-    transition: transform 0.15s;
-  }
-  tr.expanded a.drill-link .drill-arrow { transform: rotate(90deg); color: var(--ink); }
-  a.drill-link.desc-link { color: var(--ink); font-weight: 500; }
-  a.drill-link.desc-link:hover { color: var(--accent); }
+  td.gl a:hover, td.desc a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  td.gl a { color: var(--accent); }
+  td.desc a { color: var(--ink); }
+  .drill-arrow { font-size: 9px; color: var(--muted); margin-left: 4px; transition: transform 0.15s; }
+  tr.expanded .drill-arrow { transform: rotate(90deg); color: var(--ink); }
 
-  /* Single editable cell: blue border */
+  /* Single editable cell: blue, prominent, but no busier than necessary */
   input.proposed {
-    width: 110px;
+    width: 100px;
     text-align: right;
-    padding: 7px 9px;
+    padding: 6px 8px;
     border: 1.5px solid var(--accent);
-    border-radius: 6px;
+    border-radius: 5px;
     font: 600 13px ui-monospace, Menlo, monospace;
     background: var(--accent-bg);
     color: var(--ink);
     outline: none;
   }
-  input.proposed:focus { background: white; box-shadow: 0 0 0 3px rgba(29,78,216,.15); }
-  input.proposed::placeholder { color: var(--muted); font-weight: 400; font-style: italic; }
+  input.proposed:focus { background: white; box-shadow: 0 0 0 2px rgba(29,78,216,.18); }
+  input.proposed::placeholder { color: var(--muted); font-weight: 400; font-style: italic; font-size: 12px; }
   input.proposed.empty { background: white; border-color: var(--line); color: var(--muted); }
   input.proposed.empty:focus { border-color: var(--accent); background: white; }
 
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font: 600 11px ui-monospace, Menlo, monospace; }
+  /* Pills: ONLY 3 states, muted backgrounds so they don't fight the blue Proposed cell */
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font: 600 11px ui-monospace, Menlo, monospace; }
   .pill.up   { background: var(--red-bg);   color: var(--red); }
-  .pill.down { background: var(--green-bg); color: var(--green); }
+  .pill.down { background: var(--green-bg-strong); color: var(--green); }
   .pill.flat { background: var(--gray-pill); color: var(--gray-pill-ink); }
   .pill.empty { background: transparent; color: var(--muted); font-weight: 400; }
 
+  /* Inline "=" icon for No change — same row height every row, no jitter */
   .no-change-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
+    width: 24px;
     height: 26px;
     margin-left: 4px;
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 5px;
     background: white;
     color: var(--muted-2);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
+    font-weight: 600;
     vertical-align: middle;
   }
-  .no-change-icon:hover { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+  .no-change-icon:hover { background: var(--green-bg-strong); color: var(--green); border-color: var(--green); }
 
+  /* Notes: full width, no yellow border. Red dot signals "delta >10%, note required" */
+  td.notes { position: relative; }
   input.notes-input {
     width: 100%;
-    min-width: 120px;
+    min-width: 110px;
     border: 1px solid var(--line);
     border-radius: 5px;
-    padding: 6px 8px;
+    padding: 5px 8px;
     font: 13px -apple-system, sans-serif;
     background: white;
   }
-  input.notes-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(29,78,216,.1); }
-  td.notes { position: relative; }
+  input.notes-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(29,78,216,.12); }
   td.notes .needs-note-dot {
     display: none;
     position: absolute;
-    left: 6px;
+    left: 4px;
     top: 50%;
     transform: translateY(-50%);
     width: 6px;
@@ -158,13 +209,13 @@
     border-radius: 50%;
     background: var(--red);
   }
-  td.notes.needs-note input.notes-input { padding-left: 18px; }
+  td.notes.needs-note input.notes-input { padding-left: 16px; }
   td.notes.needs-note .needs-note-dot { display: block; }
 
-  /* Detail panel — combined reference tiles + invoice backup */
+  /* Invoice drill panel — when row expanded */
   tr.detail-row td {
     background: linear-gradient(to right, #f0f4ff, #f8faff);
-    padding: 14px 18px;
+    padding: 12px 18px;
     border-bottom: 1px solid var(--line);
     border-left: 3px solid var(--accent);
   }
@@ -172,7 +223,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
   .detail-header .detail-title {
     font: 600 13px -apple-system, sans-serif;
@@ -182,110 +233,27 @@
     font-size: 12px;
     color: var(--muted-2);
   }
-
-  /* Reference tiles section */
-  .ref-tiles {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 14px;
-    padding: 10px;
-    background: rgba(255,255,255,0.7);
-    border-radius: 8px;
-  }
-  .ref-tile {
-    text-align: left;
-    padding: 6px 10px;
-    border-right: 1px solid var(--line-2);
-  }
-  .ref-tile:last-child { border-right: none; }
-  .ref-tile .tile-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 2px; }
-  .ref-tile .tile-val { font: 600 13px ui-monospace, Menlo, monospace; color: var(--ink); }
-  .ref-tile .tile-val.diag-up { color: var(--red); }
-  .ref-tile .tile-val.diag-down { color: var(--green); }
-
-  /* Invoice backup section */
   .invoice-section {
     background: white;
     border-radius: 6px;
     overflow: hidden;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
   }
-  .invoice-section .inv-header {
-    background: var(--line-2);
-    padding: 8px 14px;
-    font: 600 11px -apple-system, sans-serif;
-    color: var(--muted-2);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .invoice-section .inv-header .inv-count {
-    background: var(--accent-bg);
-    color: var(--accent);
-    padding: 1px 8px;
-    border-radius: 999px;
-    font-weight: 700;
-  }
   .invoice-section .inv-table { width: auto; border-collapse: collapse; font-size: 12px; }
   .invoice-section .inv-table th,
-  .invoice-section .inv-table td { padding: 7px 14px; border-bottom: 1px solid var(--line-2); white-space: nowrap; text-align: left; }
-  .invoice-section .inv-table th { background: white; color: var(--muted-2); font: 600 10px -apple-system, sans-serif; text-transform: uppercase; letter-spacing: 0.04em; }
+  .invoice-section .inv-table td { padding: 6px 14px; border-bottom: 1px solid var(--line-2); white-space: nowrap; text-align: left; }
+  .invoice-section .inv-table th { background: var(--line-2); color: var(--muted-2); font: 600 10px -apple-system, sans-serif; text-transform: uppercase; letter-spacing: 0.04em; }
   .invoice-section .inv-table td.amt { text-align: right; font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
   .invoice-section .inv-table .reclass-btn { font: 500 11px -apple-system, sans-serif; padding: 3px 9px; background: var(--line-2); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
   .invoice-section .inv-table .reclass-btn:hover { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
-  .invoice-section .inv-empty {
-    padding: 18px;
-    text-align: center;
-    color: var(--muted-2);
-    font-size: 12px;
-    background: var(--amber-bg);
-  }
 
-  .legend { display: flex; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #fcfcfb; flex-wrap: wrap; font-size: 12px; color: var(--muted-2); }
+  .legend { display: flex; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: #fcfcfb; flex-wrap: wrap; font-size: 11px; color: var(--muted-2); }
   .legend .item { display: inline-flex; gap: 6px; align-items: center; }
-  .legend .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+  .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
   .legend .swatch.action { background: var(--accent-bg); border: 1.5px solid var(--accent); }
-  .legend .swatch.delta { background: var(--red-bg); border: 1px solid var(--red); }
-  .legend .swatch.ref { background: white; border: 1px solid var(--line); }
+  .legend .swatch.delta { background: var(--red-bg-strong); border: 1px solid var(--red); }
+  .legend .swatch.ref { background: transparent; border: 1px dashed var(--line); }
 
-  body.mode-current table.compact thead .col-prior,
-  body.mode-current table.compact thead .col-ytd,
-  body.mode-current table.compact thead .col-accrual,
-  body.mode-current table.compact thead .col-unpaid,
-  body.mode-current table.compact thead .col-estimate,
-  body.mode-current table.compact thead .col-forecast,
-  body.mode-current table.compact thead .col-variance,
-  body.mode-current table.compact thead .col-pctchange,
-  body.mode-current table.compact tbody td.col-prior,
-  body.mode-current table.compact tbody td.col-ytd,
-  body.mode-current table.compact tbody td.col-accrual,
-  body.mode-current table.compact tbody td.col-unpaid,
-  body.mode-current table.compact tbody td.col-estimate,
-  body.mode-current table.compact tbody td.col-forecast,
-  body.mode-current table.compact tbody td.col-variance,
-  body.mode-current table.compact tbody td.col-pctchange { display: table-cell; }
-
-  body.mode-compact table.compact thead .col-prior,
-  body.mode-compact table.compact thead .col-ytd,
-  body.mode-compact table.compact thead .col-accrual,
-  body.mode-compact table.compact thead .col-unpaid,
-  body.mode-compact table.compact thead .col-estimate,
-  body.mode-compact table.compact thead .col-forecast,
-  body.mode-compact table.compact thead .col-variance,
-  body.mode-compact table.compact thead .col-pctchange,
-  body.mode-compact table.compact tbody td.col-prior,
-  body.mode-compact table.compact tbody td.col-ytd,
-  body.mode-compact table.compact tbody td.col-accrual,
-  body.mode-compact table.compact tbody td.col-unpaid,
-  body.mode-compact table.compact tbody td.col-estimate,
-  body.mode-compact table.compact tbody td.col-forecast,
-  body.mode-compact table.compact tbody td.col-variance,
-  body.mode-compact table.compact tbody td.col-pctchange { display: none; }
-
-  /* In current/detailed mode, the inline "Detail" column in the heading is hidden */
   .recap {
     background: white; border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 22px;
   }
@@ -293,43 +261,110 @@
   .recap ul { margin: 0; padding-left: 18px; color: var(--muted-2); }
   .recap li { margin-bottom: 6px; line-height: 1.5; }
   .recap b { color: var(--ink); }
+
+  /* Comparison "before" mode — reverts to live build styling */
+  body.mode-current td.ref {
+    background: #f3f4f6;
+    color: var(--ink);
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  body.mode-current td.curr {
+    background: #f3f4f6;
+    color: var(--ink);
+  }
+  body.mode-current td.diag {
+    background: transparent;
+  }
+  body.mode-current td.diag.up { color: var(--red); }
+  body.mode-current td.diag.down { color: var(--green); }
+  body.mode-current td.live-fx {
+    background: transparent;
+    color: #15803d;
+    border: 1px solid #d1d5db;
+    border-left: 3px solid #16a34a !important;
+    border-radius: 4px;
+  }
+  body.mode-current td.live-fx::before {
+    content: "fx ";
+    color: #16a34a;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  body.mode-current .live-incdol-cell {
+    background: #d1fae5 !important;
+  }
+  body.mode-current .live-incdol-cell .pill {
+    background: #d1fae5;
+    border: 1px solid #16a34a;
+  }
+  body.mode-current input.notes-input.live-warn {
+    background: #fef9c3;
+    border-color: var(--amber);
+  }
+  body.mode-current td.notes.needs-note .needs-note-dot { display: none; }
+  body.mode-current td.notes.needs-note input.notes-input { padding-left: 8px; }
+  body.mode-current .no-change-icon { display: none !important; }
+  body.mode-current .no-change-live-btn { display: inline-block !important; }
+  body.mode-current .pill.flat,
+  body.mode-current .pill.up,
+  body.mode-current .pill.down {
+    background: #f3f4f6 !important;
+    border: 1px solid #d1d5db;
+    color: var(--ink) !important;
+    border-radius: 4px;
+    font-size: 12px;
+    padding: 2px 7px;
+  }
+
+  /* "No change" button used in current-build mode — shown below the input */
+  .no-change-live-btn {
+    display: none;
+    margin-top: 3px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: white;
+    color: var(--muted-2);
+    cursor: pointer;
+  }
+
   .callout {
-    background: var(--amber-bg);
-    border-left: 3px solid var(--amber);
+    background: #f0f9ff;
+    border-left: 3px solid var(--accent);
     padding: 10px 14px;
     margin: 0 0 14px;
     font-size: 13px;
     border-radius: 0 8px 8px 0;
   }
-  .callout b { color: var(--amber); }
-
-  .table-wrap { overflow-x: auto; }
+  .callout b { color: var(--accent); }
 </style>
 </head>
 <body class="mode-compact">
 
-<h1>PM Portal Redesign — v2 (invoice drill preserved)</h1>
+<h1>PM Portal — Visual Cleanup (v3)</h1>
 <p class="lede">
-  Fixes v1's critical miss: the invoice backup that PMs click GL/Description to drill into.
-  In v2, clicking the GL code or description opens a unified detail panel containing BOTH the
-  reference numbers (Prior, YTD, Estimate, Forecast, Variance vs Forecast) AND the invoice
-  table (payee, description, date, amount, reclass action). Same click target as today, more
-  context in the expanded view.
+  All 14 columns kept. Same data layout you have today. Same invoice drill on GL/Description click.
+  What changes: reduce visual chrome on the non-decision cells. Reference data becomes plain dim
+  text instead of gray boxes. Notes lose the yellow border (red dot instead). fx stickers gone on PM
+  portal (FA-only feature). Subtotal rows render derived pills so the columns line up. Same information,
+  cleaner page.
 </p>
 
 <div class="callout">
-  <b>Try this:</b> Click the GL code "5406-0000" or the words "Supplies & Hardware" in the table below.
-  The row expands inline showing reference numbers as small tiles up top, then the invoice backup table
-  underneath. Same interaction PMs already know.
+  <b>Toggle "Detailed (current build)"</b> below to see the live-build chrome restored.
+  Compare both side-by-side. Same data, same column count, different visual weight.
 </div>
 
 <div class="toolbar">
   <span class="label">View mode:</span>
   <div class="mode-switch">
-    <button id="btnCompact" class="active" onclick="setMode('compact')">Compact (proposed)</button>
-    <button id="btnCurrent" onclick="setMode('current')">Detailed (current build)</button>
+    <button id="btnCompact" class="active" onclick="setMode('compact')">Cleaned up (proposed)</button>
+    <button id="btnCurrent" onclick="setMode('current')">Detailed (current live build)</button>
   </div>
-  <span class="label">Toggle to compare side-by-side with the live build's column set.</span>
 </div>
 
 <div class="card">
@@ -343,30 +378,32 @@
   </div>
 
   <div class="legend">
-    <div class="item"><span class="swatch action"></span> Blue cell = the only thing PMs type</div>
-    <div class="item"><span class="swatch delta"></span> Pill = automatic delta vs current budget</div>
-    <div class="item"><span class="swatch ref"></span> Gray text = reference (read-only)</div>
-    <div class="item">Click GL or Description → invoices + reference detail</div>
+    <div class="item"><span class="swatch action"></span> Blue cell = PM types here</div>
+    <div class="item"><span class="swatch delta"></span> Pill = auto delta vs Current Budget</div>
+    <div class="item"><span class="swatch ref"></span> Plain text = reference (read-only)</div>
+    <div class="item">Click GL or Description → invoice drill</div>
   </div>
 
+  <div class="section-bar">Repairs & Maintenance</div>
+
   <div class="table-wrap">
-  <table class="compact" id="pmTable">
+  <table id="pmTable">
     <thead>
       <tr>
         <th class="l">GL</th>
-        <th class="l">Description</th>
-        <th class="col-prior">Prior Year</th>
-        <th class="col-ytd">YTD</th>
-        <th class="col-accrual">Accrual</th>
-        <th class="col-unpaid">Unpaid</th>
-        <th class="col-estimate">Estimate</th>
-        <th class="col-forecast">Forecast</th>
-        <th>2026 Curr Budget</th>
+        <th class="l zone-end">Description</th>
+        <th>Prior Year</th>
+        <th>YTD Actual</th>
+        <th>Accrual</th>
+        <th>Unpaid</th>
+        <th>Estimate</th>
+        <th class="zone-end">12 Mo Forecast</th>
+        <th class="zone-end">2026 Curr Budget</th>
         <th>2027 Proposed</th>
         <th>Increase $</th>
-        <th>Increase %</th>
-        <th class="col-variance">$ Variance</th>
-        <th class="col-pctchange">% Change</th>
+        <th class="zone-end">Increase %</th>
+        <th>$ Var</th>
+        <th class="zone-end">% Δ</th>
         <th class="l">Notes</th>
       </tr>
     </thead>
@@ -376,25 +413,27 @@
 </div>
 
 <div class="recap">
-  <h2>What changed in v2</h2>
+  <h2>What changed (no columns removed)</h2>
   <ul>
-    <li><b>Invoice drill is back, untouched.</b> Click GL code or Description → row expands with the same invoice table PMs use today (Payee, Description, Inv#, Date, Amount, Check#, Reclass action). Same muscle memory.</li>
-    <li><b>Reference numbers ride along with the invoice drill.</b> When the row expands, the top of the detail panel shows 6 reference tiles (Prior Year, YTD, Estimate, 12mo Forecast, $ Variance, % Change). Then the invoice table below. One click reveals everything the PM needs to decide.</li>
-    <li><b>Main table compacts from 14 columns to 7.</b> Identity → Curr Budget → Proposed → Inc $ → Inc % → Notes. Less scanning, more focus.</li>
-    <li><b>Single color budget per row: 3 treatments.</b> Gray text for reference, blue input for action, red/green pills for delta. fx stickers gone. Yellow notes border gone (replaced with a tiny red dot when notes are required).</li>
-    <li><b>Inline "= " icon button</b> replaces the "Mark No Change" button under the input. Same row height every row.</li>
-    <li><b>Subtotal rows render derived pills.</b> No more visual gaps. Per-category rollup delta visible at a glance.</li>
+    <li><b>9 visual treatments → 3.</b> Reference cells become plain dim monospace text on transparent background (no boxes, no borders). Decision cells stay loud (blue Proposed, colored pills). Same information density, less noise.</li>
+    <li><b>fx stickers removed on PM portal.</b> Estimate and Forecast are read-only here (only FA can edit those). The green-border fx affordance was misleading.</li>
+    <li><b>"No change" button → inline = icon.</b> Sits right of empty Proposed inputs at the same height. No more row-height jitter when only some rows have the button.</li>
+    <li><b>Subtotal rows render derived pills + Proposed total.</b> Fixes the "Supplies and Repairs don't line up" complaint — the gap was empty subtotal Inc % / Inc $ cells.</li>
+    <li><b>Column zones with subtle dividers.</b> Identity | Reference | Decision | Diagnostic | Notes. Five subtle vertical dividers tell the eye where one "zone" ends. Reading flows left-to-right without needing labels.</li>
+    <li><b>Notes column loses yellow border</b> on high-delta rows. Replaced with a 6px red dot at the left edge. Less competing color, still flags missing context.</li>
+    <li><b>Increase $ cell loses the bright green background.</b> It was the loudest cell on the page in the live build; under single-entry it's a derived pill anyway, doesn't need the highlight.</li>
+    <li><b>Click-to-drill behavior on GL/Description unchanged.</b> Same muscle memory. Same invoice table appears below the row when clicked.</li>
   </ul>
 </div>
 
 <script>
-  // Real GLs from 148 with mock invoice data so PMs can see the full drill flow.
+  // Real GLs from 148 + mock invoice data.
   const ROWS = [
     {
       cat: "Supplies", gl: "5406-0000", desc: "Supplies & Hardware",
       prior:  82511, ytd:  32968, accrual: -5224, unpaid: 0, estimate:  55488, forecast:  83232, curr:  72500, proposed: 76000,
       invoices: [
-        { payee: "Home Depot Pro", note: "Cleaning supplies, May order", num: "INV-30429", date: "2026-05-12", amount: 1822, check: "12-CKR-09812" },
+        { payee: "Home Depot Pro", note: "Cleaning supplies, May", num: "INV-30429", date: "2026-05-12", amount: 1822, check: "12-CKR-09812" },
         { payee: "Janitorial Plus Inc", note: "Monthly cleaning supply", num: "JP-7745", date: "2026-04-30", amount: 2150, check: "12-CKR-09740" },
         { payee: "Home Depot Pro", note: "Salt + ice melt", num: "INV-30055", date: "2026-02-08", amount: 3450, check: "12-CKR-09102" },
         { payee: "Acme Hardware", note: "Light bulbs LED 40-pack", num: "AH-2092", date: "2026-03-22", amount: 940, check: "12-CKR-09340" },
@@ -429,18 +468,18 @@
       cat: "Maintenance Contracts", gl: "5705-0000", desc: "Elevator Service Contract",
       prior: 24000, ytd: 8400, accrual: 0, unpaid: 0, estimate: 16800, forecast: 25200, curr: 24720, proposed: 25460,
       invoices: [
-        { payee: "Otis Elevator Co", note: "Monthly service contract Jan", num: "OT-CON-0126", date: "2026-01-31", amount: 2100, check: "12-CKR-09040" },
-        { payee: "Otis Elevator Co", note: "Monthly service contract Feb", num: "OT-CON-0226", date: "2026-02-28", amount: 2100, check: "12-CKR-09180" },
-        { payee: "Otis Elevator Co", note: "Monthly service contract Mar", num: "OT-CON-0326", date: "2026-03-31", amount: 2100, check: "12-CKR-09340" },
-        { payee: "Otis Elevator Co", note: "Monthly service contract Apr", num: "OT-CON-0426", date: "2026-04-30", amount: 2100, check: "12-CKR-09490" },
+        { payee: "Otis Elevator Co", note: "Service Jan", num: "OT-CON-0126", date: "2026-01-31", amount: 2100, check: "12-CKR-09040" },
+        { payee: "Otis Elevator Co", note: "Service Feb", num: "OT-CON-0226", date: "2026-02-28", amount: 2100, check: "12-CKR-09180" },
+        { payee: "Otis Elevator Co", note: "Service Mar", num: "OT-CON-0326", date: "2026-03-31", amount: 2100, check: "12-CKR-09340" },
+        { payee: "Otis Elevator Co", note: "Service Apr", num: "OT-CON-0426", date: "2026-04-30", amount: 2100, check: "12-CKR-09490" },
       ]
     },
     {
       cat: "Maintenance Contracts", gl: "5710-0000", desc: "HVAC Maintenance Contract",
       prior: 12000, ytd: 4000, accrual: 0, unpaid: 0, estimate: 8000, forecast: 12000, curr: 12360, proposed: null,
       invoices: [
-        { payee: "Cool Comfort HVAC", note: "Quarterly maintenance Q1", num: "CC-CON-Q1", date: "2026-01-15", amount: 1000, check: "12-CKR-09030" },
-        { payee: "Cool Comfort HVAC", note: "Quarterly maintenance Q2", num: "CC-CON-Q2", date: "2026-04-15", amount: 3000, check: "12-CKR-09530" },
+        { payee: "Cool Comfort HVAC", note: "Quarterly Q1", num: "CC-CON-Q1", date: "2026-01-15", amount: 1000, check: "12-CKR-09030" },
+        { payee: "Cool Comfort HVAC", note: "Quarterly Q2", num: "CC-CON-Q2", date: "2026-04-15", amount: 3000, check: "12-CKR-09530" },
       ]
     },
   ];
@@ -482,9 +521,9 @@
     let grand = { prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, curr:0, proposed:0, hasAnyProposed:false };
 
     Object.keys(cats).forEach(cat => {
+      // Inline sub-section header inside the table
       const headRow = document.createElement("tr");
-      headRow.className = "section-head";
-      headRow.innerHTML = `<td colspan="15">${catLabels[cat]}</td>`;
+      headRow.innerHTML = `<td colspan="15" style="background:#fafbfc; padding:7px 14px; font:700 10px -apple-system,sans-serif; text-transform:uppercase; letter-spacing:0.05em; color:#64748b; border-bottom:1px solid var(--line);">${catLabels[cat]}</td>`;
       tbody.appendChild(headRow);
 
       let sub = { prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, curr:0, proposed:0, hasAnyProposed:false };
@@ -506,31 +545,32 @@
         const tr = document.createElement("tr");
         tr.dataset.idx = r.idx;
         tr.innerHTML = `
-          <td class="l"><a class="drill-link" onclick="toggleDetail(${r.idx})">${r.gl}<span class="drill-arrow">▶</span></a></td>
-          <td class="l desc"><a class="drill-link desc-link" onclick="toggleDetail(${r.idx})">${r.desc}<span class="drill-arrow">▶</span></a></td>
-          <td class="ref col-prior">${fmt(r.prior)}</td>
-          <td class="ref col-ytd">${fmt(r.ytd)}</td>
-          <td class="ref col-accrual">${fmt(r.accrual)}</td>
-          <td class="ref col-unpaid">${fmt(r.unpaid)}</td>
-          <td class="ref col-estimate">${fmt(r.estimate)}</td>
-          <td class="ref col-forecast">${fmt(r.forecast)}</td>
-          <td class="curr">${fmt(r.curr)}</td>
-          <td style="white-space:nowrap;">
+          <td class="gl"><a onclick="toggleDetail(${r.idx})">${r.gl}<span class="drill-arrow">▶</span></a></td>
+          <td class="l desc zone-end"><a onclick="toggleDetail(${r.idx})">${r.desc}<span class="drill-arrow">▶</span></a></td>
+          <td class="ref">${fmt(r.prior)}</td>
+          <td class="ref">${fmt(r.ytd)}</td>
+          <td class="ref">${fmt(r.accrual)}</td>
+          <td class="ref">${fmt(r.unpaid)}</td>
+          <td class="ref live-fx">${fmt(r.estimate)}</td>
+          <td class="ref live-fx zone-end">${fmt(r.forecast)}</td>
+          <td class="curr zone-end">${fmt(r.curr)}</td>
+          <td class="action-col" style="white-space:nowrap;">
             <input class="proposed ${hasProp ? '' : 'empty'}" type="text" data-idx="${r.idx}" value="${hasProp ? fmt(proposed) : ''}" placeholder="Type $..." oninput="onEdit(this)">
-            ${hasProp ? '' : `<button class="no-change-icon" title="Set Proposed = Current Budget (${fmt(r.curr)})" onclick="flatLine(${r.idx})">=</button>`}
+            ${hasProp ? '' : `<button class="no-change-icon" title="Set Proposed = ${fmt(r.curr)}" onclick="flatLine(${r.idx})">=</button>`}
+            ${hasProp ? '' : `<button class="no-change-live-btn" onclick="flatLine(${r.idx})">Mark No Change</button>`}
           </td>
           <td><span class="pill ${klass}">${delta === null ? '—' : fmtDelta(delta)}</span></td>
-          <td><span class="pill ${klass}">${pct === null ? '—' : fmtPct(pct)}</span></td>
-          <td class="ref col-variance" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(variance)}</td>
-          <td class="ref col-pctchange" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmtPct(pctChange)}</td>
+          <td class="live-incdol-cell zone-end"><span class="pill ${klass}">${pct === null ? '—' : fmtPct(pct)}</span></td>
+          <td class="diag ${variance >= 0 ? 'up' : 'down'}">${fmt(variance)}</td>
+          <td class="diag zone-end ${variance >= 0 ? 'up' : 'down'}">${fmtPct(pctChange)}</td>
           <td class="notes l ${needsNote ? 'needs-note' : ''}">
-            <span class="needs-note-dot" title="Delta exceeds 10% — notes recommended"></span>
-            <input class="notes-input" type="text" placeholder="${needsNote ? 'Required at >10%' : 'Optional context…'}">
+            <span class="needs-note-dot" title="Delta >10% — notes recommended"></span>
+            <input class="notes-input ${needsNote ? 'live-warn' : ''}" type="text" placeholder="${needsNote ? 'Required at >10%' : 'Optional context…'}">
           </td>
         `;
         tbody.appendChild(tr);
 
-        // Hidden detail row — invoice drill + reference tiles together
+        // Detail / invoice drill row
         const detailTr = document.createElement("tr");
         detailTr.className = "detail-row";
         detailTr.dataset.detailFor = r.idx;
@@ -544,46 +584,27 @@
             <td>${inv.date}</td>
             <td class="amt">${fmtAmt(inv.amount)}</td>
             <td style="font-family:ui-monospace,Menlo,monospace; color:var(--muted-2);">${inv.check}</td>
-            <td style="text-align:right;"><button class="reclass-btn" onclick="alert('Reclass modal would open here. Same as live build /pm portal.')">Reclass to…</button></td>
+            <td style="text-align:right;"><button class="reclass-btn" onclick="alert('Reclass modal opens here. Live build behavior preserved.')">Reclass to…</button></td>
           </tr>
         `).join('');
         detailTr.innerHTML = `
           <td colspan="15">
             <div class="detail-header">
               <span class="detail-title">${r.gl} — ${r.desc}</span>
-              <span class="detail-meta">${r.invoices.length} invoice${r.invoices.length === 1 ? '' : 's'} this year · ${fmtAmt(invTotal)} YTD</span>
+              <span class="detail-meta">${r.invoices.length} invoice${r.invoices.length === 1 ? '' : 's'} · ${fmtAmt(invTotal)} YTD</span>
             </div>
-
-            <div class="ref-tiles">
-              <div class="ref-tile"><div class="tile-lbl">Prior Year</div><div class="tile-val">${fmt(r.prior)}</div></div>
-              <div class="ref-tile"><div class="tile-lbl">YTD Actual</div><div class="tile-val">${fmt(r.ytd)}</div></div>
-              <div class="ref-tile"><div class="tile-lbl">Estimate</div><div class="tile-val">${fmt(r.estimate)}</div></div>
-              <div class="ref-tile"><div class="tile-lbl">12 Mo Forecast</div><div class="tile-val">${fmt(r.forecast)}</div></div>
-              <div class="ref-tile"><div class="tile-lbl">$ Var vs Forecast</div><div class="tile-val ${variance >= 0 ? 'diag-up' : 'diag-down'}">${fmt(variance)}</div></div>
-              <div class="ref-tile"><div class="tile-lbl">% Δ vs Forecast</div><div class="tile-val ${variance >= 0 ? 'diag-up' : 'diag-down'}">${fmtPct(pctChange)}</div></div>
-            </div>
-
             <div class="invoice-section">
-              <div class="inv-header">
-                <span>Invoice backup</span>
-                <span class="inv-count">${r.invoices.length} invoice${r.invoices.length === 1 ? '' : 's'}</span>
-              </div>
-              ${r.invoices.length === 0
-                ? '<div class="inv-empty">No invoices found for this GL.</div>'
-                : `<table class="inv-table">
-                    <thead><tr>
-                      <th>Payee</th><th>Description</th><th>Invoice #</th>
-                      <th>Date</th><th style="text-align:right;">Amount</th><th>Check #</th><th style="text-align:right;">Action</th>
-                    </tr></thead>
-                    <tbody>${invRows}</tbody>
-                  </table>`
-              }
+              <table class="inv-table">
+                <thead><tr><th>Payee</th><th>Description</th><th>Invoice #</th><th>Date</th><th style="text-align:right;">Amount</th><th>Check #</th><th style="text-align:right;">Action</th></tr></thead>
+                <tbody>${invRows}</tbody>
+              </table>
             </div>
           </td>
         `;
         tbody.appendChild(detailTr);
       });
 
+      // Subtotal — render derived pills + proposed total
       const sVar = sub.curr - sub.forecast;
       const sPctChange = sub.forecast === 0 ? 0 : (sVar / Math.abs(sub.forecast)) * 100;
       const sDelta = sub.hasAnyProposed ? sub.proposed - sub.curr : null;
@@ -593,19 +614,19 @@
       subTr.className = "subtotal";
       subTr.innerHTML = `
         <td></td>
-        <td class="l">Total ${catLabels[cat]}</td>
-        <td class="ref col-prior">${fmt(sub.prior)}</td>
-        <td class="ref col-ytd">${fmt(sub.ytd)}</td>
-        <td class="ref col-accrual">${fmt(sub.accrual)}</td>
-        <td class="ref col-unpaid">${fmt(sub.unpaid)}</td>
-        <td class="ref col-estimate">${fmt(sub.estimate)}</td>
-        <td class="ref col-forecast">${fmt(sub.forecast)}</td>
-        <td class="curr">${fmt(sub.curr)}</td>
-        <td class="curr">${sub.hasAnyProposed ? fmt(sub.proposed) : '—'}</td>
+        <td class="l zone-end">Total ${catLabels[cat]}</td>
+        <td class="ref">${fmt(sub.prior)}</td>
+        <td class="ref">${fmt(sub.ytd)}</td>
+        <td class="ref">${fmt(sub.accrual)}</td>
+        <td class="ref">${fmt(sub.unpaid)}</td>
+        <td class="ref">${fmt(sub.estimate)}</td>
+        <td class="ref zone-end">${fmt(sub.forecast)}</td>
+        <td class="curr zone-end">${fmt(sub.curr)}</td>
+        <td class="action-col">${sub.hasAnyProposed ? fmt(sub.proposed) : '—'}</td>
         <td><span class="pill ${sKlass}">${sDelta === null ? '—' : fmtDelta(sDelta)}</span></td>
-        <td><span class="pill ${sKlass}">${sPct === null ? '—' : fmtPct(sPct)}</span></td>
-        <td class="ref col-variance" style="color:${sVar >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(sVar)}</td>
-        <td class="ref col-pctchange" style="color:${sVar >= 0 ? 'var(--red)' : 'var(--green)'};">${fmtPct(sPctChange)}</td>
+        <td class="zone-end"><span class="pill ${sKlass}">${sPct === null ? '—' : fmtPct(sPct)}</span></td>
+        <td class="diag ${sVar >= 0 ? 'up' : 'down'}">${fmt(sVar)}</td>
+        <td class="diag zone-end ${sVar >= 0 ? 'up' : 'down'}">${fmtPct(sPctChange)}</td>
         <td></td>
       `;
       tbody.appendChild(subTr);
@@ -614,6 +635,7 @@
       if (sub.hasAnyProposed) grand.hasAnyProposed = true;
     });
 
+    // Grand total
     const gVar = grand.curr - grand.forecast;
     const gPctChange = grand.forecast === 0 ? 0 : (gVar / Math.abs(grand.forecast)) * 100;
     const gDelta = grand.hasAnyProposed ? grand.proposed - grand.curr : null;
@@ -623,20 +645,20 @@
     gTr.className = "subtotal";
     gTr.style.background = "#1f2937";
     gTr.innerHTML = `
-      <td style="color:#fff; background:#1f2937;"></td>
-      <td class="l" style="color:#fff; background:#1f2937;">Grand Total — Repairs & Supplies</td>
-      <td class="ref col-prior" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.prior)}</td>
-      <td class="ref col-ytd" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.ytd)}</td>
-      <td class="ref col-accrual" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.accrual)}</td>
-      <td class="ref col-unpaid" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.unpaid)}</td>
-      <td class="ref col-estimate" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.estimate)}</td>
-      <td class="ref col-forecast" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.forecast)}</td>
-      <td class="curr" style="color:#fff; background:#1f2937;">${fmt(grand.curr)}</td>
-      <td class="curr" style="color:#fff; background:#1f2937;">${grand.hasAnyProposed ? fmt(grand.proposed) : '—'}</td>
+      <td style="background:#1f2937;"></td>
+      <td class="l zone-end" style="color:#fff; background:#1f2937; border-right-color:#334155;">Grand Total — Repairs & Supplies</td>
+      <td class="ref" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.prior)}</td>
+      <td class="ref" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.ytd)}</td>
+      <td class="ref" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.accrual)}</td>
+      <td class="ref" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.unpaid)}</td>
+      <td class="ref" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.estimate)}</td>
+      <td class="ref zone-end" style="color:#cbd5e1; background:#1f2937; border-right-color:#334155;">${fmt(grand.forecast)}</td>
+      <td class="curr zone-end" style="color:#fff; background:#1f2937; border-right-color:#334155;">${fmt(grand.curr)}</td>
+      <td class="action-col" style="color:#fff; background:#1f2937;">${grand.hasAnyProposed ? fmt(grand.proposed) : '—'}</td>
       <td style="background:#1f2937;"><span class="pill ${gKlass}">${gDelta === null ? '—' : fmtDelta(gDelta)}</span></td>
-      <td style="background:#1f2937;"><span class="pill ${gKlass}">${gPct === null ? '—' : fmtPct(gPct)}</span></td>
-      <td class="ref col-variance" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'};">${fmt(gVar)}</td>
-      <td class="ref col-pctchange" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'};">${fmtPct(gPctChange)}</td>
+      <td class="zone-end" style="background:#1f2937; border-right-color:#334155;"><span class="pill ${gKlass}">${gPct === null ? '—' : fmtPct(gPct)}</span></td>
+      <td class="diag" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'};">${fmt(gVar)}</td>
+      <td class="diag zone-end" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'}; border-right-color:#334155;">${fmtPct(gPctChange)}</td>
       <td style="background:#1f2937;"></td>
     `;
     tbody.appendChild(gTr);
