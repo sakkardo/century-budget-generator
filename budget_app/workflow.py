@@ -13009,12 +13009,21 @@ function readinessAction(target) {
         return;
       }
       // Got the rows — scroll once, flash each in sequence.
-      try { firstRow.scrollIntoView({behavior:'smooth', block:'center'}); } catch(e) {}
+      // Use instant scroll (`behavior: 'auto'`) instead of smooth: Chrome
+      // blocks smooth-scroll when not triggered by a direct user gesture,
+      // and the close-drawer → readinessAction handoff can fall outside
+      // the gesture window. Instant is also faster, which matches the
+      // "find me the row" intent of a deep-link.
+      try {
+        const r0 = firstRow.getBoundingClientRect();
+        const targetY = Math.max(0, window.scrollY + r0.top - (window.innerHeight / 2));
+        window.scrollTo(0, targetY);
+      } catch(e) {}
       labels.forEach(function(l, idx) {
         setTimeout(function() {
           const r = _findSummaryRowByLabel(l);
           if (r) scrollAndFlash(r, false /* don't re-scroll */);
-        }, 250 + idx * 200);
+        }, 100 + idx * 200);
       });
     };
     setTimeout(poll, 120);
@@ -13064,7 +13073,12 @@ function _findSummaryRowByLabel(label) {
 function scrollAndFlash(el, doScroll) {
   if (!el) return;
   if (doScroll !== false) {
-    try { el.scrollIntoView({behavior:'smooth', block:'center'}); } catch(e) {}
+    // Instant scroll — see comment in readinessAction for rationale.
+    try {
+      const rect = el.getBoundingClientRect();
+      const targetY = Math.max(0, window.scrollY + rect.top - (window.innerHeight / 2));
+      window.scrollTo(0, targetY);
+    } catch(e) {}
   }
   // Stash original styles so we can restore them.
   const prevTransition = el.style.transition;
