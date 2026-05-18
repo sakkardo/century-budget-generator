@@ -5097,7 +5097,10 @@ def create_workflow_blueprint(db):
                 "label": "No orphan GLs",
                 "status": "warn",
                 "detail": f"{orphan_count} GL{'s' if orphan_count != 1 else ''} with data not aggregated",
-                "action_url": "#tab=Summary",
+                # FA directive 2026-05-17: deep-link to the orphan banner on
+                # the Summary tab so the FA lands on the exact widget, not
+                # just on the tab. readinessAction handles #sumOrphans.
+                "action_url": "#sumOrphans",
                 "action_label": "Review",
             })
 
@@ -5129,7 +5132,10 @@ def create_workflow_blueprint(db):
                 "label": "No duplicate rows",
                 "status": "warn",
                 "detail": f"{len(dup_groups)} duplicate set{'s' if len(dup_groups) != 1 else ''} ({n} rows)",
-                "action_url": "#tab=Summary",
+                # FA directive 2026-05-17: deep-link to the actual duplicate
+                # rows. readinessAction handles #sumDuplicateRows: switches to
+                # Summary tab, scrolls to first duplicate, flashes all rows.
+                "action_url": "#sumDuplicateRows",
                 "action_label": "Review",
             })
 
@@ -12969,6 +12975,39 @@ function readinessAction(target) {
     if (btn) { btn.scrollIntoView({behavior:'smooth', block:'center'}); btn.click(); }
     return;
   }
+  // FA directive 2026-05-17: deep-link from Health drawer to the actual issue.
+  // #sumOrphans → switch to Summary tab, scroll to the orphan-GL banner, flash it.
+  // #sumDuplicateRows → switch to Summary tab, scroll to first duplicate, flash all duplicates.
+  if (target === '#sumOrphans' || target === '#sumDuplicateRows') {
+    _switchToSummaryTab();
+    // Defer to next tick so renderBudgetSummary has time to paint before we
+    // try to find DOM nodes by id / label.
+    setTimeout(function() {
+      if (target === '#sumOrphans') {
+        const el = document.getElementById('sumOrphans');
+        if (el) scrollAndFlash(el);
+        return;
+      }
+      // Duplicate rows: read the cached warning payload, scroll to the first
+      // row, flash every row in every duplicate group.
+      const dups = window._sumDuplicateWarnings || [];
+      const labels = [];
+      dups.forEach(function(w) {
+        (w.labels || []).forEach(function(l) { if (l && labels.indexOf(l) < 0) labels.push(l); });
+      });
+      if (!labels.length) return;
+      // Scroll to the first matched row, then flash each in sequence.
+      const firstRow = _findSummaryRowByLabel(labels[0]);
+      if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
+      labels.forEach(function(l, idx) {
+        setTimeout(function() {
+          const r = _findSummaryRowByLabel(l);
+          if (r) scrollAndFlash(r, false /* don't re-scroll */);
+        }, 200 + idx * 150);
+      });
+    }, 80);
+    return;
+  }
   if (target.indexOf('#tab=') === 0) {
     const sheetName = target.slice(5);
     const tab = document.querySelector('.sheet-tab[data-sheet="' + sheetName + '"]');
@@ -12980,6 +13019,62 @@ function readinessAction(target) {
     }
     return;
   }
+}
+
+// Helper: switch to the Summary tab. Mirrors the #tab=Summary branch above
+// but factored out so readinessAction's deep-link branches can call it
+// before doing more specific scrolling.
+function _switchToSummaryTab() {
+  const tab = document.querySelector('.sheet-tab[data-sheet="Summary"]');
+  if (!tab) return;
+  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  if (typeof renderSheet === 'function') renderSheet('Summary', null, tab);
+}
+
+// Helper: find a Summary tab row by its label text. Used by deep-links to
+// locate duplicate / orphan rows after a tab switch. Falls back gracefully
+// if the row isn't rendered (e.g. inside a collapsed section).
+function _findSummaryRowByLabel(label) {
+  if (!label) return null;
+  // Summary rows are <tr> with a child <td> containing the label text.
+  // The renderBudgetSummary function doesn't tag rows with data-label, so
+  // we look up via window._sumRowMap (populated during render) for the row
+  // object, then locate its DOM element by querying for the label text.
+  const rows = document.querySelectorAll('#sumTable tr, table.sum-table tr, #summaryTable tr');
+  for (let i = 0; i < rows.length; i++) {
+    const cells = rows[i].querySelectorAll('td, th');
+    for (let j = 0; j < cells.length; j++) {
+      const t = (cells[j].textContent || '').trim();
+      if (t === label) return rows[i];
+    }
+  }
+  return null;
+}
+
+// Helper: flash a highlight on a DOM element so the FA's eye lands on it
+// after a deep-link navigation. Uses a temporary inline boxShadow + scroll
+// so we don't fight whatever bg the element already has. The flash decays
+// over 2.5s. Called from readinessAction deep-link branches.
+function scrollAndFlash(el, doScroll) {
+  if (!el) return;
+  if (doScroll !== false) {
+    try { el.scrollIntoView({behavior:'smooth', block:'center'}); } catch(e) {}
+  }
+  // Stash original styles so we can restore them.
+  const prevTransition = el.style.transition;
+  const prevBoxShadow = el.style.boxShadow;
+  const prevBackground = el.style.backgroundColor;
+  el.style.transition = 'box-shadow 0.25s ease-out, background-color 0.25s ease-out';
+  el.style.boxShadow = '0 0 0 3px #fbbf24, 0 0 16px rgba(251,191,36,0.7)';
+  el.style.backgroundColor = 'rgba(254,243,199,0.6)';
+  setTimeout(function() {
+    el.style.boxShadow = prevBoxShadow || '';
+    el.style.backgroundColor = prevBackground || '';
+    // Restore transition after the fade completes so we don't leak it
+    // into the element's normal styling.
+    setTimeout(function() { el.style.transition = prevTransition || ''; }, 300);
+  }, 2200);
 }
 
 // Render the period banner above the workbook tabs. Reads
@@ -18883,9 +18978,11 @@ async function renderBudgetSummary(contentDiv) {
       // ── Orphan-GL banner ────────────────────────────────────
       // FA directive 2026-05-05: list each unmapped GL with its description
       // as the suggested label and a one-click "Add Row" button.
+      // 2026-05-17: wrapper now has id=sumOrphans so the Health drawer's
+      // "Review" button can scroll-and-flash to this banner.
       if (w.type === 'orphan_gls') {
         const orphans = Array.isArray(w.orphans) ? w.orphans : [];
-        warningsBannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;">';
+        warningsBannerHtml += '<div id="sumOrphans" style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;">';
         warningsBannerHtml += '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;">';
         warningsBannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
         warningsBannerHtml += '<div style="flex:1;">';
@@ -18918,22 +19015,18 @@ async function renderBudgetSummary(contentDiv) {
         warningsBannerHtml += '</tbody></table></div></div>';
         return;
       }
-      // ── Existing duplicate-row banner (unchanged) ────────────
-      const labels = (w.labels || []).map(l => '<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:3px;font-size:11px;">' + l + '</code>').join(' · ');
-      const detail = (w.shared_prefixes && w.shared_prefixes.length)
-        ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Shared GL prefixes: ' + w.shared_prefixes.join(', ') + '</div>'
-        : (w.value !== undefined
-            ? '<div style="margin-top:4px;font-size:11px;color:rgba(0,0,0,0.55);">Identical YTD: $' + Math.round(w.value).toLocaleString('en-US') + '</div>'
-            : '');
-      warningsBannerHtml += '<div style="background:' + sevBg(w.severity) + ';border-bottom:1px solid ' + sevBorder(w.severity) + ';padding:10px 14px;display:flex;align-items:flex-start;gap:10px;">';
-      warningsBannerHtml += '<div style="font-size:18px;line-height:1;color:' + sevColor(w.severity) + ';">⚠️</div>';
-      warningsBannerHtml += '<div style="flex:1;">';
-      warningsBannerHtml += '<div style="font-weight:600;color:' + sevColor(w.severity) + ';font-size:13px;">Duplicate row warning · ' + (w.section || 'Summary') + '</div>';
-      warningsBannerHtml += '<div style="margin-top:4px;color:#374151;font-size:12px;">' + (w.message || '') + '</div>';
-      warningsBannerHtml += '<div style="margin-top:4px;font-size:12px;">Rows: ' + labels + '</div>';
-      warningsBannerHtml += detail;
-      warningsBannerHtml += '</div></div>';
+      // 2026-05-17: duplicate-row + audit-empty warnings used to render as
+      // inline yellow banners here too. They now live ONLY in the Health
+      // drawer (right side) — clicking Review there scrolls back to the
+      // affected rows. Skipping inline rendering avoids the two-places
+      // duplication the FA complained about. Any future warning type that
+      // doesn't have a dedicated inline UI also falls through to "Health-only".
+      // If you need an inline banner for a new type, add an explicit case above.
+      return;
     });
+    // Cache duplicate-row warnings on window so readinessAction can read
+    // them for scroll+flash targeting without re-fetching the API.
+    window._sumDuplicateWarnings = (warnings || []).filter(w => w && w.type === 'duplicate_rows');
     warningsBannerHtml += '</div>';
   }
 
@@ -19045,6 +19138,39 @@ async function renderBudgetSummary(contentDiv) {
     const inputStyle = isReadOnly
       ? 'width:100px;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:13px;text-align:right;background:transparent;font-variant-numeric:tabular-nums;font-family:inherit;cursor:default;color:var(--gray-700);'+stripe
       : 'width:100px;padding:5px 8px;border:1px solid var(--gray-300);border-radius:4px;font-size:13px;text-align:right;background:'+editableBg+';font-variant-numeric:tabular-nums;font-family:inherit;cursor:text;'+stripe;
+    // FA directive 2026-05-17: Col 2 (audit actual) cells with lineage data
+    // get a visible "\u24d8" badge in the corner so the FA can drill into the
+    // auditor's source lines without hunting through the formula bar.
+    // Click the badge \u2192 opens the Inspector drill panel directly. Tooltip
+    // previews the matched audit category + line count. Only renders on c2
+    // (audit data); c3/c4/c5 use OVR badge instead.
+    const labelLineage = (window._sumLineage || {})[label];
+    const c2Lineage = (col === 'c2' && labelLineage && labelLineage.c2) ? labelLineage.c2 : null;
+    const c2SourceCount = c2Lineage && Array.isArray(c2Lineage.source_lines) ? c2Lineage.source_lines.length : 0;
+    const c2HasData = c2Lineage && (c2SourceCount > 0 || (c2Lineage.matched_category && c2Lineage.value !== null));
+    let c2BadgeTitle = '';
+    if (c2HasData) {
+      const mc = c2Lineage.matched_category || '(unmatched)';
+      const mt = c2Lineage.match_type || '';
+      c2BadgeTitle = 'Audit lineage: matched to "' + mc + '"' + (mt ? ' (' + mt + ')' : '') +
+        '. ' + c2SourceCount + ' source line' + (c2SourceCount === 1 ? '' : 's') +
+        ' from auditor. Click to inspect.';
+    }
+    const c2InspectBadge = c2HasData
+      ? '<button type="button" class="sum-c2-inspect-badge" ' +
+        // Use data-label + delegated handler instead of inline-encoded
+        // params to avoid double-quoting hell with labels that contain
+        // apostrophes (e.g., "Real Estate Tax Benefit Credits (Abatement, Star,etc)").
+        'data-inspect-label="' + label.replace(/"/g, '&quot;') + '" ' +
+        'onclick="sumC2BadgeClick(event, this)" ' +
+        'title="' + c2BadgeTitle.replace(/"/g, '&quot;') + '" ' +
+        'style="position:absolute;top:2px;right:4px;width:16px;height:16px;padding:0;' +
+        'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:50%;' +
+        'cursor:pointer;font-size:10px;font-weight:700;line-height:14px;' +
+        'font-family:Georgia,serif;font-style:italic;display:inline-flex;' +
+        'align-items:center;justify-content:center;z-index:5;">i</button>'
+      : '';
+
     const cellTitle = isOverridden
       ? 'Override active. Computed value was ' + (computedVal !== '' ? computedVal.toLocaleString('en-US') : '\u2014') + '. Right-click to revert.'
       : (isOverridable ? 'Click to override the computed value' : '');
@@ -19054,7 +19180,7 @@ async function renderBudgetSummary(contentDiv) {
     return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;position:relative;">' +
       '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+ovrAttr+roAttr+titleAttr+ctxAttr+' ' +
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
-      'style="'+inputStyle+'">' + ovrBadge + '</td>';
+      'style="'+inputStyle+'">' + ovrBadge + c2InspectBadge + '</td>';
   }
   const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
@@ -19373,6 +19499,22 @@ function sumCellFocus(el) {
   if (inspBtn) inspBtn.style.display = (isFx && lineage) ? '' : 'none';
   // Don't strip formatting on read-only cells (no editing happens there)
   if (!isReadOnly) el.value = el.dataset.raw || '';
+}
+
+// FA directive 2026-05-17: delegated click handler for the c2 Inspector
+// badge. Reads the label from a data attribute (avoids inline-quoting
+// issues with labels that contain apostrophes / quotes), opens the
+// drill panel, and scrolls it into view so the FA sees the result.
+function sumC2BadgeClick(evt, btn) {
+  if (evt && evt.stopPropagation) evt.stopPropagation();
+  if (evt && evt.preventDefault) evt.preventDefault();
+  const label = btn && btn.getAttribute('data-inspect-label');
+  if (!label) return;
+  if (typeof sumRenderDrillPanel === 'function') sumRenderDrillPanel(label, 'c2');
+  const panel = document.getElementById('sumDrillPanel');
+  if (panel) {
+    try { panel.scrollIntoView({behavior:'smooth', block:'center'}); } catch(e) {}
+  }
 }
 
 // ── Summary inspector: render lineage drill-down for a c2-c5 cell ──
