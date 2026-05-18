@@ -25046,6 +25046,11 @@ PM_EDIT_TEMPLATE = r"""
     border-radius: 12px;
     border: 1px solid var(--gray-200);
     overflow: visible;  /* FA dir 2026-05-18: was overflow:hidden which clipped sticky thead. */
+    /* Expand the white card to match the table width so the row background
+       extends cleanly to the right edge of the Notes column. min-width 100%
+       fills the parent; max-content lets it grow if the table is wider. */
+    width: max-content;
+    min-width: 100%;
   }
   /* FA dir 2026-05-18 (scroll fix): one scroll context only — the window.
      CSS spec gotcha: overflow-x:auto + overflow-y:visible computes both as
@@ -25091,7 +25096,7 @@ PM_EDIT_TEMPLATE = r"""
   .frozen-gl { left: 0; min-width: 80px; }
   .frozen-desc { left: 80px; min-width: 200px; max-width: 200px; width: 200px; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   thead th.frozen.frozen-desc { width: 200px; min-width: 200px; max-width: 200px; }
-  .col-notes { color: var(--gray-500); font-size: 12px; min-width: 180px; text-align: center; }
+  .col-notes { color: var(--gray-500); font-size: 12px; min-width: 140px; text-align: center; }
   .col-notes input.note-warn { background: #fef3c7; border-color: #fbbf24; }
   .col-notes input.note-warn::placeholder { color: #92400e; font-weight: 500; }
 
@@ -27289,7 +27294,7 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
                 </td>
-                <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required at >10%' : 'Add context...'}" maxlength="500" style="min-width:180px; width:100%;"></td>
+                <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required at >10%' : 'Add context...'}" maxlength="500" style="min-width:140px; width:100%;"></td>
             `;
             tbody.appendChild(tr);
         });
