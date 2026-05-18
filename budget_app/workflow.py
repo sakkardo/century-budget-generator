@@ -25312,32 +25312,74 @@ function pmRmJumpToNext() {
         const tab = document.querySelector('.pm-sheet-tab[data-sheet="Repairs & Supplies"]');
         if (tab) pmSwitchSheet('Repairs & Supplies', tab);
     }
+    // 2026-05-17 fix: when the next unreviewed line is a hidden zero-row
+    // (display:none because _showZeroRows is false), scrollIntoView is a
+    // silent no-op and the button appears broken. Auto-show zero rows so
+    // the PM can see what they're reviewing. Also use instant scroll —
+    // Chrome blocks programmatic smooth scroll without a strong user-gesture
+    // chain, and the focus() call afterwards is sensitive to scroll timing.
     setTimeout(() => {
-        const el = document.getElementById('pm_inc_' + unreviewed[0].gl_code);
-        if (el) {
-            el.scrollIntoView({behavior: 'smooth', block: 'center'});
-            el.focus();
+        const targetGl = unreviewed[0].gl_code;
+        const el = document.getElementById('pm_inc_' + targetGl);
+        if (!el) return;
+        const tr = el.closest('tr');
+        const isHidden = tr && (tr.style.display === 'none' || tr.classList.contains('zero-row') && !_showZeroRows);
+        if (isHidden && typeof toggleZeroRows === 'function') {
+            // Unhide and let the layout settle for one frame before scrolling.
+            toggleZeroRows();
+            setTimeout(() => _pmJumpScrollAndFocus(el), 40);
+        } else {
+            _pmJumpScrollAndFocus(el);
         }
     }, 60);
 }
 
+// Helper: scroll the page so the target input sits roughly in the
+// vertical middle of the viewport, then focus it. Uses instant scroll
+// (window.scrollTo) because smooth scroll is unreliable when the click
+// chain includes a tab switch / row-unhide / closeDrawer handoff.
+function _pmJumpScrollAndFocus(el) {
+    if (!el) return;
+    try {
+        const rect = el.getBoundingClientRect();
+        const targetY = Math.max(0, window.scrollY + rect.top - (window.innerHeight / 2));
+        window.scrollTo(0, targetY);
+    } catch (_e) {}
+    try { el.focus({preventScroll: true}); } catch (_e) {
+        try { el.focus(); } catch (_e2) {}
+    }
+}
+
 async function pmRmNoChange(gl) {
     const line = LINES.find(l => l.gl_code === gl);
-    if (!line || line.sheet_name !== 'Repairs & Supplies') return;
+    if (!line) return;
     if (!CAN_EDIT) return;
-    // Optimistic UI update.
+    const isRm = (line.sheet_name === 'Repairs & Supplies');
+    // 2026-05-17: "Mark No Change" is now available on G&A too (per FA UX
+    // feedback — same button, same intent: keep proposed = current). The
+    // R&M-specific review-state stamping + progress strip update is gated
+    // by isRm; G&A just clears the increase fields.
     const oldState = line.pm_review_state;
     line.increase_pct = 0;
     line.increase_dollar = null;
-    line.pm_review_state = 'no_change';
-    line._pm_action = 'no_change';
+    if (isRm) {
+      line.pm_review_state = 'no_change';
+      line._pm_action = 'no_change';
+    } else {
+      // G&A: no review-state machine, but we still tag the action so saveAll
+      // sends pm_action=no_change. Backend's update_lines treats it as a
+      // safe no-op for non-R&M (per workflow.py:4052+).
+      line._pm_action = 'no_change';
+    }
     const pctEl = document.getElementById('pm_inc_' + gl);
     if (pctEl) { pctEl.value = '0.0%'; pctEl.dataset.raw = '0.0'; pctEl.classList.remove('pm-cell-mirror'); }
     const dEl = document.getElementById('pm_incd_' + gl);
     if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; dEl.classList.remove('pm-cell-mirror'); }
-    _pmRmUpdateRowState(gl, line);
-    _pmRmUpdateProgress();
-    _pmRmUpdateSubmitGate();
+    if (isRm) {
+      _pmRmUpdateRowState(gl, line);
+      _pmRmUpdateProgress();
+      _pmRmUpdateSubmitGate();
+    }
     // Persist just this line so a refresh preserves the action even if the
     // PM doesn't trigger a saveAll.
     try {
@@ -25995,7 +26037,7 @@ function renderTable() {
                   return `
                 <td class="number">
                   <input id="pm_inc_${gl}" class="pm-cell pm-cell-pct${_pctMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_pctVal}" data-raw="${_pctRaw}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. Sibling shows the equivalent in the other unit.">
-                  ${isRm && !line.pm_review_state && CAN_EDIT ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Mark this line as no change for the 2027 budget">No change</button>` : ''}
+                  ${!line.pm_review_state && CAN_EDIT && !_hasDollar && _pctNum === 0 ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Mark this line as no change for the 2027 budget — keeps proposed equal to current budget">Mark No Change</button>` : ''}
                 </td>
                 <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar${_dollarMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_dollarVal}" data-raw="${_dollarRaw}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. Sibling shows the equivalent in the other unit. Negative values OK."></td>
                   `;
