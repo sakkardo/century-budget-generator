@@ -26368,7 +26368,11 @@ function _pmToggleNoChangeBtn(gl, line) {
     if (!propTd) return;
     const hasProposed = line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '';
     const existing = propTd.querySelector('.pm-no-change-inline');
-    if (hasProposed || line.pm_review_state) {
+    // Button visibility tracks whether the cell has a value, NOT the review-state
+    // machine. R&M's pm_review_state can stay 'typed_proposed' after a clear
+    // (it's a server-saved audit signal). The PM expects the shortcut to come
+    // back when they wipe the cell — they may want the "=" again.
+    if (hasProposed) {
         if (existing) existing.remove();
         return;
     }
