@@ -19293,7 +19293,22 @@ async function renderBudgetSummary(contentDiv) {
         makeInput(r.col5, r.label, 'c5', '#f9f9f7', (r.overrides && r.overrides.col5)) +
         makeInput(r.col6, r.label, 'c6', '#fbfaf4', (r.overrides && r.overrides.col6)) +
         makeInput(r.col7, r.label, 'c7', '#fffbeb') +
-        '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);font-variant-numeric:tabular-nums;">\u2014</td>' +
+        // FA dir 2026-05-17: per-row % Variance (Col 8) \u2014 formula = (col7-col5)/|col5|.
+        // Used to be hardcoded as "\u2014"; now renders the computed value AND
+        // gets recomputed on every cell blur via _sumRowRecalcVariance().
+        // Marked with data-row-col so sumRecalcTotals can find it.
+        (function(){
+          const c5n = (typeof r.col5 === 'number') ? r.col5 : null;
+          const c7n = (typeof r.col7 === 'number') ? r.col7 : null;
+          let html = '\u2014';
+          let color = 'var(--gray-400)';
+          if (c5n !== null && c5n !== 0 && c7n !== null) {
+            const pct = ((c7n - c5n) / Math.abs(c5n)) * 100;
+            color = pct > 0 ? 'var(--green)' : (pct < 0 ? 'var(--red)' : 'var(--gray-400)');
+            html = (pct > 0 ? '+' : '') + pct.toFixed(1) + '%';
+          }
+          return '<td data-row-col="c8" data-label="'+r.label.replace(/"/g,'&quot;')+'" style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:'+color+';font-variant-numeric:tabular-nums;font-weight:500;">'+html+'</td>';
+        })() +
         noteIn(r.label) + '</tr>';
     } else if (r.row_type === 'subtotal') {
       const isNet = r.label.toLowerCase().includes('net operating');
@@ -19352,6 +19367,31 @@ function sumRecalcTotals() {
       vals[c] = inp ? (parseFloat(inp.dataset.raw) || 0) : 0;
     });
     secs[sk].push(vals);
+
+    // FA dir 2026-05-17: refresh per-row Col 8 (% Var) as part of recalc.
+    // Formula matches the backend: (col7 - col5) / |col5| × 100.
+    // Empty c7 OR zero c5 → render "—" so the FA doesn't see misleading values.
+    const c8td = tr.querySelector('td[data-row-col="c8"]');
+    if (c8td) {
+      // Use the live input raw to detect empty (rather than `vals[c]` which
+      // coerces empty to 0 and would compute -100% / 100% spuriously).
+      const c7inp = tr.querySelector('input[data-col="c7"]');
+      const c5inp = tr.querySelector('input[data-col="c5"]');
+      const c7raw = c7inp && c7inp.dataset.raw;
+      const c5raw = c5inp && c5inp.dataset.raw;
+      const c7null = (c7raw === '' || c7raw === undefined || c7raw === null);
+      const c5null = (c5raw === '' || c5raw === undefined || c5raw === null);
+      const c5v = parseFloat(c5raw);
+      const c7v = parseFloat(c7raw);
+      if (c7null || c5null || !isFinite(c5v) || c5v === 0 || !isFinite(c7v)) {
+        c8td.textContent = '—';
+        c8td.style.color = 'var(--gray-400)';
+      } else {
+        const pct = ((c7v - c5v) / Math.abs(c5v)) * 100;
+        c8td.textContent = (pct > 0 ? '+' : '') + pct.toFixed(1) + '%';
+        c8td.style.color = pct > 0 ? 'var(--green)' : (pct < 0 ? 'var(--red)' : 'var(--gray-400)');
+      }
+    }
   });
 
   function sumSec(key) {
