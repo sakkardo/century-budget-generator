@@ -1548,6 +1548,15 @@ def create_workflow_blueprint(db):
         col2_override = db.Column(db.Float, nullable=True)           # 2025 Actual (audit) override
         col6_override = db.Column(db.Float, nullable=True)           # 2026 Approved Budget override
 
+        # FA directive 2026-05-17 (formula persistence): when the FA types a
+        # formula like "=300*12*4" in the formula bar, we store the formula
+        # string here alongside the evaluated result in col*_override. On
+        # next focus, the formula bar re-shows the formula so the FA can edit
+        # "4" → "3" without retyping the whole expression. Shape:
+        #   {"col1": "=300*12*4", "col5": "=ytd*1.05"}
+        # Empty/missing key = no formula stored; raw override value applies.
+        cell_formulas_json = db.Column(db.Text, nullable=True)
+
         # Metadata for the summary engine
         source_tab = db.Column(db.String(50), nullable=True)        # Income, Payroll, Energy, etc.
         gl_prefixes_json = db.Column(db.Text, nullable=True)        # JSON array of GL prefixes
@@ -8260,6 +8269,13 @@ def create_workflow_blueprint(db):
             if col6_overridden:
                 col6 = round(float(row.col6_override), 2)
 
+            # FA dir 2026-05-17: per-cell typed-formula strings (e.g. "=300*12*4").
+            # Parsed once per row so we don't hit json.loads in the dict literal.
+            try:
+                _row_formulas = _json.loads(row.cell_formulas_json) if row.cell_formulas_json else {}
+            except Exception:
+                _row_formulas = {}
+
             # Col 8: % variance = (col7 - col5) / |col5| * 100
             col8 = None
             if col7 is not None and col5 and col5 != 0:
@@ -8330,6 +8346,10 @@ def create_workflow_blueprint(db):
                     "col6": {"is_overridden": col6_overridden, "computed": col6_computed,
                              "override": row.col6_override},
                 },
+                # FA dir 2026-05-17: typed-formula strings keyed by col. Empty
+                # dict = no formulas. Frontend reads this to populate the
+                # formula bar on focus so re-editing "300*12*4" → change 4 to 3.
+                "formulas": _row_formulas,
             }
             result_rows.append(rd)
 
@@ -8955,6 +8975,12 @@ def create_workflow_blueprint(db):
             "col5_override": "col5_override",
             "col6_override": "col6_override",
         }
+        # FA dir 2026-05-17: typed-formula strings persist in cell_formulas_json.
+        # Edit shape: {col1_formula: "=300*12*4"} or {col1_formula: null} to clear.
+        # Stored as a JSON blob keyed by col so we can add/clear per-col without
+        # touching siblings.
+        FORMULA_FIELDS = ("col1_formula", "col2_formula", "col3_formula",
+                          "col4_formula", "col5_formula", "col6_formula", "col7_formula")
 
         updated = 0
         for edit in data["edits"]:
@@ -8995,6 +9021,49 @@ def create_workflow_blueprint(db):
                         new_value=str(coerced) if coerced is not None else "",
                         source="web",
                     ))
+            # FA dir 2026-05-17: persist typed-formula strings in cell_formulas_json.
+            # Edit shape:
+            #   {"col1_formula": "=300*12*4"} → set / replace col1 formula
+            #   {"col1_formula": null}        → clear col1 formula (drop key)
+            # Stored as a single JSON keyed by col so revoke / add is surgical.
+            import json as _json
+            try:
+                row_formulas = _json.loads(row.cell_formulas_json or "{}")
+                if not isinstance(row_formulas, dict):
+                    row_formulas = {}
+            except Exception:
+                row_formulas = {}
+            for f_field in FORMULA_FIELDS:
+                if f_field not in edit:
+                    continue
+                col_key = f_field.split("_")[0]  # "col1_formula" → "col1"
+                new_formula = edit.get(f_field)
+                old_formula = row_formulas.get(col_key)
+                if new_formula is None or new_formula == "":
+                    # Clear the formula for this col.
+                    if col_key in row_formulas:
+                        row_formulas.pop(col_key, None)
+                        row_changed = True
+                else:
+                    # Store the formula. Trim + coerce to string.
+                    new_formula_s = str(new_formula).strip()
+                    if old_formula != new_formula_s:
+                        row_formulas[col_key] = new_formula_s
+                        row_changed = True
+                        if budget:
+                            db.session.add(BudgetRevision(
+                                budget_id=budget.id,
+                                user_id=user_id,
+                                action="summary_formula",
+                                field_name=f"{f_field}:{row.label}",
+                                old_value=str(old_formula or ""),
+                                new_value=new_formula_s,
+                                source="web",
+                            ))
+            # Persist the formulas blob (or NULL when empty so we don't carry
+            # a stale "{}" string forever).
+            row.cell_formulas_json = _json.dumps(row_formulas) if row_formulas else None
+
             if row_changed:
                 row.updated_at = datetime.utcnow()
                 updated += 1
@@ -19217,7 +19286,7 @@ async function renderBudgetSummary(contentDiv) {
     '<th style="text-align:left;padding:10px;min-width:170px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
     '</tr></thead><tbody id="sumBody">';
 
-  function makeInput(val, label, col, bg, overrideInfo) {
+  function makeInput(val, label, col, bg, overrideInfo, savedFormula) {
     const raw = (val!==null&&val!==undefined&&val!==0) ? Math.round(val) : '';
     const disp = raw!=='' ? raw.toLocaleString('en-US') : '';
     // Cols c2-c5 are computed from sources (audit / GL lines). Mark them as inspectable
@@ -19298,8 +19367,15 @@ async function renderBudgetSummary(contentDiv) {
     const titleAttr = cellTitle ? (' title="' + cellTitle.replace(/"/g, '&quot;') + '"') : '';
     const ovrBadge = isOverridden ? '<span class="sum-ovr-badge" style="position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;">OVR</span>' : '';
     const ctxAttr = isOverridable ? ' oncontextmenu="return sumCellRevert(event, this)"' : '';
+    // FA dir 2026-05-17: stamp data-formula when a saved formula string exists
+    // for this cell. sumCellFocus uses it to populate the formula bar on click
+    // (so the FA can edit the original "300*12*4" to "300*12*3" instead of
+    // retyping). Escape quotes so the attribute renders cleanly.
+    const formulaAttr = (savedFormula && typeof savedFormula === 'string' && savedFormula.length)
+      ? ' data-formula="' + savedFormula.replace(/"/g, '&quot;') + '"'
+      : '';
     return '<td class="number" style="background:'+(bg||'#fbfaf4')+';padding:4px 6px;font-variant-numeric:tabular-nums;text-align:right;position:relative;">' +
-      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+ovrAttr+roAttr+titleAttr+ctxAttr+' ' +
+      '<input type="text" value="'+disp+'" placeholder="\u2014" data-label="'+label.replace(/"/g,'&quot;')+'" data-col="'+col+'" data-raw="'+raw+'"'+fxAttr+ovrAttr+roAttr+titleAttr+ctxAttr+formulaAttr+' ' +
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
       'style="'+inputStyle+'">' + ovrBadge + c2InspectBadge + '</td>';
   }
@@ -19334,13 +19410,16 @@ async function renderBudgetSummary(contentDiv) {
         '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         // FA dir 2026-05-17: pass override info for c1/c2/c6 too (newly editable).
-        makeInput(r.col1, r.label, 'c1', '#fbfaf4', (r.overrides && r.overrides.col1)) +
-        makeInput(r.col2, r.label, 'c2', '#f9f9f7', (r.overrides && r.overrides.col2)) +
-        makeInput(r.col3, r.label, 'c3', '#f9f9f7', (r.overrides && r.overrides.col3)) +
-        makeInput(r.col4, r.label, 'c4', '#f9f9f7', (r.overrides && r.overrides.col4)) +
-        makeInput(r.col5, r.label, 'c5', '#f9f9f7', (r.overrides && r.overrides.col5)) +
-        makeInput(r.col6, r.label, 'c6', '#fbfaf4', (r.overrides && r.overrides.col6)) +
-        makeInput(r.col7, r.label, 'c7', '#fffbeb') +
+        // Also pass any saved formula string via r.formulas so makeInput can
+        // stamp data-formula on the input — sumCellFocus reads that to show
+        // the formula in the formula bar on re-click.
+        makeInput(r.col1, r.label, 'c1', '#fbfaf4', (r.overrides && r.overrides.col1), (r.formulas && r.formulas.col1)) +
+        makeInput(r.col2, r.label, 'c2', '#f9f9f7', (r.overrides && r.overrides.col2), (r.formulas && r.formulas.col2)) +
+        makeInput(r.col3, r.label, 'c3', '#f9f9f7', (r.overrides && r.overrides.col3), (r.formulas && r.formulas.col3)) +
+        makeInput(r.col4, r.label, 'c4', '#f9f9f7', (r.overrides && r.overrides.col4), (r.formulas && r.formulas.col4)) +
+        makeInput(r.col5, r.label, 'c5', '#f9f9f7', (r.overrides && r.overrides.col5), (r.formulas && r.formulas.col5)) +
+        makeInput(r.col6, r.label, 'c6', '#fbfaf4', (r.overrides && r.overrides.col6), (r.formulas && r.formulas.col6)) +
+        makeInput(r.col7, r.label, 'c7', '#fffbeb', null,                                (r.formulas && r.formulas.col7)) +
         // FA dir 2026-05-17: per-row % Variance (Col 8) \u2014 formula = (col7-col5)/|col5|.
         // Used to be hardcoded as "\u2014"; now renders the computed value AND
         // gets recomputed on every cell blur via _sumRowRecalcVariance().
@@ -19652,9 +19731,16 @@ function sumCellFocus(el) {
       inp.style.opacity = '0.85';
       inp.placeholder = '';
     } else {
-      // Show the current raw value (numeric) so the FA can edit it. For fx
-      // cells with lineage, the value is the computed total or active override.
-      inp.value = el.dataset.raw || el.value || '';
+      // FA dir 2026-05-17: if the FA previously saved a formula here, show
+      // the formula text so they can edit it (e.g. "=300*12*4" → change "4"
+      // to "3"). Otherwise fall back to the raw value. data-formula is
+      // stamped by makeInput from row.formulas[col_key].
+      const savedFormula = el.dataset.formula;
+      if (savedFormula) {
+        inp.value = savedFormula;
+      } else {
+        inp.value = el.dataset.raw || el.value || '';
+      }
       inp.disabled = false;
       inp.style.opacity = '1';
       inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)';
@@ -20131,11 +20217,22 @@ function auditLineAdd(uploadId, summaryLabel) {
 }
 
 function sumCellBlur(el) {
+  // FA dir 2026-05-17: track whether the user's input was a formula so we
+  // can persist the formula string alongside the result. typedFormula is
+  // set to the raw "=..." string when applicable, else null.
+  let typedFormula = null;
   if (el.value && !el.value.startsWith('=')) {
     const num = parseFloat(el.value.replace(/,/g, ''));
     if (!isNaN(num)) { el.dataset.raw = num; el.value = num.toLocaleString('en-US', {maximumFractionDigits:0}); el.style.background = el.dataset.col === 'c7' ? '#fffbeb' : '#fbfaf4'; }
   } else if (el.value.startsWith('=')) {
-    try { const r = Function('"use strict"; return (' + el.value.slice(1) + ')')(); el.dataset.raw = r; el.style.background = '#f0fdf4'; el.style.borderColor = '#bbf7d0'; } catch(e) {}
+    typedFormula = el.value.trim();
+    try {
+      const clean = typedFormula.slice(1).replace(/,/g, '');
+      const r = Function('"use strict"; return (' + clean + ')')();
+      el.dataset.raw = r;
+      el.style.background = '#f0fdf4';
+      el.style.borderColor = '#bbf7d0';
+    } catch(e) { typedFormula = null; }
   } else { el.dataset.raw = ''; }
   sumRecalcTotals();
   // Auto-save edits — col7 (proposed) goes to col7; c3/c4/c5 land in *_override
@@ -20177,6 +20274,12 @@ function sumCellBlur(el) {
   else if (col === 'c4') edit.col4_override = rawNum;
   else if (col === 'c5') edit.col5_override = rawNum;
   else if (col === 'c6') edit.col6_override = rawNum;
+  // FA dir 2026-05-17: persist formula string. typedFormula is set when the
+  // user entered a "=" expression. A plain-number edit clears any prior
+  // formula (since the number isn't tied to a formula anymore).
+  edit[col + '_formula'] = typedFormula;
+  if (typedFormula) el.dataset.formula = typedFormula;
+  else delete el.dataset.formula;
   fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({edits:[edit]})
   }).then(r => r.json()).then(data => {
@@ -20235,6 +20338,11 @@ function sumCellRevert(event, el) {
   else if (col === 'c5') edit.col5_override = null;
   else if (col === 'c6') edit.col6_override = null;
   else return false;
+  // FA dir 2026-05-17: clear any saved formula too — reverting wipes both
+  // the override value and the formula expression. The cell falls back to
+  // its computed/imported source.
+  edit[col + '_formula'] = null;
+  delete el.dataset.formula;
   fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({edits:[edit]})
   }).then(r => r.json()).then(data => {
@@ -20305,12 +20413,22 @@ function sumAcceptFormula() {
   // bar Accept updated the cell visually but never called the save endpoint,
   // so refresh would wipe the change. Now we route through the same PUT path
   // sumCellBlur uses, with the column \u2192 override-field mapping kept in sync.
+  // ALSO sends col*_formula so re-clicks restore the original expression for
+  // editing (e.g. change "300*12*4" \u2192 "300*12*3" without retyping).
   const cell = _sumActiveCell;
   const col = cell.dataset.col;
   const tr = cell.closest('tr');
   const order = tr ? tr.dataset.order : null;
   const editable = (col === 'c7') || (col === 'c1') || (col === 'c2') ||
                    (col === 'c3') || (col === 'c4') || (col === 'c5') || (col === 'c6');
+  // The original input (might be a formula starting with "="). If formula,
+  // save its string form so the FA can edit it later. Otherwise clear any
+  // previously-saved formula since a plain number doesn't have one.
+  const inputWasFormula = (typeof val === 'string' && val.trim().startsWith('='));
+  const savedFormulaToPersist = inputWasFormula ? val.trim() : null;
+  // Reflect immediately on the cell so re-focus shows the formula without a refetch.
+  if (savedFormulaToPersist) cell.dataset.formula = savedFormulaToPersist;
+  else delete cell.dataset.formula;
   if (order && editable) {
     const edit = { display_order: parseInt(order, 10) };
     const rawNum = (parsed === null || parsed === undefined || isNaN(parsed)) ? null : parsed;
@@ -20321,6 +20439,8 @@ function sumAcceptFormula() {
     else if (col === 'c4') edit.col4_override = rawNum;
     else if (col === 'c5') edit.col5_override = rawNum;
     else if (col === 'c6') edit.col6_override = rawNum;
+    // Persist the formula string (or null to clear).
+    edit[col + '_formula'] = savedFormulaToPersist;
     fetch('/api/summary/' + entityCode, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({edits: [edit]})

@@ -190,6 +190,11 @@ def _run_idempotent_migrations():
         # FA directive 2026-05-17: per-cell overrides on the Payroll tab's tax/benefit
         # totals (FICA, Welfare, Pension, etc.). Single JSON keyed by cell key.
         "ALTER TABLE payroll_assumptions ADD COLUMN IF NOT EXISTS overrides_json TEXT DEFAULT '{}'",
+        # FA directive 2026-05-17: persist typed formula strings on Summary cells
+        # so re-clicking lets the FA edit the original formula (e.g. change "*4"
+        # to "*3" instead of retyping the whole expression). Single JSON keyed
+        # by col name. Lives alongside col*_override which stores the result.
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS cell_formulas_json TEXT",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive
