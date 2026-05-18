@@ -19636,7 +19636,12 @@ function sumCellFocus(el) {
     c4:'Col 4 \u00b7 '+BY1+' Est.',c5:'Col 5 \u00b7 '+BY1+' Forecast',c6:'Col 6 \u00b7 '+BY1+' Budget',c7:'Col 7 \u00b7 '+BY+' Budget'};
   const cl = COL_NAMES[el.dataset.col] || el.dataset.col;
   const lbl = document.getElementById('sumFBLabel');
-  const isReadOnly = (el.dataset.col !== 'c7');
+  // FA dir 2026-05-17: every numeric column (c1-c7) is now editable. The
+  // formula bar reads the cell's actual readOnly attribute (set by makeInput
+  // based on the same isOverridable check) so it stays in sync. Previously
+  // hardcoded "only c7 is editable" which made the formula bar disabled for
+  // c1-c6 even after I made the cells themselves editable. Bug-fix.
+  const isReadOnly = !!el.readOnly;
   if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl;
   const inp = document.getElementById('sumFBInput');
   if (inp) {
@@ -19647,13 +19652,15 @@ function sumCellFocus(el) {
       inp.style.opacity = '0.85';
       inp.placeholder = '';
     } else {
+      // Show the current raw value (numeric) so the FA can edit it. For fx
+      // cells with lineage, the value is the computed total or active override.
       inp.value = el.dataset.raw || el.value || '';
       inp.disabled = false;
       inp.style.opacity = '1';
       inp.placeholder = 'Enter value or formula (e.g. =9384324*1.035)';
     }
   }
-  // Hide Accept/Cancel/Clear for read-only cells
+  // Show Accept/Cancel/Clear for every editable column.
   ['sumFBAccept','sumFBCancel','sumFBClear'].forEach(id => {
     const b = document.getElementById(id);
     if (b) b.style.display = isReadOnly ? 'none' : '';
@@ -20257,14 +20264,95 @@ function sumCellKey(e, el) {
 function sumAcceptFormula() {
   if (!_sumActiveCell) return;
   const val = document.getElementById('sumFBInput').value;
-  if (val.startsWith('=')) {
+  let parsed = null;
+  if (val === '' || val === null || val === undefined) {
+    // Empty input \u2192 clear value / revert override
+    _sumActiveCell.dataset.raw = '';
+    _sumActiveCell.value = '';
+    parsed = null;
+  } else if (val.trim().startsWith('=')) {
+    // Formula path: evaluate as JS expression. Strip commas first so the
+    // FA can paste numbers like 4,654,828*1.035 from a spreadsheet without
+    // having to clean them up manually.
     try {
-      const r = Function('"use strict"; return (' + val.slice(1) + ')')();
+      const clean = val.trim().slice(1).replace(/,/g, '');
+      const r = Function('"use strict"; return (' + clean + ')')();
+      if (!isFinite(r)) throw new Error('non-finite result');
+      parsed = r;
       _sumActiveCell.dataset.raw = r;
       _sumActiveCell.value = Math.round(r).toLocaleString('en-US');
       _sumActiveCell.style.background = '#f0fdf4'; _sumActiveCell.style.borderColor = '#bbf7d0';
-      document.getElementById('sumFBPreview').textContent = '= ' + Math.round(r).toLocaleString('en-US');
-    } catch(e) { document.getElementById('sumFBPreview').textContent = '\u26a0 Error'; }
+      const prev = document.getElementById('sumFBPreview');
+      if (prev) prev.textContent = '= ' + Math.round(r).toLocaleString('en-US');
+    } catch(e) {
+      const prev = document.getElementById('sumFBPreview');
+      if (prev) prev.textContent = '\u26a0 Error';
+      return;   // don't recalc/persist on bad formula
+    }
+  } else {
+    // Plain number path: parse, format, store
+    const num = parseFloat(String(val).replace(/[$,]/g, ''));
+    if (isNaN(num)) {
+      const prev = document.getElementById('sumFBPreview');
+      if (prev) prev.textContent = '\u26a0 Invalid number';
+      return;
+    }
+    parsed = num;
+    _sumActiveCell.dataset.raw = num;
+    _sumActiveCell.value = Math.round(num).toLocaleString('en-US');
+  }
+  // FA dir 2026-05-17: persist override to backend. Previously the formula
+  // bar Accept updated the cell visually but never called the save endpoint,
+  // so refresh would wipe the change. Now we route through the same PUT path
+  // sumCellBlur uses, with the column \u2192 override-field mapping kept in sync.
+  const cell = _sumActiveCell;
+  const col = cell.dataset.col;
+  const tr = cell.closest('tr');
+  const order = tr ? tr.dataset.order : null;
+  const editable = (col === 'c7') || (col === 'c1') || (col === 'c2') ||
+                   (col === 'c3') || (col === 'c4') || (col === 'c5') || (col === 'c6');
+  if (order && editable) {
+    const edit = { display_order: parseInt(order, 10) };
+    const rawNum = (parsed === null || parsed === undefined || isNaN(parsed)) ? null : parsed;
+    if (col === 'c7')      edit.col7 = rawNum;
+    else if (col === 'c1') edit.col1_override = rawNum;
+    else if (col === 'c2') edit.col2_override = rawNum;
+    else if (col === 'c3') edit.col3_override = rawNum;
+    else if (col === 'c4') edit.col4_override = rawNum;
+    else if (col === 'c5') edit.col5_override = rawNum;
+    else if (col === 'c6') edit.col6_override = rawNum;
+    fetch('/api/summary/' + entityCode, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({edits: [edit]})
+    }).then(r => r.json()).then(data => {
+      if (data && data.error) {
+        if (typeof showToast === 'function') showToast('Save failed: ' + data.error, 'error');
+        return;
+      }
+      // Flip OVR styling on the cell for cols 1-6 (col7 is just an input, no OVR concept).
+      if (col !== 'c7') {
+        const isNowOverridden = (rawNum !== null && !isNaN(rawNum));
+        cell.dataset.overridden = isNowOverridden ? '1' : '0';
+        if (isNowOverridden) {
+          cell.style.background = '#fef3c7';
+          cell.style.boxShadow = 'inset 3px 0 0 #d97706';
+          cell.style.color = '#92400e';
+          cell.style.fontWeight = '700';
+          const td = cell.parentElement;
+          if (td && !td.querySelector('.sum-ovr-badge')) {
+            const badge = document.createElement('span');
+            badge.className = 'sum-ovr-badge';
+            badge.style.cssText = 'position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;';
+            badge.textContent = 'OVR';
+            td.appendChild(badge);
+          }
+          cell.title = 'Override active. Right-click to revert.';
+        }
+      }
+      if (typeof showToast === 'function') showToast('Saved', 'success');
+    }).catch(err => {
+      if (typeof showToast === 'function') showToast('Save failed: ' + err.message, 'error');
+    });
   }
   sumRecalcTotals();
   sumResetBar();
