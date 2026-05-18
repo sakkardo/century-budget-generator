@@ -3927,6 +3927,35 @@ def create_workflow_blueprint(db):
                     overrides = assumptions.get("re_taxes_overrides")
                 except Exception:
                     pass
+
+            # FA dir 2026-05-18 (148 item #4): the RE Tax page wasn't subtracting
+            # the right benefit-credit amounts. The dof_taxes module only knew
+            # about FA-entered overrides; on 148 those had stale/seed values
+            # ($510, $510, $408, $510 → $1,938 total). The actual GL-side
+            # budget for 148's exemptions is $463,868 (per 6315-0010/0020/
+            # 0025/0035). Fall back to the G&A budget line `current_budget`
+            # values whenever an override is missing OR zero — that way the
+            # RE Tax page and the G&A tab agree on the same dollars.
+            if budget:
+                overrides = dict(overrides or {})
+                _GL_TO_OVERRIDE = {
+                    "6315-0010": "abatement_current",  # Co-op Abatement
+                    "6315-0020": "star_current",        # STAR
+                    "6315-0025": "veteran_current",     # Veteran
+                    "6315-0035": "sche_current",        # SCHE
+                }
+                for _gl, _key in _GL_TO_OVERRIDE.items():
+                    _existing = overrides.get(_key)
+                    # Only backfill from GL if override is missing or zero
+                    if _existing is None or float(_existing or 0) == 0:
+                        _line = BudgetLine.query.filter_by(
+                            budget_id=budget.id, gl_code=_gl
+                        ).first()
+                        if _line and _line.current_budget:
+                            # Exemptions stored as negative on G&A side; the
+                            # RE Tax calc expects positive amounts to subtract.
+                            overrides[_key] = abs(float(_line.current_budget))
+
             result = compute_re_taxes(entity_code, overrides)
             # Pass through saved per-cell overrides (numeric + formula sources)
             # so the frontend can restore user edits on reload.
