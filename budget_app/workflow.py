@@ -25245,6 +25245,111 @@ PM_EDIT_TEMPLATE = r"""
     font-weight: 400;
   }
 
+  /* FA dir 2026-05-18 (visual cleanup v3): strip chrome from reference cells
+     on the PM portal. Reference data (Prior/YTD/Accrual/Unpaid/Curr Budget,
+     Estimate/Forecast read-only previews, $Variance/%Change diagnostics)
+     becomes plain dim monospace text instead of looking like editable inputs.
+     Scoped to body.pm-portal so the FA dashboard (different template) is
+     untouched. */
+  body.pm-portal input.pm-cell:disabled,
+  body.pm-portal input.pm-cell-fx[readonly],
+  body.pm-portal input.pm-cell-fx {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 4px 2px !important;
+    color: #64748b !important;
+    font-family: ui-monospace, Menlo, monospace !important;
+    font-size: 12px !important;
+    cursor: default !important;
+  }
+  /* Current Budget gets slightly stronger weight as the comparison anchor. */
+  body.pm-portal input#pm_bud_,
+  body.pm-portal input[data-field="current_budget"]:disabled {
+    color: var(--gray-700, #1f2937) !important;
+    font-weight: 600 !important;
+  }
+  /* Diagnostic cells: dimmed text with sign-only color (no boxed look). */
+  body.pm-portal input[data-field="variance"],
+  body.pm-portal input[data-field="pct_change"] {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 4px 2px !important;
+    font-family: ui-monospace, Menlo, monospace !important;
+    font-size: 12px !important;
+  }
+  /* fx span sticker already hidden globally via .pm-fx{display:none}; nothing more needed. */
+  /* Subtle column-zone separators: identity | reference | decision | diagnostic | notes.
+     Six dividers tell the eye where each "zone" ends without needing extra chrome. */
+  body.pm-portal #linesTable td:nth-child(2),      /* after Description */
+  body.pm-portal #linesTable th:nth-child(2),
+  body.pm-portal #linesTable td:nth-child(8),      /* after Forecast */
+  body.pm-portal #linesTable th:nth-child(8),
+  body.pm-portal #linesTable td:nth-child(9),      /* after Curr Budget */
+  body.pm-portal #linesTable th:nth-child(9),
+  body.pm-portal #linesTable td:nth-child(12),     /* after Increase % */
+  body.pm-portal #linesTable th:nth-child(12),
+  body.pm-portal #linesTable td:nth-child(14),     /* after % Change (before Notes) */
+  body.pm-portal #linesTable th:nth-child(14) {
+    border-right: 1px solid var(--gray-200, #e5e7eb);
+  }
+  /* Drop bright green background on Increase $ td that came from either-or
+     model (kept as inline style on .pm-cell-dollar's TD historically). */
+  body.pm-portal #linesTable td:nth-child(11) {
+    background: transparent !important;
+  }
+  /* Notes red-dot indicator: replaces yellow .note-warn border. Subtler. */
+  body.pm-portal td.col-notes { position: relative; }
+  body.pm-portal td.col-notes input.note-warn {
+    background: transparent !important;
+    border-color: var(--gray-300, #d1d5db) !important;
+    padding-left: 18px !important;
+  }
+  body.pm-portal td.col-notes input.note-warn::before {
+    content: "";
+  }
+  body.pm-portal td.col-notes::before {
+    content: "";
+    display: none;
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--red, #dc2626);
+    z-index: 2;
+    pointer-events: none;
+  }
+  body.pm-portal td.col-notes.needs-note::before { display: block; }
+  body.pm-portal td.col-notes.needs-note input { padding-left: 18px !important; }
+  /* Inline "= No change" icon button (positioned right of Proposed input,
+     same height — no row-jitter when only some rows show the button). */
+  body.pm-portal .pm-no-change-inline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 28px;
+    margin-left: 4px;
+    border: 1px solid var(--gray-300, #d1d5db);
+    border-radius: 5px;
+    background: white;
+    color: var(--gray-600, #64748b);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    vertical-align: middle;
+    line-height: 1;
+  }
+  body.pm-portal .pm-no-change-inline:hover {
+    background: #dcfce7;
+    color: #15803d;
+    border-color: #16a34a;
+  }
+
   .pm-rm-progress-strip {
     background: white;
     border-radius: 10px;
@@ -25360,7 +25465,7 @@ PM_EDIT_TEMPLATE = r"""
   .submit-btn-blocked:hover::after { opacity: 1; }
 </style>
 </head>
-<body>
+<body class="pm-portal">
 
 <!-- Global Nav -->
 <nav class="top-nav">
@@ -26925,6 +27030,22 @@ function pmUpdateTotals() {
         const catVar = catTotals.budget - catTotals.forecast;
         if (subVar) { subVar.textContent = fmt(catVar); subVar.style.color = catVar >= 0 ? 'var(--red)' : 'var(--green)'; }
 
+        // FA dir 2026-05-18: live-update subtotal Inc% / Inc$ pills.
+        const _subIncPctEl = document.getElementById('pm_subtotal_incpct_' + cat);
+        const _subIncDolEl = document.getElementById('pm_subtotal_incdol_' + cat);
+        if (_subIncPctEl || _subIncDolEl) {
+            const _sd = catTotals.proposed - catTotals.budget;
+            const _sn = Math.abs(catTotals.budget);
+            const _sk = Math.abs(_sd) < 0.5 ? 'flat' : (_sd > 0 ? 'up' : 'down');
+            const _sdTxt = Math.abs(_sd) < 0.5 ? '$0'
+                : (_sd > 0 ? '+' : '-') + '$' + Math.abs(Math.round(_sd)).toLocaleString();
+            const _spct = _sn > 0.5 ? (_sd / _sn) * 100 : null;
+            const _spTxt = _spct === null ? '—'
+                : (Math.abs(_spct) < 0.05 ? '0.0%' : (_spct > 0 ? '+' : '') + _spct.toFixed(1) + '%');
+            if (_subIncPctEl) { _subIncPctEl.textContent = _spTxt; _subIncPctEl.className = 'pm-pill ' + _sk; }
+            if (_subIncDolEl) { _subIncDolEl.textContent = _sdTxt; _subIncDolEl.className = 'pm-pill ' + _sk; }
+        }
+
         Object.keys(grandTotals).forEach(k => grandTotals[k] += catTotals[k]);
     }
 
@@ -26948,6 +27069,22 @@ function pmUpdateTotals() {
     const gPct = grandTotals.forecast ? ((grandTotals.budget - grandTotals.forecast) / grandTotals.forecast) : 0;
     if (grandVar) { grandVar.textContent = fmt(gVar); grandVar.style.color = gVar >= 0 ? 'var(--red)' : 'var(--green)'; }
     if (grandPct) grandPct.textContent = (gPct * 100).toFixed(1) + '%';
+
+    // FA dir 2026-05-18: live-update grand-total Inc% / Inc$ pills.
+    const _gIncPctEl = document.getElementById('pm_grandtotal_incpct');
+    const _gIncDolEl = document.getElementById('pm_grandtotal_incdol');
+    if (_gIncPctEl || _gIncDolEl) {
+        const _gd = grandTotals.proposed - grandTotals.budget;
+        const _gn = Math.abs(grandTotals.budget);
+        const _gk = Math.abs(_gd) < 0.5 ? 'flat' : (_gd > 0 ? 'up' : 'down');
+        const _gdTxt = Math.abs(_gd) < 0.5 ? '$0'
+            : (_gd > 0 ? '+' : '-') + '$' + Math.abs(Math.round(_gd)).toLocaleString();
+        const _gp = _gn > 0.5 ? (_gd / _gn) * 100 : null;
+        const _gpTxt = _gp === null ? '—'
+            : (Math.abs(_gp) < 0.05 ? '0.0%' : (_gp > 0 ? '+' : '') + _gp.toFixed(1) + '%');
+        if (_gIncPctEl) { _gIncPctEl.textContent = _gpTxt; _gIncPctEl.className = 'pm-pill ' + _gk; }
+        if (_gIncDolEl) { _gIncDolEl.textContent = _gdTxt; _gIncDolEl.className = 'pm-pill ' + _gk; }
+    }
 }
 
 function renderTable() {
@@ -27070,9 +27207,9 @@ function renderTable() {
                 </td>
                   `;
                 })()}
-                <td class="number" style="position:relative;">
+                <td class="number" style="position:relative; white-space:nowrap;">
                     <input id="pm_prop_${gl}" class="pm-cell pm-cell-proposed" type="text" value="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? fmt(parseFloat(line.proposed_budget) || 0) : ''}" data-raw="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? String(Math.round(parseFloat(line.proposed_budget) || 0)) : ''}" data-gl="${gl}" data-field="proposed_budget" placeholder="Type proposed $..." onfocus="pmProposedFocus(this)" onblur="pmProposedBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="2027 Proposed Budget — type a dollar amount. Increase $ and Increase % derive automatically.">
-                    ${!line.pm_review_state && CAN_EDIT && (line.proposed_budget === null || line.proposed_budget === undefined || line.proposed_budget === '') ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Set Proposed = Current Budget (no change for 2027)">No change</button>` : ''}
+                    ${!line.pm_review_state && CAN_EDIT && (line.proposed_budget === null || line.proposed_budget === undefined || line.proposed_budget === '') ? `<button class="pm-no-change-inline" onclick="pmRmNoChange('${gl}')" title="Set Proposed = Current Budget (${fmt(line.current_budget || 0)})">=</button>` : ''}
                 </td>
                 <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_var_${gl}'))">
                     <span class="pm-fx">fx</span>
@@ -27082,13 +27219,24 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
                 </td>
-                <td class="col-notes"><input type="text" class="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'note-warn' : ''}" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="Why did this change? (context for FA)" maxlength="500" style="min-width:80px;"></td>
+                <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required: delta > 10% needs context' : 'Why did this change? (context for FA)'}" maxlength="500" style="min-width:80px;"></td>
             `;
             tbody.appendChild(tr);
         });
 
         // Subtotal
         const catVar = catTotals.budget - catTotals.forecast;
+        // FA dir 2026-05-18 (visual cleanup v3): derive Inc% / Inc$ pills on
+        // subtotal rows too, so the cells line up with data rows instead of
+        // being empty white gaps. Pills compare sum_proposed vs sum_curr_budget.
+        const _catDelta = catTotals.proposed - catTotals.budget;
+        const _catDenom = Math.abs(catTotals.budget);
+        const _catPct = _catDenom > 0.5 ? (_catDelta / _catDenom) * 100 : null;
+        const _catKlass = Math.abs(_catDelta) < 0.5 ? 'flat' : (_catDelta > 0 ? 'up' : 'down');
+        const _catDollarTxt = Math.abs(_catDelta) < 0.5 ? '$0'
+            : (_catDelta > 0 ? '+' : '-') + '$' + Math.abs(Math.round(_catDelta)).toLocaleString();
+        const _catPctTxt = _catPct === null ? '—'
+            : (Math.abs(_catPct) < 0.05 ? '0.0%' : (_catPct > 0 ? '+' : '') + _catPct.toFixed(1) + '%');
         const subRow = document.createElement('tr');
         subRow.className = 'subtotal-row';
         subRow.innerHTML = `
@@ -27099,8 +27247,8 @@ function renderTable() {
             <td class="number pm-fx-td" id="pm_subtotal_estimate_${cat}" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(catTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.estimate)}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_forecast_${cat}" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(catTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.forecast)}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_budget_${cat}" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(catTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.budget)}</span></td>
-            <td></td>
-            <td></td>
+            <td class="number"><span class="pm-pill ${_catKlass}" id="pm_subtotal_incpct_${cat}">${_catPctTxt}</span></td>
+            <td class="number"><span class="pm-pill ${_catKlass}" id="pm_subtotal_incdol_${cat}">${_catDollarTxt}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catVar)}</span></td>
             <td></td>
@@ -27114,6 +27262,16 @@ function renderTable() {
     // Grand total
     const grandVar = grandTotals.budget - grandTotals.forecast;
     const grandPct = grandTotals.forecast ? ((grandTotals.budget - grandTotals.forecast) / grandTotals.forecast) : 0;
+    // FA dir 2026-05-18 (visual cleanup v3): grand-total Inc% / Inc$ pills
+    // mirror the subtotal pattern. Compares total proposed vs total curr budget.
+    const _gDelta = grandTotals.proposed - grandTotals.budget;
+    const _gDenom = Math.abs(grandTotals.budget);
+    const _gPct = _gDenom > 0.5 ? (_gDelta / _gDenom) * 100 : null;
+    const _gKlass = Math.abs(_gDelta) < 0.5 ? 'flat' : (_gDelta > 0 ? 'up' : 'down');
+    const _gDollarTxt = Math.abs(_gDelta) < 0.5 ? '$0'
+        : (_gDelta > 0 ? '+' : '-') + '$' + Math.abs(Math.round(_gDelta)).toLocaleString();
+    const _gPctTxt = _gPct === null ? '—'
+        : (Math.abs(_gPct) < 0.05 ? '0.0%' : (_gPct > 0 ? '+' : '') + _gPct.toFixed(1) + '%');
     const grandRow = document.createElement('tr');
     grandRow.className = 'grand-total';
     grandRow.innerHTML = `
@@ -27124,8 +27282,8 @@ function renderTable() {
         <td class="number pm-fx-td" id="pm_grandtotal_estimate" style="position:relative; cursor:pointer;" data-col="estimate" data-raw="${Math.round(grandTotals.estimate)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.estimate)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_forecast" style="position:relative; cursor:pointer;" data-col="forecast" data-raw="${Math.round(grandTotals.forecast)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.forecast)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_budget" style="position:relative; cursor:pointer;" data-col="budget" data-raw="${Math.round(grandTotals.budget)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.budget)}</span></td>
-        <td></td>
-        <td></td>
+        <td class="number"><span class="pm-pill ${_gKlass}" id="pm_grandtotal_incpct">${_gPctTxt}</span></td>
+        <td class="number"><span class="pm-pill ${_gKlass}" id="pm_grandtotal_incdol">${_gDollarTxt}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandVar)}</span></td>
         <td class="number" id="pm_grandtotal_pct">${(grandPct * 100).toFixed(1)}%</td>
