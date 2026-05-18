@@ -645,6 +645,12 @@ def create_workflow_blueprint(db):
         # FA override fields (when FA manually overrides a formula cell)
         estimate_override = db.Column(db.Float, nullable=True)
         forecast_override = db.Column(db.Float, nullable=True)
+        # FA dir 2026-05-17: persist typed formula strings alongside the
+        # overrides (parallels proposed_formula). On re-click, the formula bar
+        # repopulates with these so the FA can edit "300*12*4" → "300*12*3"
+        # without retyping. NULL = no formula stored.
+        estimate_formula = db.Column(db.Text, nullable=True)
+        forecast_formula = db.Column(db.Text, nullable=True)
 
         # Ancillary backup worksheet (JSON list of line items for 4130/4135/4250-series income GLs)
         # Shape: [{"label": str, "qty": num, "rate": num, "period": "mo"|"yr", "monthsActive": num, "occupancy": num}, ...]
@@ -690,6 +696,9 @@ def create_workflow_blueprint(db):
                 "proposed_formula": self.proposed_formula or "",
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
+                # FA dir 2026-05-17: formula strings parallel to overrides
+                "estimate_formula": self.estimate_formula or "",
+                "forecast_formula": self.forecast_formula or "",
                 "fa_proposed_status": self.fa_proposed_status,
                 "fa_proposed_note": self.fa_proposed_note or "",
                 "fa_override_value": self.fa_override_value,
@@ -4146,6 +4155,17 @@ def create_workflow_blueprint(db):
                     changes.append(("proposed_formula", old_val, new_val or ""))
                 line.proposed_formula = new_val
 
+            # FA dir 2026-05-17: typed-formula strings for estimate / forecast
+            # parallel to proposed_formula. Persist so re-clicks restore the
+            # expression (e.g. edit "*4" → "*3" without retyping).
+            for ffield in ("estimate_formula", "forecast_formula"):
+                if ffield in line_data:
+                    new_val = line_data[ffield] or None
+                    old_val = getattr(line, ffield, None) or ""
+                    if old_val != (new_val or ""):
+                        changes.append((ffield, old_val, new_val or ""))
+                    setattr(line, ffield, new_val)
+
             # Other numeric fields
             for fname in ("prior_year", "ytd_actual", "ytd_budget", "current_budget"):
                 if fname in line_data:
@@ -4318,6 +4338,14 @@ def create_workflow_blueprint(db):
                 if old_val != (new_val or ""):
                     changes.append(("proposed_formula", old_val, new_val or ""))
                 line.proposed_formula = new_val or None
+            # FA dir 2026-05-17: estimate/forecast formula companions.
+            for ffield in ("estimate_formula", "forecast_formula"):
+                if ffield in line_data:
+                    new_val = line_data[ffield] or None
+                    old_val = getattr(line, ffield, None) or ""
+                    if old_val != (new_val or ""):
+                        changes.append((ffield, old_val, new_val or ""))
+                    setattr(line, ffield, new_val)
 
             # Nullable override fields (null = use formula, number = manual override)
             for ofield in ("estimate_override", "forecast_override"):
@@ -15816,6 +15844,12 @@ function fxCellFocus(el) {
 
   if (field === 'proposed_budget' && el.dataset.proposedFormula) {
     bar.value = el.dataset.proposedFormula;
+  } else if (el.dataset.userFormula) {
+    // FA dir 2026-05-17: user typed a formula here previously (e.g.
+    // "=300*12*4"). Show the formula again so they can edit it (change
+    // 4 → 3) rather than retype. Separate from data-formula which holds
+    // the auto-computed formula hint.
+    bar.value = el.dataset.userFormula;
   } else if (el.dataset.override === 'true') {
     bar.value = el.dataset.raw || '';
   } else {
@@ -16011,26 +16045,51 @@ function formulaBarAccept() {
       el.dataset.raw = rounded;
       el.dataset.override = 'true';
       el.value = fmt(formulaResult);
-      el.dataset.formula = typed.startsWith('=') ? typed : '=' + typed;
+      const formulaStr = typed.startsWith('=') ? typed : '=' + typed;
+      // FA dir 2026-05-17: keep the auto-computed `data-formula` intact (used
+      // as a hint when override is cleared). Store the FA's typed formula in
+      // a separate attribute so fxCellFocus can repopulate the bar with it.
+      el.dataset.userFormula = formulaStr;
       const badge = el.parentElement.querySelector('.fa-fx');
       if (badge) { badge.textContent = 'fx✎'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
       faLineChanged(gl, field, formulaResult);
       faAutoSave(gl, field, rounded);
+      // FA dir 2026-05-17: persist the formula string so refresh / re-click
+      // restores the expression. estimate → estimate_formula, forecast → forecast_formula.
+      if (field === 'estimate' || field === 'estimate_override') {
+        faAutoSave(gl, 'estimate_formula', formulaStr);
+      } else if (field === 'forecast' || field === 'forecast_override') {
+        faAutoSave(gl, 'forecast_formula', formulaStr);
+      }
     } else if (typed !== '' && !isNaN(numericVal) && /^[\d$,.\-\s]+$/.test(typed)) {
       el.dataset.raw = Math.round(numericVal);
       el.dataset.override = 'true';
       el.value = fmt(numericVal);
+      delete el.dataset.userFormula;   // plain number clears any saved formula
       const badge = el.parentElement.querySelector('.fa-fx');
       if (badge) { badge.textContent = '✎'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
       faLineChanged(gl, field, numericVal);
       faAutoSave(gl, field, Math.round(numericVal));
+      // Plain number — clear any prior formula for this field.
+      if (field === 'estimate' || field === 'estimate_override') {
+        faAutoSave(gl, 'estimate_formula', null);
+      } else if (field === 'forecast' || field === 'forecast_override') {
+        faAutoSave(gl, 'forecast_formula', null);
+      }
     } else if (typed === '' || typed.toLowerCase() === 'auto' || typed.toLowerCase() === 'formula') {
       el.dataset.override = 'false';
+      delete el.dataset.userFormula;
       const badge = el.parentElement.querySelector('.fa-fx');
       if (badge) { badge.textContent = 'fx'; badge.style.background = ''; badge.style.color = ''; badge.style.borderColor = ''; }
       faLineChanged(gl, field === 'estimate_override' ? '__recalc_estimate' :
                          field === 'forecast_override' ? '__recalc_forecast' : field, null);
       faAutoSave(gl, field, null);
+      // Empty / auto — clear formula too.
+      if (field === 'estimate' || field === 'estimate_override') {
+        faAutoSave(gl, 'estimate_formula', null);
+      } else if (field === 'forecast' || field === 'forecast_override') {
+        faAutoSave(gl, 'forecast_formula', null);
+      }
     }
   }
 
@@ -23196,13 +23255,20 @@ function renderPayrollGL() {
           ' style="cursor:pointer; pointer-events:none;">';
       };
 
-      // Estimate cell — always editable via formula bar
+      // Estimate cell — always editable via formula bar.
+      // FA dir 2026-05-17: stamp data-user-formula when a saved estimate_formula
+      // exists so fxCellFocus repopulates the bar with the FA's expression
+      // (e.g. "=300*12*4") on re-click instead of the raw number.
+      const estUserFormulaAttr = (l.estimate_formula && l.estimate_formula.length)
+        ? ' data-user-formula="' + l.estimate_formula.replace(/"/g, '&quot;') + '"' : '';
       const estCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + estId + '\'))">' +
-        fxInput(estId, est, estFormula, 'estimate_override', estOverride) + '</td>';
+        fxInput(estId, est, estFormula, 'estimate_override', estOverride, estUserFormulaAttr) + '</td>';
 
       // Forecast cell — always editable via formula bar
+      const fcstUserFormulaAttr = (l.forecast_formula && l.forecast_formula.length)
+        ? ' data-user-formula="' + l.forecast_formula.replace(/"/g, '&quot;') + '"' : '';
       const fcstCellHtml = '<td class="num" onclick="fxCellFocus(document.getElementById(\'' + fcstId + '\'))">' +
-        fxInput(fcstId, fc, fcstFormula, 'forecast_override', fcstOverride) + '</td>';
+        fxInput(fcstId, fc, fcstFormula, 'forecast_override', fcstOverride, fcstUserFormulaAttr) + '</td>';
 
       // Proposed cell: non-linked rows editable via formula bar; linked rows are read-only linked
       let propCellHtml;

@@ -195,6 +195,10 @@ def _run_idempotent_migrations():
         # to "*3" instead of retyping the whole expression). Single JSON keyed
         # by col name. Lives alongside col*_override which stores the result.
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS cell_formulas_json TEXT",
+        # FA directive 2026-05-17: same idea on BudgetLine — preserve typed
+        # estimate / forecast formulas. Parallels proposed_formula.
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS estimate_formula TEXT",
+        "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS forecast_formula TEXT",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive
