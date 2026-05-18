@@ -692,7 +692,10 @@ def create_workflow_blueprint(db):
                 "reclass_to_gl": self.reclass_to_gl,
                 "reclass_amount": float(self.reclass_amount or 0),
                 "reclass_notes": self.reclass_notes or "",
-                "proposed_budget": float(self.proposed_budget or 0),
+                # FA dir 2026-05-18: preserve null so PM portal can show empty
+                # cells for un-entered lines (vs explicit zero). Legacy callers
+                # using `l.proposed_budget || 0` still work since null is falsy.
+                "proposed_budget": (float(self.proposed_budget) if self.proposed_budget is not None else None),
                 "proposed_formula": self.proposed_formula or "",
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
@@ -4099,6 +4102,10 @@ def create_workflow_blueprint(db):
                 _new_state = None
                 if _pm_action == "no_change":
                     # Explicit "No change" click overrides everything else.
+                    # FA directive 2026-05-18: under single-entry, "No change"
+                    # means proposed_budget = current_budget (flat-line vs
+                    # current). Clear the legacy increase fields too.
+                    line.proposed_budget = float(line.current_budget or 0)
                     line.increase_pct = 0.0
                     line.increase_dollar = None
                     _new_state = "no_change"
@@ -4106,6 +4113,10 @@ def create_workflow_blueprint(db):
                     _new_state = "typed_dollar"
                 elif _pm_action == "review_pct":
                     _new_state = "typed_pct"
+                elif _pm_action == "review_proposed":
+                    # FA directive 2026-05-18: PM typed a proposed_budget value
+                    # directly. Single-entry stamping signal.
+                    _new_state = "typed_proposed"
                 if _new_state:
                     _old_state = line.pm_review_state or "unreviewed"
                     if _old_state != _new_state:
@@ -4142,10 +4153,19 @@ def create_workflow_blueprint(db):
                     setattr(line, ofield, new_val)
 
             # Proposed budget and formula
+            # FA directive 2026-05-18: accept null/empty to mean "PM has not
+            # entered a value" — distinguish wiped/unset from explicit zero.
             if "proposed_budget" in line_data:
-                new_val = float(line_data["proposed_budget"] or 0)
-                old_val = line.proposed_budget or 0
-                if old_val != new_val:
+                raw = line_data["proposed_budget"]
+                if raw is None or raw == "":
+                    new_val = None
+                else:
+                    try:
+                        new_val = float(raw)
+                    except (TypeError, ValueError):
+                        new_val = None
+                old_val = line.proposed_budget
+                if (old_val or 0) != (new_val or 0):
                     changes.append(("proposed_budget", str(old_val), str(new_val)))
                 line.proposed_budget = new_val
             if "proposed_formula" in line_data:
@@ -25181,6 +25201,50 @@ PM_EDIT_TEMPLATE = r"""
     color: #15803d;
   }
 
+  /* FA dir 2026-05-18: single-entry PM model. Pills replace the editable
+     Increase % / $ inputs. Proposed cell becomes the one editable input. */
+  .pm-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: ui-monospace, Menlo, monospace;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .pm-pill.up   { background: #fee2e2; color: #b91c1c; }
+  .pm-pill.down { background: #dcfce7; color: #15803d; }
+  .pm-pill.flat { background: #f1f5f9; color: #64748b; }
+
+  input.pm-cell-proposed {
+    width: 100px;
+    min-width: 90px;
+    text-align: right;
+    padding: 5px 7px;
+    border: 2px solid #1d4ed8;
+    border-radius: 5px;
+    font: 600 13px ui-monospace, Menlo, monospace;
+    background: #eff6ff;
+    color: #0f172a;
+    outline: none;
+  }
+  input.pm-cell-proposed:focus {
+    background: #ffffff;
+    box-shadow: 0 0 0 3px rgba(29,78,216,.18);
+  }
+  input.pm-cell-proposed::placeholder {
+    color: #94a3b8;
+    font-weight: 400;
+    font-style: italic;
+  }
+  input.pm-cell-proposed:disabled {
+    background: #f9fafb;
+    border-color: #e5e7eb;
+    color: #64748b;
+    font-weight: 400;
+  }
+
   .pm-rm-progress-strip {
     background: white;
     border-radius: 10px;
@@ -25853,10 +25917,15 @@ function computeProposed(line) {
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
         return 0;
     }
+    // FA directive 2026-05-18: PM portal moved to single-entry — proposed_budget
+    // is the source of truth when set. Null/undefined means PM hasn't entered;
+    // 0 means PM explicitly zeroed. Both render as "blank" in the PM input but
+    // sum to 0 in subtotals.
+    if (line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') {
+        return parseFloat(line.proposed_budget) || 0;
+    }
+    // Legacy fallback for old data that still has increase_pct / increase_dollar.
     const forecast = computeForecast(line);
-    // FA directive 2026-05-11: either-or. If $ amount is set (not null/undefined),
-    // proposed = forecast + $. Otherwise the % path. When the PM types in one,
-    // pmCellBlur clears the other in memory so this branches cleanly.
     if (line.increase_dollar !== null && line.increase_dollar !== undefined && line.increase_dollar !== '') {
         return forecast + (parseFloat(line.increase_dollar) || 0);
     }
@@ -26061,6 +26130,96 @@ function pmCellFocus(el) {
     el.value = el.dataset.raw || '';
 }
 
+// ── PM single-entry handlers (FA directive 2026-05-18) ────────────────
+// The PM now types the 2027 Proposed Budget directly. Increase % and
+// Increase $ become derived pills. These handlers parse the typed
+// dollar amount, persist it to proposed_budget, and trigger a cascade
+// that repaints the derived pills + subtotals + grand total.
+
+function pmProposedFocus(el) {
+    // Strip the formatted $ so the PM can edit the raw number.
+    el.value = el.dataset.raw || '';
+    el.select();
+}
+
+function pmProposedBlur(el) {
+    const gl = el.dataset.gl;
+    const line = LINES.find(l => l.gl_code === gl);
+    if (!line) return;
+    const raw = (el.value || '').trim();
+    let newVal;
+    if (raw === '' || raw === '—') {
+        // PM cleared the cell — treat as un-set.
+        newVal = null;
+        el.dataset.raw = '';
+        el.value = '';
+    } else {
+        const parsed = parseDollar(raw);
+        newVal = parsed;
+        el.dataset.raw = String(Math.round(parsed));
+        el.value = fmt(parsed);
+    }
+    const oldVal = line.proposed_budget;
+    const changed = (oldVal === null || oldVal === undefined ? null : Math.round(oldVal))
+                    !== (newVal === null ? null : Math.round(newVal));
+    line.proposed_budget = newVal;
+    // FA directive 2026-05-18: clear legacy fields so the source-of-truth
+    // is unambiguous and saveAll doesn't carry stale data forward.
+    if (newVal !== null) {
+        line.increase_pct = 0;
+        line.increase_dollar = null;
+    }
+    // Stamp R&M review state (single-entry equivalent of review_pct/dollar).
+    if (line.sheet_name === 'Repairs & Supplies' && newVal !== null) {
+        line._pm_action = 'review_proposed';
+        line.pm_review_state = 'typed_proposed';
+        _pmRmUpdateRowState(gl, line);
+        _pmRmUpdateProgress();
+        _pmRmUpdateSubmitGate();
+    }
+    if (changed) pmLineChanged(gl, 'proposed_budget', newVal);
+}
+
+// Update the derived Increase % and Increase $ pill displays for one row,
+// based on the current proposed_budget vs current_budget. Called from
+// pmLineChanged after a proposed-cell edit, and from pmRmNoChange.
+function _pmUpdateDerivedPills(gl, line) {
+    if (!line) return;
+    const pctEl = document.getElementById('pm_inc_' + gl);
+    const dollarEl = document.getElementById('pm_incd_' + gl);
+    if (!pctEl && !dollarEl) return;
+    const curr = parseFloat(line.current_budget || 0) || 0;
+    const hasProposed = line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '';
+    if (!hasProposed) {
+        if (pctEl) { pctEl.textContent = '—'; pctEl.className = 'pm-pill flat'; }
+        if (dollarEl) { dollarEl.textContent = '—'; dollarEl.className = 'pm-pill flat'; }
+        return;
+    }
+    const proposed = parseFloat(line.proposed_budget) || 0;
+    const delta = proposed - curr;
+    const denom = Math.abs(curr);
+    const pct = denom > 0.5 ? (delta / denom) * 100 : (delta === 0 ? 0 : null);
+    const klass = Math.abs(delta) < 0.5 ? 'flat' : (delta > 0 ? 'up' : 'down');
+    if (dollarEl) {
+        const sign = delta > 0 ? '+' : (delta < 0 ? '-' : '');
+        dollarEl.textContent = Math.abs(delta) < 0.5 ? '$0' : (sign + '$' + Math.abs(Math.round(delta)).toLocaleString());
+        dollarEl.className = 'pm-pill ' + klass;
+        dollarEl.title = '= ' + fmt(proposed) + ' − ' + fmt(curr);
+    }
+    if (pctEl) {
+        if (pct === null) {
+            pctEl.textContent = '—';
+            pctEl.className = 'pm-pill flat';
+            pctEl.title = 'Current budget is $0 — % delta undefined.';
+        } else {
+            const sign = pct > 0 ? '+' : '';
+            pctEl.textContent = Math.abs(pct) < 0.05 ? '0.0%' : (sign + pct.toFixed(1) + '%');
+            pctEl.className = 'pm-pill ' + klass;
+            pctEl.title = '= (' + fmt(proposed) + ' − ' + fmt(curr) + ') / ' + fmt(denom);
+        }
+    }
+}
+
 // ── PM R&M review-gate helpers (FA directive 2026-05-11) ────────────────
 // Section-level gate forcing PMs to take an explicit action on every R&M
 // line before submitting back to the FA. None of these functions touch
@@ -26205,39 +26364,42 @@ async function pmRmNoChange(gl) {
     if (!line) return;
     if (!CAN_EDIT) return;
     const isRm = (line.sheet_name === 'Repairs & Supplies');
-    // 2026-05-17: "Mark No Change" is now available on G&A too (per FA UX
-    // feedback — same button, same intent: keep proposed = current). The
-    // R&M-specific review-state stamping + progress strip update is gated
-    // by isRm; G&A just clears the increase fields.
+    // FA directive 2026-05-18: under single-entry, "No change" means
+    // proposed_budget = current_budget (flat-line vs current). Legacy
+    // increase_pct / increase_dollar are cleared. The R&M review-state
+    // machine still stamps on `no_change` so the gate count still works.
     const oldState = line.pm_review_state;
+    const oldProposed = line.proposed_budget;
+    const flatProposed = parseFloat(line.current_budget || 0) || 0;
+    line.proposed_budget = flatProposed;
     line.increase_pct = 0;
     line.increase_dollar = null;
     if (isRm) {
       line.pm_review_state = 'no_change';
       line._pm_action = 'no_change';
     } else {
-      // G&A: no review-state machine, but we still tag the action so saveAll
-      // sends pm_action=no_change. Backend's update_lines treats it as a
-      // safe no-op for non-R&M (per workflow.py:4052+).
       line._pm_action = 'no_change';
     }
-    const pctEl = document.getElementById('pm_inc_' + gl);
-    if (pctEl) { pctEl.value = '0.0%'; pctEl.dataset.raw = '0.0'; pctEl.classList.remove('pm-cell-mirror'); }
-    const dEl = document.getElementById('pm_incd_' + gl);
-    if (dEl) { dEl.value = ''; dEl.dataset.raw = ''; dEl.classList.remove('pm-cell-mirror'); }
+    // Repaint cells optimistically.
+    const propEl = document.getElementById('pm_prop_' + gl);
+    if (propEl) {
+        propEl.value = fmt(flatProposed);
+        propEl.dataset.raw = String(Math.round(flatProposed));
+    }
+    pmLineChanged(gl, 'proposed_budget', flatProposed);
     if (isRm) {
       _pmRmUpdateRowState(gl, line);
       _pmRmUpdateProgress();
       _pmRmUpdateSubmitGate();
     }
-    // Persist just this line so a refresh preserves the action even if the
-    // PM doesn't trigger a saveAll.
+    // Persist just this line so a refresh preserves the action.
     try {
         const resp = await fetch('/api/lines/' + ENTITY, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({lines: [{
                 gl_code: gl, pm_action: 'no_change',
+                proposed_budget: flatProposed,
                 increase_pct: 0, increase_dollar: null,
             }]}),
         });
@@ -26247,9 +26409,17 @@ async function pmRmNoChange(gl) {
     } catch (e) {
         // Roll back optimistic update on failure.
         line.pm_review_state = oldState;
-        _pmRmUpdateRowState(gl, line);
-        _pmRmUpdateProgress();
-        _pmRmUpdateSubmitGate();
+        line.proposed_budget = oldProposed;
+        if (propEl) {
+            const rb = (oldProposed !== null && oldProposed !== undefined) ? oldProposed : '';
+            propEl.value = rb === '' ? '' : fmt(rb);
+            propEl.dataset.raw = rb === '' ? '' : String(Math.round(rb));
+        }
+        if (isRm) {
+            _pmRmUpdateRowState(gl, line);
+            _pmRmUpdateProgress();
+            _pmRmUpdateSubmitGate();
+        }
         showToast('Save failed — try again', 'error');
     }
 }
@@ -26672,6 +26842,17 @@ function pmLineChanged(gl, field, value) {
         propEl.value = fmt(proposed); propEl.dataset.raw = Math.round(proposed);
         if (!line.proposed_formula) propEl.dataset.formula = pmGetFormulaTooltip(line, 'proposed');
     }
+    // FA dir 2026-05-18: single-entry mode — proposed cell is now an editable
+    // text input with data-field="proposed_budget". Skip the legacy formula-
+    // cell path above and instead repaint the derived Increase % / $ pills.
+    if (propEl && propEl.dataset.field === 'proposed_budget' && field !== 'proposed_budget') {
+        // Don't clobber the PM's typed value here — only repaint when the
+        // change was triggered by another field (e.g. current_budget). When
+        // field === 'proposed_budget', pmProposedBlur already set the cell.
+        propEl.value = (proposed || proposed === 0) ? fmt(proposed) : '';
+        propEl.dataset.raw = proposed === null || proposed === undefined ? '' : String(Math.round(proposed));
+    }
+    _pmUpdateDerivedPills(gl, line);
     if (varEl) {
         varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance);
         varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
@@ -26851,50 +27032,47 @@ function renderTable() {
                 </td>
                 <td class="number"><input id="pm_bud_${gl}" class="pm-cell" type="text" value="${fmt(line.current_budget)}" data-raw="${Math.round(line.current_budget || 0)}" data-gl="${gl}" data-field="current_budget" disabled title="Locked — only Increase % / Increase $ / Notes are editable"></td>
                 ${(function(){
-                  // FA directive 2026-05-11 (Option A): compute the mirror
-                  // values for initial render. Mirror = passive readout in
-                  // the sibling cell (italic dimmed) showing the equivalent
-                  // in the other unit. Storage stays either-or; mirror is
-                  // purely a UI affordance.
-                  const _hasDollar = line.increase_dollar !== null && line.increase_dollar !== undefined;
-                  const _pctNum = line.increase_pct || 0;
-                  const _stamped = !!line.pm_review_state;
-                  let _pctVal, _pctRaw, _pctMirror = false;
-                  let _dollarVal, _dollarRaw, _dollarMirror = false;
-                  if (_hasDollar) {
-                    _dollarVal = fmtDollar(line.increase_dollar);
-                    _dollarRaw = String(Math.round(line.increase_dollar));
-                    if (forecast !== 0 && Math.abs(line.increase_dollar) > 0.01) {
-                      _pctVal = '≈ ' + ((line.increase_dollar / forecast) * 100).toFixed(1) + '%';
-                      _pctRaw = '';
-                      _pctMirror = true;
-                    } else { _pctVal = ''; _pctRaw = ''; }
-                  } else if (_pctNum !== 0) {
-                    _pctVal = (_pctNum * 100).toFixed(1) + '%';
-                    _pctRaw = (_pctNum * 100).toFixed(1);
-                    const _delta = forecast * _pctNum;
-                    if (Math.abs(_delta) > 0.01) {
-                      _dollarVal = '≈ ' + fmtDollar(_delta);
-                      _dollarRaw = '';
-                      _dollarMirror = true;
-                    } else { _dollarVal = ''; _dollarRaw = ''; }
-                  } else {
-                    // Both 0/null. Stamped no_change shows "0.0%"; unreviewed shows blank.
-                    _pctVal = _stamped ? '0.0%' : '';
-                    _pctRaw = _stamped ? '0.0' : '';
-                    _dollarVal = ''; _dollarRaw = '';
+                  // FA directive 2026-05-18: SINGLE-ENTRY MODEL.
+                  // PM types the 2027 Proposed Budget directly. Increase %
+                  // and Increase $ become read-only derived pills computed
+                  // from (proposed_budget - current_budget). When the PM
+                  // hasn't entered a proposed value, both pills show "—".
+                  const _hasProposed = line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '';
+                  const _curr = parseFloat(line.current_budget || 0) || 0;
+                  const _prop = _hasProposed ? (parseFloat(line.proposed_budget) || 0) : null;
+                  let _pctTxt = '—', _dollarTxt = '—', _pillKlass = 'flat', _pctTitle = '', _dollarTitle = '';
+                  if (_hasProposed) {
+                    const _delta = _prop - _curr;
+                    const _denom = Math.abs(_curr);
+                    _pillKlass = Math.abs(_delta) < 0.5 ? 'flat' : (_delta > 0 ? 'up' : 'down');
+                    if (Math.abs(_delta) < 0.5) {
+                      _dollarTxt = '$0';
+                    } else {
+                      const _sign = _delta > 0 ? '+' : '-';
+                      _dollarTxt = _sign + '$' + Math.abs(Math.round(_delta)).toLocaleString();
+                    }
+                    _dollarTitle = '= ' + fmt(_prop) + ' − ' + fmt(_curr);
+                    if (_denom > 0.5) {
+                      const _pct = (_delta / _denom) * 100;
+                      _pctTxt = Math.abs(_pct) < 0.05 ? '0.0%' : ((_pct > 0 ? '+' : '') + _pct.toFixed(1) + '%');
+                      _pctTitle = '= (' + fmt(_prop) + ' − ' + fmt(_curr) + ') / ' + fmt(_denom);
+                    } else {
+                      _pctTxt = (Math.abs(_delta) < 0.5) ? '0.0%' : '—';
+                      _pctTitle = 'Current budget is $0 — % delta undefined.';
+                    }
                   }
                   return `
                 <td class="number">
-                  <input id="pm_inc_${gl}" class="pm-cell pm-cell-pct${_pctMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_pctVal}" data-raw="${_pctRaw}" data-gl="${gl}" data-field="increase_pct" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="Increase % — either fill this OR the Increase $ column. Sibling shows the equivalent in the other unit.">
-                  ${!line.pm_review_state && CAN_EDIT && !_hasDollar && _pctNum === 0 ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Mark this line as no change for the 2027 budget — keeps proposed equal to current budget">Mark No Change</button>` : ''}
+                  <span id="pm_inc_${gl}" class="pm-pill ${_pillKlass}" data-gl="${gl}" data-field="increase_pct" title="${_pctTitle}">${_pctTxt}</span>
                 </td>
-                <td class="number" style="background:#f0fdf4;"><input id="pm_incd_${gl}" class="pm-cell pm-cell-dollar${_dollarMirror ? ' pm-cell-mirror' : ''}" type="text" value="${_dollarVal}" data-raw="${_dollarRaw}" data-gl="${gl}" data-field="increase_dollar" placeholder="—" onfocus="pmCellFocus(this)" onblur="pmCellBlur(this)" ${CAN_EDIT ? '' : 'disabled'} style="background:#d1fae5; border-color:#16a34a;" title="Increase $ — either fill this OR the Increase % column. Sibling shows the equivalent in the other unit. Negative values OK."></td>
+                <td class="number">
+                  <span id="pm_incd_${gl}" class="pm-pill ${_pillKlass}" data-gl="${gl}" data-field="increase_dollar" title="${_dollarTitle}">${_dollarTxt}</span>
+                </td>
                   `;
                 })()}
-                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_prop_${gl}'))">
-                    <span class="pm-fx">fx</span>
-                    <input id="pm_prop_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(proposed)}" data-raw="${Math.round(proposed)}" data-formula="${propFormula}" data-gl="${gl}" data-field="proposed" style="cursor:pointer; pointer-events:none;">
+                <td class="number" style="position:relative;">
+                    <input id="pm_prop_${gl}" class="pm-cell pm-cell-proposed" type="text" value="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? fmt(parseFloat(line.proposed_budget) || 0) : ''}" data-raw="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? String(Math.round(parseFloat(line.proposed_budget) || 0)) : ''}" data-gl="${gl}" data-field="proposed_budget" placeholder="Type proposed $..." onfocus="pmProposedFocus(this)" onblur="pmProposedBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="2027 Proposed Budget — type a dollar amount. Increase $ and Increase % derive automatically.">
+                    ${!line.pm_review_state && CAN_EDIT && (line.proposed_budget === null || line.proposed_budget === undefined || line.proposed_budget === '') ? `<button class="pm-no-change-btn" onclick="pmRmNoChange('${gl}')" title="Set Proposed = Current Budget (no change for 2027)">No change</button>` : ''}
                 </td>
                 <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_var_${gl}'))">
                     <span class="pm-fx">fx</span>
@@ -27178,7 +27356,10 @@ async function saveAll() {
                 category: l.category || '',
                 estimate_override: l.estimate_override !== null && l.estimate_override !== undefined ? l.estimate_override : null,
                 forecast_override: l.forecast_override !== null && l.forecast_override !== undefined ? l.forecast_override : null,
-                proposed_budget: l.proposed_budget || 0,
+                // FA dir 2026-05-18: single-entry — null means "PM hasn't entered",
+                // distinguishable from explicit 0. Backend now accepts null/empty.
+                proposed_budget: (l.proposed_budget !== null && l.proposed_budget !== undefined && l.proposed_budget !== '')
+                                  ? parseFloat(l.proposed_budget) : null,
                 proposed_formula: l.proposed_formula || null,
                 prior_year: l.prior_year || 0,
                 ytd_actual: l._db_ytd_actual !== undefined ? l._db_ytd_actual : (l.ytd_actual || 0),

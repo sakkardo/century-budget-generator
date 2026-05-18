@@ -10738,6 +10738,80 @@ def admin_pm_reset_rm_review(entity_code):
     })
 
 
+@app.route("/api/admin/pm-reset-all/<entity_code>", methods=["POST"])
+@require_admin
+def admin_pm_reset_all(entity_code):
+    """Wipe PM-entered data on every line for one entity.
+
+    FA directive 2026-05-18: rolling out single-entry PM portal where the PM
+    types proposed_budget directly (no more increase_pct / increase_dollar).
+    This endpoint clears the stale fields so PMs start fresh. Keeps notes
+    intact so any prior context survives. Admin-gated.
+
+    Cleared per line:
+      - proposed_budget    → NULL
+      - increase_pct       → 0.0 (the column default; column is non-nullable in practice)
+      - increase_dollar    → NULL
+      - pm_review_state    → NULL
+      - pm_reviewed_at     → NULL
+      - pm_reviewed_by     → NULL
+      - proposed_formula   → NULL
+      - fa_proposed_status → NULL
+      - fa_proposed_note   → ""
+      - fa_override_value  → NULL
+
+    Kept: notes, prior_year, ytd_actual, current_budget, every reference field.
+    Returns counts so you can verify.
+    """
+    BudgetLine = workflow_models["BudgetLine"]
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": "Budget not found"}), 404
+
+    lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+    cleared = 0
+    for line in lines:
+        # Detect whether anything was actually set so the count is honest
+        had_data = bool(
+            line.proposed_budget or line.increase_pct or line.increase_dollar
+            or line.pm_review_state or line.proposed_formula
+            or line.fa_proposed_status or line.fa_override_value is not None
+        )
+        line.proposed_budget = None
+        line.increase_pct = 0.0
+        line.increase_dollar = None
+        line.pm_review_state = None
+        line.pm_reviewed_at = None
+        line.pm_reviewed_by = None
+        line.proposed_formula = None
+        line.fa_proposed_status = None
+        line.fa_proposed_note = ""
+        line.fa_override_value = None
+        if had_data:
+            cleared += 1
+    # Reset budget status back to pm_pending so the PM portal opens fresh
+    prior_status = budget.status
+    if budget.status not in ("pm_pending",):
+        budget.status = "pm_pending"
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)[:300]}), 500
+    return jsonify({
+        "ok": True,
+        "entity_code": entity_code,
+        "total_lines": len(lines),
+        "cleared": cleared,
+        "prior_status": prior_status,
+        "new_status": budget.status,
+        "kept": "notes + reference data (prior_year, ytd_actual, current_budget, etc.)",
+    })
+
+
 @app.route("/api/admin/add-summary-row", methods=["POST"])
 def admin_add_summary_row():
     """Insert a single new BudgetSummaryRow for one entity.
