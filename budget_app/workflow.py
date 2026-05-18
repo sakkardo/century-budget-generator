@@ -15259,8 +15259,14 @@ function _biSaveSoon() {
 async function _biSaveNow() {
   _biSaveTimer = null;
   if (!_biData) return;
+  // FA dir 2026-05-18 (Item 10 follow-up): show save status. Previously the
+  // indicator span sat empty so the FA had no idea changes had persisted —
+  // some buildings even complained "amortization schedule doesn't work"
+  // when it actually did, they just hadn't seen confirmation.
+  const indicator = document.getElementById('biSaveIndicator');
+  if (indicator) { indicator.textContent = 'Saving…'; indicator.style.color = 'var(--gray-500)'; }
   try {
-    await fetch('/api/building-info/' + entityCode, {
+    const resp = await fetch('/api/building-info/' + entityCode, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -15268,8 +15274,22 @@ async function _biSaveNow() {
         amort_config: _biData.amort_config,
       }),
     });
+    if (resp.ok && indicator) {
+      indicator.textContent = '✓ Saved ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      indicator.style.color = 'var(--green, #16a34a)';
+      setTimeout(() => {
+        if (indicator.textContent.startsWith('✓ Saved')) indicator.textContent = '';
+      }, 4000);
+    } else if (indicator) {
+      indicator.textContent = '✗ Save failed (' + resp.status + ')';
+      indicator.style.color = 'var(--red, #dc2626)';
+    }
   } catch (err) {
     console.warn('building-info save failed:', err);
+    if (indicator) {
+      indicator.textContent = '✗ Save error — check connection';
+      indicator.style.color = 'var(--red, #dc2626)';
+    }
   }
 }
 

@@ -175,9 +175,19 @@ SUMMARY_ROW_MAP = {
     # ─── INCOME ──────────────────────────────────────────────────────────
     "Maintenance": {
         "sheet": "Income",
-        "gl_prefix": ["4010"],
+        # FA dir 2026-05-18 (148 item #1): Prepaid Income (4070) and Arrears
+        # (4060) belong with the Maintenance line, not lumped into Other Income.
+        # The maintenance billing cycle produces three flavors of cash:
+        #   4010 — billed maintenance (current period)
+        #   4060 — arrears (prior-period collections)
+        #   4070 — prepaid (future-period received in advance)
+        # All three are maintenance revenue, just timing variants. PMs and FAs
+        # need the combined number to see total maintenance cash flow.
+        "gl_prefix": ["4010", "4060", "4070"],
         "section": "income",
-        "notes": "Primary revenue. building_assumptions has shares × rate for forecast."
+        "notes": "Primary revenue. 4010 = billed maintenance, 4060 = arrears "
+                 "(prior-period collections), 4070 = prepaid (future-period "
+                 "advance). building_assumptions has shares × rate for forecast."
     },
     "Tax Benefit Credits (Abatement, Star,etc)": {
         "sheet": "RE Taxes",
@@ -261,13 +271,14 @@ SUMMARY_ROW_MAP = {
     },
     "Other Income": {
         "sheet": "Income",
-        # FA dir 2026-05-18: removed 4250 (now its own Cable TV row).
+        # FA dir 2026-05-18: removed 4250 (now its own Cable TV row),
+        # removed 4070 (now flows to Maintenance — see Maintenance row).
         # 4725 stays as a catch-all for the 4725-* family EXCEPT 4725-0040
         # which now flows to Working Capital Contribution (non-operating).
         # The matching code does prefix-style match — to keep 4725-0040 out of
         # this catch-all, we list the specific 4725-00XX sub-accounts that
         # should belong to Other Income rather than the bare "4725" prefix.
-        "gl_prefix": ["4070", "4700", "4705", "4710", "4715", "4720",
+        "gl_prefix": ["4700", "4705", "4710", "4715", "4720",
                        "4725-0000", "4725-0015", "4725-0020", "4725-0025",
                        "4725-0030", "4725-0035", "4725-0045", "4725-0050",
                        "4725-0055", "4725-0060", "4725-0065", "4725-0070",
