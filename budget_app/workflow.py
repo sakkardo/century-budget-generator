@@ -25089,9 +25089,9 @@ PM_EDIT_TEMPLATE = r"""
   th.frozen, td.frozen { position: sticky; z-index: 15; background: white; }
   thead th.frozen { z-index: 25; background: var(--gray-100); }
   .frozen-gl { left: 0; min-width: 80px; }
-  .frozen-desc { left: 80px; min-width: 180px; width: auto; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); }
-  thead th.frozen.frozen-desc { width: auto; min-width: 180px; }
-  .col-notes { color: var(--gray-500); font-size: 12px; min-width: 240px; text-align: center; }
+  .frozen-desc { left: 80px; min-width: 200px; max-width: 220px; width: 200px; border-right: 2px solid var(--gray-300); box-shadow: 2px 0 8px rgba(90,74,63,0.08); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  thead th.frozen.frozen-desc { width: 200px; min-width: 200px; max-width: 220px; }
+  .col-notes { color: var(--gray-500); font-size: 12px; min-width: 180px; text-align: center; }
   .col-notes input.note-warn { background: #fef3c7; border-color: #fbbf24; }
   .col-notes input.note-warn::placeholder { color: #92400e; font-weight: 500; }
 
@@ -27289,7 +27289,7 @@ function renderTable() {
                     <span class="pm-fx">fx</span>
                     <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
                 </td>
-                <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required: explain >10% change' : 'Why did this change?'}" maxlength="500" style="min-width:240px; width:100%;"></td>
+                <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required at >10%' : 'Add context...'}" maxlength="500" style="min-width:180px; width:100%;"></td>
             `;
             tbody.appendChild(tr);
         });
