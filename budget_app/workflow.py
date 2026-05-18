@@ -8246,6 +8246,29 @@ def create_workflow_blueprint(db):
             col6 = row.col6_approved_budget
             col7 = row.col7_proposed_budget
 
+            # FA dir 2026-05-18 (148 review item #14): Capital lines have no
+            # proposed budget — force col7 to $0 (not NULL/blank) for rows
+            # whose section is non_operating_expense AND whose label is the
+            # canonical "Capital Expenses" row, OR whose gl_prefixes include
+            # any 7xxx capital prefix. This mirrors the per-line rule in
+            # _aggregate_by_prefix where is_capital lines also get proposed=0.
+            try:
+                _row_label_lower = (row.label or "").lower()
+                _is_capital_row = (
+                    "capital expense" in _row_label_lower
+                    or "capital expenses" in _row_label_lower
+                )
+                if not _is_capital_row and prefixes:
+                    for _p in prefixes:
+                        _base = str(_p).split("-")[0].strip()
+                        if _base.startswith("7"):
+                            _is_capital_row = True
+                            break
+                if _is_capital_row and col7 is None:
+                    col7 = 0.0
+            except Exception:
+                pass
+
             # Compute cols 3-5 from budget_lines via GL prefix aggregation
             col2 = col2_lookup.get(row.label) if isinstance(col2_lookup, dict) and "_error" not in col2_lookup else None
             col3 = None   # 2026 YTD actual (raw — no accruals/unpaid)
