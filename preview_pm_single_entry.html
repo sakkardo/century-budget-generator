@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PM Dashboard - Single Entry Preview</title>
+<title>PM Dashboard - Single Entry Preview (Full Columns)</title>
 <style>
   :root {
     --bg: #f6f7f9;
@@ -12,180 +12,218 @@
     --line: #e5e7eb;
     --accent: #1d4ed8;
     --green: #16a34a;
-    --green-bg: #d1fae5;
     --red: #dc2626;
     --amber: #d97706;
-    --amber-bg: #fef3c7;
     --readonly-bg: #f9fafb;
     --readonly-ink: #475569;
+    --derived-bg: #f1f5f9;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 32px; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--ink); font: 13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   h1 { font-size: 22px; margin: 0 0 6px; }
   .lede { color: var(--muted); margin: 0 0 24px; max-width: 760px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 18px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
   .card h2 { margin: 0 0 4px; font-size: 16px; }
-  .card .sub { color: var(--muted); margin: 0 0 14px; font-size: 13px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); font-size: 13px; }
-  th { background: #f8fafc; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+  .card .sub { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
+
+  .callout { border-left: 3px solid var(--accent); background: #f0f9ff; padding: 10px 14px; margin: 0 0 14px; border-radius: 0 8px 8px 0; font-size: 13px; }
+  .callout b { color: var(--accent); }
+
+  .legend { display: flex; gap: 18px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+  .legend-item { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+  .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; }
+  .swatch.edit { background: #eff6ff; border: 2px solid var(--accent); }
+  .swatch.derived { background: var(--derived-bg); border: 1px solid var(--line); }
+  .swatch.ref { background: var(--readonly-bg); border: 1px solid var(--line); }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; min-width: 1300px; width: 100%; }
+  th, td { padding: 8px 9px; text-align: right; border-bottom: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
+  th { background: #f8fafc; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; position: sticky; top: 0; z-index: 2; }
   th.l, td.l { text-align: left; }
-  td.gl { font-family: ui-monospace,"Menlo",monospace; color: var(--muted); font-size: 12px; }
-  td.desc { color: var(--ink); }
-  td.curr { color: var(--readonly-ink); }
-  /* The ONE editable column */
+
+  /* Column type colors */
+  td.ref { background: var(--readonly-bg); color: var(--readonly-ink); font-family: ui-monospace,Menlo,monospace; }
+  td.curr { background: #eef2f7; color: var(--ink); font-family: ui-monospace,Menlo,monospace; font-weight: 600; }
+  td.derived { background: var(--derived-bg); color: var(--readonly-ink); font-family: ui-monospace,Menlo,monospace; }
+  td.diag { background: var(--readonly-bg); font-family: ui-monospace,Menlo,monospace; }
+
+  /* Frozen identity columns (visual only, scroll still works) */
+  th.frozen, td.frozen { position: sticky; left: 0; z-index: 1; background: #ffffff; box-shadow: 1px 0 0 var(--line); }
+  th.frozen { background: #f8fafc; z-index: 3; }
+  td.frozen.desc { left: 110px; }
+  th.frozen.desc { left: 110px; }
+  td.frozen.gl { font-family: ui-monospace,Menlo,monospace; color: var(--muted); }
+  td.frozen.desc { color: var(--ink); }
+
+  /* THE editable cell */
   input.proposed {
-    width: 130px;
+    width: 120px;
     text-align: right;
-    padding: 8px 10px;
+    padding: 6px 8px;
     border: 2px solid var(--accent);
-    border-radius: 6px;
-    font: 600 14px ui-monospace, Menlo, monospace;
+    border-radius: 5px;
+    font: 600 13px ui-monospace, Menlo, monospace;
     background: #eff6ff;
     color: var(--ink);
     outline: none;
   }
-  input.proposed:focus { background: #ffffff; box-shadow: 0 0 0 3px rgba(29,78,216,.15); }
-  /* Derived cells: dimmed, no border, no input look */
-  td.derived { color: var(--readonly-ink); font-family: ui-monospace, Menlo, monospace; background: var(--readonly-bg); }
-  td.derived.up { color: var(--red); }
-  td.derived.down { color: var(--green); }
-  td.derived.flat { color: var(--muted); }
-  .derived-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f1f5f9; font-size: 12px; font-weight: 600; }
-  .derived-pill.up { background: #fee2e2; color: var(--red); }
-  .derived-pill.down { background: #d1fae5; color: var(--green); }
-  .derived-pill.flat { background: #f1f5f9; color: var(--muted); }
-  td.notes input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px -apple-system,sans-serif; }
-  tr.subtotal td { background: #f8fafc; font-weight: 600; }
-  tr.subtotal td.derived { background: #eef2f7; }
+  input.proposed:focus { background: #ffffff; box-shadow: 0 0 0 3px rgba(29,78,216,.18); }
+
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; font-family: ui-monospace,Menlo,monospace; }
+  .pill.up { background: #fee2e2; color: var(--red); }
+  .pill.down { background: #d1fae5; color: var(--green); }
+  .pill.flat { background: #e2e8f0; color: var(--muted); }
+
+  td.notes input { width: 160px; border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; font: 12px -apple-system,sans-serif; background: #fff; }
+  td.notes input.warn { border-color: var(--amber); background: #fef3c7; }
+
+  tr.subtotal td { background: #f1f5f9; font-weight: 600; }
+  tr.subtotal td.curr { background: #dbe5ef; }
+  tr.subtotal td.derived { background: #e2eaf2; }
+  tr.subtotal td.frozen { background: #f1f5f9; }
   tr.grand td { background: #0f172a; color: #fff; font-weight: 700; }
+  tr.grand td.curr { background: #1e293b; color: #fff; }
   tr.grand td.derived { background: #1e293b; color: #fff; }
-  .caption { color: var(--muted); margin-top: 6px; font-size: 12px; }
-  .legend { display: flex; gap: 24px; margin-bottom: 18px; align-items: center; flex-wrap: wrap; }
-  .legend-item { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
-  .swatch { display: inline-block; width: 16px; height: 16px; border-radius: 4px; }
-  .swatch.edit { background: #eff6ff; border: 2px solid var(--accent); }
-  .swatch.read { background: var(--readonly-bg); border: 1px solid var(--line); }
-  .callout {
-    border-left: 3px solid var(--accent);
-    background: #f0f9ff;
-    padding: 12px 16px;
-    margin: 0 0 16px;
-    border-radius: 0 8px 8px 0;
-    color: var(--ink);
-    font-size: 13px;
-  }
-  .callout b { color: var(--accent); }
-  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  tr.grand td.frozen { background: #0f172a; color: #fff; box-shadow: 1px 0 0 #334155; }
+
+  .caption { color: var(--muted); margin-top: 8px; font-size: 12px; }
+
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
   .before-after .card { margin-bottom: 0; }
-  .before-after h3 { margin: 0 0 6px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .before-after .pill-edit { background: #eff6ff; border: 2px solid var(--accent); border-radius: 6px; padding: 4px 10px; display: inline-block; font: 600 13px ui-monospace,Menlo,monospace; }
-  .before-after .pill-read { background: var(--readonly-bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; display: inline-block; font: 13px ui-monospace,Menlo,monospace; color: var(--readonly-ink); }
-  @media (max-width: 900px) {
-    .before-after { grid-template-columns: 1fr; }
-  }
-  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
-  .nudge { display: inline-block; margin-left: 8px; color: var(--accent); cursor: pointer; font-size: 12px; }
+  .before-after h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .pill-edit { background: #eff6ff; border: 2px solid var(--accent); border-radius: 5px; padding: 3px 8px; display: inline-block; font: 600 12px ui-monospace,Menlo,monospace; }
+  .pill-read { background: var(--derived-bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 8px; display: inline-block; font: 12px ui-monospace,Menlo,monospace; color: var(--readonly-ink); }
+  @media (max-width: 900px) { .before-after { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 
-<h1>PM Dashboard - Single Entry Model</h1>
+<h1>PM Dashboard - Single Entry Model (Full Column Set)</h1>
 <p class="lede">
-  The PM enters only one number per GL: the 2027 Proposed Budget. The Increase $ and Increase % columns
-  derive automatically from the difference vs. 2026 Current Budget. No formula juggling, no double-entry,
-  no "wait, which column do I fill in?". Type the dollar amount you want. Done.
+  Same PM dashboard you have today, all 13 columns intact. The only change: the PM types the 2027 Proposed
+  Budget directly, and the Increase % / Increase $ columns become read-only and derive from
+  (Proposed - Current Budget). All reference columns (Prior, YTD, Estimate, Forecast, Curr Budget) and
+  diagnostic columns ($ Variance vs Forecast, % Change vs Forecast) stay exactly as they are.
 </p>
 
 <div class="callout">
-  <b>What changes for the PM:</b> Today they decide whether to fill "Increase %" OR "Increase $" and the
-  proposed budget is computed. New flow: type the proposed dollar amount directly, the deltas show as
-  read-only badges next to it. Less thinking, fewer rounding bugs, faster to fill in.
+  <b>What's different from today:</b> The Increase % and Increase $ inputs become derived pills.
+  The 2027 Proposed cell becomes the only editable number in the row (plus Notes).
+  Every other column - Prior Year, YTD, Estimate, Forecast, Curr Budget, $ Variance, % Change - stays
+  identical to the current build.
 </div>
 
 <div class="before-after">
   <div class="card">
-    <h3>Before (today)</h3>
-    <p style="margin: 0 0 10px;">PM types into <b>Increase %</b> or <b>Increase $</b>:</p>
-    <table style="margin: 0;">
-      <tr><td class="l desc">Management Fees</td><td><span class="pill-edit">5.0%</span></td><td><span class="pill-edit">$7,287</span></td><td class="derived">$153,025</td></tr>
-    </table>
-    <p class="caption">Three columns to think about. Proposed is auto-computed.</p>
+    <h3>Before (today's PM dashboard)</h3>
+    <p style="margin: 0 0 6px; font-size: 12px;">PM picks <b>Increase %</b> or <b>Increase $</b>, Proposed is computed.</p>
+    <div style="font-size: 12px;">
+      <span style="color:var(--muted);">… Curr Budget &nbsp;</span>
+      <span class="pill-edit">5.0%</span>
+      <span class="pill-edit" style="margin-left:4px;">$7,287</span>
+      <span class="pill-read" style="margin-left:4px;">$153,025</span>
+      <span style="color:var(--muted);"> &nbsp;… Variance, % Change, Notes</span>
+    </div>
+    <p class="caption">2 editable cells. PM has to decide which one to use.</p>
   </div>
   <div class="card">
     <h3>After (proposed)</h3>
-    <p style="margin: 0 0 10px;">PM types into <b>2027 Proposed Budget</b>:</p>
-    <table style="margin: 0;">
-      <tr><td class="l desc">Management Fees</td><td><span class="pill-edit">$153,025</span></td><td><span class="derived-pill up">+$7,287</span></td><td><span class="derived-pill up">+5.0%</span></td></tr>
-    </table>
-    <p class="caption">One number. Deltas live-update as you type.</p>
+    <p style="margin: 0 0 6px; font-size: 12px;">PM types into <b>Proposed</b>, deltas auto-fill.</p>
+    <div style="font-size: 12px;">
+      <span style="color:var(--muted);">… Curr Budget &nbsp;</span>
+      <span class="pill up" style="font-size:12px; padding:3px 8px;">+5.0%</span>
+      <span class="pill up" style="margin-left:4px; font-size:12px; padding:3px 8px;">+$7,287</span>
+      <span class="pill-edit" style="margin-left:4px;">$153,025</span>
+      <span style="color:var(--muted);"> &nbsp;… Variance, % Change, Notes</span>
+    </div>
+    <p class="caption">1 editable cell. Deltas live-update.</p>
   </div>
 </div>
 
 <div class="card">
-  <h2>Live demo</h2>
+  <h2>Live demo - full PM dashboard column set</h2>
   <p class="sub">
-    Real GLs from 130 E. 18 (building 148). The blue-bordered cell is the only thing the PM types in.
-    Try editing any value. The $ delta, % delta, and totals all recalculate instantly.
+    Real GLs from building 148 with real Prior/YTD/Curr Budget values. Estimate and Forecast use
+    plausible annualized YTD projections. Scroll the table horizontally to see all columns. The blue
+    cell is the only input. Everything else either references the database or derives from your input.
   </p>
 
   <div class="legend">
-    <div class="legend-item"><span class="swatch edit"></span> 2027 Proposed Budget - PM types here</div>
-    <div class="legend-item"><span class="swatch read"></span> Auto-derived from Proposed minus Current</div>
+    <div class="legend-item"><span class="swatch ref"></span> Reference (Prior, YTD, Estimate, Forecast, Curr Budget)</div>
+    <div class="legend-item"><span class="swatch edit"></span> Editable (2027 Proposed - the only input)</div>
+    <div class="legend-item"><span class="swatch derived"></span> Derived (Increase $, Increase %, Variance, % Change)</div>
   </div>
 
-  <table id="pmTable">
-    <thead>
-      <tr>
-        <th class="l">GL</th>
-        <th class="l">Description</th>
-        <th>2026 Curr Budget</th>
-        <th>2027 Proposed</th>
-        <th>Increase $</th>
-        <th>Increase %</th>
-        <th class="l">Notes</th>
-      </tr>
-    </thead>
-    <tbody id="pmBody"></tbody>
-  </table>
+  <div class="table-wrap">
+    <table id="pmTable">
+      <thead>
+        <tr>
+          <th class="l frozen">GL</th>
+          <th class="l frozen desc">Description</th>
+          <th>Prior Year</th>
+          <th>YTD Actual</th>
+          <th>Estimate</th>
+          <th>12 Mo Forecast</th>
+          <th>2026 Curr Budget</th>
+          <th>Increase %</th>
+          <th>Increase $</th>
+          <th>2027 Proposed</th>
+          <th>$ Variance</th>
+          <th>% Change</th>
+          <th class="l">Notes</th>
+        </tr>
+      </thead>
+      <tbody id="pmBody"></tbody>
+    </table>
+  </div>
 
   <p class="caption">
-    Edge cases the new model handles cleanly: setting Proposed equal to Current shows 0%/$0
-    (the "no change" state). Setting Proposed to 0 shows a -100% delta. Negative current budgets
-    (e.g. tax abatements as a contra) flip the sign correctly.
+    Diagnostic columns ($ Variance, % Change) compare Curr Budget vs 12 Mo Forecast - that's how the PM
+    sees "am I tracking over or under budget this year". Those are unchanged. The new Increase $ / Increase %
+    pills compare Proposed vs Curr Budget - that's the budget-cycle delta the PM is proposing.
   </p>
 </div>
 
 <div class="card">
-  <h2>Implementation notes</h2>
-  <ul style="margin: 0; padding-left: 20px; color: var(--readonly-ink);">
-    <li>Backend: <code>proposed_budget</code> becomes the source of truth for PM input. <code>increase_pct</code>
-        and <code>increase_dollar</code> are derived on the fly from <code>(proposed_budget - current_budget) / current_budget</code>.</li>
-    <li>Existing rows with <code>increase_pct</code> already saved still display correctly because we read
-        from <code>proposed_budget</code> first and fall back to the legacy formula only if proposed is null.</li>
-    <li>"Mark No Change" stays as a one-click shortcut that sets Proposed = Current.</li>
-    <li>Notes still warn when |delta| &gt; 10% and notes are empty - that guardrail doesn't change.</li>
-    <li>FA dashboard, Excel export, and totals all read from <code>proposed_budget</code> already, so no
-        downstream changes needed.</li>
-  </ul>
+  <h2>Column-by-column: what changes</h2>
+  <table style="min-width:0;">
+    <thead><tr><th class="l">Column</th><th class="l">Today</th><th class="l">New</th></tr></thead>
+    <tbody>
+      <tr><td class="l">GL, Description</td><td class="l">Frozen, read-only</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">Prior Year</td><td class="l">Reference, read-only</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">YTD Actual</td><td class="l">Reference, read-only</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">Estimate</td><td class="l">Reference, read-only</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">12 Mo Forecast</td><td class="l">Reference, read-only</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">2026 Curr Budget</td><td class="l">Reference, read-only</td><td class="l">Unchanged</td></tr>
+      <tr style="background:#fef3c7;"><td class="l"><b>Increase %</b></td><td class="l">PM types here OR Increase $</td><td class="l"><b>Derived pill (read-only)</b></td></tr>
+      <tr style="background:#fef3c7;"><td class="l"><b>Increase $</b></td><td class="l">PM types here OR Increase %</td><td class="l"><b>Derived pill (read-only)</b></td></tr>
+      <tr style="background:#fef3c7;"><td class="l"><b>2027 Proposed</b></td><td class="l">Auto-computed from Increase</td><td class="l"><b>PM types here (only input)</b></td></tr>
+      <tr><td class="l">$ Variance</td><td class="l">Diagnostic (Curr - Forecast)</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">% Change</td><td class="l">Diagnostic ((Curr - Forecast)/Forecast)</td><td class="l">Unchanged</td></tr>
+      <tr><td class="l">Notes</td><td class="l">Editable, warns at &gt;10% delta</td><td class="l">Unchanged</td></tr>
+    </tbody>
+  </table>
 </div>
 
 <script>
-  // Real PM rows from 148, plus a couple of edge cases
+  // Real PM rows from 148. Estimate = annualized YTD (proxy). Forecast = curr_budget (most PMs treat 12mo forecast ≈ budget at this point in the cycle if YTD tracks).
+  // category groupings match the live PM dashboard subtotals.
   const ROWS = [
-    { cat: "G&A",         gl: "6510-0000", desc: "Management Fees",            curr: 145738, proposed: 153025 },
-    { cat: "G&A",         gl: "6515-0000", desc: "Legal Fees",                 curr:  30000, proposed:  31500 },
-    { cat: "G&A",         gl: "6525-0000", desc: "Accounting Fees",            curr:  21200, proposed:  22260 },
-    { cat: "G&A",         gl: "6505-0000", desc: "Engineering & Architect Fees", curr: 10000, proposed: 10500 },
-    { cat: "Payroll",     gl: "5105-0000", desc: "Gross Payroll",              curr: 645296, proposed: 688660 },
-    { cat: "Repairs",     gl: "5622-0000", desc: "HVAC Repairs",               curr:  15000, proposed:  15000 },
-    { cat: "Repairs",     gl: "5406-0000", desc: "Supplies & Hardware",        curr:  72500, proposed:  76000 },
+    { cat: "Payroll",       gl: "5105-0000", desc: "Gross Payroll",                prior: 590264, ytd: 197313, estimate: 591939, forecast: 591939, curr: 645296, proposed: 688660 },
+    { cat: "Repairs",       gl: "5622-0000", desc: "HVAC Repairs",                 prior:  13901, ytd:    392, estimate:   1176, forecast:   1176, curr:  15000, proposed:  15000 },
+    { cat: "Repairs",       gl: "5406-0000", desc: "Supplies & Hardware",          prior:  82511, ytd:  32968, estimate:  98904, forecast:  98904, curr:  72500, proposed:  76000 },
+    { cat: "G&A",           gl: "6505-0000", desc: "Engineering & Architect Fees", prior:   7150, ytd:   3100, estimate:   9300, forecast:   9300, curr:  10000, proposed:  10500 },
+    { cat: "G&A",           gl: "6510-0000", desc: "Management Fees",              prior: 142183, ytd:  48579, estimate: 145738, forecast: 145738, curr: 145738, proposed: 153025 },
+    { cat: "G&A",           gl: "6515-0000", desc: "Legal Fees",                   prior:  71277, ytd:  11500, estimate:  34500, forecast:  34500, curr:  30000, proposed:  31500 },
+    { cat: "G&A",           gl: "6525-0000", desc: "Accounting Fees",              prior:  21749, ytd:  11504, estimate:  21200, forecast:  21200, curr:  21200, proposed:  22260 },
   ];
+  const catLabels = { "Payroll":"Payroll", "Repairs":"Repairs & Supplies", "G&A":"Gen & Admin" };
 
   const fmt = n => {
+    if (Math.abs(n) < 0.5) return "$0";
     const sign = n < 0 ? "-" : "";
-    const abs = Math.abs(Math.round(n));
-    return sign + "$" + abs.toLocaleString();
+    return sign + "$" + Math.abs(Math.round(n)).toLocaleString();
   };
   const fmtDelta = n => {
     if (Math.abs(n) < 0.5) return "$0";
@@ -202,88 +240,105 @@
   function render() {
     const tbody = document.getElementById("pmBody");
     tbody.innerHTML = "";
-    let totalCurr = 0, totalProp = 0;
-    let lastCat = null;
+    const cats = {};
     ROWS.forEach((r, i) => {
-      // Subtotal row when category changes
-      if (lastCat && lastCat !== r.cat) {
-        appendSubtotal(tbody, lastCat);
-      }
-      lastCat = r.cat;
-      const delta = r.proposed - r.curr;
-      const pct = r.curr === 0 ? 0 : (delta / Math.abs(r.curr)) * 100;
-      const klass = classify(delta);
-      totalCurr += r.curr;
-      totalProp += r.proposed;
+      if (!cats[r.cat]) cats[r.cat] = [];
+      cats[r.cat].push({...r, idx: i});
+    });
+    const grand = { prior:0, ytd:0, estimate:0, forecast:0, curr:0, proposed:0 };
+
+    Object.keys(cats).forEach(cat => {
+      const sub = { prior:0, ytd:0, estimate:0, forecast:0, curr:0, proposed:0 };
+      cats[cat].forEach(r => {
+        const incDollar = r.proposed - r.curr;
+        const incPct = r.curr === 0 ? 0 : (incDollar / Math.abs(r.curr)) * 100;
+        const incKlass = classify(incDollar);
+        // Diagnostic (Curr vs Forecast)
+        const variance = r.curr - r.forecast;
+        const pctChange = r.forecast === 0 ? 0 : (variance / Math.abs(r.forecast)) * 100;
+        const varColor = variance >= 0 ? "var(--red)" : "var(--green)";
+        Object.keys(sub).forEach(k => sub[k] += r[k]);
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="frozen gl">${r.gl}</td>
+          <td class="frozen desc l">${r.desc}</td>
+          <td class="ref">${fmt(r.prior)}</td>
+          <td class="ref">${fmt(r.ytd)}</td>
+          <td class="ref">${fmt(r.estimate)}</td>
+          <td class="ref">${fmt(r.forecast)}</td>
+          <td class="curr">${fmt(r.curr)}</td>
+          <td class="derived"><span class="pill ${incKlass}" data-pct="${r.idx}">${fmtPct(incPct)}</span></td>
+          <td class="derived"><span class="pill ${incKlass}" data-dol="${r.idx}">${fmtDelta(incDollar)}</span></td>
+          <td><input class="proposed" type="text" data-idx="${r.idx}" value="${fmt(r.proposed)}" oninput="onEdit(this)"></td>
+          <td class="diag" style="color:${varColor};">${fmt(variance)}</td>
+          <td class="diag" style="color:${varColor};">${fmtPct(pctChange)}</td>
+          <td class="notes l"><input type="text" class="${Math.abs(incPct) > 10 ? 'warn' : ''}" placeholder="${Math.abs(incPct) > 10 ? 'Required at >10%' : 'Context for FA…'}"></td>
+        `;
+        tbody.appendChild(tr);
+      });
+      // Subtotal
+      const subVar = sub.curr - sub.forecast;
+      const subPctChange = sub.forecast === 0 ? 0 : (subVar / Math.abs(sub.forecast)) * 100;
+      const subIncDollar = sub.proposed - sub.curr;
+      const subIncPct = sub.curr === 0 ? 0 : (subIncDollar / Math.abs(sub.curr)) * 100;
+      const subIncKlass = classify(subIncDollar);
+      const subVarColor = subVar >= 0 ? "var(--red)" : "var(--green)";
       const tr = document.createElement("tr");
-      tr.dataset.cat = r.cat;
+      tr.className = "subtotal";
       tr.innerHTML = `
-        <td class="gl">${r.gl}</td>
-        <td class="l desc">${r.desc}</td>
-        <td class="curr">${fmt(r.curr)}</td>
-        <td><input class="proposed" type="text" data-idx="${i}" value="${fmt(r.proposed)}" oninput="onEdit(this)"></td>
-        <td class="derived"><span class="derived-pill ${klass}" data-delta="${i}">${fmtDelta(delta)}</span></td>
-        <td class="derived"><span class="derived-pill ${klass}" data-pct="${i}">${fmtPct(pct)}</span></td>
-        <td class="notes l"><input type="text" placeholder="${Math.abs(pct) > 10 ? 'Why this change? (required)' : 'Optional context...'}"></td>
+        <td class="frozen"></td>
+        <td class="frozen desc l">Total ${catLabels[cat]}</td>
+        <td class="ref">${fmt(sub.prior)}</td>
+        <td class="ref">${fmt(sub.ytd)}</td>
+        <td class="ref">${fmt(sub.estimate)}</td>
+        <td class="ref">${fmt(sub.forecast)}</td>
+        <td class="curr">${fmt(sub.curr)}</td>
+        <td class="derived"><span class="pill ${subIncKlass}">${fmtPct(subIncPct)}</span></td>
+        <td class="derived"><span class="pill ${subIncKlass}">${fmtDelta(subIncDollar)}</span></td>
+        <td class="curr">${fmt(sub.proposed)}</td>
+        <td class="diag" style="color:${subVarColor};">${fmt(subVar)}</td>
+        <td class="diag" style="color:${subVarColor};">${fmtPct(subPctChange)}</td>
+        <td></td>
       `;
       tbody.appendChild(tr);
+      Object.keys(grand).forEach(k => grand[k] += sub[k]);
     });
-    if (lastCat) appendSubtotal(tbody, lastCat);
 
     // Grand total
-    const gVar = totalProp - totalCurr;
-    const gPct = totalCurr === 0 ? 0 : (gVar / Math.abs(totalCurr)) * 100;
-    const gKlass = classify(gVar);
+    const gVar = grand.curr - grand.forecast;
+    const gPctChange = grand.forecast === 0 ? 0 : (gVar / Math.abs(grand.forecast)) * 100;
+    const gIncDollar = grand.proposed - grand.curr;
+    const gIncPct = grand.curr === 0 ? 0 : (gIncDollar / Math.abs(grand.curr)) * 100;
+    const gIncKlass = classify(gIncDollar);
+    const gVarColor = gVar >= 0 ? "#fca5a5" : "#86efac";
     const gRow = document.createElement("tr");
     gRow.className = "grand";
     gRow.innerHTML = `
-      <td></td>
-      <td class="l">Grand Total</td>
-      <td>${fmt(totalCurr)}</td>
-      <td>${fmt(totalProp)}</td>
-      <td class="derived ${gKlass}">${fmtDelta(gVar)}</td>
-      <td class="derived ${gKlass}">${fmtPct(gPct)}</td>
+      <td class="frozen"></td>
+      <td class="frozen desc l">Grand Total</td>
+      <td>${fmt(grand.prior)}</td>
+      <td>${fmt(grand.ytd)}</td>
+      <td>${fmt(grand.estimate)}</td>
+      <td>${fmt(grand.forecast)}</td>
+      <td class="curr">${fmt(grand.curr)}</td>
+      <td class="derived"><span class="pill ${gIncKlass}">${fmtPct(gIncPct)}</span></td>
+      <td class="derived"><span class="pill ${gIncKlass}">${fmtDelta(gIncDollar)}</span></td>
+      <td class="curr">${fmt(grand.proposed)}</td>
+      <td style="color:${gVarColor};">${fmt(gVar)}</td>
+      <td style="color:${gVarColor};">${fmtPct(gPctChange)}</td>
       <td></td>
     `;
     tbody.appendChild(gRow);
   }
 
-  function appendSubtotal(tbody, cat) {
-    const rows = ROWS.filter(r => r.cat === cat);
-    const sumCurr = rows.reduce((a, r) => a + r.curr, 0);
-    const sumProp = rows.reduce((a, r) => a + r.proposed, 0);
-    const delta = sumProp - sumCurr;
-    const pct = sumCurr === 0 ? 0 : (delta / Math.abs(sumCurr)) * 100;
-    const klass = classify(delta);
-    const tr = document.createElement("tr");
-    tr.className = "subtotal";
-    tr.innerHTML = `
-      <td></td>
-      <td class="l">Total ${cat}</td>
-      <td>${fmt(sumCurr)}</td>
-      <td>${fmt(sumProp)}</td>
-      <td class="derived ${klass}">${fmtDelta(delta)}</td>
-      <td class="derived ${klass}">${fmtPct(pct)}</td>
-      <td></td>
-    `;
-    tbody.appendChild(tr);
-  }
-
   function onEdit(el) {
     const idx = +el.dataset.idx;
-    // Strip $ and commas, parse number
     const raw = el.value.replace(/[$,\s]/g, "");
     const num = parseFloat(raw);
     if (Number.isFinite(num)) ROWS[idx].proposed = num;
     render();
-    // Re-focus the edited cell after re-render
     const next = document.querySelector(`input.proposed[data-idx="${idx}"]`);
-    if (next) {
-      next.focus();
-      // Place cursor at end
-      const v = next.value;
-      next.setSelectionRange(v.length, v.length);
-    }
+    if (next) { next.focus(); const v = next.value; next.setSelectionRange(v.length, v.length); }
   }
 
   render();
