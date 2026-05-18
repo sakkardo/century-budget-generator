@@ -187,6 +187,9 @@ def _run_idempotent_migrations():
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col1_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col2_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col6_override DOUBLE PRECISION",
+        # FA directive 2026-05-17: per-cell overrides on the Payroll tab's tax/benefit
+        # totals (FICA, Welfare, Pension, etc.). Single JSON keyed by cell key.
+        "ALTER TABLE payroll_assumptions ADD COLUMN IF NOT EXISTS overrides_json TEXT DEFAULT '{}'",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive

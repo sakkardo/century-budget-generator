@@ -1007,6 +1007,14 @@ def create_workflow_blueprint(db):
         entity_code = db.Column(db.String(50), nullable=False)
         budget_year = db.Column(db.Integer, nullable=False)
         assumptions_json = db.Column(db.Text, default="{}")
+        # FA directive 2026-05-17: per-cell overrides for the green formula totals
+        # on the Payroll tab (FICA, Welfare, Pension, etc.). Shape:
+        #   {"welfare": 80500.00, "fica": null, ...}
+        # NULL or missing key = use computed value. Non-NULL = take this value
+        # as the FA-set authoritative number; recalcPayroll applies after base math.
+        # Single JSON column instead of one DB column per cell because the set of
+        # editable cells will grow (and shrink) and we want flex without migrations.
+        overrides_json = db.Column(db.Text, default="{}")
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
         def to_dict(self):
@@ -1015,6 +1023,7 @@ def create_workflow_blueprint(db):
                 "id": self.id, "entity_code": self.entity_code,
                 "budget_year": self.budget_year,
                 "assumptions": _json.loads(self.assumptions_json or "{}"),
+                "overrides": _json.loads(self.overrides_json or "{}"),
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None
             }
 
@@ -4648,29 +4657,68 @@ def create_workflow_blueprint(db):
             "training_monthly": float(ub.get("training_monthly", 0) or 0),
             "profit_sharing_quarterly": float(ub.get("profit_sharing_quarterly", 0) or 0),
         }
-        return jsonify({"assumptions": seeded, "source": "main_assumptions"})
+        # No PayrollAssumption row yet — return seeded + empty overrides.
+        return jsonify({"assumptions": seeded, "overrides": {}, "source": "main_assumptions"})
 
     @bp.route("/api/payroll/assumptions/<entity_code>", methods=["POST"])
     def save_payroll_assumptions(entity_code):
-        """Save payroll-tab-specific assumptions (override main assumptions for this tab)."""
+        """Save payroll-tab-specific assumptions and/or per-cell overrides.
+
+        Body can contain either or both:
+          {"assumptions": {...}}        — full assumption replace
+          {"overrides": {...}}          — full overrides replace; pass {} to clear all
+          {"override": {key, value}}    — single-cell update; value=null clears that key
+
+        FA directive 2026-05-17: per-cell overrides on green tax/benefit totals.
+        """
         try:
             data = request.get_json(silent=True) or {}
         except Exception:
             return jsonify({"error": "Invalid JSON"}), 400
-        assumptions = data.get("assumptions", {})
         import json as _json
         pa = PayrollAssumption.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).first()
         if not pa:
             pa = PayrollAssumption(entity_code=entity_code, budget_year=BUDGET_YEAR)
             db.session.add(pa)
-        pa.assumptions_json = _json.dumps(assumptions)
+        # 1. Full assumption replace (legacy path).
+        if "assumptions" in data:
+            pa.assumptions_json = _json.dumps(data.get("assumptions") or {})
+        # 2. Full overrides replace.
+        if "overrides" in data:
+            ov = data.get("overrides") or {}
+            if not isinstance(ov, dict):
+                return jsonify({"error": "overrides must be a JSON object"}), 400
+            pa.overrides_json = _json.dumps(ov)
+        # 3. Single-cell upsert.
+        if "override" in data:
+            single = data.get("override") or {}
+            key = (single.get("key") or "").strip()
+            if not key:
+                return jsonify({"error": "override.key required"}), 400
+            try:
+                current_ov = _json.loads(pa.overrides_json or "{}")
+            except Exception:
+                current_ov = {}
+            val = single.get("value")
+            if val is None:
+                current_ov.pop(key, None)
+            else:
+                try:
+                    current_ov[key] = float(val)
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"override.value must be numeric (got {val!r})"}), 400
+            pa.overrides_json = _json.dumps(current_ov)
         try:
             db.session.commit()
         except Exception as e:
             db.session.rollback()
             logger.error(f"save_payroll_assumptions failed for {entity_code}: {e}", exc_info=True)
             return jsonify({"error": "Failed to save assumptions"}), 500
-        return jsonify({"status": "ok", "assumptions": assumptions})
+        return jsonify({
+            "status": "ok",
+            "assumptions": _json.loads(pa.assumptions_json or "{}"),
+            "overrides": _json.loads(pa.overrides_json or "{}"),
+        })
 
 
     @bp.route("/api/budget-history/<entity_code>", methods=["GET"])
@@ -20989,6 +21037,13 @@ function faToggleZeroRows() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _payrollAssumptions = {};
+// FA directive 2026-05-17: per-cell overrides for tax/benefit totals on the
+// Payroll tab. Keyed by cell key (e.g., "welfare", "pension", "fica"). When a
+// key has a numeric value, recalcPayroll substitutes it for the computed total
+// at render time. Right-click an overridden cell to revert (clear the key).
+let _payrollOverrides = {};
+// Tracks the last-rendered totals per cell so flash-on-change can detect deltas.
+let _payrollPrevTotals = {};
 let _payrollPositions = [];
 let _payrollGLLines = [];
 
@@ -21085,6 +21140,9 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     fetch('/api/payroll/positions/' + ec).then(r => r.json())
   ]);
   _payrollAssumptions = aResp.assumptions || {};
+  // 2026-05-17: pick up per-cell overrides if the assumptions row has any.
+  _payrollOverrides = (aResp.overrides && typeof aResp.overrides === 'object') ? aResp.overrides : {};
+  _payrollPrevTotals = {};   // fresh tab load — no prior totals to flash against
   _payrollPositions = pResp || [];
 
   // If no positions saved yet, seed with 2 placeholder rows
@@ -21278,6 +21336,13 @@ async function renderPayrollTab(sheetLines, contentDiv) {
       </div>
     </div>
   </div>`;
+
+  // ── Payroll Lineage Drill Panel (sticky above the tax/benefits table) ──
+  // FA directive 2026-05-17: click any green tax/benefit total → drill panel
+  // appears here showing the formula + contributing inputs + override status.
+  // Same pattern as the Summary tab's audit Inspector. Right-click an OVR'd
+  // cell to revert. Double-click to inline-edit.
+  html += '<div id="payrollDrillPanel" style="display:none;margin:0 0 14px;background:white;border:1px solid #c9b89a;border-left:4px solid #5a4a3f;border-radius:8px;padding:14px 18px;font-size:13px;position:sticky;top:100px;z-index:29;box-shadow:0 4px 12px rgba(0,0,0,0.08);max-height:60vh;overflow-y:auto;"></div>';
 
   // ── Section 2: Payroll Taxes, Workers Comp & Union Benefits ────────────
   html += `
@@ -21705,12 +21770,50 @@ function recalcPayroll() {
     positions_with_adjustments: adjPositionsCount,
   };
 
-  const totalLaborCalc = grossWages + totalPayrollTax + wcAmt + totalUnion;
+  // ── FA-set overrides for tax/benefit totals (2026-05-17) ──────────────
+  // _payrollOverrides is a {cell_key: value} map. When a key is present and
+  // numeric, substitute it for the computed total. Keep the COMPUTED values
+  // in _payrollComputed so the lineage panel + revert flow can show the
+  // delta. Final variables (`ficaAmt` etc.) below this block are the
+  // FA-authoritative numbers used for rendering + downstream sums.
+  const _computed = {
+    fica: ficaAmt, sui: suiAmt, fui: fuiAmt, mta: mtaAmt,
+    nys_disability: nysDisAmt, pfl: pflAmt,
+    workers_comp: wcAmt,
+    welfare: welfareAmt, pension: pensionAmt, supp_retirement: suppRetAmt,
+    legal: legalAmt, training: trainingAmt, profit_sharing: profitShareAmt,
+  };
+  const _applyOv = (key, fallback) => {
+    const ov = _payrollOverrides[key];
+    return (ov !== null && ov !== undefined && isFinite(parseFloat(ov)))
+      ? parseFloat(ov) : fallback;
+  };
+  const ovFica = _applyOv('fica', ficaAmt);
+  const ovSui = _applyOv('sui', suiAmt);
+  const ovFui = _applyOv('fui', fuiAmt);
+  const ovMta = _applyOv('mta', mtaAmt);
+  const ovNysDis = _applyOv('nys_disability', nysDisAmt);
+  const ovPfl = _applyOv('pfl', pflAmt);
+  const ovWc = _applyOv('workers_comp', wcAmt);
+  const ovWelfare = _applyOv('welfare', welfareAmt);
+  const ovPension = _applyOv('pension', pensionAmt);
+  const ovSuppRet = _applyOv('supp_retirement', suppRetAmt);
+  const ovLegal = _applyOv('legal', legalAmt);
+  const ovTraining = _applyOv('training', trainingAmt);
+  const ovProfitShare = _applyOv('profit_sharing', profitShareAmt);
+  // Recompute subtotals using overrides so they cascade through.
+  const ovTotalPayrollTax = ovFica + ovSui + ovFui + ovMta + ovNysDis + ovPfl;
+  const ovTotalUnion = ovWelfare + ovPension + ovSuppRet + ovLegal + ovTraining + ovProfitShare;
+
+  window._payrollComputed = _computed;   // pre-override values for lineage panel
+
+  const totalLaborCalc = grossWages + ovTotalPayrollTax + ovWc + ovTotalUnion;
 
   // Store for tie-out
   window._payrollCalcTotal = totalLaborCalc;
 
-  // Publish component breakdown for GL linkage
+  // Publish component breakdown for GL linkage. Use FA-overridden values
+  // so downstream GL lines reflect manual corrections (2026-05-17).
   window._payrollComponents = {
     annual_base: totalAnnualBase,
     ot: totalOT,
@@ -21718,26 +21821,64 @@ function recalcPayroll() {
     vsh_holiday: totalVSH / 3,
     vsh_sick: totalVSH / 3,
     bonus: totalBonus,
-    employer_taxes: ficaAmt + suiAmt + fuiAmt + mtaAmt,
-    workers_comp: wcAmt,
-    nys_disability: nysDisAmt,
-    pfl: pflAmt,
-    welfare: welfareAmt,
-    pension: pensionAmt,
-    supp_retirement: suppRetAmt,
-    legal_fund: legalAmt,
-    training_fund: trainingAmt,
-    profit_sharing: profitShareAmt
+    employer_taxes: ovFica + ovSui + ovFui + ovMta,
+    workers_comp: ovWc,
+    nys_disability: ovNysDis,
+    pfl: ovPfl,
+    welfare: ovWelfare,
+    pension: ovPension,
+    supp_retirement: ovSuppRet,
+    legal_fund: ovLegal,
+    training_fund: ovTraining,
+    profit_sharing: ovProfitShare
   };
 
   // Render roster (pass assumption values for formula strings)
   renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp,
     {preWks, postWks, wageInc, otFactor, vshFactor});
 
-  // Render taxes
-  renderPayrollTaxes({ficaAmt, suiAmt, fuiAmt, mtaAmt, nysDisAmt, pflAmt, totalPayrollTax, wcAmt,
-    welfareAmt, pensionAmt, suppRetAmt, legalAmt, trainingAmt, profitShareAmt, totalUnion, totalLaborCalc,
-    grossWages, totalEmployees});
+  // Render taxes — pass OVERRIDDEN values for display + lineage panel.
+  // The renderer also reads window._payrollComputed + window._payrollOverrides
+  // to decide OVR badges and lineage formulas (2026-05-17).
+  renderPayrollTaxes({
+    ficaAmt: ovFica, suiAmt: ovSui, fuiAmt: ovFui, mtaAmt: ovMta,
+    nysDisAmt: ovNysDis, pflAmt: ovPfl, totalPayrollTax: ovTotalPayrollTax,
+    wcAmt: ovWc,
+    welfareAmt: ovWelfare, pensionAmt: ovPension, suppRetAmt: ovSuppRet,
+    legalAmt: ovLegal, trainingAmt: ovTraining, profitShareAmt: ovProfitShare,
+    totalUnion: ovTotalUnion, totalLaborCalc, grossWages, totalEmployees,
+  });
+
+  // Flash-on-change (2026-05-17): compare new totals to last render and pulse
+  // any cell whose value changed. Skipped on first render (no prior baseline).
+  if (window._payrollPrevTotals && Object.keys(_payrollPrevTotals).length > 0) {
+    const newTotals = {
+      fica: ovFica, sui: ovSui, fui: ovFui, mta: ovMta,
+      nys_disability: ovNysDis, pfl: ovPfl, workers_comp: ovWc,
+      welfare: ovWelfare, pension: ovPension, supp_retirement: ovSuppRet,
+      legal: ovLegal, training: ovTraining, profit_sharing: ovProfitShare,
+      total_payroll_tax: ovTotalPayrollTax, total_union: ovTotalUnion,
+      total_labor: totalLaborCalc,
+    };
+    Object.keys(newTotals).forEach(function(k) {
+      const prev = _payrollPrevTotals[k];
+      const next = newTotals[k];
+      if (prev !== undefined && Math.abs(prev - next) > 0.5) {
+        // Use setTimeout so the DOM has rendered the new value before we flash
+        setTimeout(function() { _payrollFlashCell(k); }, 30);
+      }
+    });
+    _payrollPrevTotals = newTotals;
+  } else {
+    _payrollPrevTotals = {
+      fica: ovFica, sui: ovSui, fui: ovFui, mta: ovMta,
+      nys_disability: ovNysDis, pfl: ovPfl, workers_comp: ovWc,
+      welfare: ovWelfare, pension: ovPension, supp_retirement: ovSuppRet,
+      legal: ovLegal, training: ovTraining, profit_sharing: ovProfitShare,
+      total_payroll_tax: ovTotalPayrollTax, total_union: ovTotalUnion,
+      total_labor: totalLaborCalc,
+    };
+  }
 
   // Push roster-derived component values to linked GL lines
   pushRosterToGL();
@@ -22339,28 +22480,28 @@ function renderPayrollTaxes(t) {
   let html = '';
   // Payroll Taxes
   html += '<tr><td colspan="4" style="' + catHdr + '">Payroll Taxes</td></tr>';
-  html += taxRow('FICA', fP(a.fica||0), 'Gross Wages × Rate', fD(t.ficaAmt));
-  html += taxRow('SUI', fP(a.sui||0), '$12,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.suiAmt));
-  html += taxRow('FUI', fP(a.fui||0), '$7,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.fuiAmt));
-  html += taxRow('MTA', fP(a.mta||0), 'Gross Wages × Rate', fD(t.mtaAmt));
-  html += taxRow('NYS Disability', fP(a.nys_disability||0), 'Per employee/year', fD(t.nysDisAmt));
-  html += taxRow('Paid Family Leave', fP(a.pfl||0), 'Gross Wages × Rate', fD(t.pflAmt));
-  html += '<tr><td colspan="3" style="' + subRow + '">Total Payroll Taxes</td><td style="' + subRow + ' text-align:right; font-weight:800;">' + fD(t.totalPayrollTax) + '</td></tr>';
+  html += taxRow('FICA', fP(a.fica||0), 'Gross Wages × Rate', fD(t.ficaAmt), 'fica');
+  html += taxRow('SUI', fP(a.sui||0), '$12,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.suiAmt), 'sui');
+  html += taxRow('FUI', fP(a.fui||0), '$7,000 × Rate × ' + t.totalEmployees + ' emp', fD(t.fuiAmt), 'fui');
+  html += taxRow('MTA', fP(a.mta||0), 'Gross Wages × Rate', fD(t.mtaAmt), 'mta');
+  html += taxRow('NYS Disability', fP(a.nys_disability||0), 'Per employee/year', fD(t.nysDisAmt), 'nys_disability');
+  html += taxRow('Paid Family Leave', fP(a.pfl||0), 'Gross Wages × Rate', fD(t.pflAmt), 'pfl');
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Payroll Taxes</td><td style="' + subRow + ' text-align:right; font-weight:800;" data-payroll-cell="total_payroll_tax">' + fD(t.totalPayrollTax) + '</td></tr>';
 
-  // Workers Comp
+  // Workers Comp — now click-to-inspect + editable like the other rows.
   html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
-  html += '<tr><td style="' + cs + ' font-weight:600;">Workers Compensation</td><td style="' + ns + ps + '">' + fP(a.workers_comp||0) + '</td><td style="' + cs + ' font-size:10px; color:var(--gray-400); font-style:italic;">Gross Wages × Rate</td><td style="' + ns + gs + ' font-weight:700;">' + fD(t.wcAmt) + '</td></tr>';
+  html += taxRow('Workers Compensation', fP(a.workers_comp||0), 'Gross Wages × Rate', fD(t.wcAmt), 'workers_comp');
 
   // Union Benefits
   html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
   html += '<tr><td colspan="4" style="' + catHdr + '">Union Benefits (32BJ)</td></tr>';
-  html += taxRow('Welfare', '$' + (a.welfare_monthly||0).toFixed(2) + '/mo', '$' + (a.welfare_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.welfareAmt));
-  html += taxRow('Pension', '$' + (a.pension_weekly||0).toFixed(2) + '/wk', '$' + (a.pension_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.pensionAmt));
-  html += taxRow('Supp. Retirement', '$' + (a.supp_retirement_weekly||0).toFixed(2) + '/wk', '$' + (a.supp_retirement_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.suppRetAmt));
-  html += taxRow('Legal Fund', '$' + (a.legal_monthly||0).toFixed(2) + '/mo', '$' + (a.legal_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.legalAmt));
-  html += taxRow('Training Fund', '$' + (a.training_monthly||0).toFixed(2) + '/mo', '$' + (a.training_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.trainingAmt));
-  html += taxRow('Profit Sharing', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + '/qtr', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 4 qtr', fD(t.profitShareAmt));
-  html += '<tr><td colspan="3" style="' + subRow + '">Total Union Benefits</td><td style="' + subRow + ' text-align:right; font-weight:800;">' + fD(t.totalUnion) + '</td></tr>';
+  html += taxRow('Welfare', '$' + (a.welfare_monthly||0).toFixed(2) + '/mo', '$' + (a.welfare_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.welfareAmt), 'welfare');
+  html += taxRow('Pension', '$' + (a.pension_weekly||0).toFixed(2) + '/wk', '$' + (a.pension_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.pensionAmt), 'pension');
+  html += taxRow('Supp. Retirement', '$' + (a.supp_retirement_weekly||0).toFixed(2) + '/wk', '$' + (a.supp_retirement_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.suppRetAmt), 'supp_retirement');
+  html += taxRow('Legal Fund', '$' + (a.legal_monthly||0).toFixed(2) + '/mo', '$' + (a.legal_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.legalAmt), 'legal');
+  html += taxRow('Training Fund', '$' + (a.training_monthly||0).toFixed(2) + '/mo', '$' + (a.training_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.trainingAmt), 'training');
+  html += taxRow('Profit Sharing', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + '/qtr', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 4 qtr', fD(t.profitShareAmt), 'profit_sharing');
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Union Benefits</td><td style="' + subRow + ' text-align:right; font-weight:800;" data-payroll-cell="total_union">' + fD(t.totalUnion) + '</td></tr>';
 
   body.innerHTML = html;
 
@@ -22374,13 +22515,294 @@ function renderPayrollTaxes(t) {
   if (badge) badge.textContent = 'Total: ' + fD(t.totalPayrollTax + t.wcAmt + t.totalUnion);
 }
 
-function taxRow(label, rate, basis, total) {
+function taxRow(label, rate, basis, total, cellKey) {
+  // FA directive 2026-05-17: each tax/benefit row's total is now click-to-inspect
+  // AND editable. cellKey is the override storage key (e.g., "welfare").
+  // - Click: opens the lineage drill panel for this cell
+  // - Edit: types a new value → saves as override → OVR badge
+  // - Right-click on OVR'd cell: reverts to computed
   const cs = 'padding:7px 10px; border-bottom:1px solid #f3f4f6;';
   const ns = cs + 'text-align:right; font-variant-numeric:tabular-nums;';
+  const isOv = cellKey && _payrollOverrides &&
+               _payrollOverrides[cellKey] !== undefined &&
+               _payrollOverrides[cellKey] !== null;
+  // Pull the numeric "total" by stripping the `$` and commas. We need this
+  // for the editable input's data-raw so blur-detection can compare.
+  const totalNum = parseFloat(String(total).replace(/[$,]/g, '')) || 0;
+  let totalCell;
+  if (cellKey) {
+    // OVR badge + amber styling when override active
+    const ovrStyle = isOv
+      ? 'background:#fef3c7;color:#92400e;font-weight:700;border:1px dashed #d97706;'
+      : 'color:#16a34a;font-weight:600;';
+    const ovrBadge = isOv
+      ? '<span style="position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;">OVR</span>'
+      : '';
+    totalCell = '<td data-payroll-cell="' + cellKey + '" data-payroll-label="' +
+      label.replace(/"/g, '&quot;') + '" style="' + ns + ' position:relative; cursor:cell; ' +
+      ovrStyle + '" ' +
+      'onclick="payrollShowLineage(event, this)" ' +
+      'oncontextmenu="return payrollRevertOverride(event, this)" ' +
+      'title="' + (isOv ? 'Override active — right-click to revert' : 'Click to inspect lineage. Double-click to edit.') + '">' +
+      '<span class="pr-total-val">' + total + '</span>' + ovrBadge +
+      // Hidden input used for inline edit on double-click.
+      '<input type="text" class="pr-total-edit" data-payroll-cell="' + cellKey +
+      '" data-raw="' + totalNum + '" value="' + total + '" ' +
+      'style="display:none; width:90%; padding:2px 4px; border:1px solid #d97706; border-radius:3px; text-align:right; font-variant-numeric:tabular-nums; background:white;" ' +
+      'onblur="payrollOverrideSave(this)" ' +
+      'onkeydown="if(event.key===\'Enter\'){this.blur();} else if(event.key===\'Escape\'){this.value=this.dataset.raw;this.blur();}">' +
+      '</td>';
+    // Double-click swaps span↔input. Attach via the click handler with detail check.
+  } else {
+    totalCell = '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + total + '</td>';
+  }
   return '<tr><td style="' + cs + '">' + label + '</td>' +
     '<td style="' + ns + ' color:#5a4a3f;">' + rate + '</td>' +
     '<td style="' + cs + ' font-size:10px; color:var(--gray-400); font-style:italic;">' + basis + '</td>' +
-    '<td style="' + ns + ' color:#16a34a; font-weight:600;">' + total + '</td></tr>';
+    totalCell + '</tr>';
+}
+
+// FA directive 2026-05-17: opens the Payroll Lineage drill panel for a clicked
+// tax/benefit total cell. Reads the cell key from data-payroll-cell and
+// composes a breakdown using _payrollComputed, _payrollOverrides, the current
+// _payrollAssumptions, and _payrollAdjustments (per-position deltas).
+// Double-click on the cell starts inline edit instead of opening the panel.
+function payrollShowLineage(evt, td) {
+  if (!td || !td.dataset) return;
+  // Double-click → enter edit mode on the hidden input.
+  if (evt && evt.detail === 2) {
+    const inp = td.querySelector('.pr-total-edit');
+    const span = td.querySelector('.pr-total-val');
+    if (inp) {
+      if (span) span.style.display = 'none';
+      inp.style.display = 'inline-block';
+      inp.value = inp.dataset.raw || '';
+      inp.focus();
+      inp.select();
+    }
+    return;
+  }
+  const key = td.dataset.payrollCell;
+  const label = td.dataset.payrollLabel || key;
+  const panel = document.getElementById('payrollDrillPanel');
+  if (!panel || !key) return;
+  const a = _payrollAssumptions || {};
+  const computed = (window._payrollComputed || {})[key];
+  const override = (_payrollOverrides || {})[key];
+  const isOv = (override !== null && override !== undefined && isFinite(parseFloat(override)));
+  const displayed = isOv ? parseFloat(override) : computed;
+  const adj = window._payrollAdjustments || {};
+  const totalEmp = (window._payrollPrevTotals && window._payrollPrevTotals._totalEmp) || 0;
+  const fD = function(v) { const n = Math.round(v||0); return (n<0?'-$':'$') + Math.abs(n).toLocaleString(); };
+
+  // Per-cell formula builder. Each branch returns an array of {label, value}
+  // breakdown lines that explain how `computed` was reached.
+  const breakdown = [];
+  // Compute totalEmp from positions live (the snapshot above is unreliable on first render)
+  let _emp = 0;
+  (_payrollPositions || []).forEach(function(p){ _emp += parseInt(p.employee_count||0,10) || 0; });
+  const grossW = (window._payrollComponents)
+    ? ((window._payrollComponents.annual_base||0) + (window._payrollComponents.ot||0) + (window._payrollComponents.vsh_vacation||0) + (window._payrollComponents.vsh_holiday||0) + (window._payrollComponents.vsh_sick||0))
+    : 0;
+  switch (key) {
+    case 'fica':
+      breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
+      breakdown.push({l: '× FICA Rate',     v: ((a.fica||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'sui':
+      breakdown.push({l: '$12,000 base × ' + _emp + ' employees', v: fD(12000 * _emp)});
+      breakdown.push({l: '× SUI Rate',      v: ((a.sui||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'fui':
+      breakdown.push({l: '$7,000 base × ' + _emp + ' employees', v: fD(7000 * _emp)});
+      breakdown.push({l: '× FUI Rate',      v: ((a.fui||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'mta':
+      breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
+      breakdown.push({l: '× MTA Rate',      v: ((a.mta||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'nys_disability':
+      breakdown.push({l: 'Per-employee rate', v: fD(a.nys_disability||0)});
+      breakdown.push({l: '× ' + _emp + ' employees', v: ''});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'pfl':
+      breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
+      breakdown.push({l: '× PFL Rate',      v: ((a.pfl||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'workers_comp':
+      breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
+      breakdown.push({l: '× Workers Comp Rate', v: ((a.workers_comp||0)*100).toFixed(3) + '%'});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'welfare':
+      breakdown.push({l: '$' + (a.welfare_monthly||0).toFixed(2) + '/mo × ' + _emp + ' emp × 12 mo', v: fD((a.welfare_monthly||0) * _emp * 12)});
+      if (adj.welfare) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.welfare)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'pension':
+      breakdown.push({l: '$' + (a.pension_weekly||0).toFixed(2) + '/wk × ' + _emp + ' emp × 52 wk', v: fD((a.pension_weekly||0) * _emp * 52)});
+      if (adj.pension) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.pension)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'supp_retirement':
+      breakdown.push({l: '$' + (a.supp_retirement_weekly||0).toFixed(2) + '/wk × ' + _emp + ' emp × 52 wk', v: fD((a.supp_retirement_weekly||0) * _emp * 52)});
+      if (adj.supp_retirement) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.supp_retirement)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'legal':
+      breakdown.push({l: '$' + (a.legal_monthly||0).toFixed(2) + '/mo × ' + _emp + ' emp × 12 mo', v: fD((a.legal_monthly||0) * _emp * 12)});
+      if (adj.legal) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.legal)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'training':
+      breakdown.push({l: '$' + (a.training_monthly||0).toFixed(2) + '/mo × ' + _emp + ' emp × 12 mo', v: fD((a.training_monthly||0) * _emp * 12)});
+      if (adj.training) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.training)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    case 'profit_sharing':
+      breakdown.push({l: '$' + (a.profit_sharing_quarterly||0).toFixed(2) + '/qtr × ' + _emp + ' emp × 4 qtr', v: fD((a.profit_sharing_quarterly||0) * _emp * 4)});
+      if (adj.profit_sharing) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.profit_sharing)});
+      breakdown.push({l: '= Computed',      v: fD(computed)});
+      break;
+    default:
+      breakdown.push({l: 'Formula', v: '(no breakdown defined for this cell)'});
+  }
+  // Render the drill panel HTML
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+    '<div style="font-weight:700;color:#5a4a3f;font-size:14px;">🔍 Lineage · ' + label + '</div>' +
+    '<button onclick="document.getElementById(\'payrollDrillPanel\').style.display=\'none\'" style="background:transparent;border:none;cursor:pointer;color:var(--gray-500);font-size:18px;line-height:1;">×</button>' +
+    '</div>';
+  html += '<div style="background:white;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:12px;">';
+  html += '<table style="width:100%;border-collapse:collapse;">';
+  breakdown.forEach(function(b, i) {
+    const isLast = (i === breakdown.length - 1);
+    html += '<tr style="' + (isLast ? 'background:#f5efe7;font-weight:700;' : '') + '">' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #f3f4f6;">' + b.l + '</td>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #f3f4f6;text-align:right;font-variant-numeric:tabular-nums;">' + b.v + '</td>' +
+      '</tr>';
+  });
+  html += '</table></div>';
+  if (isOv) {
+    html += '<div style="margin-top:10px;padding:8px 10px;background:#fef3c7;border-left:3px solid #d97706;border-radius:4px;font-size:12px;color:#92400e;">' +
+      '<strong>OVR active:</strong> the FA manually set this to <strong>' + fD(override) + '</strong> ' +
+      '(computed was ' + fD(computed) + '). Right-click the cell to revert.' +
+      '</div>';
+  }
+  // Show per-position adjustment detail when relevant
+  const adjVal = adj[key];
+  if (adjVal && Math.abs(adjVal) > 0.5) {
+    const adjPositions = [];
+    (_payrollPositions || []).forEach(function(p) {
+      const pa = p.benefit_adjustments;
+      if (!pa || !pa.benefits || !pa.benefits[key]) return;
+      const block = pa.benefits[key];
+      const cnt = Math.min(parseInt(pa.adjusted_count||0,10)||0, parseInt(p.employee_count||0,10)||0);
+      if (cnt <= 0) return;
+      const r = parseFloat(block.rate) || 0;
+      const pp = parseFloat(block.periods) || 0;
+      adjPositions.push({pos: p.position_name, cnt: cnt, rate: r, periods: pp, total: r * pp * cnt});
+    });
+    if (adjPositions.length) {
+      html += '<div style="margin-top:10px;padding:8px 10px;background:#f5efe7;border-left:3px solid #5a4a3f;border-radius:4px;font-size:12px;">' +
+        '<strong>Per-position adjustments contributing:</strong>' +
+        '<table style="width:100%;margin-top:6px;border-collapse:collapse;">';
+      adjPositions.forEach(function(ap) {
+        html += '<tr><td style="padding:3px 0;">' + ap.pos + ' (' + ap.cnt + ' adj)</td>' +
+          '<td style="padding:3px 0;text-align:right;">$' + ap.rate.toFixed(2) + ' × ' + ap.periods + ' = ' + fD(ap.total) + '</td></tr>';
+      });
+      html += '</table></div>';
+    }
+  }
+  panel.innerHTML = html;
+  panel.style.display = 'block';
+  try { panel.scrollIntoView({behavior: 'smooth', block: 'center'}); } catch (_e) {}
+}
+
+// FA directive 2026-05-17: blur on a payroll override input → POST the new value.
+// Empty input → clears the override (reverts to computed).
+async function payrollOverrideSave(inp) {
+  if (!inp || !inp.dataset) return;
+  const td = inp.closest('td');
+  const span = td ? td.querySelector('.pr-total-val') : null;
+  // Restore span↔input visibility
+  if (span) span.style.display = '';
+  inp.style.display = 'none';
+  const key = inp.dataset.payrollCell;
+  if (!key) return;
+  const raw = (inp.value || '').trim().replace(/[$,]/g, '');
+  const num = raw === '' ? null : parseFloat(raw);
+  if (raw !== '' && !isFinite(num)) {
+    showToast('Invalid number — not saved', 'error');
+    return;
+  }
+  // Optimistic local update so the UI flips before the server round-trip.
+  if (num === null) {
+    delete _payrollOverrides[key];
+  } else {
+    _payrollOverrides[key] = num;
+  }
+  // Re-run recalc so all dependent subtotals + flash effects fire.
+  if (typeof recalcPayroll === 'function') recalcPayroll();
+  try {
+    const resp = await fetch('/api/payroll/assumptions/' + entityCode, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({override: {key: key, value: num}}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      showToast('Save failed: ' + (data.error || resp.status), 'error');
+    } else {
+      showToast(num === null ? 'Reverted ' + key : 'Override saved · ' + key, 'success');
+    }
+  } catch (e) {
+    showToast('Save failed: ' + e.message, 'error');
+  }
+}
+
+// FA directive 2026-05-17: right-click on an OVR'd payroll cell → revert.
+function payrollRevertOverride(evt, td) {
+  if (evt) evt.preventDefault();
+  if (!td || !td.dataset) return false;
+  const key = td.dataset.payrollCell;
+  if (!key) return false;
+  const ov = _payrollOverrides[key];
+  if (ov === null || ov === undefined) return false;   // not overridden
+  const computed = (window._payrollComputed || {})[key];
+  const fD = function(v) { const n = Math.round(v||0); return (n<0?'-$':'$') + Math.abs(n).toLocaleString(); };
+  if (!confirm('Revert ' + (td.dataset.payrollLabel || key) + ' to computed value (' + fD(computed) + ')?')) return false;
+  delete _payrollOverrides[key];
+  if (typeof recalcPayroll === 'function') recalcPayroll();
+  fetch('/api/payroll/assumptions/' + entityCode, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({override: {key: key, value: null}}),
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if (d.error) showToast('Revert save failed: ' + d.error, 'error');
+    else showToast('Reverted ' + key, 'success');
+  }).catch(function(e){ showToast('Revert save failed: ' + e.message, 'error'); });
+  return false;
+}
+
+// FA directive 2026-05-17: flash a payroll cell amber when its value changed
+// after a roster edit. Used to make data-flow visible: edit employee_count
+// and the dependent tax/benefit cells pulse to show "this is what changed."
+function _payrollFlashCell(cellKey) {
+  const td = document.querySelector('td[data-payroll-cell="' + cellKey + '"]');
+  if (!td) return;
+  const prevBg = td.style.backgroundColor || '';
+  const prevTrans = td.style.transition || '';
+  td.style.transition = 'background-color 0.18s ease-out';
+  td.style.backgroundColor = '#fef3c7';   // amber flash
+  setTimeout(function() {
+    td.style.backgroundColor = prevBg;
+    setTimeout(function() { td.style.transition = prevTrans; }, 250);
+  }, 800);
 }
 
 // ── Render GL Detail with Expandable Groups ───────────────────────────────
