@@ -1530,6 +1530,15 @@ def create_workflow_blueprint(db):
         col4_override = db.Column(db.Float, nullable=True)           # 2026 Estimate override
         col5_override = db.Column(db.Float, nullable=True)           # 2026 Forecast override
 
+        # FA directive 2026-05-17: make ALL summary cells editable. col1 / col6
+        # come from the approved-budget Excel import; col2 comes from the
+        # confirmed audit's mapped_data. Each override field, when non-NULL,
+        # takes precedence over the imported / computed source. NULL = use
+        # source. Right-click on the cell reverts (clears the override).
+        col1_override = db.Column(db.Float, nullable=True)           # 2024 Actual override
+        col2_override = db.Column(db.Float, nullable=True)           # 2025 Actual (audit) override
+        col6_override = db.Column(db.Float, nullable=True)           # 2026 Approved Budget override
+
         # Metadata for the summary engine
         source_tab = db.Column(db.String(50), nullable=True)        # Income, Payroll, Energy, etc.
         gl_prefixes_json = db.Column(db.Text, nullable=True)        # JSON array of GL prefixes
@@ -8186,6 +8195,23 @@ def create_workflow_blueprint(db):
             if col5_overridden:
                 col5 = round(float(row.col5_override), 2)
 
+            # FA directive 2026-05-17: same override pattern for c1/c2/c6.
+            # c1 source = col1_prior_actual (imported), c2 source = audit lookup,
+            # c6 source = col6_approved_budget (imported). Each override beats
+            # its source when non-NULL.
+            col1_computed = col1
+            col2_computed = col2
+            col6_computed = col6
+            col1_overridden = row.col1_override is not None
+            col2_overridden = row.col2_override is not None
+            col6_overridden = row.col6_override is not None
+            if col1_overridden:
+                col1 = round(float(row.col1_override), 2)
+            if col2_overridden:
+                col2 = round(float(row.col2_override), 2)
+            if col6_overridden:
+                col6 = round(float(row.col6_override), 2)
+
             # Col 8: % variance = (col7 - col5) / |col5| * 100
             col8 = None
             if col7 is not None and col5 and col5 != 0:
@@ -8243,12 +8269,18 @@ def create_workflow_blueprint(db):
                 # Override metadata: lets UI badge overridden cells and offer
                 # one-click revert by exposing the computed-vs-override delta.
                 "overrides": {
+                    "col1": {"is_overridden": col1_overridden, "computed": col1_computed,
+                             "override": row.col1_override},
+                    "col2": {"is_overridden": col2_overridden, "computed": col2_computed,
+                             "override": row.col2_override},
                     "col3": {"is_overridden": col3_overridden, "computed": col3_computed,
                              "override": row.col3_override},
                     "col4": {"is_overridden": col4_overridden, "computed": col4_computed,
                              "override": row.col4_override},
                     "col5": {"is_overridden": col5_overridden, "computed": col5_computed,
                              "override": row.col5_override},
+                    "col6": {"is_overridden": col6_overridden, "computed": col6_computed,
+                             "override": row.col6_override},
                 },
             }
             result_rows.append(rd)
@@ -8864,12 +8896,16 @@ def create_workflow_blueprint(db):
         # Need a budget record for revision logging
         budget = Budget.query.filter_by(entity_code=entity_code, year=budget_year).first()
 
-        # Editable fields: legacy col7 + new col3/4/5 overrides
+        # Editable fields: legacy col7 + all column overrides (FA dir 2026-05-17).
+        # Adding col1/col2/col6 overrides made every numeric Summary cell editable.
         EDITABLE_FIELDS = {
             "col7": "col7_proposed_budget",
+            "col1_override": "col1_override",
+            "col2_override": "col2_override",
             "col3_override": "col3_override",
             "col4_override": "col4_override",
             "col5_override": "col5_override",
+            "col6_override": "col6_override",
         }
 
         updated = 0
@@ -19139,12 +19175,16 @@ async function renderBudgetSummary(contentDiv) {
     // Cols c2-c5 are computed from sources (audit / GL lines). Mark them as inspectable
     // with a green left-stripe + data-fx flag so sumCellFocus can show the "Inspect" button.
     const isFx = (col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5');
-    // FA directive 2026-05-05: c3/c4/c5 are now editable too. Edits land in
-    // dedicated override columns on BudgetSummaryRow; the legacy "computed"
-    // value remains accessible via the overrideInfo so the FA can revert.
-    // c2 (audit) stays read-only \u2014 that data lives in audit_uploads.
-    // c1 / c6 stay read-only \u2014 imported from yrlycomp Excel.
-    const isOverridable = (col === 'c3' || col === 'c4' || col === 'c5');
+    // FA directive 2026-05-17: ALL numeric columns are now editable.
+    //   c1 / c6: imported from approved-budget Excel \u2014 override column added 2026-05-17.
+    //   c2:      computed from confirmed audit's mapped_data \u2014 override column added 2026-05-17.
+    //   c3/c4/c5: GL-aggregation computed (since 2026-05-05).
+    //   c7:      directly editable (Proposed Budget).
+    // Each overridable column has its dedicated *_override field on the
+    // BudgetSummaryRow model; right-click reverts the override (clears
+    // the column back to imported / computed source).
+    const isOverridable = (col === 'c1' || col === 'c2' || col === 'c3' ||
+                            col === 'c4' || col === 'c5' || col === 'c6');
     const isReadOnly = !(col === 'c7' || isOverridable);
     const isOverridden = !!(overrideInfo && overrideInfo.is_overridden);
     const computedVal = (overrideInfo && overrideInfo.computed != null) ? Math.round(overrideInfo.computed) : '';
@@ -19183,6 +19223,12 @@ async function renderBudgetSummary(contentDiv) {
         '. ' + c2SourceCount + ' source line' + (c2SourceCount === 1 ? '' : 's') +
         ' from auditor. Click to inspect.';
     }
+    // 2026-05-17: if c2 has an active OVR (the FA edited it manually), shift
+    // the Inspector badge LEFT so it doesn't overlap the OVR badge. Clicking
+    // the Inspector with OVR active still shows the original audit lineage —
+    // useful for FA to compare their override to what the audit said.
+    const c2HasOvr = (col === 'c2' && overrideInfo && overrideInfo.is_overridden);
+    const c2InspectRight = c2HasOvr ? '24px' : '4px';
     const c2InspectBadge = c2HasData
       ? '<button type="button" class="sum-c2-inspect-badge" ' +
         // Use data-label + delegated handler instead of inline-encoded
@@ -19191,7 +19237,7 @@ async function renderBudgetSummary(contentDiv) {
         'data-inspect-label="' + label.replace(/"/g, '&quot;') + '" ' +
         'onclick="sumC2BadgeClick(event, this)" ' +
         'title="' + c2BadgeTitle.replace(/"/g, '&quot;') + '" ' +
-        'style="position:absolute;top:2px;right:4px;width:16px;height:16px;padding:0;' +
+        'style="position:absolute;top:2px;right:' + c2InspectRight + ';width:16px;height:16px;padding:0;' +
         'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:50%;' +
         'cursor:pointer;font-size:10px;font-weight:700;line-height:14px;' +
         'font-family:Georgia,serif;font-style:italic;display:inline-flex;' +
@@ -19239,12 +19285,13 @@ async function renderBudgetSummary(contentDiv) {
       html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'" data-label="'+r.label.replace(/"/g,'&quot;')+'">' +
         '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
-        makeInput(r.col1, r.label, 'c1', '#fbfaf4') +
-        makeInput(r.col2, r.label, 'c2', '#f9f9f7') +
+        // FA dir 2026-05-17: pass override info for c1/c2/c6 too (newly editable).
+        makeInput(r.col1, r.label, 'c1', '#fbfaf4', (r.overrides && r.overrides.col1)) +
+        makeInput(r.col2, r.label, 'c2', '#f9f9f7', (r.overrides && r.overrides.col2)) +
         makeInput(r.col3, r.label, 'c3', '#f9f9f7', (r.overrides && r.overrides.col3)) +
         makeInput(r.col4, r.label, 'c4', '#f9f9f7', (r.overrides && r.overrides.col4)) +
         makeInput(r.col5, r.label, 'c5', '#f9f9f7', (r.overrides && r.overrides.col5)) +
-        makeInput(r.col6, r.label, 'c6', '#fbfaf4') +
+        makeInput(r.col6, r.label, 'c6', '#fbfaf4', (r.overrides && r.overrides.col6)) +
         makeInput(r.col7, r.label, 'c7', '#fffbeb') +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);color:var(--gray-400);font-variant-numeric:tabular-nums;">\u2014</td>' +
         noteIn(r.label) + '</tr>';
@@ -20002,7 +20049,10 @@ function sumCellBlur(el) {
   const tr = el.closest('tr');
   const order = tr ? tr.dataset.order : null;
   if (!order) return;
-  const editable = (col === 'c7') || (col === 'c3') || (col === 'c4') || (col === 'c5');
+  // FA dir 2026-05-17: c1/c2/c6 are now editable too (via *_override fields).
+  const editable = (col === 'c7') ||
+                   (col === 'c1') || (col === 'c2') || (col === 'c3') ||
+                   (col === 'c4') || (col === 'c5') || (col === 'c6');
   if (!editable) return;
   // FA directive 2026-05-10: short-circuit when the FA didn't actually
   // change the value during this focus session. Without this guard, just
@@ -20026,14 +20076,18 @@ function sumCellBlur(el) {
   const rawNum = (el.dataset.raw === '' || el.dataset.raw === undefined) ? null : parseFloat(el.dataset.raw);
   const edit = { display_order: parseInt(order) };
   if (col === 'c7')      edit.col7 = rawNum;
+  else if (col === 'c1') edit.col1_override = rawNum;
+  else if (col === 'c2') edit.col2_override = rawNum;
   else if (col === 'c3') edit.col3_override = rawNum;
   else if (col === 'c4') edit.col4_override = rawNum;
   else if (col === 'c5') edit.col5_override = rawNum;
+  else if (col === 'c6') edit.col6_override = rawNum;
   fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({edits:[edit]})
   }).then(r => r.json()).then(data => {
-    // Reflect override state visually after save (no full reload)
-    if (col === 'c3' || col === 'c4' || col === 'c5') {
+    // Reflect override state visually after save (no full reload).
+    // 2026-05-17: c1/c2/c6 also get the OVR badge treatment.
+    if (col === 'c1' || col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5' || col === 'c6') {
       const isNowOverridden = (rawNum !== null && !isNaN(rawNum));
       el.dataset.overridden = isNowOverridden ? '1' : '0';
       // Toggle stripe + amber tint
@@ -20066,8 +20120,9 @@ function sumCellBlur(el) {
 }
 
 // FA directive 2026-05-05: right-click on c3/c4/c5 to revert to computed value.
+// 2026-05-17: extended to c1/c2/c6 (which revert to imported / audit-computed source).
 // Sends {col*_override: null} which clears the override; server returns the
-// row to GL-aggregation behavior on next render.
+// row to GL-aggregation / import behavior on next render.
 function sumCellRevert(event, el) {
   event.preventDefault();
   if (el.dataset.overridden !== '1') return false;
@@ -20078,9 +20133,12 @@ function sumCellRevert(event, el) {
   if (!order) return false;
   if (!confirm('Revert ' + (el.dataset.label || '') + ' ' + col.toUpperCase() + ' to computed value (' + (computed || '—') + ')?')) return false;
   const edit = { display_order: parseInt(order) };
-  if (col === 'c3') edit.col3_override = null;
+  if (col === 'c1') edit.col1_override = null;
+  else if (col === 'c2') edit.col2_override = null;
+  else if (col === 'c3') edit.col3_override = null;
   else if (col === 'c4') edit.col4_override = null;
   else if (col === 'c5') edit.col5_override = null;
+  else if (col === 'c6') edit.col6_override = null;
   else return false;
   fetch('/api/summary/' + entityCode, {method:'PUT', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({edits:[edit]})

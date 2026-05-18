@@ -182,6 +182,11 @@ def _run_idempotent_migrations():
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col3_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col4_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col5_override DOUBLE PRECISION",
+        # FA directive 2026-05-17: make c1/c2/c6 editable too. Same pattern —
+        # non-NULL override beats the imported / computed value; NULL falls back.
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col1_override DOUBLE PRECISION",
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col2_override DOUBLE PRECISION",
+        "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col6_override DOUBLE PRECISION",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive
