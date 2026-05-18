@@ -25048,10 +25048,13 @@ PM_EDIT_TEMPLATE = r"""
     overflow: visible;  /* FA dir 2026-05-18: was overflow:hidden which clipped sticky thead. */
   }
   /* FA dir 2026-05-18 (scroll fix): one scroll context only — the window.
-     Drop the inner max-height + overflow-y:auto that created a nested scroll
-     area and broke position:sticky on thead. Horizontal scroll stays via
-     overflow-x:auto for narrow viewports. */
-  .grid-container { overflow-x: auto; overflow-y: visible; }
+     CSS spec gotcha: overflow-x:auto + overflow-y:visible computes both as
+     auto, which makes grid-container its own scroll context and breaks
+     position:sticky on the thead. So BOTH must be visible. If the table is
+     wider than the viewport on narrow screens, the page scrolls horizontally
+     (annoying but acceptable — vertical scroll with sticky headers is the
+     primary daily use). */
+  .grid-container { overflow: visible; }
   .grid-container::-webkit-scrollbar { width:10px; height:12px; }
   .grid-container::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
   .grid-container::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }
