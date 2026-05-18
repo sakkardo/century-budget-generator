@@ -25045,9 +25045,13 @@ PM_EDIT_TEMPLATE = r"""
     background: white;
     border-radius: 12px;
     border: 1px solid var(--gray-200);
-    overflow: hidden;
+    overflow: visible;  /* FA dir 2026-05-18: was overflow:hidden which clipped sticky thead. */
   }
-  .grid-container { overflow-x: scroll; max-height: 75vh; overflow-y: auto; }
+  /* FA dir 2026-05-18 (scroll fix): one scroll context only — the window.
+     Drop the inner max-height + overflow-y:auto that created a nested scroll
+     area and broke position:sticky on thead. Horizontal scroll stays via
+     overflow-x:auto for narrow viewports. */
+  .grid-container { overflow-x: auto; overflow-y: visible; }
   .grid-container::-webkit-scrollbar { width:10px; height:12px; }
   .grid-container::-webkit-scrollbar-track { background:var(--gray-100); border-radius:6px; }
   .grid-container::-webkit-scrollbar-thumb { background:#8b7355; border-radius:6px; min-height:40px; }
@@ -25055,7 +25059,10 @@ PM_EDIT_TEMPLATE = r"""
   .grid-container::-webkit-scrollbar-corner { background:var(--gray-100); }
 
   table { border-collapse: separate; border-spacing: 0; font-size: 13px; width: 100%; }
-  .grid-container > table > thead { position: sticky; top: 48px; z-index: 20; }
+  /* FA dir 2026-05-18: thead sticks below the nav (48px) AND the formula bar
+     (~46px). Both are sticky themselves, so column headers slot in below them. */
+  .grid-container > table > thead { position: sticky; top: 94px; z-index: 20; }
+  .grid-container > table > thead th { position: sticky; top: 94px; z-index: 22; background: #fafbfc; }
   /* Inner drill-down tables (invoice details) must NOT inherit sticky thead */
   .invoice-detail-row table thead,
   .invoice-detail-row table thead tr,
@@ -25767,7 +25774,7 @@ PM_EDIT_TEMPLATE = r"""
 
   <div class="grid-wrapper">
     <div class="grid-container">
-      <div id="pmFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:0; position:sticky; top:0; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">
+      <div id="pmFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200); border-radius:8px; margin-bottom:0; position:sticky; top:48px; z-index:50; box-shadow:0 2px 4px rgba(0,0,0,0.04);">
         <span style="font-size:11px; font-weight:700; color:var(--blue); background:var(--blue-light, #e1effe); border:1px solid var(--blue); border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>
         <span id="pmFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:var(--gray-600); white-space:nowrap; min-width:100px;"></span>
         <input id="pmFormulaBar" type="text" placeholder="Click a green formula cell to view its formula..." style="display:block; flex:1; padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="pmFormulaBarPreview()" onkeydown="pmFormulaBarKeydown(event)">
@@ -25914,18 +25921,16 @@ function fmt(n) {
     return '$' + Math.round(n).toLocaleString();
 }
 
-/* ── Grid Viewport Fit (PM) — keep horizontal scrollbar visible ──── */
-function pmFitGridToViewport() {
-  const gs = document.querySelector('.grid-container');
-  if (!gs) return;
-  const rect = gs.getBoundingClientRect();
-  const available = window.innerHeight - rect.top - 16;
-  gs.style.maxHeight = Math.max(120, available) + 'px';
-}
-pmFitGridToViewport();
-window.addEventListener('resize', pmFitGridToViewport);
-window.addEventListener('scroll', pmFitGridToViewport);
-document.querySelector('.grid-container')?.addEventListener('scroll', pmFitGridToViewport);
+/* ── Grid Viewport Fit (PM) — DISABLED 2026-05-18 ─────────────────────
+   Was: dynamically resize .grid-container max-height on every window scroll
+   so its inner scrollbar matched the viewport. Side-effect: nested scroll
+   contexts (window + inner container) broke position:sticky on the thead,
+   so column headers scrolled away as the PM moved down the row list.
+   Fix: drop the inner scroll entirely and let the window be the single
+   scroll context — sticky thead now anchors at top:48px below the nav.
+   Function kept as a no-op so any cached call sites don't error. */
+function pmFitGridToViewport() { /* intentional no-op */ }
+// (removed: pmFitGridToViewport() call + resize/scroll listeners)
 
 /* ── Column Auto-Sizer (PM) ───────────────────────────────────────── */
 function autoSizeColumns(table) {
