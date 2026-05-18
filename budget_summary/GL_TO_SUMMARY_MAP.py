@@ -143,10 +143,14 @@ _CONDO_ROWS = {
     },
     "Working Capital Contribution": {
         "sheet": None,
-        "gl_prefix": [],
+        # FA dir 2026-05-18: 4725-0040 routes here (below the line, non-operating
+        # income) instead of being lumped into Other Income. Sub-account exact
+        # match keeps it out of the 4725-* catch-all in Other Income.
+        "gl_prefix": ["4725-0040"],
         "section": "non_operating_income",
         "special": "manual",
-        "notes": "Condo working capital contributions. FA-entered."
+        "notes": "Condo working capital contributions. 4725-0040 (Working Capital "
+                 "Contribution) is the canonical GL on Yardi. Below-the-line."
     },
     "Claims Proceeds - Insurance Repairs": {
         "sheet": None,
@@ -201,15 +205,33 @@ SUMMARY_ROW_MAP = {
     },
     "Garage": {
         "sheet": "Income",
-        "gl_prefix": ["4135", "4520"],
+        "gl_prefix": ["4135"],
         "section": "income",
-        "notes": "Garage/parking income. 4135=garage contract, 4520=parking."
+        "notes": "Garage/parking income. 4135=garage contract. (FA dir 2026-05-18: "
+                 "removed 4520 — on most buildings 4520 is Commercial Real Estate Tax, "
+                 "not parking. Moved to Commercial Real Estate Tax row.)"
     },
     "Commercial Real Estate Tax": {
         "sheet": "Income",
-        "gl_prefix": ["4045"],  # varies by building
+        # FA dir 2026-05-18 (148 FA review): 4520 is "Commercial Real Estate Tax"
+        # on the buildings we manage, not parking. 4045 kept for buildings that
+        # use that GL number for the same concept. This is an income line —
+        # commercial tenants pay an additional charge that reimburses the building
+        # for its RE tax liability on the commercial space.
+        "gl_prefix": ["4045", "4520"],
         "section": "income",
-        "notes": "Not all buildings have this. Zero for most."
+        "notes": "Pulls in commercial RE tax reimbursement income. Most buildings "
+                 "use 4520; some use 4045. Income line, own row (not lumped into "
+                 "Other Income)."
+    },
+    "Cable TV": {
+        "sheet": "Income",
+        # FA dir 2026-05-18: was being absorbed into Other Income via the 4250
+        # catch-all. Now its own line so PMs/FAs can see cable revenue distinctly.
+        "gl_prefix": ["4250"],
+        "section": "income",
+        "notes": "Cable TV revenue (bulk-rate building cable). Own line, not "
+                 "lumped into Other Income."
     },
     "Storage Income": {
         "sheet": "Income",
@@ -239,7 +261,17 @@ SUMMARY_ROW_MAP = {
     },
     "Other Income": {
         "sheet": "Income",
-        "gl_prefix": ["4070", "4250", "4700", "4705", "4710", "4715", "4720", "4725",
+        # FA dir 2026-05-18: removed 4250 (now its own Cable TV row).
+        # 4725 stays as a catch-all for the 4725-* family EXCEPT 4725-0040
+        # which now flows to Working Capital Contribution (non-operating).
+        # The matching code does prefix-style match — to keep 4725-0040 out of
+        # this catch-all, we list the specific 4725-00XX sub-accounts that
+        # should belong to Other Income rather than the bare "4725" prefix.
+        "gl_prefix": ["4070", "4700", "4705", "4710", "4715", "4720",
+                       "4725-0000", "4725-0015", "4725-0020", "4725-0025",
+                       "4725-0030", "4725-0035", "4725-0045", "4725-0050",
+                       "4725-0055", "4725-0060", "4725-0065", "4725-0070",
+                       "4725-0075", "4725-0080", "4725-0085", "4725-0090",
                        "4803", "4812", "4815", "4818", "4911", "4917", "4922",
                        "4926", "4932", "4956", "4990"],
         "section": "income",
@@ -247,7 +279,10 @@ SUMMARY_ROW_MAP = {
                  "Added 2026-05-03 from 168 orphan scan: 4070 (Prepaid Income), "
                  "4818 (Flip Tax - Operating), 4911 (Messenger), 4917 (Credit Check), "
                  "4926 (Administrative Fees). "
-                 "Added 2026-05-13 from 148 orphan scan: 4956 (Security Account Admin)."
+                 "Added 2026-05-13 from 148 orphan scan: 4956 (Security Account Admin). "
+                 "FA dir 2026-05-18: 4250 broken out to Cable TV row; 4725-0040 "
+                 "moved to Working Capital Contribution row. 4725-* sub-accounts "
+                 "enumerated explicitly to exclude 4725-0040."
     },
 
     # ─── EXPENSES ────────────────────────────────────────────────────────
@@ -472,14 +507,17 @@ SUMMARY_ROW_MAP = {
     # the working-session decides above-vs-below the line.
     "Flip Tax": {
         "sheet": None,
-        "gl_prefix": [],
+        # FA dir 2026-05-18 (148 review): 7025 routes here (below the line,
+        # non-operating income), not into Capital Expenses. 4818 is the
+        # operating-line flip tax which stays in Other Income via that row's
+        # catch-all (per FA's "above-the-line vs below-the-line" treatment).
+        # 4935 is "Flip Tax Income" seen on 148 — also below the line.
+        "gl_prefix": ["7025", "4935"],
         "section": "non_operating_income",
         "special": "manual",
-        "notes": "Apartment sale transfer fees. GL varies per building: "
-                 "4818 (above-the-line / operating) seen on some coops, "
-                 "7025 (below-the-line / non-operating) on others. FA "
-                 "attaches the right GL prefix per-building via the "
-                 "summary tab's Add Row → Specific GL mode."
+        "notes": "Apartment sale transfer fees. 7025 = below-the-line capital "
+                 "flip tax, 4935 = below-the-line flip tax income. 4818 stays "
+                 "in Other Income (operating)."
     },
 }
 
