@@ -19031,7 +19031,15 @@ async function renderBudgetSummary(contentDiv) {
     });
     // Cache duplicate-row warnings on window so readinessAction can read
     // them for scroll+flash targeting without re-fetching the API.
-    window._sumDuplicateWarnings = (warnings || []).filter(w => w && w.type === 'duplicate_rows');
+    // Backend emits either 'duplicate_prefixes' (same GL prefix list, high
+    // severity) or 'duplicate_values' (identical YTD, medium severity);
+    // both carry a labels[] array we can flash. 'duplicate_rows' is kept
+    // as a forward-compat name in case the backend ever consolidates.
+    window._sumDuplicateWarnings = (warnings || []).filter(function(w) {
+      return w && (w.type === 'duplicate_prefixes' ||
+                   w.type === 'duplicate_values'   ||
+                   w.type === 'duplicate_rows');
+    });
     warningsBannerHtml += '</div>';
   }
 
