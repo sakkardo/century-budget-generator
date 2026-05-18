@@ -13988,10 +13988,22 @@ function openBoardPresentation() {
       return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
     }
 
-    // Category defs for expandable detail
+    // Category defs for expandable detail. Gen & Admin sub-categorization
+    // historically used row_num ranges (which match the original approved-2026
+    // Excel template layout). GLs imported from YSL that weren't in that
+    // template get row_num=0 and fall outside all ranges. FA dir 2026-05-17
+    // adds a GL-prefix fallback via _gaSubForGl() so 6145 (Errors & Omissions
+    // Insurance) lands in "Insurance" and 6315-001x (RE Tax credits) land in
+    // "Taxes", regardless of whether they came from the Excel template.
     const CATS = {
       'Repairs & Supplies': [{label:'Supplies', match: l => l.category === 'supplies'}, {label:'Repairs', match: l => l.category === 'repairs'}, {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}],
-      'Gen & Admin': [{label:'Professional Fees', match: l => l.row_num >= 8 && l.row_num <= 16}, {label:'Administrative & Other', match: l => l.row_num >= 20 && l.row_num <= 49}, {label:'Insurance', match: l => l.row_num >= 53 && l.row_num <= 64}, {label:'Taxes', match: l => l.row_num >= 68 && l.row_num <= 78}, {label:'Financial Expenses', match: l => l.row_num >= 82 && l.row_num <= 90}]
+      'Gen & Admin': [
+        {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
+        {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
+        {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
+        {label:'Taxes',                 match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+        {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
+      ]
     };
 
     // Sheet totals
@@ -16917,6 +16929,27 @@ function updateProposalBadge() {
   document.getElementById('pmReviewBadgeText').textContent = total + ' item' + (total !== 1 ? 's' : '') + ' need review';
 }
 
+// FA dir 2026-05-17: GL-prefix → Gen & Admin sub-category. Mirrors the
+// Sub-Category column in budget_system/GL_Mapping.csv. Used as fallback in
+// every Gen & Admin sub-category match function when row_num=0 (the case for
+// GLs imported from the YSL that weren't in the approved-2026 Excel template,
+// e.g. GL 6145-0000 "Errors & Omissions Insurance"). Without this, those GLs
+// land in "Administrative & Other" instead of their natural section.
+function _gaSubForGl(gl) {
+  const p4 = (gl || '').slice(0, 4);
+  // Insurance (6105-6195)
+  if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
+  // Taxes (6310-6395)
+  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  // Professional Fees (6505-6590)
+  if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
+  // Financial Expenses (6905-6970+, etc.)
+  if (p4.startsWith('69')) return 'financial';
+  // Administrative & Other (6700-6799) — Telephone, Software, Cable, Stationery, Misc, etc.
+  if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
+  return 'admin_other';   // safe default
+}
+
 // Category grouping definitions per sheet
 const SHEET_CATEGORIES = {
   'Repairs & Supplies': {
@@ -16927,12 +16960,14 @@ const SHEET_CATEGORIES = {
     ]
   },
   'Gen & Admin': {
+    // FA dir 2026-05-17: GL-prefix fallback for row_num=0 GLs (YSL-imported
+    // but not in the approved-2026 template). See _gaSubForGl() definition.
     groups: [
-      {key: 'prof_fees', label: 'Professional Fees', match: l => (l.row_num >= 8 && l.row_num <= 16)},
-      {key: 'admin', label: 'Administrative & Other', match: l => (l.row_num >= 20 && l.row_num <= 49)},
-      {key: 'insurance', label: 'Insurance', match: l => (l.row_num >= 53 && l.row_num <= 64)},
-      {key: 'taxes', label: 'Taxes', match: l => (l.row_num >= 68 && l.row_num <= 78)},
-      {key: 'financial', label: 'Financial Expenses', match: l => (l.row_num >= 82 && l.row_num <= 90)}
+      {key: 'prof_fees', label: 'Professional Fees', match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
+      {key: 'admin',     label: 'Administrative & Other', match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
+      {key: 'insurance', label: 'Insurance', match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
+      {key: 'taxes',     label: 'Taxes', match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+      {key: 'financial', label: 'Financial Expenses', match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
     ]
   }
 };
@@ -25512,6 +25547,20 @@ const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
 const REMAINING_MONTHS = {{ remaining_months }};
 
+// FA dir 2026-05-17: GL-prefix → Gen & Admin sub-category fallback (mirrors
+// budget_system/GL_Mapping.csv Sub-Category column). Used by PM_SHEET_CATEGORIES
+// below when row_num=0 so YSL-imported GLs land in the right sub-section
+// (e.g. 6145 → Insurance, 6315-001x → Taxes).
+function _gaSubForGl(gl) {
+  const p4 = (gl || '').slice(0, 4);
+  if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
+  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
+  if (p4.startsWith('69')) return 'financial';
+  if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
+  return 'admin_other';
+}
+
 // PM Portal v2 — visual-hierarchy redesign (2026-05-17).
 // Opt-in via ?ui=v2 (one-shot) or localStorage pm_ui=v2 (persistent).
 // Adding ?ui=v2 to the URL also stickies the choice in localStorage so
@@ -25548,7 +25597,14 @@ const PM_SHEET_CATEGORIES = {
       if (r >= 53 && r <= 64) return 'insurance';
       if (r >= 68 && r <= 78) return 'taxes';
       if (r >= 82 && r <= 90) return 'financial';
-      return 'admin_other';  // fallback
+      // FA dir 2026-05-17: row_num=0 → fall back to GL-prefix lookup so YSL-
+      // imported GLs (not in approved-2026 template) land in the right bucket.
+      const sub = _gaSubForGl(l.gl_code);
+      if (sub === 'prof_fees')   return 'prof_fees';
+      if (sub === 'insurance')   return 'insurance';
+      if (sub === 'taxes')       return 'taxes';
+      if (sub === 'financial')   return 'financial';
+      return 'admin_other';   // ultimate fallback
     },
     grandLabel: 'GRAND TOTAL G&A'
   }
@@ -27720,18 +27776,31 @@ function safeEvalFormula(expr) {
   } catch (e) { return null; }
 }
 
+// FA dir 2026-05-17: see BUILDING_DETAIL_TEMPLATE for full notes. Duplicated
+// here so this template's JS scope can resolve it.
+function _gaSubForGl(gl) {
+  const p4 = (gl || '').slice(0, 4);
+  if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
+  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
+  if (p4.startsWith('69')) return 'financial';
+  if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
+  return 'admin_other';
+}
+
 const CATEGORIES = {
   'Repairs & Supplies': [
     {label:'Supplies', match: l => l.category === 'supplies'},
     {label:'Repairs', match: l => l.category === 'repairs'},
     {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}
   ],
+  // FA dir 2026-05-17: row_num=0 fallback via _gaSubForGl (CSV-derived).
   'Gen & Admin': [
-    {label:'Professional Fees', match: l => l.row_num >= 8 && l.row_num <= 16},
-    {label:'Administrative & Other', match: l => l.row_num >= 20 && l.row_num <= 49},
-    {label:'Insurance', match: l => l.row_num >= 53 && l.row_num <= 64},
-    {label:'Taxes', match: l => l.row_num >= 68 && l.row_num <= 78},
-    {label:'Financial Expenses', match: l => l.row_num >= 82 && l.row_num <= 90}
+    {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
+    {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
+    {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
+    {label:'Taxes',                 match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+    {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
   ]
 };
 
