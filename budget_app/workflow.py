@@ -25350,6 +25350,36 @@ PM_EDIT_TEMPLATE = r"""
     border-color: #16a34a;
   }
 
+  /* FA dir 2026-05-18: when pm-v2 is also active (opt-in "action zone" overlay),
+     neutralize its chrome that conflicts with single-entry visuals. pm-v2 was
+     designed for the either-or model where Inc% and Inc$ were action inputs;
+     under single-entry those are derived pills, so the heavy blue header bands,
+     gold side rails, and tan backgrounds make the page busier, not cleaner. */
+  body.pm-portal.pm-v2 #linesTable tbody td:nth-child(5),
+  body.pm-portal.pm-v2 #linesTable tbody td:nth-child(6) {
+    background: transparent !important;
+  }
+  body.pm-portal.pm-v2 #linesTable thead th:nth-child(10),
+  body.pm-portal.pm-v2 #linesTable thead th:nth-child(11) {
+    background: #fafbfc !important;
+    color: var(--gray-600, #64748b) !important;
+    border-bottom: 1px solid var(--gray-200, #e5e7eb) !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    font-weight: 600 !important;
+    font-size: 11px !important;
+    letter-spacing: 0.04em !important;
+    text-transform: uppercase;
+  }
+  body.pm-portal.pm-v2 #linesTable tbody td:nth-child(10),
+  body.pm-portal.pm-v2 #linesTable tbody td:nth-child(11) {
+    background: transparent !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+  }
+  /* Keep pm-v2's Current Budget anchor styling (col 9 tan emphasis) — that one
+     plays nicely with single-entry's "compare against this" mental model. */
+
   .pm-rm-progress-strip {
     background: white;
     border-radius: 10px;
@@ -25756,12 +25786,12 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">YTD<br>Actual</th>
             <th class="number">Accrual<br>Adj</th>
             <th class="number">Unpaid<br>Bills</th>
-            <th class="number">{{ estimate_label }}<br>Estimate <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
-            <th class="number">12 Month<br>Forecast <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+            <th class="number">{{ estimate_label }}<br>Estimate</th>
+            <th class="number">12 Month<br>Forecast</th>
             <th class="number">Current<br>Budget</th>
-            <th class="number" title="Enter % OR $ — either, not both">Increase<br>%</th>
-            <th class="number" title="Enter $ OR % — either, not both" style="background:#d1fae5; color:#065f46;">Increase<br>$</th>
-            <th class="number">Proposed<br>Budget <span style="font-size:9px; color:var(--blue); background:var(--blue-light, #f5efe7); padding:0 3px; border-radius:3px; border:1px solid var(--blue);">fx</span></th>
+            <th class="number" title="Auto-derived from (Proposed − Current Budget) / Current Budget">Increase<br>%</th>
+            <th class="number" title="Auto-derived from Proposed − Current Budget">Increase<br>$</th>
+            <th class="number">2027 Proposed<br>Budget</th>
             <th class="number">$<br>Variance</th>
             <th class="number">%<br>Change</th>
             <th class="col-notes">Notes</th>
