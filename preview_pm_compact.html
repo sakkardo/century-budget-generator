@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PM Portal — Compact Redesign Preview</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #94a3b8;
+    --muted-2: #64748b;
+    --line: #e5e7eb;
+    --line-2: #f1f5f9;
+    --accent: #1d4ed8;
+    --accent-bg: #eff6ff;
+    --green: #16a34a;
+    --green-bg: #dcfce7;
+    --red: #dc2626;
+    --red-bg: #fee2e2;
+    --gray-pill: #f1f5f9;
+    --gray-pill-ink: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  .lede { color: var(--muted-2); margin: 0 0 24px; max-width: 760px; }
+
+  .toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  .toolbar .label { color: var(--muted-2); font-size: 13px; }
+  .mode-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .mode-switch button { padding: 7px 14px; background: white; border: none; color: var(--muted-2); cursor: pointer; font: 600 13px -apple-system,sans-serif; }
+  .mode-switch button.active { background: var(--ink); color: white; }
+  .mode-switch button + button { border-left: 1px solid var(--line); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 0; margin-bottom: 18px; overflow: hidden; box-shadow: 0 1px 3px rgba(15,23,42,.04); }
+
+  .progress-strip {
+    padding: 12px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid var(--line);
+    background: white;
+    font-size: 13px;
+  }
+  .progress-strip .pct { font-weight: 600; color: var(--ink); }
+  .progress-strip .bar { flex: 1; height: 6px; background: var(--line-2); border-radius: 999px; overflow: hidden; max-width: 280px; }
+  .progress-strip .bar-fill { height: 100%; background: var(--accent); width: 18%; border-radius: 999px; }
+  .progress-strip .ghost-btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); font: 600 12px -apple-system,sans-serif; cursor: pointer; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: #fafbfc; color: var(--muted-2); font: 600 11px -apple-system,sans-serif; text-transform: uppercase; letter-spacing: 0.04em; padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  thead th.l { text-align: left; }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line-2); font-size: 13px; vertical-align: middle; text-align: right; }
+  tbody td.l { text-align: left; }
+  tbody tr.section-head td {
+    background: #fafbfc;
+    font: 700 11px -apple-system,sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted-2);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+  }
+  tbody tr.subtotal td {
+    background: #fafbfc;
+    font-weight: 600;
+    border-top: 1px solid var(--line);
+    border-bottom: 2px solid var(--line);
+    color: var(--ink);
+  }
+
+  /* Reference cells: dimmed, no chrome */
+  td.ref { color: var(--muted-2); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+  /* Current Budget: slight emphasis as the anchor PMs compare against */
+  td.curr { color: var(--ink); font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+
+  td.gl { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted-2); }
+  td.desc { color: var(--ink); }
+
+  /* Single editable cell: blue border, plain enough not to fight pills */
+  input.proposed {
+    width: 110px;
+    text-align: right;
+    padding: 7px 9px;
+    border: 1.5px solid var(--accent);
+    border-radius: 6px;
+    font: 600 13px ui-monospace, Menlo, monospace;
+    background: var(--accent-bg);
+    color: var(--ink);
+    outline: none;
+  }
+  input.proposed:focus { background: white; box-shadow: 0 0 0 3px rgba(29,78,216,.15); }
+  input.proposed::placeholder { color: var(--muted); font-weight: 400; font-style: italic; }
+  input.proposed.empty { background: white; border-color: var(--line); color: var(--muted); }
+  input.proposed.empty:focus { border-color: var(--accent); background: white; }
+
+  /* Pills: only 3 states */
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font: 600 11px ui-monospace, Menlo, monospace; }
+  .pill.up   { background: var(--red-bg);   color: var(--red); }
+  .pill.down { background: var(--green-bg); color: var(--green); }
+  .pill.flat { background: var(--gray-pill); color: var(--gray-pill-ink); }
+  .pill.empty { background: transparent; color: var(--muted); font-weight: 400; }
+
+  /* "No change" — inline icon button right of input, no row-height jitter */
+  .no-change-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    margin-left: 4px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: white;
+    color: var(--muted-2);
+    cursor: pointer;
+    font-size: 14px;
+    vertical-align: middle;
+  }
+  .no-change-icon:hover { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+
+  /* Expand toggle on each row */
+  .row-expand {
+    display: inline-flex;
+    width: 18px; height: 18px;
+    align-items: center; justify-content: center;
+    margin-right: 4px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 10px;
+    transition: transform 0.15s;
+  }
+  .row-expand.open { transform: rotate(90deg); color: var(--ink); }
+
+  /* Notes column */
+  input.notes-input {
+    width: 100%;
+    min-width: 120px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 6px 8px;
+    font: 13px -apple-system, sans-serif;
+    background: white;
+  }
+  input.notes-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(29,78,216,.1); }
+  /* Missing notes on big delta — subtle red dot to the left of the field, not a yellow border */
+  td.notes { position: relative; }
+  td.notes .needs-note-dot {
+    display: none;
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+  td.notes.needs-note input.notes-input { padding-left: 18px; }
+  td.notes.needs-note .needs-note-dot { display: block; }
+
+  /* Detail panel revealed under a row */
+  tr.detail-row td {
+    background: #fafbfc;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px 24px;
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+  .detail-grid .item .lbl { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 2px; }
+  .detail-grid .item .val { color: var(--ink); font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 500; }
+  .detail-grid .item .val.diag-up { color: var(--red); }
+  .detail-grid .item .val.diag-down { color: var(--green); }
+
+  .legend { display: flex; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #fcfcfb; flex-wrap: wrap; font-size: 12px; color: var(--muted-2); }
+  .legend .item { display: inline-flex; gap: 6px; align-items: center; }
+  .legend .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+  .legend .swatch.action { background: var(--accent-bg); border: 1.5px solid var(--accent); }
+  .legend .swatch.delta { background: var(--red-bg); border: 1px solid var(--red); }
+  .legend .swatch.ref { background: white; border: 1px solid var(--line); }
+
+  /* "Before" (current build) styling — for the comparison toggle */
+  body.mode-current table.compact thead .col-detail,
+  body.mode-current table.compact tbody td.col-detail,
+  body.mode-current tr.detail-row { display: none; }
+
+  body.mode-current table.compact thead .col-prior,
+  body.mode-current table.compact thead .col-ytd,
+  body.mode-current table.compact thead .col-accrual,
+  body.mode-current table.compact thead .col-unpaid,
+  body.mode-current table.compact thead .col-estimate,
+  body.mode-current table.compact thead .col-forecast,
+  body.mode-current table.compact thead .col-variance,
+  body.mode-current table.compact thead .col-pctchange,
+  body.mode-current table.compact tbody td.col-prior,
+  body.mode-current table.compact tbody td.col-ytd,
+  body.mode-current table.compact tbody td.col-accrual,
+  body.mode-current table.compact tbody td.col-unpaid,
+  body.mode-current table.compact tbody td.col-estimate,
+  body.mode-current table.compact tbody td.col-forecast,
+  body.mode-current table.compact tbody td.col-variance,
+  body.mode-current table.compact tbody td.col-pctchange { display: table-cell; }
+
+  body.mode-compact table.compact thead .col-prior,
+  body.mode-compact table.compact thead .col-ytd,
+  body.mode-compact table.compact thead .col-accrual,
+  body.mode-compact table.compact thead .col-unpaid,
+  body.mode-compact table.compact thead .col-estimate,
+  body.mode-compact table.compact thead .col-forecast,
+  body.mode-compact table.compact thead .col-variance,
+  body.mode-compact table.compact thead .col-pctchange,
+  body.mode-compact table.compact tbody td.col-prior,
+  body.mode-compact table.compact tbody td.col-ytd,
+  body.mode-compact table.compact tbody td.col-accrual,
+  body.mode-compact table.compact tbody td.col-unpaid,
+  body.mode-compact table.compact tbody td.col-estimate,
+  body.mode-compact table.compact tbody td.col-forecast,
+  body.mode-compact table.compact tbody td.col-variance,
+  body.mode-compact table.compact tbody td.col-pctchange { display: none; }
+
+  body.mode-compact table.compact thead .col-detail,
+  body.mode-compact table.compact tbody td.col-detail { display: table-cell; }
+
+  .recap {
+    background: white; border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 22px;
+  }
+  .recap h2 { margin: 0 0 8px; font-size: 16px; }
+  .recap ul { margin: 0; padding-left: 18px; color: var(--muted-2); }
+  .recap li { margin-bottom: 6px; line-height: 1.5; }
+  .recap b { color: var(--ink); }
+
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body class="mode-compact">
+
+<h1>PM Portal Redesign — Compact View Preview</h1>
+<p class="lede">
+  Same functionality as the live build at /pm/148. Reduced columns, single color budget,
+  expandable per-row detail. Compare with the current "detailed" mode using the toggle below.
+  Click the ▶ on any row to peek at Prior/YTD/Forecast/Variance.
+</p>
+
+<div class="toolbar">
+  <span class="label">View mode:</span>
+  <div class="mode-switch">
+    <button id="btnCompact" class="active" onclick="setMode('compact')">Compact (proposed)</button>
+    <button id="btnCurrent" onclick="setMode('current')">Detailed (current build)</button>
+  </div>
+  <span class="label">Tap "▶" on a row to expand context. Edit any blue cell to see derived pills + subtotals update.</span>
+</div>
+
+<div class="card">
+
+  <div class="progress-strip">
+    <span class="pct">3 of 102 reviewed</span>
+    <div class="bar"><div class="bar-fill"></div></div>
+    <button class="ghost-btn">Jump to next unreviewed →</button>
+    <button class="ghost-btn">Mark all as 0%</button>
+    <span style="margin-left:auto; color: var(--muted-2); font-size: 12px;">Status: <b style="color:var(--ink);">PM IN PROGRESS</b></span>
+  </div>
+
+  <div class="legend">
+    <div class="item"><span class="swatch action"></span> Blue cell = the only thing you type</div>
+    <div class="item"><span class="swatch delta"></span> Pill = automatic delta vs current budget</div>
+    <div class="item"><span class="swatch ref"></span> Gray text = reference (read-only)</div>
+    <div class="item">▶ = expand for Prior / YTD / Forecast / Variance</div>
+  </div>
+
+  <div class="table-wrap">
+  <table class="compact" id="pmTable">
+    <thead>
+      <tr>
+        <th class="l col-detail" style="width:32px;"></th>
+        <th class="l">GL</th>
+        <th class="l">Description</th>
+        <th class="col-prior">Prior Year</th>
+        <th class="col-ytd">YTD</th>
+        <th class="col-accrual">Accrual</th>
+        <th class="col-unpaid">Unpaid</th>
+        <th class="col-estimate">Estimate</th>
+        <th class="col-forecast">Forecast</th>
+        <th>2026 Curr Budget</th>
+        <th>2027 Proposed</th>
+        <th>Increase $</th>
+        <th>Increase %</th>
+        <th class="col-variance">$ Variance</th>
+        <th class="col-pctchange">% Change</th>
+        <th class="l">Notes</th>
+      </tr>
+    </thead>
+    <tbody id="pmBody"></tbody>
+  </table>
+  </div>
+</div>
+
+<div class="recap">
+  <h2>What changed vs the live build</h2>
+  <ul>
+    <li><b>14 columns → 7 columns by default.</b> Prior, YTD, Accrual, Unpaid, Estimate, Forecast, $ Variance, % Change are hidden behind the ▶ row expander. Power users see them on demand; PMs aren't drowning in them.</li>
+    <li><b>9 visual treatments → 3.</b> Gray text for reference, blue input for action, red/green pills for delta. Killed the fx stickers (FA-only feature), the green borders on Estimate/Forecast cells (not editable here), the yellow Notes border (replaced with a tiny red dot when notes are needed).</li>
+    <li><b>"No change" button → inline icon button.</b> Sits to the right of the Proposed input, same height as the input. Row heights stop jittering. Click the "= " icon to flat-line proposed = current.</li>
+    <li><b>Subtotal rows render derived pills.</b> No more visual gap where data rows have pills and subtotals have blank cells. Now you see the rollup delta per category, which is useful.</li>
+    <li><b>Column order matches the decision flow.</b> Identity → Current Budget → Proposed (the action) → Delta pills → Notes. Diagnostic comparisons (vs Forecast) hide in the detail panel where they belong.</li>
+    <li><b>Notes column gets full width.</b> Small red dot on the left signals "this row needs a note" when delta &gt; 10% and notes is empty.</li>
+  </ul>
+</div>
+
+<script>
+  const ROWS = [
+    { cat: "Supplies", gl: "5406-0000", desc: "Supplies & Hardware",   prior:  82511, ytd:  32968, accrual: -5224, unpaid: 0, estimate:  55488, forecast:  83232, curr:  72500, proposed: 76000 },
+    { cat: "Repairs",  gl: "5622-0000", desc: "HVAC Repairs",          prior:  13901, ytd:    392, accrual:    0,  unpaid: 0, estimate:    784, forecast:   1176, curr:  15000, proposed: 15000 },
+    { cat: "Repairs",  gl: "5630-0000", desc: "Plumbing Repairs",      prior: 223898, ytd:  31588, accrual: -3419, unpaid: 0, estimate:  56338, forecast:  84508, curr: 185000, proposed: 185000 },
+    { cat: "Repairs",  gl: "5640-0000", desc: "Elevator Repairs",      prior:  18450, ytd:   6200, accrual:    0,  unpaid: 0, estimate:  10500, forecast:  16200, curr:  22000, proposed: null },
+    { cat: "Maintenance Contracts", gl: "5705-0000", desc: "Elevator Service Contract", prior: 24000, ytd: 8400, accrual: 0, unpaid: 0, estimate: 16800, forecast: 25200, curr: 24720, proposed: 25460 },
+    { cat: "Maintenance Contracts", gl: "5710-0000", desc: "HVAC Maintenance Contract", prior: 12000, ytd: 4000, accrual: 0, unpaid: 0, estimate: 8000, forecast: 12000, curr: 12360, proposed: null },
+  ];
+
+  const catLabels = {
+    "Supplies": "Supplies",
+    "Repairs": "Repairs",
+    "Maintenance Contracts": "Maintenance Contracts",
+  };
+
+  const fmt = n => {
+    if (n === null || n === undefined || n === '') return '';
+    if (Math.abs(n) < 0.5) return "$0";
+    const sign = n < 0 ? "-" : "";
+    return sign + "$" + Math.abs(Math.round(n)).toLocaleString();
+  };
+  const fmtDelta = n => {
+    if (Math.abs(n) < 0.5) return "$0";
+    const sign = n > 0 ? "+" : "-";
+    return sign + "$" + Math.abs(Math.round(n)).toLocaleString();
+  };
+  const fmtPct = pct => {
+    if (Math.abs(pct) < 0.05) return "0.0%";
+    const sign = pct > 0 ? "+" : "";
+    return sign + pct.toFixed(1) + "%";
+  };
+  const classify = d => Math.abs(d) < 0.5 ? "flat" : (d > 0 ? "up" : "down");
+
+  function render() {
+    const tbody = document.getElementById("pmBody");
+    tbody.innerHTML = "";
+    const cats = {};
+    ROWS.forEach((r, i) => {
+      if (!cats[r.cat]) cats[r.cat] = [];
+      cats[r.cat].push({...r, idx: i});
+    });
+
+    let grand = { prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, curr:0, proposed:0, hasAnyProposed:false };
+
+    Object.keys(cats).forEach(cat => {
+      const headRow = document.createElement("tr");
+      headRow.className = "section-head";
+      headRow.innerHTML = `<td colspan="16">${catLabels[cat]}</td>`;
+      tbody.appendChild(headRow);
+
+      let sub = { prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, curr:0, proposed:0, hasAnyProposed:false };
+
+      cats[cat].forEach(r => {
+        const hasProp = (r.proposed !== null && r.proposed !== undefined);
+        const proposed = hasProp ? r.proposed : 0;
+        const delta = hasProp ? proposed - r.curr : null;
+        const pct = (hasProp && r.curr !== 0) ? (delta / Math.abs(r.curr)) * 100 : null;
+        const klass = delta === null ? "empty" : classify(delta);
+        // Diagnostic
+        const variance = r.curr - r.forecast;
+        const pctChange = r.forecast === 0 ? 0 : (variance / Math.abs(r.forecast)) * 100;
+
+        Object.keys(sub).forEach(k => { if (typeof r[k] === 'number') sub[k] += r[k]; });
+        sub.proposed += hasProp ? r.proposed : 0;
+        if (hasProp) sub.hasAnyProposed = true;
+
+        const needsNote = hasProp && pct !== null && Math.abs(pct) > 10;
+        const tr = document.createElement("tr");
+        tr.dataset.idx = r.idx;
+        tr.innerHTML = `
+          <td class="l col-detail"><button class="row-expand" onclick="toggleDetail(${r.idx}, this)">▶</button></td>
+          <td class="gl">${r.gl}</td>
+          <td class="l desc">${r.desc}</td>
+          <td class="ref col-prior">${fmt(r.prior)}</td>
+          <td class="ref col-ytd">${fmt(r.ytd)}</td>
+          <td class="ref col-accrual">${fmt(r.accrual)}</td>
+          <td class="ref col-unpaid">${fmt(r.unpaid)}</td>
+          <td class="ref col-estimate">${fmt(r.estimate)}</td>
+          <td class="ref col-forecast">${fmt(r.forecast)}</td>
+          <td class="curr">${fmt(r.curr)}</td>
+          <td style="white-space:nowrap;">
+            <input class="proposed ${hasProp ? '' : 'empty'}" type="text" data-idx="${r.idx}" value="${hasProp ? fmt(proposed) : ''}" placeholder="Type $..." oninput="onEdit(this)">
+            ${hasProp ? '' : `<button class="no-change-icon" title="Set Proposed = Current Budget ($${r.curr.toLocaleString()})" onclick="flatLine(${r.idx})">=</button>`}
+          </td>
+          <td><span class="pill ${klass}">${delta === null ? '—' : fmtDelta(delta)}</span></td>
+          <td><span class="pill ${klass}">${pct === null ? '—' : fmtPct(pct)}</span></td>
+          <td class="ref col-variance" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(variance)}</td>
+          <td class="ref col-pctchange" style="color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">${fmtPct(pctChange)}</td>
+          <td class="notes l ${needsNote ? 'needs-note' : ''}">
+            <span class="needs-note-dot" title="Delta exceeds 10% — notes recommended"></span>
+            <input class="notes-input" type="text" placeholder="${needsNote ? 'Required at >10%' : 'Optional context…'}">
+          </td>
+        `;
+        tbody.appendChild(tr);
+
+        // Hidden detail row (collapsed by default)
+        const detailTr = document.createElement("tr");
+        detailTr.className = "detail-row";
+        detailTr.dataset.detailFor = r.idx;
+        detailTr.style.display = "none";
+        detailTr.innerHTML = `
+          <td colspan="16">
+            <div class="detail-grid">
+              <div class="item"><span class="lbl">Prior Year</span><span class="val">${fmt(r.prior)}</span></div>
+              <div class="item"><span class="lbl">YTD Actual</span><span class="val">${fmt(r.ytd)}</span></div>
+              <div class="item"><span class="lbl">Accrual Adj</span><span class="val">${fmt(r.accrual)}</span></div>
+              <div class="item"><span class="lbl">Unpaid Bills</span><span class="val">${fmt(r.unpaid)}</span></div>
+              <div class="item"><span class="lbl">Estimate</span><span class="val">${fmt(r.estimate)}</span></div>
+              <div class="item"><span class="lbl">12 Mo Forecast</span><span class="val">${fmt(r.forecast)}</span></div>
+              <div class="item"><span class="lbl">$ Variance (vs Forecast)</span><span class="val ${variance >= 0 ? 'diag-up' : 'diag-down'}">${fmt(variance)}</span></div>
+              <div class="item"><span class="lbl">% Change (vs Forecast)</span><span class="val ${variance >= 0 ? 'diag-up' : 'diag-down'}">${fmtPct(pctChange)}</span></div>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(detailTr);
+      });
+
+      // Subtotal
+      const sVar = sub.curr - sub.forecast;
+      const sPctChange = sub.forecast === 0 ? 0 : (sVar / Math.abs(sub.forecast)) * 100;
+      const sDelta = sub.hasAnyProposed ? sub.proposed - sub.curr : null;
+      const sPct = (sDelta !== null && sub.curr !== 0) ? (sDelta / Math.abs(sub.curr)) * 100 : null;
+      const sKlass = sDelta === null ? "empty" : classify(sDelta);
+      const subTr = document.createElement("tr");
+      subTr.className = "subtotal";
+      subTr.innerHTML = `
+        <td class="col-detail"></td>
+        <td></td>
+        <td class="l">Total ${catLabels[cat]}</td>
+        <td class="ref col-prior">${fmt(sub.prior)}</td>
+        <td class="ref col-ytd">${fmt(sub.ytd)}</td>
+        <td class="ref col-accrual">${fmt(sub.accrual)}</td>
+        <td class="ref col-unpaid">${fmt(sub.unpaid)}</td>
+        <td class="ref col-estimate">${fmt(sub.estimate)}</td>
+        <td class="ref col-forecast">${fmt(sub.forecast)}</td>
+        <td class="curr">${fmt(sub.curr)}</td>
+        <td class="curr">${sub.hasAnyProposed ? fmt(sub.proposed) : '—'}</td>
+        <td><span class="pill ${sKlass}">${sDelta === null ? '—' : fmtDelta(sDelta)}</span></td>
+        <td><span class="pill ${sKlass}">${sPct === null ? '—' : fmtPct(sPct)}</span></td>
+        <td class="ref col-variance" style="color:${sVar >= 0 ? 'var(--red)' : 'var(--green)'};">${fmt(sVar)}</td>
+        <td class="ref col-pctchange" style="color:${sVar >= 0 ? 'var(--red)' : 'var(--green)'};">${fmtPct(sPctChange)}</td>
+        <td></td>
+      `;
+      tbody.appendChild(subTr);
+
+      Object.keys(grand).forEach(k => { if (typeof sub[k] === 'number') grand[k] += sub[k]; });
+      if (sub.hasAnyProposed) grand.hasAnyProposed = true;
+    });
+
+    // Grand total
+    const gVar = grand.curr - grand.forecast;
+    const gPctChange = grand.forecast === 0 ? 0 : (gVar / Math.abs(grand.forecast)) * 100;
+    const gDelta = grand.hasAnyProposed ? grand.proposed - grand.curr : null;
+    const gPct = (gDelta !== null && grand.curr !== 0) ? (gDelta / Math.abs(grand.curr)) * 100 : null;
+    const gKlass = gDelta === null ? "empty" : classify(gDelta);
+    const gTr = document.createElement("tr");
+    gTr.className = "subtotal";
+    gTr.style.background = "#1f2937";
+    gTr.innerHTML = `
+      <td class="col-detail" style="background:#1f2937;"></td>
+      <td style="color:#fff; background:#1f2937;"></td>
+      <td class="l" style="color:#fff; background:#1f2937;">Grand Total — Repairs & Supplies</td>
+      <td class="ref col-prior" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.prior)}</td>
+      <td class="ref col-ytd" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.ytd)}</td>
+      <td class="ref col-accrual" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.accrual)}</td>
+      <td class="ref col-unpaid" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.unpaid)}</td>
+      <td class="ref col-estimate" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.estimate)}</td>
+      <td class="ref col-forecast" style="color:#cbd5e1; background:#1f2937;">${fmt(grand.forecast)}</td>
+      <td class="curr" style="color:#fff; background:#1f2937;">${fmt(grand.curr)}</td>
+      <td class="curr" style="color:#fff; background:#1f2937;">${grand.hasAnyProposed ? fmt(grand.proposed) : '—'}</td>
+      <td style="background:#1f2937;"><span class="pill ${gKlass}">${gDelta === null ? '—' : fmtDelta(gDelta)}</span></td>
+      <td style="background:#1f2937;"><span class="pill ${gKlass}">${gPct === null ? '—' : fmtPct(gPct)}</span></td>
+      <td class="ref col-variance" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'};">${fmt(gVar)}</td>
+      <td class="ref col-pctchange" style="background:#1f2937; color:${gVar >= 0 ? '#fca5a5' : '#86efac'};">${fmtPct(gPctChange)}</td>
+      <td style="background:#1f2937;"></td>
+    `;
+    tbody.appendChild(gTr);
+  }
+
+  function toggleDetail(idx, btn) {
+    const detailRow = document.querySelector(`tr.detail-row[data-detail-for="${idx}"]`);
+    if (!detailRow) return;
+    const open = detailRow.style.display !== "none";
+    detailRow.style.display = open ? "none" : "table-row";
+    btn.classList.toggle("open", !open);
+  }
+
+  function onEdit(el) {
+    const idx = +el.dataset.idx;
+    const raw = el.value.replace(/[$,\s]/g, "");
+    if (raw === "") {
+      ROWS[idx].proposed = null;
+    } else {
+      const num = parseFloat(raw);
+      if (Number.isFinite(num)) ROWS[idx].proposed = num;
+    }
+    render();
+    // Restore focus
+    const next = document.querySelector(`input.proposed[data-idx="${idx}"]`);
+    if (next) {
+      next.focus();
+      const v = next.value;
+      next.setSelectionRange(v.length, v.length);
+    }
+  }
+
+  function flatLine(idx) {
+    ROWS[idx].proposed = ROWS[idx].curr;
+    render();
+  }
+
+  function setMode(m) {
+    document.body.className = "mode-" + m;
+    document.getElementById("btnCompact").classList.toggle("active", m === "compact");
+    document.getElementById("btnCurrent").classList.toggle("active", m === "current");
+  }
+
+  render();
+</script>
+
+</body>
+</html>
