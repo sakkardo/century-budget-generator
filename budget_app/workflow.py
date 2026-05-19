@@ -3909,6 +3909,297 @@ def create_workflow_blueprint(db):
         })
 
 
+    # ─── API Routes: Per-Building Data Quality Health Check ─────────────────
+    # FA dir 2026-05-19: data-quality checks per building, exposed to the
+    # existing Health drawer as a second tab ("Data Quality" alongside
+    # "Readiness"). Each check encodes a bug class we hit on 148/168 so we
+    # catch the same pattern on every future entity automatically.
+
+    @bp.route("/api/health-check/<entity_code>", methods=["GET"])
+    def get_health_check(entity_code):
+        """Per-building data-quality health check.
+
+        Returns a list of checks with status (pass/warn/fail), human-readable
+        detail, suggested fix (when applicable), and supporting data. Powers
+        the "Data Quality" tab in the Health drawer.
+
+        Designed to catch every bug class from the 148/168 cycle:
+          - GL routing (Cable TV in own row, not Other Income)
+          - Maintenance prefix completeness (4010 + 4060 + 4070)
+          - Cable TV breakout
+          - Flip Tax routes below the line
+          - Working Capital Contribution row exists when GL has data
+          - RE Tax exemptions reconcile with G&A budget
+          - Capital lines proposed = $0
+          - Summary math ties (Total Income = sum of income rows)
+          - Audited financials confirmed for BUDGET_YEAR-2
+          - Commercial RE Tax row in income section, not at the bottom
+          - Cross-building shape diff against a known-good baseline
+        """
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found", "entity_code": entity_code}), 404
+
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        rows = (
+            BudgetSummaryRow.query
+            .filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR)
+            .order_by(BudgetSummaryRow.display_order)
+            .all()
+        )
+        # Index by GL prefix → row label for the "what bucket does X live in" question
+        rows_by_label = {r.label: r for r in rows}
+
+        checks = []
+        def _check(name, status, detail, fix=None, data=None):
+            checks.append({
+                "name": name,
+                "status": status,
+                "detail": detail,
+                "fix": fix,
+                "data": data or [],
+            })
+
+        # ── Check 1: GL coverage — no orphan lines on Unmapped sheet ─────
+        orphans = [l for l in lines if (l.sheet_name or "") == "Unmapped"
+                   and (abs(float(l.ytd_actual or 0)) > 0.01 or abs(float(l.current_budget or 0)) > 0.01)]
+        if not orphans:
+            _check("GL coverage", "pass",
+                   f"All {len(lines)} account numbers route to a sheet. Zero orphans with real data.")
+        else:
+            _check("GL coverage", "fail",
+                   f"{len(orphans)} account number{'s' if len(orphans) != 1 else ''} on the Unmapped sheet have YTD or budget data with nowhere to go.",
+                   fix={"label": "Review unmapped lines", "url": f"/dashboard/{entity_code}#unmapped"},
+                   data=[{"gl": l.gl_code, "desc": l.description or "",
+                          "ytd": float(l.ytd_actual or 0)} for l in orphans[:8]])
+
+        # ── Check 2: All standard summary rows present ────────────────────
+        STANDARD_LABELS = [
+            "Maintenance", "Commercial Rent", "Tax Benefit Credits (Abatement, Star,etc)",
+            "Cable TV", "Other Income", "Total Income",
+            "Payroll", "Electric", "Water & Sewer", "Supplies",
+            "Repairs & Maintenance", "Insurance", "Real Estate Taxes",
+            "Professional Fees", "Administrative & Other",
+            "Total Expenses", "Net Operating Surplus <Deficit>",
+            "Flip Tax/Transfer Fees", "Total Surplus <Deficit>",
+        ]
+        missing = [lbl for lbl in STANDARD_LABELS if lbl not in rows_by_label]
+        if not missing:
+            _check("All standard summary rows present", "pass",
+                   f"{len(rows)} summary rows on this building. All standard labels found.")
+        else:
+            _check("All standard summary rows present", "warn",
+                   f"{len(missing)} standard summary row{'s' if len(missing) != 1 else ''} missing on this building's summary.",
+                   data=[{"gl": "", "desc": lbl, "ytd": 0} for lbl in missing[:8]])
+
+        # ── Check 3: Maintenance row includes 4010 + 4060 + 4070 ──────────
+        m_row = rows_by_label.get("Maintenance")
+        try:
+            m_prefixes = _json.loads(m_row.gl_prefixes_json) if m_row and m_row.gl_prefixes_json else []
+        except Exception:
+            m_prefixes = []
+        m_expected = {"4010", "4060", "4070"}
+        m_missing = m_expected - set(p for p in m_prefixes)
+        if not m_row:
+            _check("Maintenance income aggregation", "warn",
+                   "Maintenance row not present on this building.")
+        elif not m_missing:
+            _check("Maintenance income aggregation", "pass",
+                   f"Maintenance row pulls all three account families: 4010 (billed), 4060 (arrears), 4070 (prepaid).")
+        else:
+            _check("Maintenance income aggregation", "fail",
+                   f"Maintenance row is missing account prefixes: {', '.join(sorted(m_missing))}. Prepaid income / arrears won't roll up here.",
+                   fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"},
+                   data=[{"gl": p, "desc": "Missing from Maintenance prefix list", "ytd": 0} for p in sorted(m_missing)])
+
+        # ── Check 4: Cable TV breakout (own row, not in Other Income) ─────
+        cable_row = rows_by_label.get("Cable TV")
+        try:
+            cable_prefixes = _json.loads(cable_row.gl_prefixes_json) if cable_row and cable_row.gl_prefixes_json else []
+        except Exception:
+            cable_prefixes = []
+        if cable_row and "4250" in cable_prefixes:
+            cable_lines = [l for l in lines if (l.gl_code or "").startswith("4250") and float(l.ytd_actual or 0) != 0]
+            cable_ytd = sum(float(l.ytd_actual or 0) for l in cable_lines)
+            _check("Cable TV breakout", "pass",
+                   f"Cable TV income (account 4250) routes to its own summary row. ${cable_ytd:,.0f} YTD on this building.")
+        else:
+            _check("Cable TV breakout", "warn",
+                   "Cable TV row missing or doesn't include account 4250. Cable income may be lumped into Other Income.",
+                   fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"})
+
+        # ── Check 5: Flip Tax routes below the line ───────────────────────
+        flip_row = rows_by_label.get("Flip Tax/Transfer Fees") or rows_by_label.get("Flip Tax")
+        try:
+            flip_prefixes = _json.loads(flip_row.gl_prefixes_json) if flip_row and flip_row.gl_prefixes_json else []
+        except Exception:
+            flip_prefixes = []
+        flip_has_7025 = any(p == "7025" for p in flip_prefixes)
+        if flip_row and flip_has_7025:
+            _check("Flip Tax routes below the line", "pass",
+                   "Account 7025 (Flip Tax - Capital) routes to non-operating income, not Capital Expenses.")
+        elif flip_row:
+            _check("Flip Tax routes below the line", "warn",
+                   "Flip Tax row exists but doesn't include account 7025. Any flip tax income may be stuck on the Capital sheet.",
+                   fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"})
+        else:
+            _check("Flip Tax routes below the line", "warn",
+                   "No 'Flip Tax/Transfer Fees' row on this building's summary.")
+
+        # ── Check 6: Working Capital Contribution row exists when GL has data ─
+        wc_lines = [l for l in lines if (l.gl_code or "") == "4725-0040"
+                    and (abs(float(l.ytd_actual or 0)) > 0.01 or abs(float(l.current_budget or 0)) > 0.01)]
+        wc_row = rows_by_label.get("Working Capital Contribution")
+        if not wc_lines:
+            _check("Working Capital Contribution", "pass",
+                   "No Working Capital Contribution data on this building (account 4725-0040 is empty). Skip.")
+        elif wc_row:
+            _check("Working Capital Contribution", "pass",
+                   f"Working Capital row exists. Account 4725-0040 contributes ${float(wc_lines[0].ytd_actual or 0):,.0f} YTD here.")
+        else:
+            _check("Working Capital Contribution", "fail",
+                   f"Account 4725-0040 has ${float(wc_lines[0].ytd_actual or 0):,.0f} YTD but no destination row on this summary.",
+                   fix={"label": "Add 'Working Capital Contribution' row", "endpoint": "/api/admin/add-summary-row",
+                        "body": {"entity_code": entity_code, "label": "Working Capital Contribution",
+                                  "section": "Non-Operating Income", "display_order": 33}},
+                   data=[{"gl": l.gl_code, "desc": l.description or "",
+                          "ytd": float(l.ytd_actual or 0)} for l in wc_lines])
+
+        # ── Check 7: Capital lines proposed = $0 ───────────────────────────
+        capital_with_proposed = [l for l in lines
+                                  if ((l.sheet_name or "") == "Capital" or (l.category or "").lower() == "capital")
+                                  and l.proposed_budget is not None and abs(float(l.proposed_budget or 0)) > 0.01]
+        capital_count = sum(1 for l in lines if (l.sheet_name or "") == "Capital" or (l.category or "").lower() == "capital")
+        if capital_count == 0:
+            _check("Capital lines have no proposed budget", "pass",
+                   "No capital lines on this building.")
+        elif not capital_with_proposed:
+            _check("Capital lines have no proposed budget", "pass",
+                   f"All {capital_count} capital lines display $0 proposed (correct — capital projects aren't proposed via the operating budget).")
+        else:
+            _check("Capital lines have no proposed budget", "warn",
+                   f"{len(capital_with_proposed)} of {capital_count} capital lines have a proposed_budget value set. Capital should always be $0.",
+                   data=[{"gl": l.gl_code, "desc": l.description or "",
+                          "ytd": float(l.proposed_budget or 0)} for l in capital_with_proposed[:8]])
+
+        # ── Check 8: RE Tax exemptions reconcile with G&A budget ───────────
+        is_coop_b = (budget.building_type or "").lower() in ("coop", "co-op")
+        if is_coop_b:
+            try:
+                from dof_taxes import compute_re_taxes
+                overrides = None
+                if budget.assumptions_json:
+                    try:
+                        overrides = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
+                    except Exception:
+                        overrides = None
+                # Apply the same GL-line fallback the live endpoint uses
+                _GL_TO_OVR = {
+                    "6315-0010": "abatement_current", "6315-0020": "star_current",
+                    "6315-0025": "veteran_current",   "6315-0035": "sche_current",
+                }
+                ovr = dict(overrides or {})
+                for _gl, _key in _GL_TO_OVR.items():
+                    if not ovr.get(_key):
+                        _l = next((l for l in lines if l.gl_code == _gl), None)
+                        if _l and _l.current_budget:
+                            ovr[_key] = abs(float(_l.current_budget))
+                re_taxes = compute_re_taxes(entity_code, ovr)
+                rt_total = float(re_taxes.get("total_exemptions_budget") or 0)
+                ga_total = sum(abs(float(l.current_budget or 0)) for l in lines
+                                if (l.gl_code or "") in _GL_TO_OVR)
+                if rt_total > 0 and ga_total > 0:
+                    delta = abs(rt_total - ga_total)
+                    if delta < 1.0:  # to the dollar
+                        _check("RE Tax exemptions reconcile", "pass",
+                               f"RE Tax page total credits (${rt_total:,.0f}) matches sum of G&A tax credit budget lines (${ga_total:,.0f}).")
+                    else:
+                        _check("RE Tax exemptions reconcile", "warn",
+                               f"RE Tax page shows ${rt_total:,.0f} in credits; G&A budget lines sum to ${ga_total:,.0f}. Off by ${delta:,.0f}.")
+                else:
+                    _check("RE Tax exemptions reconcile", "warn",
+                           "RE Tax exemption totals are zero. FA may need to enter values on the RE Tax tab or set the 6315-* budget lines.")
+            except Exception as e:
+                _check("RE Tax exemptions reconcile", "warn",
+                       f"Could not compute RE Tax check: {str(e)[:80]}")
+        else:
+            _check("RE Tax exemptions reconcile", "pass",
+                   "Not applicable for condos (no building-level RE tax).")
+
+        # ── Check 9: Math ties — Total Income = sum of income rows ─────────
+        # Best-effort: only checks col6 (current budget) which is most stable.
+        income_rows = [r for r in rows if (r.section or "").lower() == "income" and r.row_type == "data"]
+        total_income_row = rows_by_label.get("Total Income")
+        if income_rows and total_income_row and total_income_row.col6_approved_budget is not None:
+            sum_income = sum(float(r.col6_approved_budget or 0) for r in income_rows)
+            total = float(total_income_row.col6_approved_budget)
+            delta = abs(sum_income - total)
+            if delta < 1.0:
+                _check("Summary math ties (Total Income)", "pass",
+                       f"Total Income (${total:,.0f}) equals sum of {len(income_rows)} income rows.")
+            else:
+                _check("Summary math ties (Total Income)", "warn",
+                       f"Total Income (${total:,.0f}) differs from sum of income rows (${sum_income:,.0f}) by ${delta:,.0f}.")
+        else:
+            _check("Summary math ties (Total Income)", "pass",
+                   "Skip — totals not yet populated on this building.")
+
+        # ── Check 10: Audited financials confirmed for BUDGET_YEAR - 2 ─────
+        try:
+            target_year = str(BUDGET_YEAR - 2)
+            audits = db.session.execute(
+                db.text("SELECT id, status, fiscal_year_end, pdf_filename FROM audit_uploads "
+                         "WHERE entity_code = :ec AND fiscal_year_end = :fy"),
+                {"ec": entity_code, "fy": target_year}
+            ).fetchall()
+            confirmed = [a for a in audits if (a[1] or "") == "confirmed"]
+            if confirmed:
+                _check(f"Audited financials confirmed ({target_year})", "pass",
+                       f"FY{target_year} audit upload confirmed. Column 2 (BY-2 Actual) populated on summary.")
+            elif audits:
+                _check(f"Audited financials confirmed ({target_year})", "fail",
+                       f"FY{target_year} audit uploaded but not confirmed yet. Column 2 will be blank on summary.",
+                       fix={"label": "Open Audited Financials", "url": "/audited-financials"})
+            elif is_coop_b:
+                _check(f"Audited financials confirmed ({target_year})", "warn",
+                       f"No FY{target_year} audit upload found for this co-op. Column 2 will be blank.")
+            else:
+                _check(f"Audited financials confirmed ({target_year})", "pass",
+                       "Not applicable for non-coop.")
+        except Exception as e:
+            _check(f"Audited financials confirmed", "warn",
+                   f"Could not check audit status: {str(e)[:80]}")
+
+        # ── Check 11: Commercial RE Tax row position ───────────────────────
+        cret_row = rows_by_label.get("Commercial Real Estate Tax")
+        total_income_idx = (total_income_row.display_order if total_income_row else None)
+        if not cret_row:
+            _check("Commercial RE Tax row position", "pass",
+                   "No Commercial Real Estate Tax row on this building.")
+        elif total_income_idx is not None and cret_row.display_order > total_income_idx + 5:
+            _check("Commercial RE Tax row position", "warn",
+                   f"Commercial RE Tax row is at display position {cret_row.display_order}, well below Total Income (position {total_income_idx}). Belongs in the income section.",
+                   fix={"label": "Move row up", "endpoint": "/api/admin/move-summary-row",
+                        "body": {"entity_code": entity_code, "label": "Commercial Real Estate Tax", "to_position": total_income_idx - 2}})
+        else:
+            _check("Commercial RE Tax row position", "pass",
+                   f"Commercial RE Tax row is in the income section (position {cret_row.display_order}).")
+
+        # ── Summary counts ─────────────────────────────────────────────────
+        summary = {
+            "pass": sum(1 for c in checks if c["status"] == "pass"),
+            "warn": sum(1 for c in checks if c["status"] == "warn"),
+            "fail": sum(1 for c in checks if c["status"] == "fail"),
+        }
+        return jsonify({
+            "entity_code": entity_code,
+            "scanned_at": datetime.utcnow().isoformat() + "Z",
+            "summary": summary,
+            "checks": checks,
+        })
+
+
     # ─── API Routes: RE Taxes (NYC DOF) ─────────────────────────────────────
 
     @bp.route("/api/re-taxes/<entity_code>", methods=["GET"])
@@ -24203,7 +24494,155 @@ function openHealthDrawer() {
   const o = document.getElementById('healthOverlay');
   if (d) { d.classList.add('open'); d.setAttribute('aria-hidden','false'); }
   if (o) o.classList.add('open');
+  // FA dir 2026-05-19: prefetch Data Quality so the badge updates immediately
+  // even while the user is reading the Readiness tab.
+  try { _loadDataQualityIfStale(); } catch (_e) {}
 }
+
+// ── Data Quality Tab (FA dir 2026-05-19) ─────────────────────────────
+// Switches between the existing Readiness gates and the new Data Quality
+// check list. Both share the same drawer + KPI strip up top.
+function switchDrawerTab(tab) {
+  document.querySelectorAll('.drawer-tab').forEach(b => {
+    const active = b.dataset.drawerTab === tab;
+    b.classList.toggle('active', active);
+    b.style.borderBottomColor = active ? 'var(--blue, #1d4ed8)' : 'transparent';
+    b.style.color = active ? 'var(--blue, #1d4ed8)' : 'var(--gray-500, #64748b)';
+  });
+  document.getElementById('drawerActions').style.display = tab === 'readiness' ? '' : 'none';
+  document.getElementById('drawerDataQuality').style.display = tab === 'quality' ? '' : 'none';
+  if (tab === 'quality') _loadDataQualityIfStale();
+}
+
+let _hcLoadedAt = 0;
+async function _loadDataQualityIfStale() {
+  // Re-fetch if older than 30 seconds OR never loaded
+  if (Date.now() - _hcLoadedAt < 30000) return;
+  const container = document.getElementById('drawerDataQuality');
+  if (!container) return;
+  if (!container.innerHTML.trim()) {
+    container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--gray-500); font-size:13px;">Running checks…</div>';
+  }
+  try {
+    const resp = await fetch('/api/health-check/' + encodeURIComponent(entityCode));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    _hcLoadedAt = Date.now();
+    _renderDataQuality(data);
+  } catch (e) {
+    container.innerHTML = '<div style="padding:24px; color:var(--red); font-size:13px;">Health check failed: ' + (e.message || 'unknown') + '</div>';
+  }
+}
+
+function _renderDataQuality(data) {
+  const container = document.getElementById('drawerDataQuality');
+  const badge = document.getElementById('drawerDqBadge');
+  if (!container || !data) return;
+  const s = data.summary || {pass:0, warn:0, fail:0};
+  // Update tab badge (only shows when fail > 0)
+  if (badge) {
+    if (s.fail > 0) { badge.style.display = ''; badge.textContent = String(s.fail); }
+    else if (s.warn > 0) { badge.style.display = ''; badge.textContent = String(s.warn); badge.style.background = '#d97706'; }
+    else { badge.style.display = 'none'; }
+  }
+  let html = '';
+  // Summary strip
+  html += '<div style="padding:12px 16px; background:#fafbfc; border-bottom:1px solid var(--gray-200); display:flex; gap:14px; font-size:11px; font-weight:600;">';
+  html += '<span style="color:#16a34a;">&#10003; ' + s.pass + ' passing</span>';
+  html += '<span style="color:#d97706;">&#9888; ' + s.warn + ' warning' + (s.warn !== 1 ? 's' : '') + '</span>';
+  html += '<span style="color:#dc2626;">&#10007; ' + s.fail + ' issue' + (s.fail !== 1 ? 's' : '') + '</span>';
+  html += '<span style="margin-left:auto; color:var(--gray-500);">Last run: just now</span>';
+  html += '</div>';
+  // Check list — fails first, then warns, then passes
+  const order = {fail: 0, warn: 1, pass: 2};
+  const checks = (data.checks || []).slice().sort((a,b) => (order[a.status]||9) - (order[b.status]||9));
+  for (const c of checks) {
+    html += _renderHealthCheck(c);
+  }
+  container.innerHTML = html;
+  // Attach expand handlers
+  container.querySelectorAll('.hc-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const e = row.nextElementSibling;
+      if (e && e.classList.contains('hc-expand')) e.classList.toggle('open');
+    });
+  });
+}
+
+function _renderHealthCheck(c) {
+  const icons = {pass: '&#10003;', warn: '&#9888;', fail: '&#10007;'};
+  const colors = {pass: '#16a34a', warn: '#d97706', fail: '#dc2626'};
+  const bgs = {pass: '#dcfce7', warn: '#fef9c3', fail: '#fee2e2'};
+  const icon = icons[c.status] || '?';
+  const color = colors[c.status] || '#64748b';
+  const bg = bgs[c.status] || '#f1f5f9';
+  let html = '';
+  html += '<div class="hc-row" style="display:grid; grid-template-columns:20px 1fr auto; gap:10px; padding:12px 16px; cursor:pointer; border-bottom:1px solid var(--gray-200); align-items:center;">';
+  html += '<span style="font-size:14px; color:' + color + ';">' + icon + '</span>';
+  html += '<div>';
+  html += '<div style="font:600 13px -apple-system,sans-serif; color:#0f172a; margin-bottom:2px;">' + _escapeHtml(c.name) + '</div>';
+  html += '<div style="font-size:12px; color:var(--gray-500); line-height:1.4;">' + _escapeHtml(c.detail || '') + '</div>';
+  html += '</div>';
+  html += '<span style="font:600 10px -apple-system,sans-serif; padding:2px 8px; border-radius:999px; background:' + bg + '; color:' + color + '; text-transform:uppercase; letter-spacing:0.04em;">' + c.status + '</span>';
+  html += '</div>';
+  // Expand panel — only render if there's data or a fix
+  if ((c.data && c.data.length) || c.fix) {
+    html += '<div class="hc-expand" style="display:none; padding:12px 16px 14px 46px; background:#fafbfc; border-bottom:1px solid var(--gray-200); font-size:12px;">';
+    if (c.data && c.data.length) {
+      html += '<div style="font:600 10px -apple-system,sans-serif; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;">Affected accounts</div>';
+      for (const d of c.data) {
+        html += '<div style="display:grid; grid-template-columns:100px 1fr 80px; gap:10px; padding:4px 0; border-bottom:1px dashed var(--gray-200);">';
+        html += '<span style="font-family:ui-monospace,Menlo,monospace; color:var(--gray-500);">' + _escapeHtml(d.gl || '') + '</span>';
+        html += '<span>' + _escapeHtml(d.desc || '') + '</span>';
+        html += '<span style="font-family:ui-monospace,Menlo,monospace; text-align:right; font-weight:600;">$' + Math.round(d.ytd || 0).toLocaleString() + '</span>';
+        html += '</div>';
+      }
+    }
+    if (c.fix) {
+      html += '<div style="margin-top:10px; padding:10px 12px; background:#eff6ff; border-left:3px solid #1d4ed8; border-radius:0 5px 5px 0;">';
+      html += '<div style="font:600 10px -apple-system,sans-serif; color:#1d4ed8; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Suggested fix</div>';
+      html += '<div style="color:#0f172a;">' + _escapeHtml(c.fix.label || 'Take action') + '</div>';
+      if (c.fix.url) {
+        html += '<a href="' + _escapeAttr(c.fix.url) + '" style="display:inline-block; margin-top:6px; padding:5px 11px; background:#1d4ed8; color:white; border-radius:5px; text-decoration:none; font:600 11px -apple-system,sans-serif;">Open →</a>';
+      } else if (c.fix.endpoint) {
+        html += '<button onclick="_runHealthFix(this, \'' + _escapeAttr(c.fix.endpoint) + '\', ' + JSON.stringify(c.fix.body || null).replace(/"/g, '&quot;') + ')" style="margin-top:6px; padding:5px 11px; background:#1d4ed8; color:white; border:none; border-radius:5px; cursor:pointer; font:600 11px -apple-system,sans-serif;">Run fix →</button>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
+async function _runHealthFix(btn, endpoint, body) {
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const opts = {method: 'POST', headers: {'Content-Type': 'application/json'}};
+    if (body) opts.body = JSON.stringify(body);
+    const resp = await fetch(endpoint, opts);
+    if (resp.ok) {
+      btn.textContent = '✓ Fixed — refreshing';
+      btn.style.background = '#16a34a';
+      // Re-run health check
+      setTimeout(() => { _hcLoadedAt = 0; _loadDataQualityIfStale(); }, 800);
+    } else {
+      btn.textContent = '✗ Failed (' + resp.status + ')';
+      btn.style.background = '#dc2626';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = '✗ Error';
+    btn.style.background = '#dc2626';
+    btn.disabled = false;
+  }
+}
+
+function _escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function _escapeAttr(s) { return _escapeHtml(s); }
 function closeHealthDrawer() {
   const d = document.getElementById('healthDrawer');
   const o = document.getElementById('healthOverlay');
@@ -24577,7 +25016,8 @@ loadDetail();
 <!-- Health Drawer (Variant A — Quiet Pill). Lives at end of body so it can
      overlay the whole workbook. Populated by populateHealthDrawerKpis (from
      loadDetail's KPI block) + populateHealthDrawerActions (from
-     renderReadinessInspector). FA directive 2026-05-14 Phase 4. -->
+     renderReadinessInspector). FA directive 2026-05-14 Phase 4.
+     FA dir 2026-05-19: added "Data Quality" tab alongside Readiness. -->
 <div class="drawer-overlay" id="healthOverlay" onclick="closeHealthDrawer()"></div>
 <aside class="drawer" id="healthDrawer" aria-hidden="true" aria-label="Health drawer">
   <div class="drawer-header">
@@ -24586,7 +25026,17 @@ loadDetail();
     <button class="drawer-close" onclick="closeHealthDrawer()" aria-label="Close drawer">&#x2715;</button>
   </div>
   <div class="drawer-kpis" id="drawerKpis"></div>
+  <!-- FA dir 2026-05-19: tab strip — Readiness (existing) + Data Quality (new) -->
+  <div class="drawer-tabs" style="display:flex; gap:0; border-bottom:1px solid var(--gray-200); margin:8px 16px 0; padding:0;">
+    <button class="drawer-tab active" data-drawer-tab="readiness"
+            onclick="switchDrawerTab('readiness')"
+            style="flex:1; padding:10px 12px; background:transparent; border:none; border-bottom:2px solid var(--blue, #1d4ed8); color:var(--blue, #1d4ed8); font:600 12px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Readiness</button>
+    <button class="drawer-tab" data-drawer-tab="quality"
+            onclick="switchDrawerTab('quality')"
+            style="flex:1; padding:10px 12px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--gray-500, #64748b); font:600 12px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Data Quality <span id="drawerDqBadge" style="display:none; margin-left:6px; background:#dc2626; color:white; font-size:9px; padding:1px 6px; border-radius:999px; font-weight:700;">0</span></button>
+  </div>
   <div id="drawerActions"></div>
+  <div id="drawerDataQuality" style="display:none;"></div>
 </aside>
 
 </body>
