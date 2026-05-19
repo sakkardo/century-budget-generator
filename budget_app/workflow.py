@@ -3909,6 +3909,71 @@ def create_workflow_blueprint(db):
         })
 
 
+    # ─── API Routes: Sheet Subtotal / Sheet-Total Overrides ───────────────
+    # FA dir 2026-05-19: FA can override Income/Payroll/etc. tab subtotal +
+    # Sheet Total cells via the formula bar (same UX as line cells). Stored
+    # per-(entity, row_id, col) in budget.assumptions_json under
+    # "sheet_subtotal_overrides".
+
+    @bp.route("/api/sheet-subtotal-override/<entity_code>", methods=["PUT"])
+    def put_sheet_subtotal_override(entity_code):
+        """Set or clear a subtotal-cell override on the FA dashboard sheet tabs.
+
+        Body: {row_id: str, col: str, value: float|null, formula: str|null}
+        Pass value=null to clear the override (reverts to computed sum).
+        """
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        data = request.get_json() or {}
+        row_id = (data.get("row_id") or "").strip()
+        col = (data.get("col") or "").strip()
+        if not row_id or not col:
+            return jsonify({"error": "row_id and col required"}), 400
+        value = data.get("value")
+        formula = data.get("formula")
+        try:
+            current = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            current = {}
+        overrides = current.setdefault("sheet_subtotal_overrides", {})
+        row_overrides = overrides.setdefault(row_id, {})
+        if value is None and not formula:
+            # Clear
+            row_overrides.pop(col, None)
+            row_overrides.pop(col + "__formula", None)
+            if not row_overrides:
+                overrides.pop(row_id, None)
+        else:
+            if value is not None:
+                row_overrides[col] = float(value)
+            if formula:
+                row_overrides[col + "__formula"] = formula
+            else:
+                row_overrides.pop(col + "__formula", None)
+        budget.assumptions_json = _json.dumps(current)
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)[:200]}), 500
+        return jsonify({"ok": True, "row_id": row_id, "col": col, "value": value, "formula": formula})
+
+    @bp.route("/api/sheet-subtotal-override/<entity_code>", methods=["GET"])
+    def get_sheet_subtotal_overrides(entity_code):
+        """Return all subtotal overrides for this entity, keyed by row_id → col → value."""
+        import json as _json
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"overrides": {}})
+        try:
+            current = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
+        except Exception:
+            current = {}
+        return jsonify({"overrides": current.get("sheet_subtotal_overrides", {})})
+
+
     # ─── API Routes: Per-Building Data Quality Health Check ─────────────────
     # FA dir 2026-05-19: data-quality checks per building, exposed to the
     # existing Health drawer as a second tab ("Data Quality" alongside
@@ -16274,6 +16339,11 @@ function fxCellBlur(el) {
 }
 
 // ── fxSubtotalFocus: formula bar for subtotal/total row cells ──────────
+// FA dir 2026-05-19: subtotal cells now editable like other formula tabs.
+// Tracks the currently-focused subtotal cell so formulaBarAccept can route
+// to the subtotal save path instead of the line-cell save path.
+let _activeSubtotalCell = null;
+
 function fxSubtotalFocus(td) {
   const bar = document.getElementById('faFormulaBar');
   const label = document.getElementById('faFormulaLabel');
@@ -16285,6 +16355,7 @@ function fxSubtotalFocus(td) {
     _activeFxCell.style.background = '';
     _activeFxCell = null;
   }
+  _activeSubtotalCell = td;
   const row = td.closest('tr');
   const rowId = row ? row.id : '';
   const col = td.dataset.col;
@@ -16318,22 +16389,131 @@ function fxSubtotalFocus(td) {
     }
   }
   _formulaBarOriginal = bar.value;
-  _showFormulaButtons(false, false);
-  bar.readOnly = true;
+  // FA dir 2026-05-19: make subtotal cells editable like line cells. Was
+  // bar.readOnly=true + buttons hidden, which meant the FA could only LOOK
+  // at the formula. Now they can type an override (e.g. "=5800000") and
+  // Accept to lock it in. Override stored per-entity in budget.assumptions_json
+  // under "sheet_subtotal_overrides[rowId][col]".
+  // If the cell currently has a saved override, show that instead of the
+  // computed sum formula so the FA can edit their previous value.
+  const savedOverride = td.dataset.overrideFormula || td.dataset.overrideValue;
+  if (savedOverride) {
+    bar.value = td.dataset.overrideFormula
+      ? td.dataset.overrideFormula
+      : ('= ' + parseFloat(td.dataset.overrideValue).toLocaleString('en-US'));
+  }
+  bar.readOnly = false;
+  _showFormulaButtons(true, !!savedOverride);
   // Highlight clicked cell
   td.style.outline = '2px solid var(--blue)';
   td.style.outlineOffset = '-2px';
   td.style.borderRadius = '4px';
-  const cleanup = (e) => {
-    if (!td.contains(e.target) && e.target !== bar) {
-      td.style.outline = '';
-      td.style.outlineOffset = '';
-      td.style.borderRadius = '';
-      bar.readOnly = false;
-      document.removeEventListener('click', cleanup);
+  // No auto-cleanup on outside click — the FA needs to explicitly Accept
+  // or Cancel via the formula bar buttons. Auto-blur was eating typed
+  // changes before the save fired.
+}
+
+// ── Accept handler for subtotal / sheet-total overrides (FA dir 2026-05-19)
+// Mirrors formulaBarAccept's logic but routes to the subtotal save endpoint.
+// Stores per-cell overrides in budget.assumptions_json under the key
+// "sheet_subtotal_overrides[rowId][col]". Empty input clears the override.
+async function subtotalAcceptFormula() {
+  const td = _activeSubtotalCell;
+  const bar = document.getElementById('faFormulaBar');
+  if (!td || !bar) return;
+  const typed = bar.value.trim();
+  const row = td.closest('tr');
+  const rowId = row ? row.id : '';
+  const col = td.dataset.col;
+  if (!rowId || !col) {
+    alert('Cannot save: missing row id or column');
+    return;
+  }
+  // Parse the typed value
+  let value = null;
+  let formula = null;
+  if (typed === '' || typed === '—') {
+    // Clear override — fall back to computed sum
+    value = null;
+    formula = null;
+  } else if (typed.startsWith('=')) {
+    const result = safeEvalFormula(typed);
+    if (result === null) {
+      alert('Invalid formula');
+      return;
     }
-  };
-  setTimeout(() => document.addEventListener('click', cleanup), 0);
+    value = Math.round(result);
+    formula = typed;
+  } else {
+    const num = parseFloat(typed.replace(/[$,]/g, ''));
+    if (isNaN(num)) {
+      alert('Invalid number');
+      return;
+    }
+    value = Math.round(num);
+    formula = null;
+  }
+  // Optimistic UI update
+  const span = td.querySelector('.sub-val');
+  if (value === null) {
+    // Restore computed value from data-raw (the original sum)
+    const computed = parseFloat(td.dataset.raw) || 0;
+    if (span) span.textContent = fmt(computed);
+    td.dataset.overrideValue = '';
+    td.dataset.overrideFormula = '';
+    td.style.outline = '';
+    td.style.borderRadius = '';
+    if (span) { span.style.color = ''; span.style.fontWeight = ''; }
+  } else {
+    if (span) {
+      span.textContent = fmt(value);
+      span.style.color = 'var(--blue, #1d4ed8)';
+      span.style.fontWeight = '700';
+      span.title = 'FA override (was ' + fmt(parseFloat(td.dataset.raw) || 0) + ')';
+    }
+    td.dataset.overrideValue = String(value);
+    if (formula) td.dataset.overrideFormula = formula;
+    else td.dataset.overrideFormula = '';
+  }
+  // Persist to backend
+  try {
+    const resp = await fetch('/api/sheet-subtotal-override/' + encodeURIComponent(entityCode), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({row_id: rowId, col: col, value: value, formula: formula}),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      alert('Save failed (' + resp.status + '): ' + errText.slice(0, 200));
+      return;
+    }
+  } catch (e) {
+    alert('Save error: ' + e.message);
+  }
+  // Close formula bar editing state
+  bar.readOnly = true;
+  _showFormulaButtons(false, false);
+  td.style.outline = '';
+  td.style.outlineOffset = '';
+  td.style.borderRadius = '';
+  _activeSubtotalCell = null;
+}
+
+// Cancel — revert formula bar to its original value, clear active state
+function subtotalCancelFormula() {
+  const td = _activeSubtotalCell;
+  const bar = document.getElementById('faFormulaBar');
+  if (td) {
+    td.style.outline = '';
+    td.style.outlineOffset = '';
+    td.style.borderRadius = '';
+  }
+  if (bar) {
+    bar.value = _formulaBarOriginal || '';
+    bar.readOnly = true;
+  }
+  _showFormulaButtons(false, false);
+  _activeSubtotalCell = null;
 }
 
 // ── Formula bar live preview ───────────────────────────────────────────
@@ -16372,7 +16552,15 @@ function formulaBarPreview() {
 // ── Accept: commit formula/value to cell and save ──────────────────────
 function formulaBarAccept() {
   const bar = document.getElementById('faFormulaBar');
-  if (!bar || !_activeFxCell) return;
+  if (!bar) return;
+
+  // FA dir 2026-05-19: route to subtotal-save path when the active cell is
+  // a subtotal/sheet-total cell instead of a per-line cell.
+  if (_activeSubtotalCell) {
+    return subtotalAcceptFormula();
+  }
+
+  if (!_activeFxCell) return;
 
   const el = _activeFxCell;
   const typed = bar.value.trim();
@@ -16505,6 +16693,10 @@ function formulaBarAccept() {
 
 // ── Cancel: revert formula bar to original ─────────────────────────────
 function formulaBarCancel() {
+  // FA dir 2026-05-19: also handle subtotal-cell cancel
+  if (_activeSubtotalCell) {
+    return subtotalCancelFormula();
+  }
   const bar = document.getElementById('faFormulaBar');
   if (bar) bar.value = _formulaBarOriginal;
   _showFormulaButtons(false, false);
@@ -24379,6 +24571,45 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   contentDiv.innerHTML = html;
   // Auto-size numeric columns after render
   autoSizeColumns(contentDiv.querySelector('table'));
+  // FA dir 2026-05-19: apply saved subtotal/sheet-total overrides on top of
+  // the freshly-rendered computed values. Async fetch — overrides paint in
+  // once they arrive (no blocking).
+  applySubtotalOverrides(contentDiv);
+}
+
+// FA dir 2026-05-19: apply saved subtotal overrides to the rendered table.
+// Override values are stored per (row_id, col); replacing the displayed sum
+// with the FA's locked-in number. Visual indicator: blue + bold so the FA
+// can tell it's overridden, with a hover-title showing the original sum.
+async function applySubtotalOverrides(container) {
+  try {
+    const resp = await fetch('/api/sheet-subtotal-override/' + encodeURIComponent(entityCode));
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const overrides = data.overrides || {};
+    for (const rowId in overrides) {
+      const row = container.querySelector('tr#' + CSS.escape(rowId));
+      if (!row) continue;
+      const cells = row.querySelectorAll('td.fx-td');
+      for (const td of cells) {
+        const col = td.dataset.col;
+        if (!col) continue;
+        const val = overrides[rowId][col];
+        const formula = overrides[rowId][col + '__formula'];
+        if (val === undefined || val === null) continue;
+        const span = td.querySelector('.sub-val');
+        if (span) {
+          const original = parseFloat(td.dataset.raw) || 0;
+          span.textContent = fmt(val);
+          span.style.color = 'var(--blue, #1d4ed8)';
+          span.style.fontWeight = '700';
+          span.title = 'FA override (computed sum was ' + fmt(original) + ')';
+        }
+        td.dataset.overrideValue = String(val);
+        if (formula) td.dataset.overrideFormula = formula;
+      }
+    }
+  } catch (_e) { /* silent — overrides are non-critical */ }
 }
 
 /* ── Grid Viewport Fit — keep horizontal scrollbar visible ────────── */
