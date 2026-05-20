@@ -5453,18 +5453,37 @@ def create_workflow_blueprint(db):
         Up to 50 entries by default. Each is augmented with the GL code +
         description from BudgetLine so the UI can show "Maintenance Fees /
         proposed_budget changed from $145,738 → $153,025 by FA at 4:23 PM".
+
+        Query params:
+          limit    — max entries returned (default 50)
+          sheet    — if set, return only changes whose line is on that sheet
+                     (e.g. ?sheet=Income, ?sheet=Payroll). Used by the per-tab
+                     Undo/History controls.
         """
         limit = int(request.args.get("limit", "50"))
+        sheet_filter = (request.args.get("sheet") or "").strip()
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
             return jsonify({"changes": []})
-        revisions = (
-            BudgetRevision.query
-            .filter_by(budget_id=budget.id)
-            .order_by(BudgetRevision.id.desc())
-            .limit(limit)
-            .all()
-        )
+
+        # When filtering by sheet, look up the relevant line IDs first so
+        # we can scope the revisions query — avoids fetching 1000+ revisions
+        # just to filter them client-side.
+        line_id_filter = None
+        if sheet_filter:
+            line_ids_on_sheet = [
+                l.id for l in BudgetLine.query
+                    .filter_by(budget_id=budget.id, sheet_name=sheet_filter)
+                    .all()
+            ]
+            if not line_ids_on_sheet:
+                return jsonify({"changes": [], "entity_code": entity_code, "sheet": sheet_filter})
+            line_id_filter = line_ids_on_sheet
+
+        q = BudgetRevision.query.filter_by(budget_id=budget.id)
+        if line_id_filter is not None:
+            q = q.filter(BudgetRevision.budget_line_id.in_(line_id_filter))
+        revisions = q.order_by(BudgetRevision.id.desc()).limit(limit).all()
         # Build GL lookup for any line_ids referenced
         line_ids = {r.budget_line_id for r in revisions if r.budget_line_id}
         gl_lookup = {}
@@ -18175,6 +18194,9 @@ function renderSheet(sheetName, sheetLines, tabEl) {
   }
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   tabEl.classList.add('active');
+  // FA dir 2026-05-19: track active sheet so the per-tab Undo bar knows
+  // which sheet's changes to load.
+  window._activeFaSheet = sheetName;
 
   const contentDiv = document.getElementById('sheetContent');
 
@@ -22556,6 +22578,11 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
     '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
+    // FA dir 2026-05-19: per-tab Undo + History controls. Visible on every
+    // sheet tab. Scoped to the active sheet via `sheet=` query param.
+    '<span style="display:inline-block; width:1px; height:22px; background:var(--gray-300); margin:0 4px;"></span>' +
+    '<button class="fa-tab-undo-btn" onclick="faTabUndoLast()" title="Restore the most recent change on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">↩ Undo last</button>' +
+    '<button class="fa-tab-hist-btn" onclick="faTabShowHistory()" title="See the last 50 changes on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">⏱ History</button>' +
     '</div>';
 
   // ── Section 0: Payroll Assumptions (Editable) ──────────────────────────
@@ -24833,6 +24860,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
     '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
+    // FA dir 2026-05-19: per-tab Undo + History controls. Visible on every
+    // sheet tab. Scoped to the active sheet via `sheet=` query param.
+    '<span style="display:inline-block; width:1px; height:22px; background:var(--gray-300); margin:0 4px;"></span>' +
+    '<button class="fa-tab-undo-btn" onclick="faTabUndoLast()" title="Restore the most recent change on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">↩ Undo last</button>' +
+    '<button class="fa-tab-hist-btn" onclick="faTabShowHistory()" title="See the last 50 changes on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">⏱ History</button>' +
     '</div>';
 
   const _hideAdj = (sheetName === 'Income') ? ' fa-grid-hide-adj' : '';
@@ -25203,6 +25235,164 @@ function switchDrawerTab(tab) {
   if (rc) rc.style.display = tab === 'changes' ? '' : 'none';
   if (tab === 'quality') _loadDataQualityIfStale();
   if (tab === 'changes') _loadRecentChangesIfStale();
+}
+
+// ── Per-tab Undo + History (FA dir 2026-05-19 Phase 3) ────────────────
+// Buttons in each sheet's formula bar. Scoped to the active sheet's GLs
+// via the ?sheet= query param on the existing /api/recent-changes endpoint.
+// Reuses the same undo endpoint as the Health drawer's Recent Changes tab.
+
+async function faTabUndoLast() {
+  const sheet = window._activeFaSheet || '';
+  if (!sheet) { alert('No active sheet'); return; }
+  // Fetch most recent change on this sheet
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) +
+                              '?sheet=' + encodeURIComponent(sheet) + '&limit=20');
+    if (!resp.ok) { alert('Could not load recent changes: ' + resp.status); return; }
+    const data = await resp.json();
+    const changes = data.changes || [];
+    const target = changes.find(c => c.undoable);
+    if (!target) {
+      alert('No undoable changes on the ' + sheet + ' tab yet.\\n\\nThe Undo button reverts the most recent line-level edit (proposed budget, notes, formulas, etc.). If you made bulk changes or override edits, use the History button to browse.');
+      return;
+    }
+    const fieldLabel = target.field || target.action || 'change';
+    if (!confirm('Undo the most recent change on ' + sheet + '?\\n\\n' +
+                  (target.gl_code ? target.gl_code + ' · ' : '') +
+                  fieldLabel + ': ' +
+                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)'))) return;
+    const undoResp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: target.id}),
+    });
+    if (!undoResp.ok) {
+      const err = await undoResp.text();
+      alert('Undo failed: ' + err.slice(0, 200));
+      return;
+    }
+    // Re-render the current sheet so the change shows
+    const tab = document.querySelector('.sheet-tab[data-sheet="' + sheet.replace(/"/g,'\\"') + '"]');
+    if (tab) tab.click();
+  } catch (e) {
+    alert('Undo error: ' + e.message);
+  }
+}
+
+async function faTabShowHistory() {
+  const sheet = window._activeFaSheet || '';
+  if (!sheet) { alert('No active sheet'); return; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) +
+                              '?sheet=' + encodeURIComponent(sheet) + '&limit=50');
+    if (!resp.ok) { alert('Could not load history: ' + resp.status); return; }
+    const data = await resp.json();
+    const changes = data.changes || [];
+    _faTabRenderHistoryModal(sheet, changes);
+  } catch (e) {
+    alert('History error: ' + e.message);
+  }
+}
+
+function _faTabRenderHistoryModal(sheet, changes) {
+  // Strip any existing modal
+  const existing = document.getElementById('faTabHistoryRoot');
+  if (existing) existing.remove();
+  let html = '';
+  html += '<div id="faTabHistoryOverlay" onclick="_faTabCloseHistory()" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;"></div>';
+  html += '<div id="faTabHistoryModal" style="position:fixed; top:60px; left:50%; transform:translateX(-50%); width:720px; max-width:94vw; max-height:82vh; background:white; border-radius:12px; box-shadow:0 24px 60px rgba(0,0,0,0.3); z-index:1001; overflow:hidden; display:flex; flex-direction:column;">';
+  html += '<div style="padding:14px 22px; border-bottom:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center;">';
+  html += '<h3 style="margin:0; font-size:15px; font-weight:700; color:var(--gray-900);">⏱ History · ' + _escapeHtml(sheet) + ' tab</h3>';
+  html += '<button onclick="_faTabCloseHistory()" style="border:none; background:transparent; font-size:20px; cursor:pointer; color:var(--gray-500); line-height:1;">×</button>';
+  html += '</div>';
+  html += '<div style="padding:8px 18px; font-size:11px; color:var(--gray-500); background:#fafbfc; border-bottom:1px solid var(--gray-200);">';
+  html += changes.length + ' change' + (changes.length !== 1 ? 's' : '') + ' on this tab · newest first · Restore reverts a single field to its prior value';
+  html += '</div>';
+  html += '<div style="overflow-y:auto; flex:1;">';
+  if (!changes.length) {
+    html += '<div style="padding:40px; text-align:center; color:var(--gray-500); font-size:13px;">No changes logged on this tab yet.</div>';
+  } else {
+    for (const c of changes) {
+      html += _faTabRenderHistoryEntry(c);
+    }
+  }
+  html += '</div>';
+  html += '<div style="padding:10px 22px; background:var(--gray-50, #fafbfc); border-top:1px solid var(--gray-200); font-size:10px; color:var(--gray-500); text-align:right;">Last 50 changes shown.</div>';
+  html += '</div>';
+  const wrap = document.createElement('div');
+  wrap.id = 'faTabHistoryRoot';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+}
+
+function _faTabRenderHistoryEntry(c) {
+  const fieldLabels = {
+    proposed_budget: 'Proposed', increase_pct: 'Increase %', increase_dollar: 'Increase $',
+    estimate_override: 'Estimate', forecast_override: 'Forecast',
+    estimate_formula: 'Est. formula', forecast_formula: 'Fcst. formula', proposed_formula: 'Prop. formula',
+    accrual_adj: 'Accrual', unpaid_bills: 'Unpaid', current_budget: 'Curr. Budget',
+    prior_year: 'Prior Year', ytd_actual: 'YTD',
+    notes: 'Notes', category: 'Category', pm_review_state: 'PM review',
+    fa_proposed_status: 'FA decision', fa_proposed_note: 'FA note', fa_override_value: 'FA override',
+  };
+  const fieldLabel = fieldLabels[c.field] || c.field || c.action;
+  const oldDisp = _fmtChangeValue(c.old_value, c.field);
+  const newDisp = _fmtChangeValue(c.new_value, c.field);
+  const ts = c.ts ? new Date(c.ts) : null;
+  const tsLocal = ts ? ts.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '';
+  let h = '<div style="padding:12px 22px; border-bottom:1px solid var(--gray-100); display:grid; grid-template-columns:1fr auto; gap:12px;">';
+  h += '<div style="min-width:0;">';
+  if (c.gl_code) {
+    h += '<div style="font:600 13px -apple-system,sans-serif; color:var(--gray-900); margin-bottom:3px;">' + _escapeHtml(c.gl_code) + (c.description ? ' · ' + _escapeHtml(c.description) : '') + '</div>';
+  }
+  h += '<div style="font-size:12px; color:var(--gray-600); line-height:1.5;">';
+  h += '<b style="color:var(--gray-900);">' + _escapeHtml(fieldLabel) + '</b>: ';
+  h += '<span style="color:#94a3b8; text-decoration:line-through;">' + _escapeHtml(oldDisp) + '</span> → ';
+  h += '<span style="color:var(--gray-900); font-weight:600;">' + _escapeHtml(newDisp) + '</span>';
+  h += '</div>';
+  h += '<div style="font-size:11px; color:var(--gray-400); margin-top:4px;">' + _escapeHtml(tsLocal);
+  if (c.source) h += ' · ' + _escapeHtml(c.source);
+  if (c.action === 'undo') h += ' · <span style="color:var(--blue);">UNDO</span>';
+  h += '</div>';
+  h += '</div>';
+  if (c.undoable) {
+    h += '<button onclick="_faTabRestoreFromHistory(' + c.id + ', this)" style="align-self:center; padding:6px 14px; font:600 12px -apple-system,sans-serif; background:var(--blue, #1d4ed8); color:white; border:none; border-radius:6px; cursor:pointer; white-space:nowrap;">↺ Restore</button>';
+  } else {
+    h += '<span style="align-self:center; color:var(--gray-400); font-size:11px;">not undoable</span>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function _faTabCloseHistory() {
+  const r = document.getElementById('faTabHistoryRoot');
+  if (r) r.remove();
+}
+
+async function _faTabRestoreFromHistory(revId, btn) {
+  if (!confirm('Restore this version of the field?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: revId}),
+    });
+    if (!resp.ok) {
+      alert('Restore failed: ' + await resp.text());
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+      return;
+    }
+    _faTabCloseHistory();
+    // Re-render current sheet so the restored value appears
+    const sheet = window._activeFaSheet || '';
+    const tab = document.querySelector('.sheet-tab[data-sheet="' + sheet.replace(/"/g,'\\"') + '"]');
+    if (tab) tab.click();
+  } catch (e) {
+    alert('Restore error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+  }
 }
 
 // ── Recent Changes Tab (FA dir 2026-05-19 Phase 2) ────────────────────
