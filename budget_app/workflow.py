@@ -5397,6 +5397,20 @@ def create_workflow_blueprint(db):
     # new values). These endpoints surface that as a feed in the Health
     # drawer, with a one-click Undo for any entry.
 
+    # FA dir 2026-05-19: Summary tab uses BudgetSummaryRow.col*_override (and
+    # col7_proposed_budget). Map the field-name prefix written by
+    # api_summary_edit ("col3_override:Maintenance") to the actual DB attr
+    # so undo can write the old_value back.
+    _SUMMARY_UNDOABLE_FIELDS = {
+        "col7": "col7_proposed_budget",
+        "col1_override": "col1_override",
+        "col2_override": "col2_override",
+        "col3_override": "col3_override",
+        "col4_override": "col4_override",
+        "col5_override": "col5_override",
+        "col6_override": "col6_override",
+    }
+
     # Fields safe to undo on BudgetLine. Each entry: {parser_for_old_value, sensitive_flag}
     # Fields not in this list reject the undo (don't pretend to revert
     # something we don't know how to write back).
@@ -5466,11 +5480,14 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"changes": []})
 
-        # When filtering by sheet, look up the relevant line IDs first so
-        # we can scope the revisions query — avoids fetching 1000+ revisions
-        # just to filter them client-side.
-        line_id_filter = None
-        if sheet_filter:
+        # Three filter modes:
+        #   - sheet="Summary" → revisions with action="summary_edit" (no line_id)
+        #   - sheet="<other>" → revisions on lines whose sheet_name matches
+        #   - no sheet → all revisions for this budget
+        q = BudgetRevision.query.filter_by(budget_id=budget.id)
+        if sheet_filter == "Summary":
+            q = q.filter(BudgetRevision.action == "summary_edit")
+        elif sheet_filter:
             line_ids_on_sheet = [
                 l.id for l in BudgetLine.query
                     .filter_by(budget_id=budget.id, sheet_name=sheet_filter)
@@ -5478,11 +5495,7 @@ def create_workflow_blueprint(db):
             ]
             if not line_ids_on_sheet:
                 return jsonify({"changes": [], "entity_code": entity_code, "sheet": sheet_filter})
-            line_id_filter = line_ids_on_sheet
-
-        q = BudgetRevision.query.filter_by(budget_id=budget.id)
-        if line_id_filter is not None:
-            q = q.filter(BudgetRevision.budget_line_id.in_(line_id_filter))
+            q = q.filter(BudgetRevision.budget_line_id.in_(line_ids_on_sheet))
         revisions = q.order_by(BudgetRevision.id.desc()).limit(limit).all()
         # Build GL lookup for any line_ids referenced
         line_ids = {r.budget_line_id for r in revisions if r.budget_line_id}
@@ -5493,23 +5506,39 @@ def create_workflow_blueprint(db):
         out = []
         for r in revisions:
             gl_info = gl_lookup.get(r.budget_line_id, {})
+            # Detect summary edits — field_name shape "col3_override:Maintenance".
+            # Parse so the UI can show "Maintenance / Proposed → $X".
+            is_summary = (r.action == "summary_edit") and (":" in (r.field_name or ""))
+            sum_col = ""
+            sum_label = ""
+            if is_summary:
+                try:
+                    parts = (r.field_name or "").split(":", 1)
+                    sum_col = parts[0]   # e.g. "col3_override" or "col7"
+                    sum_label = parts[1] # e.g. "Maintenance"
+                except Exception:
+                    pass
             undoable = (
-                r.budget_line_id is not None
-                and r.action in ("update", "fa_proposal_review")
-                and r.field_name in _UNDOABLE_FIELDS
+                (r.budget_line_id is not None
+                 and r.action in ("update", "fa_proposal_review")
+                 and r.field_name in _UNDOABLE_FIELDS)
+                or
+                (is_summary and sum_col in _SUMMARY_UNDOABLE_FIELDS)
             )
             out.append({
                 "id": r.id,
                 "ts": r.created_at.isoformat() + "Z" if r.created_at else None,
                 "user_id": r.user_id,
                 "action": r.action,
-                "field": r.field_name or "",
+                "field": sum_col if is_summary else (r.field_name or ""),
                 "old_value": r.old_value or "",
                 "new_value": r.new_value or "",
                 "source": r.source or "",
                 "notes": r.notes or "",
-                "gl_code": gl_info.get("gl_code", ""),
-                "description": gl_info.get("description", ""),
+                "gl_code": gl_info.get("gl_code", "") if not is_summary else "",
+                "description": gl_info.get("description", "") if not is_summary else sum_label,
+                "summary_label": sum_label,  # for UI to show even when desc is generic
+                "is_summary": is_summary,
                 "undoable": undoable,
             })
         return jsonify({"changes": out, "entity_code": entity_code})
@@ -5532,6 +5561,68 @@ def create_workflow_blueprint(db):
         budget = Budget.query.get(rev.budget_id)
         if not budget or budget.entity_code != entity_code:
             return jsonify({"error": "Revision does not belong to this entity"}), 400
+
+        # FA dir 2026-05-19: route summary edits to a different undo path.
+        # Summary revisions have action="summary_edit" + field_name in the
+        # form "col3_override:Maintenance" (no budget_line_id).
+        if rev.action == "summary_edit":
+            try:
+                sum_col, _, sum_label = (rev.field_name or "").partition(":")
+            except Exception:
+                sum_col, sum_label = "", ""
+            if sum_col not in _SUMMARY_UNDOABLE_FIELDS:
+                return jsonify({"error": f"Summary column '{sum_col}' not undoable."}), 400
+            db_attr = _SUMMARY_UNDOABLE_FIELDS[sum_col]
+            # Locate the row by label within this budget's summary rows
+            srow = (
+                BudgetSummaryRow.query
+                .filter_by(entity_code=entity_code, budget_year=budget.year, label=sum_label)
+                .first()
+            )
+            if not srow:
+                return jsonify({"error": f"Summary row '{sum_label}' not found."}), 404
+            # Coerce old_value back to float / None
+            raw_old = rev.old_value
+            if raw_old in (None, "", "None", "null"):
+                new_value = None
+            else:
+                try:
+                    new_value = float(raw_old)
+                except Exception:
+                    return jsonify({"error": f"Cannot parse old value '{raw_old}' as number."}), 400
+            previous_current = getattr(srow, db_attr, None)
+            try:
+                setattr(srow, db_attr, new_value)
+            except Exception as e:
+                return jsonify({"error": f"Cannot set {db_attr}: {e}"}), 500
+            # Audit the undo (re-uses summary_edit action so it shows up in the
+            # Summary tab's history feed too, with field_name carrying both
+            # column + label like the original).
+            undo_rev = BudgetRevision(
+                budget_id=budget.id,
+                action="summary_edit",
+                field_name=rev.field_name,  # keep "col3_override:Maintenance" shape
+                old_value=str(previous_current) if previous_current is not None else "",
+                new_value=str(new_value) if new_value is not None else "",
+                notes=f"Undo of revision #{rev.id}",
+                source="web",
+                user_id=_read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
+            )
+            db.session.add(undo_rev)
+            try:
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                return jsonify({"error": str(e)[:200]}), 500
+            return jsonify({
+                "ok": True,
+                "reverted_field": sum_col,
+                "summary_label": sum_label,
+                "new_value": new_value,
+                "undo_revision_id": undo_rev.id,
+            })
+
+        # Line-level undo path (existing behavior)
         if rev.field_name not in _UNDOABLE_FIELDS:
             return jsonify({"error": f"Field '{rev.field_name}' is not undoable from this UI."}), 400
         if not rev.budget_line_id:
@@ -20402,6 +20493,10 @@ async function renderBudgetSummary(contentDiv) {
     '<button id="sumFBCancel" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;color:var(--gray-600);">Cancel</button>' +
     '<button id="sumFBClear" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(224,36,36,0.3);background:white;color:var(--red);">Clear</button>' +
     '<button id="sumFBInspect" style="display:none;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #16a34a;background:#f0fdf4;color:#15803d;" title="Show how this number was calculated">\ud83d\udd0d Inspect</button>' +
+    // FA dir 2026-05-19: Summary tab per-tab Undo + History (same pattern as other tabs)
+    '<span style="display:inline-block;width:1px;height:22px;background:var(--gray-200);margin:0 4px;"></span>' +
+    '<button onclick="sumTabUndoLast()" title="Restore the most recent change on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u21a9 Undo last</button>' +
+    '<button onclick="sumTabShowHistory()" title="See the last 50 changes on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u23f1 History</button>' +
     '</div>' +
     '<div id="sumDrillPanel" style="display:none;margin:0 8px 8px;background:white;border:1px solid #bbf7d0;border-left:4px solid #16a34a;border-radius:8px;padding:14px 18px;font-size:13px;position:sticky;top:100px;z-index:29;box-shadow:0 4px 12px rgba(0,0,0,0.08);max-height:60vh;overflow-y:auto;"></div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
@@ -21500,6 +21595,145 @@ function sumCellRevert(event, el) {
 function sumCellKey(e, el) {
   if (e.key === 'Enter') { el.blur(); sumAcceptFormula(); }
   else if (e.key === 'Escape') { sumCancelFormula(); }
+}
+
+// ── Summary tab Per-tab Undo + History (FA dir 2026-05-19) ────────────
+// Reuses /api/recent-changes/<entity>?sheet=Summary + same undo endpoint.
+// After a successful undo, re-renders the Summary tab so the change shows.
+
+async function sumTabUndoLast() {
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '?sheet=Summary&limit=20');
+    if (!resp.ok) { alert('Could not load recent changes: ' + resp.status); return; }
+    const data = await resp.json();
+    const changes = data.changes || [];
+    const target = changes.find(c => c.undoable);
+    if (!target) {
+      alert('No undoable changes on the Summary tab yet.');
+      return;
+    }
+    const fieldLabel = target.field || 'cell';
+    const lbl = target.summary_label || target.description || '';
+    if (!confirm('Undo the most recent change on the Summary tab?\n\n' +
+                  (lbl ? lbl + ' · ' : '') + fieldLabel + ': ' +
+                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)'))) return;
+    const undoResp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: target.id}),
+    });
+    if (!undoResp.ok) {
+      alert('Undo failed: ' + (await undoResp.text()).slice(0, 200));
+      return;
+    }
+    // Re-render the Summary tab
+    const tab = document.querySelector('.sheet-tab[data-sheet="Summary"]');
+    if (tab) tab.click();
+  } catch (e) {
+    alert('Undo error: ' + e.message);
+  }
+}
+
+async function sumTabShowHistory() {
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '?sheet=Summary&limit=50');
+    if (!resp.ok) { alert('Could not load history: ' + resp.status); return; }
+    const data = await resp.json();
+    _sumTabRenderHistoryModal(data.changes || []);
+  } catch (e) {
+    alert('History error: ' + e.message);
+  }
+}
+
+function _sumTabRenderHistoryModal(changes) {
+  const existing = document.getElementById('sumTabHistoryRoot');
+  if (existing) existing.remove();
+  const COL_LABELS = {col7:'2027 Proposed', col1_override:'Col 1 (Actual BY-3)', col2_override:'Col 2 (Actual BY-2)',
+                       col3_override:'Col 3 (YTD)', col4_override:'Col 4 (Estimate)',
+                       col5_override:'Col 5 (Forecast)', col6_override:'Col 6 (Curr Budget)'};
+  const _esc = (s) => (s===null||s===undefined?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const _fmtV = (raw, field) => {
+    if (raw === null || raw === undefined || raw === '') return '(empty)';
+    const n = parseFloat(String(raw));
+    if (!isNaN(n)) return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+    return String(raw).slice(0, 60);
+  };
+  let html = '';
+  html += '<div id="sumTabHistoryOverlay" onclick="_sumTabCloseHistory()" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;"></div>';
+  html += '<div id="sumTabHistoryModal" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);width:720px;max-width:94vw;max-height:82vh;background:white;border-radius:12px;box-shadow:0 24px 60px rgba(0,0,0,0.3);z-index:1001;overflow:hidden;display:flex;flex-direction:column;">';
+  html += '<div style="padding:14px 22px;border-bottom:1px solid var(--gray-200);display:flex;justify-content:space-between;align-items:center;">';
+  html += '<h3 style="margin:0;font-size:15px;font-weight:700;color:var(--gray-900);">⏱ History · Summary tab</h3>';
+  html += '<button onclick="_sumTabCloseHistory()" style="border:none;background:transparent;font-size:20px;cursor:pointer;color:var(--gray-500);line-height:1;">×</button>';
+  html += '</div>';
+  html += '<div style="padding:8px 18px;font-size:11px;color:var(--gray-500);background:#fafbfc;border-bottom:1px solid var(--gray-200);">';
+  html += changes.length + ' change' + (changes.length !== 1 ? 's' : '') + ' · newest first · Restore reverts one cell';
+  html += '</div>';
+  html += '<div style="overflow-y:auto;flex:1;">';
+  if (!changes.length) {
+    html += '<div style="padding:40px;text-align:center;color:var(--gray-500);font-size:13px;">No edits logged on the Summary tab yet.</div>';
+  } else {
+    for (const c of changes) {
+      const colLabel = COL_LABELS[c.field] || c.field || '';
+      const lbl = c.summary_label || c.description || '(unknown row)';
+      const oldDisp = _fmtV(c.old_value, c.field);
+      const newDisp = _fmtV(c.new_value, c.field);
+      const ts = c.ts ? new Date(c.ts) : null;
+      const tsLocal = ts ? ts.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      html += '<div style="padding:12px 22px;border-bottom:1px solid var(--gray-100);display:grid;grid-template-columns:1fr auto;gap:12px;">';
+      html += '<div style="min-width:0;">';
+      html += '<div style="font:600 13px -apple-system,sans-serif;color:var(--gray-900);margin-bottom:3px;">' + _esc(lbl) + '</div>';
+      html += '<div style="font-size:12px;color:var(--gray-600);line-height:1.5;">';
+      html += '<b style="color:var(--gray-900);">' + _esc(colLabel) + '</b>: ';
+      html += '<span style="color:#94a3b8;text-decoration:line-through;">' + _esc(oldDisp) + '</span> → ';
+      html += '<span style="color:var(--gray-900);font-weight:600;">' + _esc(newDisp) + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:11px;color:var(--gray-400);margin-top:4px;">' + _esc(tsLocal);
+      if (c.source) html += ' · ' + _esc(c.source);
+      html += '</div>';
+      html += '</div>';
+      if (c.undoable) {
+        html += '<button onclick="_sumTabRestoreFromHistory(' + c.id + ', this)" style="align-self:center;padding:6px 14px;font:600 12px -apple-system,sans-serif;background:var(--blue, #1d4ed8);color:white;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">↺ Restore</button>';
+      } else {
+        html += '<span style="align-self:center;color:var(--gray-400);font-size:11px;">not undoable</span>';
+      }
+      html += '</div>';
+    }
+  }
+  html += '</div>';
+  html += '<div style="padding:10px 22px;background:#fafbfc;border-top:1px solid var(--gray-200);font-size:10px;color:var(--gray-500);text-align:right;">Last 50 changes shown.</div>';
+  html += '</div>';
+  const wrap = document.createElement('div');
+  wrap.id = 'sumTabHistoryRoot';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+}
+
+function _sumTabCloseHistory() {
+  const r = document.getElementById('sumTabHistoryRoot');
+  if (r) r.remove();
+}
+
+async function _sumTabRestoreFromHistory(revId, btn) {
+  if (!confirm('Restore this version of the cell?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: revId}),
+    });
+    if (!resp.ok) {
+      alert('Restore failed: ' + (await resp.text()).slice(0, 200));
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+      return;
+    }
+    _sumTabCloseHistory();
+    const tab = document.querySelector('.sheet-tab[data-sheet="Summary"]');
+    if (tab) tab.click();
+  } catch (e) {
+    alert('Restore error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+  }
 }
 
 function sumAcceptFormula() {
