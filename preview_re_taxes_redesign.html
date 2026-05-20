@@ -428,9 +428,9 @@
     { gl: '6315-0010', label: 'Real Estate Tax Abatement', isCredit: true,   s2: 'f29', prior: -430000, ytd: -204277, curr: -430000 },
     { gl: '6315-0020', label: 'STAR Exemption',            isCredit: true,   s2: 'f28', prior: -19248,  ytd: -8906,   curr: -19695  },
     { gl: '6315-0025', label: 'Veteran Exemption',         isCredit: true,   s2: 'f26', prior: -2727,   ytd: -1343,   curr: -2727   },
-    { gl: '6315-0030', label: 'SCRIE Credit',              isCredit: true,   s2: null,  prior: 0,       ytd: 0,       curr: 0,       noteSpec: 'No Section 2 input — defaults to $0 monthly unless you add SCRIE to Section 2' },
+    { gl: '6315-0030', label: 'SCRIE Credit',              isCredit: true,   s2: null,  prior: 0,       ytd: 0,       curr: 0,       noteSpec: 'No Section 2 input — defaults to $0 quarterly unless you add SCRIE to Section 2' },
     { gl: '6315-0035', label: 'SCHE Credit',               isCredit: true,   s2: 'f27', prior: -11446,  ytd: -5797,   curr: -11446  },
-    { gl: '6315-0040', label: 'J-51 Credit',               isCredit: true,   s2: null,  prior: 0,       ytd: 0,       curr: 0,       noteSpec: 'No Section 2 input — defaults to $0 monthly unless you add J-51 to Section 2' },
+    { gl: '6315-0040', label: 'J-51 Credit',               isCredit: true,   s2: null,  prior: 0,       ytd: 0,       curr: 0,       noteSpec: 'No Section 2 input — defaults to $0 quarterly unless you add J-51 to Section 2' },
   ];
 
   function parseDollar(s) {
@@ -519,8 +519,8 @@
       } else if (row.isCredit) {
         if (row.s2 && s2Lookup[row.s2] !== undefined) {
           const base = s2Lookup[row.s2];
-          est = -(base / 12);
-          formulaStr = '= − (Section 2 ' + row.label.replace(' Credit','').replace(' Exemption','') + ' 26/27 Base / 12) = − ($' + base.toLocaleString() + ' / 12) = ' + fmtD(est);
+          est = -(base / 4);
+          formulaStr = '= − (Section 2 ' + row.label.replace(' Credit','').replace(' Exemption','') + ' 26/27 Base / 4) = − ($' + base.toLocaleString() + ' / 4) = ' + fmtD(est);
         } else {
           est = 0;
           formulaStr = row.noteSpec || '= $0 (no matching Section 2 entry)';
