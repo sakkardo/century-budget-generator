@@ -27328,6 +27328,10 @@ PM_EDIT_TEMPLATE = r"""
         <button id="pmFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarCancel()">Cancel</button>
         <button id="pmFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>
         <button id="pmFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="pmFormulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>
+        <!-- FA dir 2026-05-19: PM-side per-tab Undo + History (mirrors FA dashboard) -->
+        <span style="display:inline-block; width:1px; height:22px; background:var(--gray-300); margin:0 4px;"></span>
+        <button onclick="pmTabUndoLast()" title="Restore the most recent change on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">↩ Undo last</button>
+        <button onclick="pmTabShowHistory()" title="See the last 50 changes on this tab" style="padding:4px 10px; font-size:11px; background:white; color:var(--gray-700); border:1px solid var(--gray-300); border-radius:4px; cursor:pointer; font-weight:600; white-space:nowrap;">⏱ History</button>
       </div>
       <table id="linesTable">
         <thead>
@@ -28498,6 +28502,186 @@ function pmFormulaBarKeydown(e) {
     } else if (e.key === 'Escape') {
         pmFormulaBarCancel();
     }
+}
+
+// ── PM-side Per-Tab Undo + History (FA dir 2026-05-19) ────────────────
+// Mirrors the FA dashboard buttons. Uses _pmActiveSheet as the sheet filter
+// and the same /api/recent-changes endpoint. Reverting any change refreshes
+// the PM portal table so the restored value appears.
+
+async function pmTabUndoLast() {
+  const sheet = _pmActiveSheet || '';
+  if (!sheet) { alert('No active sheet'); return; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(ENTITY) +
+                              '?sheet=' + encodeURIComponent(sheet) + '&limit=20');
+    if (!resp.ok) { alert('Could not load recent changes: ' + resp.status); return; }
+    const data = await resp.json();
+    const changes = data.changes || [];
+    const target = changes.find(c => c.undoable);
+    if (!target) {
+      alert('No undoable changes on the ' + sheet + ' tab yet.');
+      return;
+    }
+    const fieldLabel = target.field || target.action || 'change';
+    if (!confirm('Undo the most recent change on ' + sheet + '?\n\n' +
+                  (target.gl_code ? target.gl_code + ' · ' : '') +
+                  fieldLabel + ': ' +
+                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)'))) return;
+    const undoResp = await fetch('/api/recent-changes/' + encodeURIComponent(ENTITY) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: target.id}),
+    });
+    if (!undoResp.ok) {
+      alert('Undo failed: ' + (await undoResp.text()).slice(0, 200));
+      return;
+    }
+    // Reload PM lines so the change reflects in the grid
+    await pmReloadLinesAndRender();
+    showToast('Undid ' + fieldLabel + ' on ' + (target.gl_code || sheet), 'success');
+  } catch (e) {
+    alert('Undo error: ' + e.message);
+  }
+}
+
+async function pmTabShowHistory() {
+  const sheet = _pmActiveSheet || '';
+  if (!sheet) { alert('No active sheet'); return; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(ENTITY) +
+                              '?sheet=' + encodeURIComponent(sheet) + '&limit=50');
+    if (!resp.ok) { alert('Could not load history: ' + resp.status); return; }
+    const data = await resp.json();
+    _pmTabRenderHistoryModal(sheet, data.changes || []);
+  } catch (e) {
+    alert('History error: ' + e.message);
+  }
+}
+
+function _pmTabRenderHistoryModal(sheet, changes) {
+  const existing = document.getElementById('pmTabHistoryRoot');
+  if (existing) existing.remove();
+  const fieldLabels = {
+    proposed_budget: 'Proposed', increase_pct: 'Increase %', increase_dollar: 'Increase $',
+    estimate_override: 'Estimate', forecast_override: 'Forecast',
+    estimate_formula: 'Est. formula', forecast_formula: 'Fcst. formula', proposed_formula: 'Prop. formula',
+    accrual_adj: 'Accrual', unpaid_bills: 'Unpaid', current_budget: 'Curr. Budget',
+    prior_year: 'Prior Year', ytd_actual: 'YTD',
+    notes: 'Notes', category: 'Category', pm_review_state: 'PM review',
+    fa_proposed_status: 'FA decision', fa_proposed_note: 'FA note', fa_override_value: 'FA override',
+  };
+  const _esc = (s) => (s===null||s===undefined?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const _fmtV = (raw, field) => {
+    if (raw === null || raw === undefined || raw === '') return '(empty)';
+    const s = String(raw);
+    const numericFields = ['proposed_budget','increase_dollar','estimate_override','forecast_override','accrual_adj','unpaid_bills','current_budget','prior_year','ytd_actual','fa_override_value'];
+    if (numericFields.indexOf(field) >= 0) {
+      const n = parseFloat(s);
+      if (!isNaN(n)) return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+    }
+    if (field === 'increase_pct') {
+      const n = parseFloat(s);
+      if (!isNaN(n)) return (n * 100).toFixed(1) + '%';
+    }
+    if (s.length > 60) return s.slice(0, 57) + '…';
+    return s;
+  };
+  let html = '';
+  html += '<div id="pmTabHistoryOverlay" onclick="_pmTabCloseHistory()" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2000;"></div>';
+  html += '<div id="pmTabHistoryModal" style="position:fixed; top:60px; left:50%; transform:translateX(-50%); width:720px; max-width:94vw; max-height:82vh; background:white; border-radius:12px; box-shadow:0 24px 60px rgba(0,0,0,0.3); z-index:2001; overflow:hidden; display:flex; flex-direction:column;">';
+  html += '<div style="padding:14px 22px; border-bottom:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center;">';
+  html += '<h3 style="margin:0; font-size:15px; font-weight:700; color:var(--gray-900);">⏱ History · ' + _esc(sheet) + ' tab</h3>';
+  html += '<button onclick="_pmTabCloseHistory()" style="border:none; background:transparent; font-size:20px; cursor:pointer; color:var(--gray-500); line-height:1;">×</button>';
+  html += '</div>';
+  html += '<div style="padding:8px 18px; font-size:11px; color:var(--gray-500); background:#fafbfc; border-bottom:1px solid var(--gray-200);">';
+  html += changes.length + ' change' + (changes.length !== 1 ? 's' : '') + ' on this tab · newest first · Restore reverts a single field';
+  html += '</div>';
+  html += '<div style="overflow-y:auto; flex:1;">';
+  if (!changes.length) {
+    html += '<div style="padding:40px; text-align:center; color:var(--gray-500); font-size:13px;">No changes logged on this tab yet.</div>';
+  } else {
+    for (const c of changes) {
+      const fieldLabel = fieldLabels[c.field] || c.field || c.action;
+      const oldDisp = _fmtV(c.old_value, c.field);
+      const newDisp = _fmtV(c.new_value, c.field);
+      const ts = c.ts ? new Date(c.ts) : null;
+      const tsLocal = ts ? ts.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      html += '<div style="padding:12px 22px; border-bottom:1px solid var(--gray-100); display:grid; grid-template-columns:1fr auto; gap:12px;">';
+      html += '<div style="min-width:0;">';
+      if (c.gl_code) html += '<div style="font:600 13px -apple-system,sans-serif; color:var(--gray-900); margin-bottom:3px;">' + _esc(c.gl_code) + (c.description ? ' · ' + _esc(c.description) : '') + '</div>';
+      html += '<div style="font-size:12px; color:var(--gray-600); line-height:1.5;">';
+      html += '<b style="color:var(--gray-900);">' + _esc(fieldLabel) + '</b>: ';
+      html += '<span style="color:#94a3b8; text-decoration:line-through;">' + _esc(oldDisp) + '</span> → ';
+      html += '<span style="color:var(--gray-900); font-weight:600;">' + _esc(newDisp) + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:11px; color:var(--gray-400); margin-top:4px;">' + _esc(tsLocal);
+      if (c.source) html += ' · ' + _esc(c.source);
+      if (c.action === 'undo') html += ' · <span style="color:var(--blue);">UNDO</span>';
+      html += '</div>';
+      html += '</div>';
+      if (c.undoable) {
+        html += '<button onclick="_pmTabRestoreFromHistory(' + c.id + ', this)" style="align-self:center; padding:6px 14px; font:600 12px -apple-system,sans-serif; background:var(--blue, #1d4ed8); color:white; border:none; border-radius:6px; cursor:pointer; white-space:nowrap;">↺ Restore</button>';
+      } else {
+        html += '<span style="align-self:center; color:var(--gray-400); font-size:11px;">not undoable</span>';
+      }
+      html += '</div>';
+    }
+  }
+  html += '</div>';
+  html += '<div style="padding:10px 22px; background:var(--gray-50, #fafbfc); border-top:1px solid var(--gray-200); font-size:10px; color:var(--gray-500); text-align:right;">Last 50 changes shown.</div>';
+  html += '</div>';
+  const wrap = document.createElement('div');
+  wrap.id = 'pmTabHistoryRoot';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+}
+
+function _pmTabCloseHistory() {
+  const r = document.getElementById('pmTabHistoryRoot');
+  if (r) r.remove();
+}
+
+async function _pmTabRestoreFromHistory(revId, btn) {
+  if (!confirm('Restore this version of the field?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(ENTITY) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: revId}),
+    });
+    if (!resp.ok) {
+      alert('Restore failed: ' + (await resp.text()).slice(0, 200));
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+      return;
+    }
+    _pmTabCloseHistory();
+    await pmReloadLinesAndRender();
+    showToast('Restored', 'success');
+  } catch (e) {
+    alert('Restore error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Restore'; }
+  }
+}
+
+// Reload LINES from server then re-render the active sheet. Used after
+// undo/restore so the grid shows the new (restored) values.
+async function pmReloadLinesAndRender() {
+  try {
+    const r = await fetch('/api/lines/' + ENTITY + '?_=' + Date.now());
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (Array.isArray(data)) {
+      LINES = data;
+    } else if (data && Array.isArray(data.lines)) {
+      LINES = data.lines;
+    }
+    if (typeof renderTable === 'function') renderTable();
+    if (typeof populateMyChanges === 'function') populateMyChanges();
+  } catch (e) {
+    console.warn('Reload after undo failed:', e);
+  }
 }
 
 // Get formula tooltip string for cell
