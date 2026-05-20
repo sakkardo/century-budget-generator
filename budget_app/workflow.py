@@ -5392,6 +5392,172 @@ def create_workflow_blueprint(db):
         return jsonify({"ok": True, **info.to_dict()})
 
 
+    # ─── Recent Changes Feed + Undo (FA dir 2026-05-19 Phase 2) ──────────
+    # The BudgetRevision table already logs every field-level change (old +
+    # new values). These endpoints surface that as a feed in the Health
+    # drawer, with a one-click Undo for any entry.
+
+    # Fields safe to undo on BudgetLine. Each entry: {parser_for_old_value, sensitive_flag}
+    # Fields not in this list reject the undo (don't pretend to revert
+    # something we don't know how to write back).
+    _UNDOABLE_FIELDS = {
+        "proposed_budget": "float",
+        "increase_pct": "float",
+        "increase_dollar": "float_nullable",
+        "estimate_override": "float_nullable",
+        "forecast_override": "float_nullable",
+        "estimate_formula": "text_nullable",
+        "forecast_formula": "text_nullable",
+        "proposed_formula": "text_nullable",
+        "accrual_adj": "float",
+        "unpaid_bills": "float",
+        "current_budget": "float",
+        "prior_year": "float",
+        "ytd_actual": "float",
+        "notes": "text",
+        "category": "text",
+        "pm_review_state": "text_nullable",
+        "fa_proposed_status": "text_nullable",
+        "fa_proposed_note": "text",
+        "fa_override_value": "float_nullable",
+    }
+
+    def _parse_undo_value(raw, kind):
+        """Parse a stored old_value string into the right Python type for the
+        field. Handles None / empty for nullable fields."""
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if kind == "float":
+            try:
+                return float(s) if s else 0.0
+            except Exception:
+                return 0.0
+        if kind == "float_nullable":
+            if s in ("", "None", "null"):
+                return None
+            try:
+                return float(s)
+            except Exception:
+                return None
+        if kind == "text":
+            return "" if s in ("None", "null") else s
+        if kind == "text_nullable":
+            return None if s in ("", "None", "null") else s
+        return s
+
+    @bp.route("/api/recent-changes/<entity_code>", methods=["GET"])
+    def get_recent_changes(entity_code):
+        """Return the most recent BudgetRevision entries for this building.
+
+        Up to 50 entries by default. Each is augmented with the GL code +
+        description from BudgetLine so the UI can show "Maintenance Fees /
+        proposed_budget changed from $145,738 → $153,025 by FA at 4:23 PM".
+        """
+        limit = int(request.args.get("limit", "50"))
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"changes": []})
+        revisions = (
+            BudgetRevision.query
+            .filter_by(budget_id=budget.id)
+            .order_by(BudgetRevision.id.desc())
+            .limit(limit)
+            .all()
+        )
+        # Build GL lookup for any line_ids referenced
+        line_ids = {r.budget_line_id for r in revisions if r.budget_line_id}
+        gl_lookup = {}
+        if line_ids:
+            for l in BudgetLine.query.filter(BudgetLine.id.in_(line_ids)).all():
+                gl_lookup[l.id] = {"gl_code": l.gl_code, "description": l.description}
+        out = []
+        for r in revisions:
+            gl_info = gl_lookup.get(r.budget_line_id, {})
+            undoable = (
+                r.budget_line_id is not None
+                and r.action in ("update", "fa_proposal_review")
+                and r.field_name in _UNDOABLE_FIELDS
+            )
+            out.append({
+                "id": r.id,
+                "ts": r.created_at.isoformat() + "Z" if r.created_at else None,
+                "user_id": r.user_id,
+                "action": r.action,
+                "field": r.field_name or "",
+                "old_value": r.old_value or "",
+                "new_value": r.new_value or "",
+                "source": r.source or "",
+                "notes": r.notes or "",
+                "gl_code": gl_info.get("gl_code", ""),
+                "description": gl_info.get("description", ""),
+                "undoable": undoable,
+            })
+        return jsonify({"changes": out, "entity_code": entity_code})
+
+    @bp.route("/api/recent-changes/<entity_code>/undo", methods=["POST"])
+    def undo_recent_change(entity_code):
+        """Undo one BudgetRevision: write the old_value back to the field.
+
+        Body: {revision_id: N}. Creates a new revision tagged action="undo"
+        so the undo itself is auditable + redoable.
+        """
+        body = request.get_json(silent=True) or {}
+        rev_id = body.get("revision_id")
+        if not rev_id:
+            return jsonify({"error": "revision_id required"}), 400
+
+        rev = BudgetRevision.query.get(rev_id)
+        if not rev:
+            return jsonify({"error": "Revision not found"}), 404
+        budget = Budget.query.get(rev.budget_id)
+        if not budget or budget.entity_code != entity_code:
+            return jsonify({"error": "Revision does not belong to this entity"}), 400
+        if rev.field_name not in _UNDOABLE_FIELDS:
+            return jsonify({"error": f"Field '{rev.field_name}' is not undoable from this UI."}), 400
+        if not rev.budget_line_id:
+            return jsonify({"error": "Revision has no line attached"}), 400
+
+        line = BudgetLine.query.get(rev.budget_line_id)
+        if not line:
+            return jsonify({"error": "Budget line missing — can't undo"}), 404
+
+        kind = _UNDOABLE_FIELDS[rev.field_name]
+        new_value_for_line = _parse_undo_value(rev.old_value, kind)
+        previous_current = getattr(line, rev.field_name, None)
+        try:
+            setattr(line, rev.field_name, new_value_for_line)
+        except Exception as e:
+            return jsonify({"error": f"Cannot set {rev.field_name}: {e}"}), 500
+
+        # Audit the undo so it's itself reversible
+        undo_rev = BudgetRevision(
+            budget_id=budget.id,
+            budget_line_id=line.id,
+            action="undo",
+            field_name=rev.field_name,
+            old_value=str(previous_current) if previous_current is not None else "",
+            new_value=str(new_value_for_line) if new_value_for_line is not None else "",
+            notes=f"Undo of revision #{rev.id}",
+            source="web",
+            user_id=_read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
+        )
+        db.session.add(undo_rev)
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)[:200]}), 500
+        return jsonify({
+            "ok": True,
+            "reverted_field": rev.field_name,
+            "new_value": new_value_for_line,
+            "gl_code": line.gl_code,
+            "description": line.description or "",
+            "undo_revision_id": undo_rev.id,
+        })
+
+
     # ─── Building Info — Undo / History (FA dir 2026-05-19) ─────────────
     # Snapshot-on-save powers per-building undo. Every PUT pushes the prior
     # state into BuildingInfo.snapshots_json (capped at 20). These endpoints
@@ -25033,7 +25199,140 @@ function switchDrawerTab(tab) {
   });
   document.getElementById('drawerActions').style.display = tab === 'readiness' ? '' : 'none';
   document.getElementById('drawerDataQuality').style.display = tab === 'quality' ? '' : 'none';
+  const rc = document.getElementById('drawerRecentChanges');
+  if (rc) rc.style.display = tab === 'changes' ? '' : 'none';
   if (tab === 'quality') _loadDataQualityIfStale();
+  if (tab === 'changes') _loadRecentChangesIfStale();
+}
+
+// ── Recent Changes Tab (FA dir 2026-05-19 Phase 2) ────────────────────
+// Reads BudgetRevision rows for the current building, renders newest-first,
+// with one-click Undo for any line-field change. Re-renders after undo.
+let _rcLoadedAt = 0;
+async function _loadRecentChangesIfStale() {
+  if (Date.now() - _rcLoadedAt < 15000) return;
+  const container = document.getElementById('drawerRecentChanges');
+  if (!container) return;
+  if (!container.innerHTML.trim()) {
+    container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--gray-500); font-size:13px;">Loading recent changes…</div>';
+  }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '?limit=50');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    _rcLoadedAt = Date.now();
+    _renderRecentChanges(data.changes || []);
+  } catch (e) {
+    container.innerHTML = '<div style="padding:24px; color:var(--red); font-size:13px;">Failed to load recent changes: ' + (e.message || 'unknown') + '</div>';
+  }
+}
+
+function _renderRecentChanges(changes) {
+  const container = document.getElementById('drawerRecentChanges');
+  if (!container) return;
+  if (!changes.length) {
+    container.innerHTML = '<div style="padding:32px; text-align:center; color:var(--gray-500); font-size:13px;">No changes logged yet for this building. Edits to budget lines, notes, and FA actions will appear here.</div>';
+    return;
+  }
+  let html = '<div style="padding:12px 16px; background:#fafbfc; border-bottom:1px solid var(--gray-200); display:flex; gap:14px; font-size:11px; color:var(--gray-500);">';
+  html += '<span><b style="color:var(--gray-900);">' + changes.length + '</b> change' + (changes.length !== 1 ? 's' : '') + ' (newest first, last 50)</span>';
+  html += '<span style="margin-left:auto;">Click ↺ to undo any change</span>';
+  html += '</div>';
+  for (const c of changes) {
+    html += _renderRecentChangeRow(c);
+  }
+  container.innerHTML = html;
+}
+
+function _renderRecentChangeRow(c) {
+  const ts = c.ts ? new Date(c.ts) : null;
+  const tsLocal = ts ? ts.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '';
+  const fieldLabels = {
+    proposed_budget: 'Proposed', increase_pct: 'Increase %', increase_dollar: 'Increase $',
+    estimate_override: 'Estimate', forecast_override: 'Forecast',
+    estimate_formula: 'Est. formula', forecast_formula: 'Fcst. formula', proposed_formula: 'Prop. formula',
+    accrual_adj: 'Accrual', unpaid_bills: 'Unpaid', current_budget: 'Curr. Budget',
+    prior_year: 'Prior Year', ytd_actual: 'YTD',
+    notes: 'Notes', category: 'Category', pm_review_state: 'PM review',
+    fa_proposed_status: 'FA decision', fa_proposed_note: 'FA note', fa_override_value: 'FA override',
+  };
+  const fieldLabel = fieldLabels[c.field] || c.field || c.action;
+  const oldDisp = _fmtChangeValue(c.old_value, c.field);
+  const newDisp = _fmtChangeValue(c.new_value, c.field);
+  let html = '<div style="padding:10px 16px; border-bottom:1px solid var(--gray-200); display:grid; grid-template-columns:1fr auto; gap:8px;">';
+  html += '<div style="min-width:0;">';
+  if (c.gl_code) {
+    html += '<div style="font:600 12px -apple-system,sans-serif; color:var(--gray-900); margin-bottom:2px;">' + _escapeHtml(c.gl_code) + (c.description ? ' · ' + _escapeHtml(c.description) : '') + '</div>';
+  } else if (c.action) {
+    html += '<div style="font:600 12px -apple-system,sans-serif; color:var(--gray-900); margin-bottom:2px;">' + _escapeHtml(c.action.replace(/_/g, ' ')) + '</div>';
+  }
+  html += '<div style="font-size:11px; color:var(--gray-600); line-height:1.4;">';
+  html += '<b style="color:var(--gray-900);">' + _escapeHtml(fieldLabel) + '</b>: ';
+  html += '<span style="color:#94a3b8; text-decoration:line-through;">' + _escapeHtml(oldDisp) + '</span> → ';
+  html += '<span style="color:var(--gray-900); font-weight:600;">' + _escapeHtml(newDisp) + '</span>';
+  html += '</div>';
+  html += '<div style="font-size:10px; color:var(--gray-400); margin-top:3px;">' + _escapeHtml(tsLocal);
+  if (c.source) html += ' · ' + _escapeHtml(c.source);
+  if (c.action === 'undo') html += ' · <span style="color:var(--blue);">UNDO</span>';
+  html += '</div>';
+  html += '</div>';
+  if (c.undoable) {
+    html += '<button onclick="_undoRecentChange(' + c.id + ', this)" title="Restore the previous value" style="align-self:center; padding:5px 10px; font:600 11px -apple-system,sans-serif; background:white; color:var(--blue, #1d4ed8); border:1px solid var(--blue, #1d4ed8); border-radius:5px; cursor:pointer; white-space:nowrap;">↺ Undo</button>';
+  } else {
+    html += '<span style="align-self:center; color:var(--gray-400); font-size:10px;">—</span>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function _fmtChangeValue(raw, field) {
+  if (raw === null || raw === undefined || raw === '') return '(empty)';
+  const s = String(raw);
+  // Treat numeric fields as currency for readability
+  const numericFields = ['proposed_budget', 'increase_dollar', 'estimate_override', 'forecast_override',
+                          'accrual_adj', 'unpaid_bills', 'current_budget', 'prior_year', 'ytd_actual', 'fa_override_value'];
+  if (numericFields.indexOf(field) >= 0) {
+    const n = parseFloat(s);
+    if (!isNaN(n)) {
+      return (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString();
+    }
+  }
+  if (field === 'increase_pct') {
+    const n = parseFloat(s);
+    if (!isNaN(n)) return (n * 100).toFixed(1) + '%';
+  }
+  // Truncate long text
+  if (s.length > 60) return s.slice(0, 57) + '…';
+  return s;
+}
+
+async function _undoRecentChange(revisionId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Undoing…'; }
+  try {
+    const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({revision_id: revisionId}),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      alert('Undo failed: ' + err.slice(0, 200));
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Undo'; }
+      return;
+    }
+    // Refresh the feed
+    _rcLoadedAt = 0;
+    await _loadRecentChangesIfStale();
+    // Also re-render the active sheet so the change is reflected in the grid
+    if (typeof renderActiveSheet === 'function') {
+      try { renderActiveSheet(); } catch (_e) {}
+    } else if (typeof loadDetail === 'function') {
+      try { loadDetail(); } catch (_e) {}
+    }
+  } catch (e) {
+    alert('Undo error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Undo'; }
+  }
 }
 
 let _hcLoadedAt = 0;
@@ -25548,17 +25847,21 @@ loadDetail();
     <button class="drawer-close" onclick="closeHealthDrawer()" aria-label="Close drawer">&#x2715;</button>
   </div>
   <div class="drawer-kpis" id="drawerKpis"></div>
-  <!-- FA dir 2026-05-19: tab strip — Readiness (existing) + Data Quality (new) -->
+  <!-- FA dir 2026-05-19: tab strip — Readiness (existing) + Data Quality + Recent Changes -->
   <div class="drawer-tabs" style="display:flex; gap:0; border-bottom:1px solid var(--gray-200); margin:8px 16px 0; padding:0;">
     <button class="drawer-tab active" data-drawer-tab="readiness"
             onclick="switchDrawerTab('readiness')"
-            style="flex:1; padding:10px 12px; background:transparent; border:none; border-bottom:2px solid var(--blue, #1d4ed8); color:var(--blue, #1d4ed8); font:600 12px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Readiness</button>
+            style="flex:1; padding:10px 8px; background:transparent; border:none; border-bottom:2px solid var(--blue, #1d4ed8); color:var(--blue, #1d4ed8); font:600 11px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Readiness</button>
     <button class="drawer-tab" data-drawer-tab="quality"
             onclick="switchDrawerTab('quality')"
-            style="flex:1; padding:10px 12px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--gray-500, #64748b); font:600 12px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Data Quality <span id="drawerDqBadge" style="display:none; margin-left:6px; background:#dc2626; color:white; font-size:9px; padding:1px 6px; border-radius:999px; font-weight:700;">0</span></button>
+            style="flex:1; padding:10px 8px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--gray-500, #64748b); font:600 11px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Data Quality <span id="drawerDqBadge" style="display:none; margin-left:4px; background:#dc2626; color:white; font-size:9px; padding:1px 5px; border-radius:999px; font-weight:700;">0</span></button>
+    <button class="drawer-tab" data-drawer-tab="changes"
+            onclick="switchDrawerTab('changes')"
+            style="flex:1; padding:10px 8px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--gray-500, #64748b); font:600 11px -apple-system,sans-serif; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em;">Recent Changes</button>
   </div>
   <div id="drawerActions"></div>
   <div id="drawerDataQuality" style="display:none;"></div>
+  <div id="drawerRecentChanges" style="display:none;"></div>
 </aside>
 
 </body>
