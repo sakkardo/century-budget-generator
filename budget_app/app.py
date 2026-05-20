@@ -199,6 +199,10 @@ def _run_idempotent_migrations():
         # estimate / forecast formulas. Parallels proposed_formula.
         "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS estimate_formula TEXT",
         "ALTER TABLE budget_lines ADD COLUMN IF NOT EXISTS forecast_formula TEXT",
+        # FA dir 2026-05-19: snapshot-on-save undo support for Building Info.
+        # JSON array of last-N snapshots (current state pushed before each
+        # write). Restore endpoint reads from here. Cap enforced in app code.
+        "ALTER TABLE building_info ADD COLUMN IF NOT EXISTS snapshots_json TEXT",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive

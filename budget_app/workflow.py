@@ -1627,6 +1627,14 @@ def create_workflow_blueprint(db):
         common_charges_history_json = db.Column(db.Text, nullable=True)
         amort_config_json = db.Column(db.Text, nullable=True)
 
+        # FA dir 2026-05-19: snapshot-on-save undo support. Every PUT pushes
+        # the CURRENT state into this JSON array before applying the new
+        # values. Last 20 snapshots kept. Each entry:
+        #   {ts: ISO timestamp, by: user_id, maintenance_history, amort_config, common_charges_history}
+        # Restore endpoint reads from here. Once empty, undo is unavailable
+        # (oldest snapshot is the only known previous state).
+        snapshots_json = db.Column(db.Text, nullable=True)
+
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
         updated_by = db.Column(db.String(120), nullable=True)
 
@@ -5276,6 +5284,39 @@ def create_workflow_blueprint(db):
             info = BuildingInfo(entity_code=entity_code)
             db.session.add(info)
 
+        # FA dir 2026-05-19: snapshot the CURRENT state before applying writes.
+        # Keeps last 20 versions so the FA can undo accidental wipes (e.g.
+        # someone clears maintenance history by mistake). Restore endpoint
+        # reads from this list. Skip snapshot on first save (no prior state).
+        try:
+            had_any_state = bool(
+                info.maintenance_history_json
+                or info.common_charges_history_json
+                or info.amort_config_json
+            )
+            if had_any_state:
+                try:
+                    _snaps = json.loads(info.snapshots_json) if info.snapshots_json else []
+                    if not isinstance(_snaps, list):
+                        _snaps = []
+                except Exception:
+                    _snaps = []
+                # Capture pre-write state
+                _snaps.append({
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "by": _read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
+                    "maintenance_history_json": info.maintenance_history_json,
+                    "common_charges_history_json": info.common_charges_history_json,
+                    "amort_config_json": info.amort_config_json,
+                })
+                # Cap at 20
+                if len(_snaps) > 20:
+                    _snaps = _snaps[-20:]
+                info.snapshots_json = json.dumps(_snaps)
+        except Exception as _e:
+            # Never fail the save because of snapshot bookkeeping
+            pass
+
         # FA directive 2026-05-10: dedup maintenance_history and
         # common_charges_history by year. Past versions of the parser
         # / append paths produced duplicate-by-year rows (168 had 24
@@ -5349,6 +5390,115 @@ def create_workflow_blueprint(db):
             return jsonify({"error": str(e)}), 500
 
         return jsonify({"ok": True, **info.to_dict()})
+
+
+    # ─── Building Info — Undo / History (FA dir 2026-05-19) ─────────────
+    # Snapshot-on-save powers per-building undo. Every PUT pushes the prior
+    # state into BuildingInfo.snapshots_json (capped at 20). These endpoints
+    # let the FA list snapshots and restore one.
+
+    @bp.route("/api/building-info/<entity_code>/history", methods=["GET"])
+    def get_building_info_history(entity_code):
+        """List the last N building-info snapshots for this entity.
+
+        Returns a brief summary per snapshot: timestamp, who, what kind of
+        data was present (maint history row count, amort config present, etc.).
+        The frontend uses this to render the "History" modal with restore
+        buttons.
+        """
+        info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+        if not info or not info.snapshots_json:
+            return jsonify({"snapshots": []})
+        try:
+            snaps = json.loads(info.snapshots_json)
+            if not isinstance(snaps, list):
+                snaps = []
+        except Exception:
+            snaps = []
+
+        # Build summaries (oldest → newest, so frontend can show newest first)
+        out = []
+        for idx, s in enumerate(snaps):
+            mh = s.get("maintenance_history_json")
+            cc = s.get("common_charges_history_json")
+            ac = s.get("amort_config_json")
+            def _safe_count(raw):
+                try:
+                    arr = json.loads(raw) if raw else []
+                    return len(arr) if isinstance(arr, list) else 0
+                except Exception:
+                    return 0
+            out.append({
+                "index": idx,
+                "ts": s.get("ts"),
+                "by": s.get("by"),
+                "maintenance_rows": _safe_count(mh),
+                "common_charges_rows": _safe_count(cc),
+                "has_amort_config": bool(ac),
+            })
+        # Newest first for the UI
+        out.reverse()
+        return jsonify({"snapshots": out})
+
+    @bp.route("/api/building-info/<entity_code>/restore", methods=["POST"])
+    def restore_building_info(entity_code):
+        """Restore a snapshot. Body: {snapshot_index: N} where N is the index
+        returned by /history. Pushes the CURRENT state into snapshots first
+        (so a restore is itself undoable). Then writes the snapshot's JSON
+        blobs back to the live columns.
+        """
+        body = request.get_json(silent=True) or {}
+        idx = body.get("snapshot_index")
+        if idx is None:
+            return jsonify({"error": "snapshot_index required"}), 400
+        try:
+            idx = int(idx)
+        except Exception:
+            return jsonify({"error": "snapshot_index must be integer"}), 400
+
+        info = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+        if not info:
+            return jsonify({"error": "Building info not found"}), 404
+        try:
+            snaps = json.loads(info.snapshots_json) if info.snapshots_json else []
+            if not isinstance(snaps, list):
+                snaps = []
+        except Exception:
+            snaps = []
+        if not snaps or idx < 0 or idx >= len(snaps):
+            return jsonify({"error": "Snapshot index out of range"}), 400
+
+        target = snaps[idx]
+
+        # Push the CURRENT state as a new snapshot before restoring (so the
+        # FA can undo the restore itself if they realize the restore was wrong)
+        try:
+            snaps.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "by": _read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
+                "maintenance_history_json": info.maintenance_history_json,
+                "common_charges_history_json": info.common_charges_history_json,
+                "amort_config_json": info.amort_config_json,
+                "note": f"pre-restore snapshot (about to restore snapshot from {target.get('ts')})",
+            })
+            if len(snaps) > 20:
+                snaps = snaps[-20:]
+            info.snapshots_json = json.dumps(snaps)
+        except Exception:
+            pass
+
+        # Apply the target snapshot's blobs
+        info.maintenance_history_json = target.get("maintenance_history_json")
+        info.common_charges_history_json = target.get("common_charges_history_json")
+        info.amort_config_json = target.get("amort_config_json")
+
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)[:200]}), 500
+
+        return jsonify({"ok": True, "restored_from": target.get("ts"), **info.to_dict()})
 
 
     # ─── Readiness Inspector ─────────────────────────────────────────────
@@ -15714,9 +15864,14 @@ function _biRenderAll(container) {
   const showCC = ccRows && ccRows.length > 0;
   container.innerHTML =
     '<div class="bi-page">' +
-      '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:12px;">' +
         '<button onclick="_biCloseAndReturn()" style="padding:6px 14px; font-size:12px; font-weight:600; background:var(--blue-light, #f5efe7); color:var(--blue, #5a4a3f); border:1px solid var(--blue, #5a4a3f); border-radius:6px; cursor:pointer;">\u2190 Back to Summary</button>' +
-        '<span id="biSaveIndicator" style="font-size:11px; color:var(--gray-500);"></span>' +
+        '<div style="display:flex; align-items:center; gap:10px;">' +
+          // FA dir 2026-05-19: Undo + History buttons for snapshot recovery
+          '<button id="biUndoBtn" onclick="_biUndoLast()" title="Restore the most recent saved state (your last edit will be undone)" style="padding:6px 12px; font-size:12px; font-weight:600; background:white; color:var(--gray-700, #4a4039); border:1px solid var(--gray-300, #d5cfc5); border-radius:6px; cursor:pointer;">\u21a9 Undo last change</button>' +
+          '<button id="biHistoryBtn" onclick="_biOpenHistory()" title="Browse the last 20 saved versions" style="padding:6px 12px; font-size:12px; font-weight:600; background:white; color:var(--gray-700, #4a4039); border:1px solid var(--gray-300, #d5cfc5); border-radius:6px; cursor:pointer;">\u23f1 History\u2026</button>' +
+          '<span id="biSaveIndicator" style="font-size:11px; color:var(--gray-500);"></span>' +
+        '</div>' +
       '</div>' +
       _biRenderType() +
       _biRenderMaint() +
@@ -15724,6 +15879,127 @@ function _biRenderAll(container) {
       _biRenderAmort() +
     '</div>';
   _biRecalcAmort();
+  _biRefreshUndoButton();
+}
+
+// FA dir 2026-05-19: snapshot-based undo / history controls
+async function _biRefreshUndoButton() {
+  const btn = document.getElementById('biUndoBtn');
+  if (!btn) return;
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode + '/history');
+    const data = await resp.json();
+    const count = (data.snapshots || []).length;
+    if (count === 0) {
+      btn.disabled = true;
+      btn.style.opacity = '0.45';
+      btn.style.cursor = 'not-allowed';
+      btn.title = 'No previous versions saved yet';
+    } else {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+      btn.title = 'Restore the most recent saved state (' + count + ' version' + (count !== 1 ? 's' : '') + ' available)';
+    }
+  } catch (_e) { /* leave button as-is */ }
+}
+
+async function _biUndoLast() {
+  const btn = document.getElementById('biUndoBtn');
+  if (btn && btn.disabled) return;
+  if (!confirm('Restore the most recent saved version?\\n\\nYour current edits will be saved as a new version first, so you can redo if needed.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '\u21a9 Restoring\u2026'; }
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode + '/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({snapshot_index: 0}),  // 0 = most recent in the reversed list
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      alert('Restore failed: ' + err.slice(0, 200));
+      if (btn) { btn.disabled = false; btn.textContent = '\u21a9 Undo last change'; }
+      return;
+    }
+    const indicator = document.getElementById('biSaveIndicator');
+    if (indicator) {
+      indicator.textContent = '\u2713 Restored at ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      indicator.style.color = 'var(--green, #16a34a)';
+    }
+    // Reload Building Info to show restored state
+    const contentDiv = document.getElementById('sheetContent');
+    if (contentDiv) renderBuildingInfoTab(contentDiv);
+  } catch (e) {
+    alert('Restore error: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '\u21a9 Undo last change'; }
+  }
+}
+
+async function _biOpenHistory() {
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode + '/history');
+    const data = await resp.json();
+    const snaps = data.snapshots || [];
+    // Build modal HTML
+    let modalHtml = '<div id="biHistoryOverlay" onclick="_biCloseHistory()" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000;"></div>';
+    modalHtml += '<div id="biHistoryModal" style="position:fixed; top:80px; left:50%; transform:translateX(-50%); width:560px; max-width:92vw; max-height:80vh; background:white; border-radius:12px; box-shadow:0 20px 60px rgba(0,0,0,0.3); z-index:1001; overflow:hidden; display:flex; flex-direction:column;">';
+    modalHtml += '<div style="padding:16px 22px; border-bottom:1px solid var(--gray-200); display:flex; justify-content:space-between; align-items:center;">';
+    modalHtml += '<h3 style="margin:0; font-size:16px; font-weight:700; color:var(--gray-900);">Building Info \u2014 Version History</h3>';
+    modalHtml += '<button onclick="_biCloseHistory()" style="border:none; background:transparent; font-size:20px; cursor:pointer; color:var(--gray-500); line-height:1;">\u00d7</button>';
+    modalHtml += '</div>';
+    modalHtml += '<div style="overflow-y:auto; flex:1;">';
+    if (snaps.length === 0) {
+      modalHtml += '<div style="padding:32px; text-align:center; color:var(--gray-500);">No saved versions yet. Your next edit will create the first snapshot.</div>';
+    } else {
+      for (const s of snaps) {
+        const tsLocal = s.ts ? new Date(s.ts).toLocaleString() : '(unknown time)';
+        const mhStr = s.maintenance_rows + ' maint row' + (s.maintenance_rows !== 1 ? 's' : '');
+        const ccStr = s.common_charges_rows + ' CC row' + (s.common_charges_rows !== 1 ? 's' : '');
+        const amStr = s.has_amort_config ? 'amort config' : 'no amort';
+        modalHtml += '<div style="padding:14px 22px; border-bottom:1px solid var(--gray-100); display:flex; justify-content:space-between; align-items:center; gap:16px;">';
+        modalHtml += '<div>';
+        modalHtml += '<div style="font-size:13px; font-weight:600; color:var(--gray-900);">' + tsLocal + '</div>';
+        modalHtml += '<div style="font-size:12px; color:var(--gray-500); margin-top:2px;">' + mhStr + ' \u00b7 ' + ccStr + ' \u00b7 ' + amStr + '</div>';
+        modalHtml += '</div>';
+        modalHtml += '<button onclick="_biRestoreSnapshot(' + s.index + ')" style="padding:6px 14px; font-size:12px; font-weight:600; background:var(--blue, #5a4a3f); color:white; border:none; border-radius:6px; cursor:pointer; white-space:nowrap;">Restore this</button>';
+        modalHtml += '</div>';
+      }
+    }
+    modalHtml += '</div>';
+    modalHtml += '<div style="padding:12px 22px; background:var(--gray-50, #f4f1eb); border-top:1px solid var(--gray-200); font-size:11px; color:var(--gray-500);">Last 20 versions kept. Older versions are pruned automatically.</div>';
+    modalHtml += '</div>';
+    const div = document.createElement('div');
+    div.id = 'biHistoryRoot';
+    div.innerHTML = modalHtml;
+    document.body.appendChild(div);
+  } catch (e) {
+    alert('Could not load history: ' + e.message);
+  }
+}
+
+function _biCloseHistory() {
+  const root = document.getElementById('biHistoryRoot');
+  if (root) root.remove();
+}
+
+async function _biRestoreSnapshot(idx) {
+  if (!confirm('Restore this version? Your current state will be saved as a new version first.')) return;
+  try {
+    const resp = await fetch('/api/building-info/' + entityCode + '/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({snapshot_index: idx}),
+    });
+    if (!resp.ok) {
+      alert('Restore failed: ' + await resp.text());
+      return;
+    }
+    _biCloseHistory();
+    const contentDiv = document.getElementById('sheetContent');
+    if (contentDiv) renderBuildingInfoTab(contentDiv);
+  } catch (e) {
+    alert('Restore error: ' + e.message);
+  }
 }
 
 // Building Type card \u2014 coop/condo/rental/mixed/other. Source of truth for
