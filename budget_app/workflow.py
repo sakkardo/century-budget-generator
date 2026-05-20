@@ -9705,6 +9705,7 @@ def create_workflow_blueprint(db):
                     updated_labels.append({"label": label, "old": current, "new": new_prefixes})
 
             # Auto-insert missing summary rows defined above.
+            auto_insert_error = None
             for new_label, meta in _AUTO_INSERT_ROWS.items():
                 if new_label in existing_labels:
                     continue
@@ -9716,37 +9717,54 @@ def create_workflow_blueprint(db):
                 new_cfg = SUMMARY_ROW_MAP.get(new_label)
                 if not new_cfg:
                     continue
-                # Shift every row after the anchor down by +1 in a single SQL
-                # statement. Postgres defers UNIQUE constraint checks to end-of-
-                # statement, so this avoids transient collisions that ORM-level
-                # row-by-row updates can hit.
-                db.session.flush()  # ensure any pending row-level updates are sent
-                db.session.execute(
-                    db.text(
-                        "UPDATE budget_summary_rows SET display_order = display_order + 1 "
-                        "WHERE entity_code = :ec AND budget_year = :year AND display_order > :anchor"
-                    ),
-                    {"ec": ec, "year": BUDGET_YEAR, "anchor": anchor.display_order},
-                )
-                # Keep in-memory `rows` consistent with DB so any subsequent
-                # _AUTO_INSERT_ROWS iteration in this loop sees the new state.
-                for r in rows:
-                    if r.display_order > anchor.display_order:
-                        r.display_order = r.display_order + 1
-                new_row = BudgetSummaryRow(
-                    entity_code=ec,
-                    budget_year=BUDGET_YEAR,
-                    display_order=anchor.display_order + 1,
-                    label=new_label,
-                    section=meta.get("section") or anchor.section,
-                    row_type="data",
-                    gl_prefixes_json=_json.dumps(new_cfg.get("gl_prefix", [])),
-                )
-                db.session.add(new_row)
-                rows.append(new_row)
-                existing_labels.add(new_label)
-                inserted += 1
-                inserted_labels.append({"label": new_label, "after": after_label, "order": anchor.display_order + 1})
+                # Shift every row after the anchor down by +1. The uq constraint
+                # on (entity_code, budget_year, display_order) is NOT deferrable,
+                # and Postgres checks UNIQUE per-row inside an UPDATE statement,
+                # so the naive `+1` can hit transient collisions. Two-step with
+                # a large offset avoids any conflict:
+                #   1) shift to display_order + 100000 (no positive collisions)
+                #   2) shift back by 99999 → effectively +1, room for new row
+                try:
+                    db.session.flush()  # send any pending ORM updates first
+                    db.session.execute(
+                        db.text(
+                            "UPDATE budget_summary_rows SET display_order = display_order + 100000 "
+                            "WHERE entity_code = :ec AND budget_year = :year AND display_order > :anchor"
+                        ),
+                        {"ec": ec, "year": BUDGET_YEAR, "anchor": anchor.display_order},
+                    )
+                    db.session.execute(
+                        db.text(
+                            "UPDATE budget_summary_rows SET display_order = display_order - 99999 "
+                            "WHERE entity_code = :ec AND budget_year = :year AND display_order > 100000"
+                        ),
+                        {"ec": ec, "year": BUDGET_YEAR},
+                    )
+                    # Keep in-memory `rows` consistent with DB so any subsequent
+                    # _AUTO_INSERT_ROWS iteration in this loop sees the new state.
+                    for r in rows:
+                        if r.display_order > anchor.display_order:
+                            r.display_order = r.display_order + 1
+                    new_row = BudgetSummaryRow(
+                        entity_code=ec,
+                        budget_year=BUDGET_YEAR,
+                        display_order=anchor.display_order + 1,
+                        label=new_label,
+                        section=meta.get("section") or anchor.section,
+                        row_type="data",
+                        gl_prefixes_json=_json.dumps(new_cfg.get("gl_prefix", [])),
+                    )
+                    db.session.add(new_row)
+                    db.session.flush()
+                    rows.append(new_row)
+                    existing_labels.add(new_label)
+                    inserted += 1
+                    inserted_labels.append({"label": new_label, "after": after_label, "order": anchor.display_order + 1})
+                except Exception as e:
+                    db.session.rollback()
+                    auto_insert_error = f"{new_label}: {type(e).__name__}: {str(e)[:200]}"
+                    # Stop trying to insert further rows on this entity
+                    break
 
             if updated or inserted:
                 try:
@@ -9757,14 +9775,17 @@ def create_workflow_blueprint(db):
                     continue
             total_updated += updated
             total_inserted += inserted
-            results.append({
+            row_result = {
                 "entity_code": ec,
                 "rows_examined": len(rows),
                 "rows_updated": updated,
                 "rows_inserted": inserted,
                 "updates": updated_labels,
                 "inserts": inserted_labels,
-            })
+            }
+            if auto_insert_error:
+                row_result["auto_insert_error"] = auto_insert_error
+            results.append(row_result)
         return jsonify({
             "ok": True,
             "total_entities": len(entities),
