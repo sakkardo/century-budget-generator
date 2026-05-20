@@ -23905,19 +23905,28 @@ function renderPayrollGL() {
     Object.keys(grandTotals).forEach(k => { grandTotals[k] += subTotals[k]; });
   });
 
-  // Grand total row (navy #1e3a5f, matches R&S/Repairs/Gen&Admin total-row)
-  html += '<tr class="total-row">' +
+  // FA dir 2026-05-19: Grand total row cells now use fx-td so they're
+  // clickable + editable via the formula bar (same as other sheet tabs'
+  // Sheet Total). Each cell has data-col so fxSubtotalFocus can build the
+  // SUM formula, and onclick wired to the same handler. Saved overrides
+  // are applied on render via applySubtotalOverrides.
+  const _grandVar = grandTotals.proposed - grandTotals.currBudget;
+  const _grandPct = grandTotals.currBudget ? (_grandVar / grandTotals.currBudget * 100) : 0;
+  function _payTotalTd(val, col) {
+    return '<td class="num fx-td" data-col="' + col + '" data-raw="' + Math.round(val) + '" onclick="fxSubtotalFocus(this)" style="cursor:pointer;"><span class="sub-val num-box">' + fD(val) + '</span></td>';
+  }
+  html += '<tr class="total-row" id="faSheetTotal">' +
     '<td class="frozen frozen-gl"></td>' +
     '<td class="frozen frozen-desc">TOTAL PAYROLL</td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.prior) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.ytd) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.estimate) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.forecast) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.currBudget) + '</span></td>' +
+    _payTotalTd(grandTotals.prior, 'prior') +
+    _payTotalTd(grandTotals.ytd, 'ytd') +
+    _payTotalTd(grandTotals.estimate, 'estimate') +
+    _payTotalTd(grandTotals.forecast, 'forecast') +
+    _payTotalTd(grandTotals.currBudget, 'budget') +
     '<td></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.proposed) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + fD(grandTotals.proposed - grandTotals.currBudget) + '</span></td>' +
-    '<td class="num"><span class="num-box">' + (grandTotals.currBudget ? ((grandTotals.proposed - grandTotals.currBudget) / grandTotals.currBudget * 100).toFixed(1) + '%' : '—') + '</span></td>' +
+    _payTotalTd(grandTotals.proposed, 'proposed') +
+    '<td class="num fx-td" data-col="variance" data-raw="' + Math.round(_grandVar) + '" onclick="fxSubtotalFocus(this)" style="cursor:pointer;"><span class="sub-val num-box">' + fD(_grandVar) + '</span></td>' +
+    '<td class="num fx-td" data-col="pctchange" data-raw="' + _grandPct.toFixed(2) + '" onclick="fxSubtotalFocus(this)" style="cursor:pointer;"><span class="sub-val num-box">' + (grandTotals.currBudget ? _grandPct.toFixed(1) + '%' : '—') + '</span></td>' +
     '<td></td>' +
     '</tr>';
 
@@ -23935,6 +23944,12 @@ function renderPayrollGL() {
   // Store GL total for tie-out
   window._payrollGLTotal = grandTotals.proposed;
   renderPayrollTieOut(window._payrollCalcTotal || 0);
+  // FA dir 2026-05-19: apply saved subtotal overrides to TOTAL PAYROLL row.
+  // Same machinery as the other FA sheet tabs — overrides live in
+  // budget.assumptions_json under sheet_subtotal_overrides[faSheetTotal][col].
+  if (typeof applySubtotalOverrides === 'function') {
+    applySubtotalOverrides(contentDiv);
+  }
 }
 
 function float(v) { return parseFloat(v) || 0; }
