@@ -4325,6 +4325,9 @@ def create_workflow_blueprint(db):
             # so the frontend can restore user edits on reload.
             if isinstance(overrides, dict) and overrides.get("cell_overrides"):
                 result["cell_overrides"] = overrides["cell_overrides"]
+            # FA dir 2026-05-19: After-10/31 toggle round-trip.
+            if isinstance(overrides, dict):
+                result["after_oct31"] = bool(overrides.get("after_oct31"))
             return jsonify({"is_coop": True, "re_taxes": result})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -9652,12 +9655,29 @@ def create_workflow_blueprint(db):
         else:
             entities = [entity_code]
 
+        # FA dir 2026-05-19 (148 RE Tax redesign): the new "Real Estate Tax
+        # Benefit Credits" row didn't exist on most entities — credits used to
+        # roll up under the "Real Estate Taxes" row (prefix "6315"). Now that
+        # "Real Estate Taxes" is narrowed to just "6315-0000", the credit GLs
+        # (6315-0010..0040) need a home or they'll orphan. Auto-insert the
+        # row right after "Real Estate Taxes" with the same section.
+        _AUTO_INSERT_ROWS = {
+            "Real Estate Tax Benefit Credits": {
+                "after_label": "Real Estate Taxes",
+                "section": "expenses",
+            },
+        }
+
         results = []
         total_updated = 0
+        total_inserted = 0
         for ec in entities:
             rows = BudgetSummaryRow.query.filter_by(entity_code=ec, budget_year=BUDGET_YEAR).all()
+            existing_labels = {r.label for r in rows}
             updated = 0
+            inserted = 0
             updated_labels = []
+            inserted_labels = []
             for row in rows:
                 if row.row_type != "data":
                     continue
@@ -9683,7 +9703,52 @@ def create_workflow_blueprint(db):
                     row.gl_prefixes_json = _json.dumps(new_prefixes)
                     updated += 1
                     updated_labels.append({"label": label, "old": current, "new": new_prefixes})
-            if updated:
+
+            # Auto-insert missing summary rows defined above.
+            for new_label, meta in _AUTO_INSERT_ROWS.items():
+                if new_label in existing_labels:
+                    continue
+                after_label = meta["after_label"]
+                anchor = next((r for r in rows if r.label == after_label), None)
+                if not anchor:
+                    # No anchor — skip. Don't make up an arbitrary position.
+                    continue
+                new_cfg = SUMMARY_ROW_MAP.get(new_label)
+                if not new_cfg:
+                    continue
+                # Shift every row after the anchor down by +1 in a single SQL
+                # statement. Postgres defers UNIQUE constraint checks to end-of-
+                # statement, so this avoids transient collisions that ORM-level
+                # row-by-row updates can hit.
+                db.session.flush()  # ensure any pending row-level updates are sent
+                db.session.execute(
+                    db.text(
+                        "UPDATE budget_summary_rows SET display_order = display_order + 1 "
+                        "WHERE entity_code = :ec AND budget_year = :year AND display_order > :anchor"
+                    ),
+                    {"ec": ec, "year": BUDGET_YEAR, "anchor": anchor.display_order},
+                )
+                # Keep in-memory `rows` consistent with DB so any subsequent
+                # _AUTO_INSERT_ROWS iteration in this loop sees the new state.
+                for r in rows:
+                    if r.display_order > anchor.display_order:
+                        r.display_order = r.display_order + 1
+                new_row = BudgetSummaryRow(
+                    entity_code=ec,
+                    budget_year=BUDGET_YEAR,
+                    display_order=anchor.display_order + 1,
+                    label=new_label,
+                    section=meta.get("section") or anchor.section,
+                    row_type="data",
+                    gl_prefixes_json=_json.dumps(new_cfg.get("gl_prefix", [])),
+                )
+                db.session.add(new_row)
+                rows.append(new_row)
+                existing_labels.add(new_label)
+                inserted += 1
+                inserted_labels.append({"label": new_label, "after": after_label, "order": anchor.display_order + 1})
+
+            if updated or inserted:
                 try:
                     db.session.commit()
                 except Exception as e:
@@ -9691,16 +9756,20 @@ def create_workflow_blueprint(db):
                     results.append({"entity_code": ec, "error": str(e)[:200]})
                     continue
             total_updated += updated
+            total_inserted += inserted
             results.append({
                 "entity_code": ec,
                 "rows_examined": len(rows),
                 "rows_updated": updated,
+                "rows_inserted": inserted,
                 "updates": updated_labels,
+                "inserts": inserted_labels,
             })
         return jsonify({
             "ok": True,
             "total_entities": len(entities),
             "total_rows_updated": total_updated,
+            "total_rows_inserted": total_inserted,
             "results": results,
         })
 
@@ -14883,7 +14952,7 @@ function openBoardPresentation() {
         {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
         {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
         {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
-        {label:'Taxes',                 match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+        {label:'Taxes',                 match: l => !(l.gl_code || '').startsWith('6315') && ((l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes'))},
         {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
       ]
     };
@@ -18123,10 +18192,15 @@ function updateProposalBadge() {
 // land in "Administrative & Other" instead of their natural section.
 function _gaSubForGl(gl) {
   const p4 = (gl || '').slice(0, 4);
+  // FA dir 2026-05-19: 6315 (Real Estate Tax + credits) now lives on the
+  // RE Taxes tab Section 3 only. Return null so G&A categorization treats
+  // these lines as "skip" (combined with the explicit predicate filter
+  // in SHEET_CATEGORIES so row_num-based imports also exclude them).
+  if (p4 === '6315') return null;
   // Insurance (6105-6195)
   if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
-  // Taxes (6310-6395)
-  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  // Taxes (6310-6395) — excludes 6315, handled above
+  if (['6310','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
   // Professional Fees (6505-6590)
   if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
   // Financial Expenses (6905-6970+, etc.)
@@ -18152,7 +18226,7 @@ const SHEET_CATEGORIES = {
       {key: 'prof_fees', label: 'Professional Fees', match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
       {key: 'admin',     label: 'Administrative & Other', match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
       {key: 'insurance', label: 'Insurance', match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
-      {key: 'taxes',     label: 'Taxes', match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+      {key: 'taxes',     label: 'Taxes', match: l => !(l.gl_code || '').startsWith('6315') && ((l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes'))},
       {key: 'financial', label: 'Financial Expenses', match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
     ]
   }
@@ -19007,8 +19081,14 @@ const RE_TAXES_TAB_HTML = `<style>
 
       <!-- SECTION 3: GL BUDGET LINES -->
       <div class="card">
-        <h2>3. GL Budget Lines → Gen & Admin Tab</h2>
-        <div class="note" style="margin-bottom:8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+          <h2 style="margin:0;">3. GL Budget Lines</h2>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none;" title="After 10/31, YSL actuals are the source of truth for remaining months. Set May-Dec estimates to zero so 12-Mo Forecast tracks YTD.">
+            <input type="checkbox" id="reAfterOct31" style="margin:0;">
+            After 10/31 (YSL has full year) — zero out remaining-months estimate
+          </label>
+        </div>
+        <div class="note" style="margin-bottom:8px; margin-top:6px;">
           <span class="ysl-badge">YSL</span> YTD Actual is pulled from this building's Yardi Select Ledger postings.
           <span class="upload-badge">UPLOAD</span> Prior Year Budget comes from the imported approved budget.
         </div>
@@ -19207,22 +19287,19 @@ const CELL_META = {
 };
 // Section 3 per-GL cells — meta registered after GL_ROWS is defined below.
 // Excel formulas for each per-GL computed cell.
-// FA directive 2026-05-10: estimate column is now period-independent —
-// it's simply (Current Year Budget − YTD Actual). 12-month forecast = YTD + Estimate
-// = Current Year Budget. Mathematically clean: as the FA enters real YTD,
-// the estimate auto-adjusts so the full-year forecast hits budget. Replaces
-// the old quarter-based math (=I11/2, =-G29/4, etc.) which baked in the
-// Jul-Sep / Oct-Dec calendar of entity 212 only and broke for other periods.
+// FA directive 2026-05-19 (148 RE Tax redesign): estimate column now derives
+// from Sections 1 + 2 per-GL (see _reEstFormulaEntry for the human-readable
+// explanation). 12-Mo Forecast = YTD + Estimate (unchanged).
 // H column (Current Year Budget) formulas unchanged — they remain the
 // "anchor" derived from sections 1+2 (gross tax minus exemptions).
 const GL_EXCEL_FORMULAS = {
-  '6315-0000': { e: '=H_6315_0000 - YTD_6315_0000', h: '=+I19' },
-  '6315-0010': { e: '=H_6315_0010 - YTD_6315_0010', h: '=-G29/2 + -H29/2' },
-  '6315-0020': { e: '=H_6315_0020 - YTD_6315_0020', h: '=-G28/2 + -H28/2' },
-  '6315-0025': { e: '=H_6315_0025 - YTD_6315_0025', h: '=-G26/2 + -H26/2' },
-  '6315-0030': { e: '=H_6315_0030 - YTD_6315_0030', h: '0' },
-  '6315-0035': { e: '=H_6315_0035 - YTD_6315_0035', h: '=-G27/2 + -H27/2' },
-  '6315-0040': { e: '=H_6315_0040 - YTD_6315_0040', h: '0' }
+  '6315-0000': { e: '=I11/2',  h: '=+I19' },
+  '6315-0010': { e: '=-F29/4', h: '=-G29/2 + -H29/2' },
+  '6315-0020': { e: '=-F28/4', h: '=-G28/2 + -H28/2' },
+  '6315-0025': { e: '=-F26/4', h: '=-G26/2 + -H26/2' },
+  '6315-0030': { e: '0',       h: '0' },
+  '6315-0035': { e: '=-F27/4', h: '=-G27/2 + -H27/2' },
+  '6315-0040': { e: '0',       h: '0' }
 };
 // Helper: build period-aware labels for the GL Budget Lines period split.
 // FA directive 2026-05-10: labels follow YTD_MONTHS (driven by budget_period).
@@ -19495,6 +19572,31 @@ function recalc() {
     '6315-0040': 0                                        // J-51 — always 0
   };
 
+  // FA dir 2026-05-19 (148 RE Tax redesign): May-Dec estimate formulas now
+  // come from Sections 1 + 2 directly instead of (H - YTD).
+  //   6315-0000 Real Estate Tax    : Section 1 1st-half tax / 2 = I11 / 2
+  //   6315-0010 Co-op Abatement    : -(Section 2 Co-op Abatement base / 4) = -F29/4
+  //   6315-0020 STAR Exemption     : -F28/4
+  //   6315-0025 Veteran Exemption  : -F26/4
+  //   6315-0030 SCRIE Credit       : 0 (no Section 2 input — FA can override)
+  //   6315-0035 SCHE Credit        : -F27/4
+  //   6315-0040 J-51 Credit        : 0 (no Section 2 input — FA can override)
+  // After-10/31 toggle (STATE.afterOct31): all estimates = 0, YSL actuals
+  // are then the source of truth for remaining months.
+  const afterOct31 = !!(STATE && STATE.afterOct31);
+  const glEFormulas = afterOct31 ? {
+    '6315-0000': 0, '6315-0010': 0, '6315-0020': 0, '6315-0025': 0,
+    '6315-0030': 0, '6315-0035': 0, '6315-0040': 0,
+  } : {
+    '6315-0000': I11 / 2,
+    '6315-0010': -(ex.f29 || 0) / 4,
+    '6315-0020': -(ex.f28 || 0) / 4,
+    '6315-0025': -(ex.f26 || 0) / 4,
+    '6315-0030': 0,
+    '6315-0035': -(ex.f27 || 0) / 4,
+    '6315-0040': 0,
+  };
+
   let D47 = 0, E47 = 0, F47 = 0, G47 = 0, H47 = 0;
   STATE.rows = {};
   GL_ROWS.forEach(r => {
@@ -19504,7 +19606,9 @@ function recalc() {
     CELL_STATE['ytd_' + glKey].value = D;
     CELL_STATE['pb_'  + glKey].value = G;
     const H = computedOrOverride('h_' + glKey, glHFormulas[glKey]);    // computed first
-    const E = computedOrOverride('e_' + glKey, H - D);                 // estimate = budget - actual
+    // FA dir 2026-05-19: estimate now from Sections 1/2 (per glEFormulas)
+    const eDefault = (glEFormulas[glKey] !== undefined) ? glEFormulas[glKey] : (H - D);
+    const E = computedOrOverride('e_' + glKey, eDefault);
     const F = computedOrOverride('f_' + glKey, D + E);                 // forecast = ytd + estimate
     setComputed('e_' + glKey, E);
     setComputed('f_' + glKey, F);
@@ -19579,18 +19683,48 @@ function recalc() {
 }
 
 // ─── FORMULA POPOVER (click on a Section 3 computed cell) ─────────
-// FA directive 2026-05-10: estimate column is now period-independent —
-// estimate = Current Year Budget - YTD Actual. The popover note explains
-// it the same way for every GL.
+// FA directive 2026-05-19 (148 RE Tax redesign): estimate column now derives
+// from Sections 1 + 2 per-GL. The popover shows the actual formula for each
+// GL, and switches to "zero" messaging when the After-10/31 toggle is on.
 function _reEstFormulaEntry(glCode, label) {
   const lbl = _rePeriodLabels();
   const row = STATE.rows && STATE.rows[glCode] ? STATE.rows[glCode] : { D: 0, H: 0, E: 0 };
+  const afterOct31 = !!(STATE && STATE.afterOct31);
+  if (afterOct31) {
+    return {
+      title: glCode + ' ' + label + ' · ' + lbl.estimate,
+      excel: '= 0',
+      expanded: '= 0 (After-10/31 toggle ON)',
+      result: 0,
+      note: 'After 10/31 the YSL has the full year of actuals. Remaining-months estimate is forced to zero so the 12-Mo Forecast equals YTD Actual.',
+    };
+  }
+  // Map GL → human-readable Section-1/2 formula
+  const FORMULAS = {
+    '6315-0000': { excel: '= I11 / 2',  note: 'Section 1 first-half tax (I11) divided by 2 = expected May-Dec tax accrual.' },
+    '6315-0010': { excel: '= -F29 / 4', note: 'Co-op Abatement (Section 2 base F29) split into 4 quarters; one quarter falls in May-Dec.', src: 'f29' },
+    '6315-0020': { excel: '= -F28 / 4', note: 'STAR Exemption (Section 2 base F28) split into 4 quarters; one quarter falls in May-Dec.', src: 'f28' },
+    '6315-0025': { excel: '= -F26 / 4', note: 'Veteran Exemption (Section 2 base F26) split into 4 quarters; one quarter falls in May-Dec.', src: 'f26' },
+    '6315-0030': { excel: '= 0',        note: 'SCRIE Credit has no Section 2 input. FA can override directly if needed.' },
+    '6315-0035': { excel: '= -F27 / 4', note: 'SCHE Credit (Section 2 base F27) split into 4 quarters; one quarter falls in May-Dec.', src: 'f27' },
+    '6315-0040': { excel: '= 0',        note: 'J-51 Credit has no Section 2 input. FA can override directly if needed.' },
+  };
+  const f = FORMULAS[glCode] || { excel: '= H - YTD', note: 'Period-independent fallback.' };
+  let expanded;
+  if (glCode === '6315-0000') {
+    expanded = '= ' + fmtDollar(STATE.I11 || 0) + ' / 2';
+  } else if (f.src) {
+    const base = (CELL_STATE[f.src] && CELL_STATE[f.src].value) || 0;
+    expanded = '= -' + fmtDollar(base) + ' / 4';
+  } else {
+    expanded = '= 0';
+  }
   return {
     title: glCode + ' ' + label + ' · ' + lbl.estimate,
-    excel: '= H - YTD',
-    expanded: '= ' + fmtDollar(row.H) + ' - ' + fmtDollar(row.D),
+    excel: f.excel,
+    expanded: expanded,
     result: row.E,
-    note: 'Current Year Budget (H) minus YTD Actual = remaining months’ expected activity. Period-independent: as actuals roll in, the estimate auto-shrinks so 12-Mo Forecast still hits budget.',
+    note: f.note,
   };
 }
 
@@ -20099,6 +20233,18 @@ function initReTaxesTab() {
       if (activeCellId) { commitFormulaBar(); autosaveReTaxes(); }
     });
   }
+
+  // FA dir 2026-05-19: After-10/31 toggle. When checked, Section 3 estimates
+  // zero out (YSL actuals become the source of truth for remaining months).
+  // Persisted via re_taxes_overrides.after_oct31 so it round-trips on reload.
+  const afterOct31El = document.getElementById('reAfterOct31');
+  if (afterOct31El) {
+    afterOct31El.addEventListener('change', () => {
+      STATE.afterOct31 = !!afterOct31El.checked;
+      recalc();
+      autosaveReTaxes();
+    });
+  }
 }
 
 // ─── BACKEND BRIDGE ──────────────────────────────────────────────
@@ -20142,6 +20288,11 @@ function reTaxLoadFromBackend(re) {
       _reSetInput(fid, _reBaseFromCurrent(c, g), 'dollar');
       _reSetInput(gpid, g, 'pct');
     });
+
+    // FA dir 2026-05-19: After-10/31 toggle round-trip.
+    STATE.afterOct31 = !!re.after_oct31;
+    const afterOct31El = document.getElementById('reAfterOct31');
+    if (afterOct31El) afterOct31El.checked = STATE.afterOct31;
 
     // Restore saved per-cell overrides (numeric values + user-typed formula sources).
     // Each entry is either a raw number (legacy) or {override, overrideSrc}.
@@ -20235,6 +20386,8 @@ function reTaxBuildPayload() {
     // Extra fields — backend currently ignores these, persisted for UI round-trip
     rate_adjustment:   cellRaw('g13'),
     j51_amount:        cellRaw('i15'),
+    // FA dir 2026-05-19: After-10/31 toggle (zeros out May-Dec estimate)
+    after_oct31:       !!(STATE && STATE.afterOct31),
     // Per-cell overrides (numeric values + user-typed formula sources)
     cell_overrides:    cellOverrides,
   };
@@ -27606,10 +27759,13 @@ const REMAINING_MONTHS = {{ remaining_months }};
 // budget_system/GL_Mapping.csv Sub-Category column). Used by PM_SHEET_CATEGORIES
 // below when row_num=0 so YSL-imported GLs land in the right sub-section
 // (e.g. 6145 → Insurance, 6315-001x → Taxes).
+// FA dir 2026-05-19: 6315 (Real Estate Tax + credits) is now FA-only on the
+// RE Taxes tab. Return null so PM portal G&A categorization skips them.
 function _gaSubForGl(gl) {
   const p4 = (gl || '').slice(0, 4);
+  if (p4 === '6315') return null;
   if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
-  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  if (['6310','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
   if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
   if (p4.startsWith('69')) return 'financial';
   if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
@@ -27644,7 +27800,9 @@ const PM_SHEET_CATEGORIES = {
   'Gen & Admin': {
     cats: {prof_fees: [], admin_other: [], insurance: [], taxes: [], financial: []},
     labels: {prof_fees: 'Professional Fees', admin_other: 'Administrative & Other', insurance: 'Insurance', taxes: 'Taxes', financial: 'Financial Expenses'},
-    match: function(l) { return l.sheet_name === 'Gen & Admin'; },
+    // FA dir 2026-05-19: 6315 (Real Estate Tax + credits) moved to FA-only
+    // RE Taxes tab. Skip on PM portal G&A so PMs don't see RE tax lines.
+    match: function(l) { return l.sheet_name === 'Gen & Admin' && !(l.gl_code || '').startsWith('6315'); },
     assign: function(l) {
       const r = l.row_num || 0;
       if (r >= 8 && r <= 16) return 'prof_fees';
@@ -30230,10 +30388,13 @@ function safeEvalFormula(expr) {
 
 // FA dir 2026-05-17: see BUILDING_DETAIL_TEMPLATE for full notes. Duplicated
 // here so this template's JS scope can resolve it.
+// FA dir 2026-05-19: 6315 (Real Estate Tax + credits) is now FA-only on the
+// RE Taxes tab. Return null so G&A categorization treats these lines as skip.
 function _gaSubForGl(gl) {
   const p4 = (gl || '').slice(0, 4);
+  if (p4 === '6315') return null;
   if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
-  if (['6310','6315','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
+  if (['6310','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
   if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
   if (p4.startsWith('69')) return 'financial';
   if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
@@ -30251,7 +30412,7 @@ const CATEGORIES = {
     {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
     {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
     {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
-    {label:'Taxes',                 match: l => (l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes')},
+    {label:'Taxes',                 match: l => !(l.gl_code || '').startsWith('6315') && ((l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes'))},
     {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
   ]
 };

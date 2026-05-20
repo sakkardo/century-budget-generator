@@ -387,17 +387,32 @@ SUMMARY_ROW_MAP = {
     },
     "Real Estate Taxes": {
         "sheet": "RE Taxes",
-        "gl_prefix": ["6315"],
+        # FA dir 2026-05-19 (148 RE Tax redesign): split prefix so this row
+        # captures ONLY the base RE Tax expense GL (6315-0000), and the
+        # credit GLs (6315-0010 thru 6315-0040) feed the separate
+        # "Real Estate Tax Benefit Credits" row below. Before this fix,
+        # both rows shared prefix ["6315"] which caused double-counting.
+        "gl_prefix": ["6315-0000"],
         "section": "expenses",
         "special": "re_taxes_gross",  # Pull from dof_taxes.gross_tax
-        "notes": "Computed by RE Taxes tab. GL 6315-0000 = base tax."
+        "notes": "Base RE tax expense (6315-0000). Computed by RE Taxes tab Section 1."
     },
     "Real Estate Tax Benefit Credits": {
         "sheet": "RE Taxes",
-        "gl_prefix": ["6315"],
+        # FA dir 2026-05-19: enumerate the six credit sub-accounts so this row
+        # captures only the abatement / STAR / Veteran / SCRIE / SCHE / J-51
+        # credits — not the base 6315-0000 tax.
+        "gl_prefix": [
+            "6315-0010",  # Real Estate Tax Abatement (Co-op Abatement)
+            "6315-0020",  # STAR Exemption
+            "6315-0025",  # Veteran Exemption
+            "6315-0030",  # SCRIE Credit
+            "6315-0035",  # SCHE Credit
+            "6315-0040",  # J-51 Credit
+        ],
         "section": "expenses",
         "special": "re_taxes_credits_expense",  # Pull from dof_taxes, negate
-        "notes": "Same GL codes as income Tax Benefits but on expense side. Negative."
+        "notes": "Six credit sub-accounts under 6315. Negative values reduce the base RE tax."
     },
     "Corporate Taxes": {
         "sheet": "Gen & Admin",
