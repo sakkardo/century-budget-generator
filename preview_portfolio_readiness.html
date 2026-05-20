@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Portfolio Readiness — Preview</title>
+<style>
+  :root {
+    --bg: #f9fafb;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
+    --green: #16a34a;
+    --green-light: #dcfce7;
+    --amber: #d97706;
+    --amber-light: #fef3c7;
+    --red: #dc2626;
+    --red-light: #fee2e2;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--gray-100);
+    color: var(--text);
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+  }
+  .page-wrap {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+  .page-title {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  /* Health Drawer mock framing */
+  .drawer-frame {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+  }
+  .drawer-header {
+    background: var(--blue);
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .drawer-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    flex: 1;
+  }
+  .drawer-header .entity-pill {
+    background: rgba(255, 255, 255, 0.18);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .drawer-header .close-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+  }
+
+  /* Tab strip */
+  .tab-strip {
+    background: var(--gray-50);
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    display: flex;
+    gap: 4px;
+  }
+  .tab {
+    padding: 10px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-weight: 500;
+  }
+  .tab:hover { color: var(--gray-800); }
+  .tab.active {
+    color: var(--blue);
+    border-bottom-color: var(--blue);
+    background: white;
+  }
+  .tab .count {
+    background: var(--gray-200);
+    color: var(--gray-700);
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    margin-left: 4px;
+  }
+  .tab.active .count {
+    background: var(--blue-light);
+    color: var(--blue);
+  }
+  .tab.has-red .count {
+    background: var(--red-light);
+    color: var(--red);
+  }
+
+  /* Tab content area */
+  .tab-body {
+    padding: 18px 20px;
+  }
+
+  /* Portfolio rollup banner */
+  .portfolio-rollup {
+    background: linear-gradient(135deg, var(--blue-light) 0%, #f9f5ee 100%);
+    border: 1px solid #e8dcc8;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .portfolio-rollup .label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .portfolio-rollup .total {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--blue);
+    line-height: 1;
+  }
+  .rollup-stats {
+    display: flex;
+    gap: 18px;
+    flex: 1;
+  }
+  .stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat-tile .v {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .stat-tile .l {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .stat-tile.green .v { color: var(--green); }
+  .stat-tile.amber .v { color: var(--amber); }
+  .stat-tile.red   .v { color: var(--red); }
+  .download-btn {
+    background: var(--blue);
+    color: white;
+    border: none;
+    padding: 9px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .download-btn:hover { background: #6b594d; }
+
+  /* This building card */
+  .this-building {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .this-building .head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--gray-50);
+  }
+  .this-building .head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    flex: 1;
+  }
+  .overall-badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .overall-badge.green { background: var(--green-light); color: var(--green); }
+  .overall-badge.amber { background: var(--amber-light); color: var(--amber); }
+  .overall-badge.red   { background: var(--red-light);   color: var(--red); }
+
+  /* Checks list */
+  .check {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--gray-100);
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .check:last-child { border-bottom: none; }
+  .check .icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+  }
+  .check .icon.green { background: var(--green); }
+  .check .icon.amber { background: var(--amber); }
+  .check .icon.red   { background: var(--red); }
+  .check .body { flex: 1; }
+  .check .title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--gray-800);
+  }
+  .check .detail {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .check .detail code {
+    background: var(--gray-100);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  .check .fix-btn {
+    background: white;
+    border: 1px solid var(--border);
+    color: var(--blue);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  .check .fix-btn:hover { background: var(--blue-light); border-color: var(--blue); }
+
+  /* Section header within tab */
+  .section-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 18px 0 8px 4px;
+  }
+
+  /* Annotations to explain the preview */
+  .annotation {
+    background: #fffbeb;
+    border: 1px dashed #fcd34d;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #78350f;
+    margin-bottom: 16px;
+  }
+  .annotation strong { color: #92400e; }
+</style>
+</head>
+<body>
+
+<div class="page-wrap">
+  <div class="page-title">Preview — Health Drawer · new "Readiness" tab (148 example)</div>
+
+  <div class="annotation">
+    <strong>What you're looking at:</strong> mockup of the Health Drawer with a new "Readiness" tab.
+    Top banner shows the portfolio-wide rollup (so you can triage across all 143 buildings without
+    leaving). Below: this building's specific check results. Red items have a Fix button that takes
+    you directly to the relevant page. CSV download gives you the full portfolio for spreadsheet triage.
+  </div>
+
+  <div class="drawer-frame">
+    <div class="drawer-header">
+      <h2>Health · 130 E. 18 Owners Corp.</h2>
+      <span class="entity-pill">148 · Co-op</span>
+      <button class="close-btn">×</button>
+    </div>
+
+    <div class="tab-strip">
+      <div class="tab">Readiness <span class="count">12</span></div>
+      <div class="tab">Data Quality <span class="count">3</span></div>
+      <div class="tab">Recent Changes <span class="count">28</span></div>
+      <div class="tab active has-red">Portfolio Readiness <span class="count">2</span></div>
+    </div>
+
+    <div class="tab-body">
+
+      <!-- PORTFOLIO ROLLUP BANNER -->
+      <div class="portfolio-rollup">
+        <div>
+          <div class="label">Portfolio</div>
+          <div class="total">143</div>
+        </div>
+        <div class="rollup-stats">
+          <div class="stat-tile green">
+            <div class="v">47</div>
+            <div class="l">Green · ready</div>
+          </div>
+          <div class="stat-tile amber">
+            <div class="v">38</div>
+            <div class="l">Yellow · warnings</div>
+          </div>
+          <div class="stat-tile red">
+            <div class="v">58</div>
+            <div class="l">Red · blockers</div>
+          </div>
+        </div>
+        <button class="download-btn">↓ Download portfolio CSV</button>
+      </div>
+
+      <!-- THIS BUILDING -->
+      <div class="section-header">This building · 148</div>
+      <div class="this-building">
+        <div class="head">
+          <h3>Readiness checks</h3>
+          <span class="overall-badge amber">Yellow · 2 warnings</span>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">2027 Budget row exists</div>
+            <div class="detail">Created 2026-04-12 · 215 budget lines</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">2026 SharePoint approved budget on file</div>
+            <div class="detail">Last modified 4 months ago · imported into system 2026-04-12 · render passes ✓</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">Yrlycomp imported</div>
+            <div class="detail">Imported 32 days ago · 41 summary rows</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">Summary row coverage</div>
+            <div class="detail">41 of 41 expected labels present · no orphan rows</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon amber">!</div>
+          <div class="body">
+            <div class="title">2 orphan GLs detected</div>
+            <div class="detail">
+              <code>5260-0000</code> (Fuel, $0 YTD)
+              · <code>1789-9999</code> (Unmapped, $463 YTD)
+              · total $463 unmapped
+            </div>
+          </div>
+          <button class="fix-btn">View list →</button>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">BBL configured</div>
+            <div class="detail"><code>1-00878-0048</code> · auto-pulled from NYC GeoSearch</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">Tax rate configured</div>
+            <div class="detail">9.3128% (Class 2 residential) · last DOF refresh 12 days ago</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon amber">!</div>
+          <div class="body">
+            <div class="title">2025 audit uploaded but mapped_data is empty</div>
+            <div class="detail">Audit ID 47 confirmed 2026-04-09 · Col 2 will be blank until re-mapped</div>
+          </div>
+          <button class="fix-btn">Re-run mapping →</button>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">Last summary aggregation succeeded</div>
+            <div class="detail">3 minutes ago · no errors</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title">Foundation status: complete</div>
+            <div class="detail">All foundation steps passed</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SAMPLE OF OTHER BUILDINGS (collapsed view) -->
+      <div class="section-header">Other buildings · sample (full list in CSV)</div>
+      <div class="this-building">
+
+        <div class="check">
+          <div class="icon red">✗</div>
+          <div class="body">
+            <div class="title"><strong>412 · 510 East 23rd Owners Corp.</strong></div>
+            <div class="detail">
+              ✗ Yrlycomp missing &nbsp;·&nbsp;
+              ✗ 13 summary rows missing &nbsp;·&nbsp;
+              ✗ 12 orphan GLs ($87,432) &nbsp;·&nbsp;
+              ⚠ BBL not configured &nbsp;·&nbsp;
+              ✗ Audit not uploaded
+            </div>
+          </div>
+          <button class="fix-btn">Open →</button>
+        </div>
+
+        <div class="check">
+          <div class="icon red">✗</div>
+          <div class="body">
+            <div class="title"><strong>301 · 200 W 16th Owners Corp.</strong></div>
+            <div class="detail">
+              ✓ Yrlycomp &nbsp;·&nbsp;
+              ✗ 2026 SharePoint budget import failed (row 47 label not recognized) &nbsp;·&nbsp;
+              ⚠ 4 orphan GLs ($12,108)
+            </div>
+          </div>
+          <button class="fix-btn">Open →</button>
+        </div>
+
+        <div class="check">
+          <div class="icon amber">!</div>
+          <div class="body">
+            <div class="title"><strong>206 · 77 Bleecker Street Corp.</strong></div>
+            <div class="detail">
+              ✓ All structural checks &nbsp;·&nbsp;
+              ⚠ Tax rate stale (last DOF refresh 94 days ago)
+            </div>
+          </div>
+          <button class="fix-btn">Open →</button>
+        </div>
+
+        <div class="check">
+          <div class="icon green">✓</div>
+          <div class="body">
+            <div class="title"><strong>168 · 168 Owners Corp.</strong></div>
+            <div class="detail">
+              All 10 checks green · 2026 budget renders cleanly · ready for FA
+            </div>
+          </div>
+          <button class="fix-btn">Open →</button>
+        </div>
+
+      </div>
+
+      <div style="margin-top: 18px; padding: 12px; background: var(--gray-50); border-radius: 8px; font-size: 12px; color: var(--muted); text-align: center;">
+        Showing 4 of 143 · <a href="#" style="color: var(--blue); font-weight: 500;">Download portfolio CSV</a>
+        for the full triage list (sorted red → green)
+      </div>
+
+    </div>
+  </div>
+
+  <div style="margin-top: 24px; padding: 14px 16px; background: white; border: 1px solid var(--border); border-radius: 10px;">
+    <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 8px;">Notes on this preview</div>
+    <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: var(--gray-700); line-height: 1.6;">
+      <li>Numbers are illustrative (47/38/58). Real numbers come from running the audit against your actual portfolio.</li>
+      <li>The <strong>2026 SharePoint budget</strong> check is the new one we added based on your point — it tries the actual import + render, not just a synthetic check.</li>
+      <li><strong>Fix</strong> buttons deep-link to the relevant page (audit re-mapping, BBL editor, GL mapping editor, etc.) so the FA can act without leaving.</li>
+      <li>Portfolio rollup at top means you don't need a separate /admin/readiness URL — every Health drawer shows portfolio status.</li>
+      <li>CSV download is the spreadsheet for you to triage 143 buildings in one view.</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>
