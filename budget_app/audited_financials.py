@@ -1824,8 +1824,13 @@ async function uploadAll() {
                 currentMapping = description;
             }
 
-            // All start yellow (recommended) — user must Accept to turn green
-            const bgStyle = currentMapping ? 'background:#fff3cd;' : '';
+            // FA dir 2026-05-21: every unaccepted row gets the peach
+            // background so it visually signals "needs your input". Previous
+            // logic only colored rows with a recommended mapping — rows
+            // missing a recommendation (like entity 106 line items) looked
+            // white/done. White is now reserved for confirmed mappings, peach
+            // means "still needs Accept", green means "accepted".
+            const bgStyle = 'background:#fff3cd;';
 
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
@@ -1839,7 +1844,10 @@ async function uploadAll() {
         // Version for split rows — inherits parent mapping, starts yellow
         function makeDropdownWithDefault(description, amount, section, defaultMapping, amount1) {
             const id = 'map_' + itemIndex++;
-            const bgStyle = defaultMapping ? 'background:#fff3cd;' : '';
+            // FA dir 2026-05-21: peach for ALL unaccepted rows (consistent
+            // with makeDropdown above). Split rows without a default also
+            // need attention, not blend into white.
+            const bgStyle = 'background:#fff3cd;';
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
