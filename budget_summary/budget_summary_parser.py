@@ -53,13 +53,36 @@ def parse_column_headers(sheet):
     """
     columns = {}
 
-    # Find header row - look for a row with multiple year values
+    def _as_year(val):
+        """Return year as int if val parses as a 2010-2030 year, else None.
+        Handles ints, floats, AND strings like '2024' / '2024.0' / ' 2024 '.
+        FA dir 2026-05-20: some yrlycomp templates store years as text,
+        which the original int-only check missed → "Could not parse column
+        headers" on 340, 358, 360, 710, 909, 927."""
+        if val is None:
+            return None
+        try:
+            if isinstance(val, (int, float)):
+                v = int(val)
+            else:
+                v = int(float(str(val).strip()))
+        except (TypeError, ValueError):
+            return None
+        if 2010 <= v <= 2030:
+            return v
+        return None
+
+    # Find header row - look for a row with multiple year values.
+    # FA dir 2026-05-20: widened range from (5-11) to (3-15) and added
+    # stringy-year tolerance. Different building templates put the year
+    # header at different rows; the narrow range failed 6 buildings.
+    # Still requires >= 3 year columns so a stray year mention in a note
+    # row can't accidentally match.
     header_row = None
-    for r in range(5, 12):
+    for r in range(3, 16):
         year_count = 0
         for c in range(1, 30):
-            val = sheet.cell(row=r, column=c).value
-            if isinstance(val, (int, float)) and 2010 <= val <= 2030:
+            if _as_year(sheet.cell(row=r, column=c).value) is not None:
                 year_count += 1
         if year_count >= 3:
             header_row = r
@@ -74,8 +97,8 @@ def parse_column_headers(sheet):
         year_val = sheet.cell(row=header_row, column=col_num).value
         sub_val = sheet.cell(row=sub_header_row, column=col_num).value
 
-        if year_val is not None and isinstance(year_val, (int, float)) and 2010 <= year_val <= 2030:
-            year = int(year_val)
+        year = _as_year(year_val)
+        if year is not None:
             sub = str(sub_val).strip() if sub_val else ""
 
             # Classify the column type
