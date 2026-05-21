@@ -2383,20 +2383,29 @@ async function uploadAll() {
                 }
                 _cbActivePopup = popup;
                 _cbActiveSel = sel;
-                // Position relative to trigger using viewport coords. Open
-                // upward if there isn't room below.
+                // Position relative to trigger. Compute available viewport
+                // space above and below so the popup never extends off-screen
+                // (which makes the inner scroll region unreachable).
                 const rect = trigger.getBoundingClientRect();
-                const spaceBelow = window.innerHeight - rect.bottom;
-                const popupMaxH = 380;
+                const VP_PAD = 16;  // viewport edge padding
+                const spaceBelow = window.innerHeight - rect.bottom - VP_PAD;
+                const spaceAbove = rect.top - VP_PAD;
+                const preferDown = spaceBelow >= 220 || spaceBelow >= spaceAbove;
+                // Hard cap at 380px so the popup doesn't dominate the screen
+                // even when there's tons of room.
+                const popupMaxH = Math.max(180, Math.min(380, preferDown ? spaceBelow : spaceAbove));
                 popup.style.display = 'flex';
+                popup.style.maxHeight = popupMaxH + 'px';
                 popup.style.left = rect.left + 'px';
-                if (spaceBelow >= popupMaxH || spaceBelow >= rect.top) {
+                if (preferDown) {
                     popup.style.top = (rect.bottom + 4) + 'px';
                     popup.style.bottom = 'auto';
                 } else {
                     popup.style.top = 'auto';
                     popup.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
                 }
+                // List takes whatever's left after the search bar (~44px).
+                listEl.style.maxHeight = Math.max(120, popupMaxH - 44) + 'px';
                 search.value = '';
                 renderList('');
                 setTimeout(() => search.focus(), 0);
