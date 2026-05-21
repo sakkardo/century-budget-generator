@@ -2530,12 +2530,26 @@ async function uploadAll() {
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
             loadProfiles();
-            // Default to building-only scope
+            // FA dir 2026-05-21: default scope depends on whether the entity
+            // has any summary rows of its own. Entities flagged with
+            // foundation_no_prior_budget (like 106 / 5 West 14th) have an
+            // empty buildingLabels list — restricting to "this building"
+            // produces an empty dropdown. Auto-enable show-all for those.
+            const _bldgHasLabels = (bldgIncome.length + bldgExpense.length + bldgNonOp.length) > 0;
             const cb = document.getElementById('showAllCategories');
-            if (cb) { cb.checked = false; }
-            _showAllScope = false;
-            // No initial rebuild — dropdowns are rendered server-side already.
-            // toggleCategoryScope() runs only when user clicks the checkbox.
+            if (!_bldgHasLabels) {
+                _showAllScope = true;
+                if (cb) cb.checked = true;
+                // Rebuild dropdowns so options actually populate.
+                document.querySelectorAll('select[id^="map_"]').forEach(sel => {
+                    const current = sel.value;
+                    sel.innerHTML = buildSelectOptions(current);
+                    if (current) sel.value = current;
+                });
+            } else {
+                _showAllScope = false;
+                if (cb) cb.checked = false;
+            }
         });
 
         // FA dir 2026-05-21: removed saveAndApplyRules() function.
