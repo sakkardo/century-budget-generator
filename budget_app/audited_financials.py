@@ -2512,13 +2512,18 @@ async function uploadAll() {
             _cbActivePopup = null;
             _cbActiveSel = null;
         });
-        // Close on scroll / resize so the popup doesn't float over old positions.
-        window.addEventListener('scroll', () => {
-            if (_cbActivePopup) {
-                _cbActivePopup.style.display = 'none';
-                _cbActivePopup = null;
-                _cbActiveSel = null;
-            }
+        // Close on PAGE scroll so the popup doesn't float over old positions.
+        // CRITICAL: ignore scroll events whose target is inside the popup
+        // itself (FA scrolling the long category list) — capture:true catches
+        // those too, which would slam the popup shut every time the FA
+        // mousewheels in the list. Previous version did exactly that and
+        // made the list effectively unscrollable.
+        window.addEventListener('scroll', (e) => {
+            if (!_cbActivePopup) return;
+            if (e.target && e.target.nodeType === 1 && _cbActivePopup.contains(e.target)) return;
+            _cbActivePopup.style.display = 'none';
+            _cbActivePopup = null;
+            _cbActiveSel = null;
         }, true);
 
         function renderRawData() {
