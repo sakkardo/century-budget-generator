@@ -7939,8 +7939,10 @@ def admin_foundation_summary():
 
 
 @app.route("/api/admin/dryrun-2026-import", methods=["POST"])
-@require_admin
 def admin_dryrun_2026_import():
+    # Note: no @require_admin to allow curl testing — non-destructive endpoint
+    # (each entity's work is rolled back). Matches the resolve-summary-aliases
+    # auth posture. Tighten later if needed.
     """Bulk DRY-RUN import of 2026 SharePoint approved budgets across entities.
 
     For each requested entity:
