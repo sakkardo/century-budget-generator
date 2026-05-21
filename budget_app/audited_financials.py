@@ -2015,23 +2015,24 @@ async function uploadAll() {
         }
 
         function buildSelectOptions(currentMapping) {
+            // FA dir 2026-05-21: always include EVERY optgroup in the
+            // underlying <select> regardless of _showAllScope. The
+            // combobox's renderList controls what's visible in the popup —
+            // and we want the search to reach the full 280-item universe,
+            // not just the ~30 that happen to be in the default-visible
+            // tiers. The <select> must contain an <option> for every value
+            // we might assign to sel.value, otherwise the assignment silently
+            // fails when the FA picks a long-tail item via search.
             let opts = '<option value="">— Select category —</option>';
-            // This building's labels first (most relevant — pick these
-            // when col 2 should land on the FA's exact summary row text).
             opts += _renderOptgroup('Income (this building)', bldgIncome, currentMapping);
             opts += _renderOptgroup('Expenses (this building)', bldgExpense, currentMapping);
             opts += _renderOptgroup('Non-Operating (this building)', bldgNonOp, currentMapping);
-            // Standard Century — always visible. Curated canonical list of
-            // ~30 categories that exists for every building in the portfolio.
             opts += _renderOptgroup('Standard Century — Income', stdIncome, currentMapping);
             opts += _renderOptgroup('Standard Century — Expenses', stdExpense, currentMapping);
             opts += _renderOptgroup('Standard Century — Non-Operating', stdNonOp, currentMapping);
-            // Other portfolio long-tail — only when "Show all" is checked.
-            if (_showAllScope) {
-                opts += _renderOptgroup('Other portfolio — Income', otherIncome, currentMapping);
-                opts += _renderOptgroup('Other portfolio — Expenses', otherExpense, currentMapping);
-                opts += _renderOptgroup('Other portfolio — Non-Operating', otherNonOp, currentMapping);
-            }
+            opts += _renderOptgroup('Other portfolio — Income', otherIncome, currentMapping);
+            opts += _renderOptgroup('Other portfolio — Expenses', otherExpense, currentMapping);
+            opts += _renderOptgroup('Other portfolio — Non-Operating', otherNonOp, currentMapping);
             return opts;
         }
 
@@ -2357,9 +2358,16 @@ async function uploadAll() {
                 const flt = (filter || '').toLowerCase().trim();
                 // Iterate optgroups in the underlying <select> to preserve
                 // the group order and visual hierarchy (this building first,
-                // Other Century below).
+                // Standard Century in the middle, Other portfolio long-tail
+                // at the bottom).
                 for (const og of sel.querySelectorAll('optgroup')) {
                     const groupName = og.getAttribute('label') || '';
+                    // FA dir 2026-05-21: "Other portfolio" tier is hidden by
+                    // default to reduce visual clutter — UNLESS the FA is
+                    // actively searching (filter non-empty) OR the "Show all"
+                    // checkbox is on. Search always reaches the full universe.
+                    const isLongTail = groupName.startsWith('Other portfolio');
+                    if (isLongTail && !flt && !_showAllScope) continue;
                     const items = [];
                     for (const opt of og.querySelectorAll('option')) {
                         const v = opt.value;
@@ -3065,14 +3073,21 @@ async function uploadAll() {
         // both the toggle and the option builder share one source of truth.)
         function toggleCategoryScope() {
             _showAllScope = !!document.getElementById('showAllCategories').checked;
-            document.querySelectorAll('select[id^="map_"]').forEach(sel => {
-                const current = sel.value;  // preserve selection across rebuild
-                sel.innerHTML = buildSelectOptions(current);
-                // Try to restore — if the previously-selected option is now
-                // outside the visible scope, the rebuild will have left it
-                // unset and we just leave it that way (FA will see empty).
-                if (current) sel.value = current;
-            });
+            // The <select> already contains every option (buildSelectOptions
+            // always emits the full set). The "Show all" checkbox now only
+            // controls whether the Other-portfolio tier appears in the
+            // combobox popup's DEFAULT view (with empty filter). If a popup
+            // is currently open, re-render its list so the toggle takes
+            // effect immediately.
+            if (_cbActivePopup && _cbActiveSel) {
+                const popup = _cbActivePopup;
+                const search = popup.querySelector('input[type="text"]');
+                const listEl = popup.querySelector('.cb-list');
+                // Trigger the popup's own renderList. The closure is the
+                // only thing that knows how to render, so dispatch an input
+                // event on the search box (which is wired to renderList).
+                if (search) search.dispatchEvent(new Event('input'));
+            }
         }
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
