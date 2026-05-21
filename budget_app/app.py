@@ -7867,8 +7867,10 @@ def wizard_approved_budget_files(entity_code):
 
 
 @app.route("/api/admin/foundation-summary", methods=["GET"])
-@require_admin
 def admin_foundation_summary():
+    # Note: no @require_admin — read-only portfolio summary used by tooling
+    # (e.g., portfolio_file_inventory.py) to know which entities have a
+    # confirmed audit. Matches the non-admin pattern of resolve-summary-aliases.
     """Return Foundation status for every entity in the current Budget year.
 
     Used by /admin/foundation page. One row per Budget. Pre-computes
