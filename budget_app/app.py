@@ -210,6 +210,26 @@ def _run_idempotent_migrations():
         # Idempotent: ALTER COLUMN TYPE is a no-op if already at target width.
         "ALTER TABLE budget_summary_rows ALTER COLUMN footnote_marker TYPE VARCHAR(255)",
         "ALTER TABLE budget_summary_rows ALTER COLUMN row_type TYPE VARCHAR(255)",
+        # FA dir 2026-05-21: portfolio smoke test runs. Each row is one full-
+        # portfolio dry-run sweep. We persist the per-entity result JSON so
+        # subsequent runs can diff vs the last one to surface regressions.
+        # actionable_issues_count = entities in a real failure state, EXCLUDING
+        # those flagged foundation_no_prior_budget (expected to fail SP lookup).
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_sweep_runs (
+            id SERIAL PRIMARY KEY,
+            started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'running',
+            total_entities INTEGER NOT NULL DEFAULT 0,
+            status_counts_json TEXT NULL,
+            actionable_issues_count INTEGER NOT NULL DEFAULT 0,
+            actionable_entities_json TEXT NULL,
+            results_json TEXT NULL,
+            error_text TEXT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_sweep_runs_finished_at ON portfolio_sweep_runs (finished_at DESC NULLS LAST)",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive
@@ -8149,6 +8169,304 @@ def admin_dryrun_2026_import():
         "status_counts": status_counts,
         "results": results,
     })
+
+
+@app.route("/api/admin/portfolio-smoke-run", methods=["POST"])
+def admin_portfolio_smoke_run():
+    """Trigger a full-portfolio dry-run sweep server-side.
+
+    Creates a `portfolio_sweep_runs` row with status='running' and kicks off
+    a background thread that iterates every entity, captures dry-run results,
+    then updates the row to status='done' with full results JSON.
+
+    Body (optional): {}
+    Returns immediately: {"ok":true, "run_id": N, "status":"running"}
+
+    Use GET /api/admin/portfolio-smoke-run/<id> to poll, or
+    GET /api/admin/portfolio-smoke-latest to get the most recent run + diff.
+
+    Why a thread (vs sync HTTP): full portfolio sweep takes 5-8 min, well
+    past Railway's request timeout. The background thread is acceptable
+    because sweeps don't pile up (caller checks status before re-firing).
+    """
+    import threading
+    from datetime import datetime as _dt
+
+    # Insert the run row
+    res = db.session.execute(db.text(
+        "INSERT INTO portfolio_sweep_runs (started_at, status) "
+        "VALUES (CURRENT_TIMESTAMP, 'running') RETURNING id"
+    ))
+    run_id = res.scalar()
+    db.session.commit()
+
+    def _run():
+        # New app context for the thread
+        with app.app_context():
+            Budget = workflow_models["Budget"]
+            BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+            from workflow import BUDGET_YEAR as _BY, apply_summary_prefix_override
+            import json as _json
+
+            # Mirror the dry-run endpoint but loop ALL entities in one go.
+            # Same commit-interception safety: monkey-patch session.commit
+            # so internal commits become flushes; final rollback wipes all.
+            _orig_commit = db.session.commit
+            def _flush_only_commit():
+                db.session.flush()
+
+            results = []
+            try:
+                db.session.commit = _flush_only_commit
+                budgets = Budget.query.filter_by(year=_BY).order_by(Budget.entity_code).all()
+                for budget in budgets:
+                    ec = budget.entity_code
+                    entry = {
+                        "entity_code": ec,
+                        "building_name": budget.building_name,
+                        "foundation_no_prior_budget": bool(budget.foundation_no_prior_budget),
+                        "status": None,
+                        "rows_existed": 0,
+                        "rows_would_create": 0,
+                        "rows_would_update": 0,
+                        "file_name": None,
+                        "error_detail": None,
+                    }
+
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
+
+                    try:
+                        existed_count = BudgetSummaryRow.query.filter_by(
+                            entity_code=ec, budget_year=_BY).count()
+                        entry["rows_existed"] = existed_count
+                    except Exception:
+                        existed_count = 0
+
+                    try:
+                        files = _sharepoint_list_approved_budgets(ec)
+                    except Exception as e:
+                        entry["status"] = "sharepoint_error"
+                        entry["error_detail"] = f"{type(e).__name__}: {str(e)[:200]}"
+                        results.append(entry)
+                        continue
+
+                    if not files:
+                        entry["status"] = "no_file"
+                        results.append(entry)
+                        continue
+
+                    files_sorted = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)
+                    chosen = files_sorted[0]
+                    entry["file_name"] = chosen.get("name")
+                    selection = {"item_id": chosen.get("item_id"), "filename": chosen.get("name")}
+
+                    try:
+                        written = _build_apply_approved_2026(
+                            ec, selection, BudgetSummaryRow, _BY, apply_summary_prefix_override
+                        )
+                        after_count = BudgetSummaryRow.query.filter_by(
+                            entity_code=ec, budget_year=_BY).count()
+                        entry["rows_would_create"] = max(0, after_count - existed_count)
+                        entry["rows_would_update"] = max(0, int(written or 0) - entry["rows_would_create"])
+                        entry["status"] = "clean_import"
+                    except Exception as e:
+                        err_low = str(e).lower()
+                        if "yrlycomp parse error" in err_low:
+                            entry["status"] = "parse_error"
+                        elif "extract_importable_data error" in err_low:
+                            entry["status"] = "mapping_gap"
+                        elif "sharepoint" in err_low or "graph" in err_low or "404" in str(e):
+                            entry["status"] = "sharepoint_error"
+                        elif type(e).__name__ in ("IntegrityError", "DataError", "OperationalError", "ProgrammingError"):
+                            entry["status"] = "apply_error"
+                        else:
+                            entry["status"] = "unknown_error"
+                        entry["error_detail"] = f"{type(e).__name__}: {str(e)[:200]}"
+                    finally:
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass
+
+                    results.append(entry)
+            finally:
+                db.session.commit = _orig_commit
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+
+            # Compute summary
+            status_counts = {}
+            for r in results:
+                s = r.get("status") or "unknown"
+                status_counts[s] = status_counts.get(s, 0) + 1
+
+            # actionable_issues = real failures, excluding flagged no_prior_budget
+            ACTIONABLE_STATUSES = {"parse_error", "apply_error", "sharepoint_error",
+                                    "mapping_gap", "unknown_error"}
+            actionable = [
+                {"entity_code": r["entity_code"],
+                 "status": r["status"],
+                 "error_detail": r.get("error_detail")}
+                for r in results
+                if r["status"] in ACTIONABLE_STATUSES
+                and not r.get("foundation_no_prior_budget")
+            ]
+            # Plus: no_file entities that AREN'T flagged are also actionable
+            for r in results:
+                if r["status"] == "no_file" and not r.get("foundation_no_prior_budget"):
+                    actionable.append({
+                        "entity_code": r["entity_code"],
+                        "status": "no_file_unflagged",
+                        "error_detail": "Has no 2026 budget in SP and no_prior_budget flag not set",
+                    })
+
+            # Persist
+            try:
+                db.session.execute(db.text(
+                    "UPDATE portfolio_sweep_runs SET "
+                    "  finished_at = CURRENT_TIMESTAMP, "
+                    "  status = 'done', "
+                    "  total_entities = :total, "
+                    "  status_counts_json = :sc, "
+                    "  actionable_issues_count = :ac, "
+                    "  actionable_entities_json = :ae, "
+                    "  results_json = :res "
+                    "WHERE id = :id"
+                ), {
+                    "total": len(results),
+                    "sc": _json.dumps(status_counts),
+                    "ac": len(actionable),
+                    "ae": _json.dumps(actionable),
+                    "res": _json.dumps(results),
+                    "id": run_id,
+                })
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                try:
+                    db.session.execute(db.text(
+                        "UPDATE portfolio_sweep_runs SET status='failed', "
+                        "  finished_at=CURRENT_TIMESTAMP, "
+                        "  error_text=:err WHERE id=:id"
+                    ), {"err": f"persist failed: {type(e).__name__}: {str(e)[:200]}", "id": run_id})
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    return jsonify({"ok": True, "run_id": run_id, "status": "running"})
+
+
+@app.route("/api/admin/portfolio-smoke-run/<int:run_id>", methods=["GET"])
+def admin_portfolio_smoke_run_status(run_id):
+    """Return status + results for a specific smoke run."""
+    import json as _json
+    row = db.session.execute(db.text(
+        "SELECT id, started_at, finished_at, status, total_entities, "
+        "status_counts_json, actionable_issues_count, actionable_entities_json, "
+        "results_json, error_text "
+        "FROM portfolio_sweep_runs WHERE id = :id"
+    ), {"id": run_id}).fetchone()
+    if not row:
+        return jsonify({"error": "run not found"}), 404
+    started = row[1].isoformat() if row[1] else None
+    finished = row[2].isoformat() if row[2] else None
+    elapsed_s = None
+    if row[1] and row[2]:
+        elapsed_s = (row[2] - row[1]).total_seconds()
+    return jsonify({
+        "run_id": row[0],
+        "started_at": started,
+        "finished_at": finished,
+        "elapsed_seconds": elapsed_s,
+        "status": row[3],
+        "total_entities": row[4],
+        "status_counts": _json.loads(row[5]) if row[5] else None,
+        "actionable_issues_count": row[6],
+        "actionable_entities": _json.loads(row[7]) if row[7] else None,
+        "error_text": row[9],
+        # results_json intentionally excluded — query separately if needed
+    })
+
+
+@app.route("/api/admin/portfolio-smoke-latest", methods=["GET"])
+def admin_portfolio_smoke_latest():
+    """Return the most recent completed smoke run + diff vs the previous one.
+
+    Diff surfaces:
+      - regressions: entities that flipped clean -> broken since last run
+      - fixes:       entities that flipped broken -> clean since last run
+
+    Use this as the dashboard query — one call gives you "where are we, and
+    what changed since last sweep."
+    """
+    import json as _json
+    rows = db.session.execute(db.text(
+        "SELECT id, started_at, finished_at, status, total_entities, "
+        "status_counts_json, actionable_issues_count, actionable_entities_json, "
+        "results_json "
+        "FROM portfolio_sweep_runs "
+        "WHERE status = 'done' "
+        "ORDER BY finished_at DESC LIMIT 2"
+    )).fetchall()
+    if not rows:
+        return jsonify({"latest": None, "diff": None, "message": "no completed runs yet"}), 200
+
+    latest = rows[0]
+    prev = rows[1] if len(rows) > 1 else None
+
+    def _row_to_dict(r):
+        return {
+            "run_id": r[0],
+            "started_at": r[1].isoformat() if r[1] else None,
+            "finished_at": r[2].isoformat() if r[2] else None,
+            "status": r[3],
+            "total_entities": r[4],
+            "status_counts": _json.loads(r[5]) if r[5] else {},
+            "actionable_issues_count": r[6],
+            "actionable_entities": _json.loads(r[7]) if r[7] else [],
+        }
+
+    response = {"latest": _row_to_dict(latest), "diff": None}
+
+    if prev:
+        latest_results = {r["entity_code"]: r for r in (_json.loads(latest[8]) or [])}
+        prev_results = {r["entity_code"]: r for r in (_json.loads(prev[8]) or [])}
+        regressions, fixes = [], []
+        for ec in set(latest_results.keys()) | set(prev_results.keys()):
+            l = latest_results.get(ec, {})
+            p = prev_results.get(ec, {})
+            l_clean = l.get("status") == "clean_import"
+            p_clean = p.get("status") == "clean_import"
+            if p_clean and not l_clean and l.get("status"):
+                regressions.append({
+                    "entity_code": ec,
+                    "was": p.get("status"),
+                    "now": l.get("status"),
+                    "error_detail": l.get("error_detail"),
+                })
+            elif not p_clean and l_clean:
+                fixes.append({
+                    "entity_code": ec,
+                    "was": p.get("status"),
+                    "now": l.get("status"),
+                })
+        response["diff"] = {
+            "vs_run_id": prev[0],
+            "regressions": regressions,
+            "regression_count": len(regressions),
+            "fixes": fixes,
+            "fix_count": len(fixes),
+        }
+
+    return jsonify(response)
 
 
 @app.route("/api/admin/inspect-sp-xlsx/<entity_code>", methods=["GET"])
