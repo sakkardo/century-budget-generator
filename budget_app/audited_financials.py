@@ -1822,6 +1822,13 @@ async function uploadAll() {
         const buildingLabels = {{ building_labels_json }};
         const buildingLabelSet = new Set(buildingLabels);
         const buildingLabelSections = {{ building_label_sections_json }};
+        // Standard Century = the curated ~30 canonical category set, minus
+        // any labels the building already has of its own. Always reachable
+        // in the picker so common categories are a fast path even for
+        // buildings with sparse own-labels.
+        const standardCenturyLabels = {{ standard_century_labels_json }};
+        const standardCenturySections = {{ standard_century_sections_json }};
+        const standardCenturySet = new Set(standardCenturyLabels);
         const centuryCatSet = new Set(centuryCategories);
         // FA dir 2026-05-21: heuristic-suggested category per audit line.
         // Keyed by normalized (lowercase, trimmed) description. Used in
@@ -1947,7 +1954,10 @@ async function uploadAll() {
             return s.includes('non-operating');
         }).slice().sort();
         const bldgSet = new Set(buildingLabels);
-        const otherCentury = centuryCategories.filter(c => !bldgSet.has(c)).sort();
+        // "Other portfolio" = everything in the portfolio universe minus
+        // this building's own labels AND minus the Standard Century tier
+        // (which we'll render as its own group above).
+        const otherCentury = centuryCategories.filter(c => !bldgSet.has(c) && !standardCenturySet.has(c)).sort();
 
         // FA dir 2026-05-21: split otherCentury by section so the dropdown
         // always shows a clear Income / Expenses / Non-Operating breakdown,
@@ -1964,16 +1974,26 @@ async function uploadAll() {
         const otherExpense = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'expense');
         const otherNonOp = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'non-op');
 
+        // Standard Century tier — partition by section using its own
+        // pre-computed sections dict (passed from Python).
+        function _sectionOfStdCat(c) {
+            const s = (standardCenturySections[c] || '').toLowerCase();
+            if (s.includes('non-operating')) return 'non-op';
+            if (s.includes('income')) return 'income';
+            return 'expense';
+        }
+        const stdIncome = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'income');
+        const stdExpense = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'expense');
+        const stdNonOp = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'non-op');
+
         // Scope toggle declared up-front so buildSelectOptions can read it.
         // toggleCategoryScope() further down flips this and rebuilds dropdowns.
-        // Auto-on when: (a) building has no labels of its own (e.g. entity 106
-        // foundation_no_prior_budget) — otherwise the picker would be empty,
-        // OR (b) any auto-suggestion lands outside the building's labels —
-        // otherwise the suggested option wouldn't be in the DOM and the
-        // dropdown would render blank instead of pre-filling the suggestion.
-        let _showAllScope = (
-            (bldgIncome.length + bldgExpense.length + bldgNonOp.length) === 0 ||
-            Object.values(suggestedCategories).some(s => s && !buildingLabelSet.has(s))
+        // Auto-on ONLY when a suggestion lands in the long-tail portfolio
+        // (outside both building labels AND Standard Century). With the
+        // Standard tier always visible, most common suggestions are already
+        // reachable without needing showAll.
+        let _showAllScope = Object.values(suggestedCategories).some(s =>
+            s && !buildingLabelSet.has(s) && !standardCenturySet.has(s)
         );
 
         function _renderOptgroup(label, items, currentMapping) {
@@ -1988,16 +2008,21 @@ async function uploadAll() {
 
         function buildSelectOptions(currentMapping) {
             let opts = '<option value="">— Select category —</option>';
-            // This building's labels first (most relevant to the FA).
+            // This building's labels first (most relevant — pick these
+            // when col 2 should land on the FA's exact summary row text).
             opts += _renderOptgroup('Income (this building)', bldgIncome, currentMapping);
             opts += _renderOptgroup('Expenses (this building)', bldgExpense, currentMapping);
             opts += _renderOptgroup('Non-Operating (this building)', bldgNonOp, currentMapping);
-            // Other Century categories — only when scope = all. Broken into
-            // 3 sub-groups so Income / Expenses / Non-Op stay visually distinct.
+            // Standard Century — always visible. Curated canonical list of
+            // ~30 categories that exists for every building in the portfolio.
+            opts += _renderOptgroup('Standard Century — Income', stdIncome, currentMapping);
+            opts += _renderOptgroup('Standard Century — Expenses', stdExpense, currentMapping);
+            opts += _renderOptgroup('Standard Century — Non-Operating', stdNonOp, currentMapping);
+            // Other portfolio long-tail — only when "Show all" is checked.
             if (_showAllScope) {
-                opts += _renderOptgroup('Other Century — Income', otherIncome, currentMapping);
-                opts += _renderOptgroup('Other Century — Expenses', otherExpense, currentMapping);
-                opts += _renderOptgroup('Other Century — Non-Operating', otherNonOp, currentMapping);
+                opts += _renderOptgroup('Other portfolio — Income', otherIncome, currentMapping);
+                opts += _renderOptgroup('Other portfolio — Expenses', otherExpense, currentMapping);
+                opts += _renderOptgroup('Other portfolio — Non-Operating', otherNonOp, currentMapping);
             }
             return opts;
         }
@@ -3287,21 +3312,36 @@ async function uploadAll() {
         # Master picker universe = sorted union.
         portfolio_labels = sorted(portfolio_label_sections.keys())
 
+        # FA dir 2026-05-21: standard Century tier — the curated canonical
+        # list. Always reachable in the picker even when a building's own
+        # summary rows are sparse (e.g. 5 West 14th / entity 106 only has
+        # "Water & Sewer" in budget_summary_rows). Without this tier the FA
+        # would have to dig through 250+ long-tail portfolio entries to find
+        # "Maintenance" or "Payroll".
+        # Standard set = CENTURY_CATEGORIES minus what's already in the
+        # building's own labels (no need to show duplicates).
+        building_set = set(building_labels)
+        standard_century_labels = [c for c in sorted(CENTURY_CATEGORIES) if c not in building_set]
+        standard_century_sections = {
+            c: _classify_label(c, None) for c in standard_century_labels
+        }
+
         # FA dir 2026-05-21: auto-suggest a Century category per audit line.
         # Heuristic only (token overlap + substring + section hint). 99% of
         # audit lines map cleanly ("Maintenance" → Maintenance, "Insurance"
         # → Insurance). FA sees the suggestion pre-selected in peach (needs
-        # Accept), can override before confirming. Inference candidate set =
-        # building's own labels FIRST (preferred when both exist), portfolio
-        # universe as fallback. Building-first because if 212's summary calls
-        # it "R & M" and the portfolio has "Repairs & Maintenance", the FA's
-        # own summary label is the right choice for col 2 to land cleanly.
+        # Accept), can override before confirming. Inference candidate order:
+        #   1. building's own labels — preferred so col 2 lands on the FA's
+        #      actual summary row text.
+        #   2. standard Century canonical — curated, well-defined options.
+        #   3. portfolio long-tail — catch-all for niche labels.
         def _suggest(desc, section_hint):
-            # building-first
             s = _infer_category(desc, building_labels, building_label_sections, section_hint)
             if s:
                 return s
-            # fall back to portfolio universe
+            s = _infer_category(desc, standard_century_labels, standard_century_sections, section_hint)
+            if s:
+                return s
             return _infer_category(desc, portfolio_labels, portfolio_label_sections, section_hint)
 
         suggested_categories = {}  # description (normalized) → suggested label
@@ -3335,6 +3375,8 @@ async function uploadAll() {
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
         html = html.replace("{{ building_labels_json }}", json.dumps(building_labels))
         html = html.replace("{{ building_label_sections_json }}", json.dumps(building_label_sections))
+        html = html.replace("{{ standard_century_labels_json }}", json.dumps(standard_century_labels))
+        html = html.replace("{{ standard_century_sections_json }}", json.dumps(standard_century_sections))
         html = html.replace("{{ suggested_categories_json }}", json.dumps(suggested_categories))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
         # FA dir 2026-05-21: pass Claude-detected auditor firm name so JS can
