@@ -3344,20 +3344,42 @@ async function uploadAll() {
                 return s
             return _infer_category(desc, portfolio_labels, portfolio_label_sections, section_hint)
 
+        # FA dir 2026-05-21: raw_extraction shape (built by extract_from_pdf):
+        #   raw_extraction["revenue"]["items"]      — flat list of revenue rows
+        #   raw_extraction["expenses"]["categories"] — dict: cat_idx → [item, ...]
+        # Plural "expenses" + nested categories dict. Earlier code looked for
+        # singular "expense" with flat items → never matched any expense row,
+        # so the FA only saw suggestions on the 2 revenue rows.
         suggested_categories = {}  # description (normalized) → suggested label
+
+        def _harvest_item(desc, hint):
+            if not desc:
+                return
+            key = desc.lower().strip()
+            if key in suggested_categories:
+                return
+            sugg = _suggest(desc, hint)
+            if sugg:
+                suggested_categories[key] = sugg
+
         try:
-            for sect_key, hint in (("revenue", "revenue"), ("expense", "expense")):
-                sect = (raw_extraction.get(sect_key) or {})
-                for item in (sect.get("items") or []):
-                    desc = (item.get("description") or "").strip()
-                    if not desc:
-                        continue
-                    key = desc.lower().strip()
-                    if key in suggested_categories:
-                        continue
-                    sugg = _suggest(desc, hint)
-                    if sugg:
-                        suggested_categories[key] = sugg
+            # Revenue side — flat list.
+            for item in ((raw_extraction.get("revenue") or {}).get("items") or []):
+                _harvest_item((item.get("description") or "").strip(), "revenue")
+            # Expense side — nested dict of categories.
+            exp_root = raw_extraction.get("expenses") or {}
+            cats = exp_root.get("categories")
+            if isinstance(cats, dict):
+                for cat_items in cats.values():
+                    for item in (cat_items or []):
+                        _harvest_item((item.get("description") or "").strip(), "expense")
+            elif isinstance(cats, list):
+                # Defensive — flat list variant some older extractions might use
+                for item in cats:
+                    _harvest_item((item.get("description") or "").strip(), "expense")
+            # Final defensive fallback — older shape with raw_extraction.expense.items
+            for item in ((raw_extraction.get("expense") or {}).get("items") or []):
+                _harvest_item((item.get("description") or "").strip(), "expense")
         except Exception:
             suggested_categories = {}
 
