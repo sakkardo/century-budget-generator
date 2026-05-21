@@ -55,21 +55,50 @@ def parse_column_headers(sheet):
 
     def _as_year(val):
         """Return year as int if val parses as a 2010-2030 year, else None.
-        Handles ints, floats, AND strings like '2024' / '2024.0' / ' 2024 '.
-        FA dir 2026-05-20: some yrlycomp templates store years as text,
-        which the original int-only check missed → "Could not parse column
-        headers" on 340, 358, 360, 710, 909, 927."""
+
+        Handles:
+          - ints/floats: 2024, 2024.0
+          - plain strings: '2024', '2024.0', ' 2024 '
+          - fiscal-year strings: '2024-25' → 2025, '2024-2025' → 2025
+            (returns the LATTER year so condos with Jul-Jun fiscal years
+            map to the calendar year the FY closes in; matches '06/30/2026'
+            header convention in those files)
+
+        FA dir 2026-05-20: 340 (Pierhouse Condo) revealed fiscal-year format
+        in row 7 ('2016-17', '2017-18', ..., '2024-25'). 6 buildings hit
+        'Could not parse column headers' for this reason."""
         if val is None:
             return None
-        try:
-            if isinstance(val, (int, float)):
-                v = int(val)
-            else:
-                v = int(float(str(val).strip()))
-        except (TypeError, ValueError):
+        # int / float
+        if isinstance(val, (int, float)):
+            v = int(val)
+            return v if 2010 <= v <= 2030 else None
+        s = str(val).strip()
+        if not s:
             return None
-        if 2010 <= v <= 2030:
-            return v
+        # Plain numeric string
+        try:
+            v = int(float(s))
+            if 2010 <= v <= 2030:
+                return v
+        except (TypeError, ValueError):
+            pass
+        # Fiscal-year string 'YYYY-YY' or 'YYYY-YYYY'
+        import re as _re_local
+        m = _re_local.match(r'^(\d{4})\s*-\s*(\d{2,4})$', s)
+        if m:
+            first = int(m.group(1))
+            second_raw = m.group(2)
+            if len(second_raw) == 2:
+                # '2024-25' → 2025; carry the century from first year
+                second = (first // 100) * 100 + int(second_raw)
+                # Sanity: handle century rollover e.g. '1999-00' → 2000
+                if second < first:
+                    second += 100
+            else:
+                second = int(second_raw)
+            if 2010 <= second <= 2030:
+                return second
         return None
 
     # Find header row - look for a row with multiple year values.
