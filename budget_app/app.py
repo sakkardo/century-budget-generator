@@ -9130,18 +9130,41 @@ def wizard_build_budget(entity_code):
                 logger.exception("approved_2026 parse failed")
                 raise RuntimeError(f"2026 Approved Budget parse failed: {e}")
 
-        # YSL / ExpDist / AP Aging / Maint Proof — TODO Phase B.2 wiring.
-        # For now: acknowledge selection but flag as not yet wired so FA knows
-        # they still need to handle these via the legacy upload flow.
+        # FA dir 2026-05-21: Phase B.2 wiring complete. YSL/ExpDist/AP Aging/
+        # Maint Proof now ingest in the same atomic transaction as the
+        # approved budget. If any one of them fails (parser error, missing
+        # file, etc.), the whole build rolls back and the FA fixes + retries.
+        # Order matters: YSL writes budget_lines, ExpDist + AP Aging then
+        # apply accruals/unpaid bills to those lines, so they must run after
+        # YSL. Maint Proof is independent.
+        _APPLY_FNS = {
+            "ysl":                  _build_apply_ysl,
+            "expense_distribution": _build_apply_expense_distribution,
+            "ap_aging":             _build_apply_ap_aging,
+            "maint_proof":          _build_apply_maint_proof,
+        }
         for st in ("ysl", "expense_distribution", "ap_aging", "maint_proof"):
-            if st in selections:
-                sel = selections[st]
-                summary["selections_processed"].append({
-                    "source_type": st,
-                    "filename": sel.get("filename"),
-                    "status": "selection_recorded_only",
-                    "note": "Parser pipeline for this source type pending — file selection saved but not yet auto-imported.",
+            if st not in selections:
+                continue
+            sel = selections[st]
+            try:
+                result = _APPLY_FNS[st](entity_code, sel)
+                # Normalize: ensure source_type + filename present
+                if isinstance(result, dict):
+                    result.setdefault("source_type", st)
+                    result.setdefault("filename", sel.get("filename"))
+                summary["selections_processed"].append(result or {
+                    "source_type": st, "filename": sel.get("filename"),
                 })
+                if isinstance(result, dict) and result.get("warning"):
+                    # Non-fatal: surface but keep building
+                    summary["errors"].append({
+                        "source_type": st,
+                        "warning": result.get("warning"),
+                    })
+            except Exception as e:
+                logger.exception(f"{st} parse failed for {entity_code}")
+                raise RuntimeError(f"{st} parse failed: {e}")
 
         # Seed Budget.assumptions_json from staged wizard assumptions.
         # CFO defaults are file-based and read by the wizard UI for pre-population.
