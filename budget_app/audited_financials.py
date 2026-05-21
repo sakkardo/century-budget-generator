@@ -164,6 +164,54 @@ def _expand_tokens(tokens):
     return out
 
 
+# FA dir 2026-05-21: collapse near-duplicate labels seen across the portfolio
+# (typos, plural/singular, lowercase variants, common aliases) to one
+# canonical form so the picker doesn't show "Common Charge / Common Charges
+# / HOA Common Charges / Commercial Common Charge / Commercial Common Charges"
+# as five separate options. Conservative — only collapses where the variant
+# is clearly the same row. Distinct rows like "Electric Income" vs "Electric"
+# (utility expense) or "Fuel" vs "Fuel Oil" stay separate.
+_CANON_LABEL_FIXES = {
+    # Typos
+    "adminsitrative & other": "Administrative & Other",
+    "adminstrative & other": "Administrative & Other",
+    "contigency": "Contingency",
+    "commerical rent": "Commercial Rent",
+    # Singular → plural canonical
+    "common charge": "Common Charges",
+    "commercial common charge": "Commercial Common Charges",
+    "corporation tax": "Corporate Taxes",
+    "corporation taxes": "Corporate Taxes",
+    # Aliases (different label, same row purpose)
+    "hoa common charges": "Common Charges",
+    "bike": "Bicycle",
+    "bike storage": "Bicycle Storage",
+    # Lowercase / capitalization fixes (some Excel parsers preserved
+    # whatever-case the building had typed it as)
+    "capital assessment": "Capital Assessment",
+    "cooking gas": "Gas Cooking / Heating",
+    "garage rent": "Garage Rent",
+    "air conditioner": "Air Conditioner",
+    # Gas/Heat label sprawl → one canonical
+    "gas cooking": "Gas Cooking / Heating",
+    "gas heating": "Gas Cooking / Heating",
+    "gas heat": "Gas Cooking / Heating",
+    "gas & heat": "Gas Cooking / Heating",
+    "gas cooking & heat": "Gas Cooking / Heating",
+    "gas and gas heating": "Gas Cooking / Heating",
+}
+
+
+def _canonical_label(label):
+    """Map near-duplicates to a single canonical label string. Used to dedupe
+    the portfolio-wide picker universe so typos and plural variants don't
+    each show up as separate dropdown options."""
+    if not label:
+        return label
+    l = label.strip()
+    return _CANON_LABEL_FIXES.get(l.lower(), l)
+
+
 def _infer_category(description, candidates, sections_by_label, section_hint=None):
     """Pick the best Century category for an audit line description.
 
@@ -1715,8 +1763,8 @@ async function uploadAll() {
             <a href="/audited-financials/profiles" target="_blank" style="font-size:12px; color:var(--blue); text-decoration:none;">Manage profiles ↗</a>
         </div>
         <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-            <input type="checkbox" id="showAllCategories" onchange="toggleCategoryScope()">
-            <label for="showAllCategories" style="font-size:12px; color:var(--gray-700);">Show all Century categories (not just this building\'s)</label>
+            <input type="checkbox" id="showAllCategories" checked onchange="toggleCategoryScope()">
+            <label for="showAllCategories" style="font-size:12px; color:var(--gray-700);">Show all Century categories (uncheck to narrow to just this building)</label>
         </div>
     </div>
 
@@ -2011,6 +2059,8 @@ async function uploadAll() {
             btn.textContent = '✓';
             btn.disabled = true;
             btn.title = 'Accepted';
+            // Combobox trigger needs to mirror the new accepted state.
+            if (sel._cb_sync) sel._cb_sync();
             // Clear the "(suggested)" hint — once confirmed, it's no longer a guess.
             const hint = wrapper.parentElement && wrapper.parentElement.querySelector('.suggested-hint');
             if (hint) hint.style.display = 'none';
@@ -2028,6 +2078,8 @@ async function uploadAll() {
                 btn.textContent = '✓ Accept';
                 btn.disabled = false;
             }
+            // Mirror state back to the combobox trigger.
+            if (el._cb_sync) el._cb_sync();
             // Once the FA picks something different, the suggestion-flag is
             // no longer meaningful — hide the hint so the row reads as the
             // FA's own choice instead of "computer guessed this".
@@ -2131,6 +2183,7 @@ async function uploadAll() {
             row.remove();
             renderReconciliation();
             recalcLeftTotals();
+            attachComboboxesAll();  // attach combobox to the newly-inserted sub-row dropdowns
         }
 
         // FA dir 2026-05-21: undo Split. Removes all sub-rows that share the
@@ -2157,6 +2210,162 @@ async function uploadAll() {
             renderReconciliation();
             recalcLeftTotals();
             updateAcceptState();
+            attachComboboxesAll();  // re-attach combobox to restored dropdown
+        }
+
+        // FA dir 2026-05-21: searchable combobox per dropdown.
+        // The underlying <select> stays as state (so confirmExtraction,
+        // updateAcceptState, renderReconciliation all keep reading sel.value
+        // unchanged). On top we render a custom trigger + popup with a search
+        // input + filtered list. Solves "FA has to scroll a 100-item dropdown"
+        // when picking categories outside this building's own labels.
+        //
+        // Layout: the trigger replaces the <select> visually inside the same
+        // flex container. The <select> stays in the DOM with display:none
+        // so all the existing data-attributes (data-amount, data-desc,
+        // data-accepted, data-suggested, data-orig-cat) keep working.
+        //
+        // Picking an item in the popup writes to sel.value and dispatches a
+        // 'change' event so onDropdownChange + renderReconciliation fire
+        // as if the FA had used the native <select>.
+        function attachComboboxesAll() {
+            document.querySelectorAll('select[id^="map_"]').forEach(sel => {
+                if (sel.dataset.cbAttached === '1') return;
+                attachCombobox(sel);
+                sel.dataset.cbAttached = '1';
+            });
+        }
+
+        function attachCombobox(sel) {
+            const wrap = document.createElement('div');
+            wrap.className = 'cb-wrap';
+            wrap.style.cssText = 'position:relative; flex:1; min-width:160px;';
+
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.className = 'cb-trigger';
+            trigger.style.cssText = 'width:100%; text-align:left; padding:4px 24px 4px 8px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; min-height:26px; position:relative; font-family:inherit;';
+
+            const popup = document.createElement('div');
+            popup.className = 'cb-popup';
+            popup.style.cssText = 'position:absolute; z-index:10000; top:100%; left:0; min-width:300px; max-width:420px; background:#fff; border:1px solid #999; border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,0.18); max-height:380px; display:flex; flex-direction:column; margin-top:2px;';
+            popup.hidden = true;
+
+            const search = document.createElement('input');
+            search.type = 'text';
+            search.placeholder = 'Type to search 100+ categories...';
+            search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit;';
+            popup.appendChild(search);
+
+            const listEl = document.createElement('div');
+            listEl.className = 'cb-list';
+            listEl.style.cssText = 'overflow-y:auto; max-height:340px;';
+            popup.appendChild(listEl);
+
+            function renderList(filter) {
+                listEl.innerHTML = '';
+                const flt = (filter || '').toLowerCase().trim();
+                // Iterate optgroups in the underlying <select> to preserve
+                // the group order and visual hierarchy (this building first,
+                // Other Century below).
+                for (const og of sel.querySelectorAll('optgroup')) {
+                    const groupName = og.getAttribute('label') || '';
+                    const items = [];
+                    for (const opt of og.querySelectorAll('option')) {
+                        const v = opt.value;
+                        const t = opt.textContent;
+                        if (!v) continue;
+                        if (!flt || t.toLowerCase().includes(flt)) {
+                            items.push({ v: v, t: t });
+                        }
+                    }
+                    if (items.length === 0) continue;
+                    const header = document.createElement('div');
+                    header.textContent = groupName;
+                    header.style.cssText = 'padding:6px 10px; font-size:10px; font-weight:700; color:#555; background:#f1f5f9; text-transform:uppercase; letter-spacing:0.5px; position:sticky; top:0;';
+                    listEl.appendChild(header);
+                    for (const it of items) {
+                        const itemDiv = document.createElement('div');
+                        itemDiv.textContent = it.t;
+                        itemDiv.dataset.value = it.v;
+                        itemDiv.style.cssText = 'padding:5px 12px; font-size:13px; cursor:pointer;' + (it.v === sel.value ? ' background:#dbeafe; font-weight:600;' : '');
+                        itemDiv.addEventListener('mouseenter', () => { itemDiv.style.background = '#e0f2fe'; });
+                        itemDiv.addEventListener('mouseleave', () => { itemDiv.style.background = (it.v === sel.value ? '#dbeafe' : ''); });
+                        itemDiv.addEventListener('click', () => {
+                            sel.value = it.v;
+                            syncTrigger();
+                            closePopup();
+                            sel.dispatchEvent(new Event('change', { bubbles: true }));
+                        });
+                        listEl.appendChild(itemDiv);
+                    }
+                }
+                if (listEl.children.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.textContent = 'No matches';
+                    empty.style.cssText = 'padding:12px; color:#888; font-size:12px; font-style:italic; text-align:center;';
+                    listEl.appendChild(empty);
+                }
+            }
+
+            function syncTrigger() {
+                const v = sel.value;
+                // Build trigger label HTML: value text + caret.
+                const label = v
+                    ? '<span class="cb-val">' + escapeHtml(v) + '</span>'
+                    : '<span style="color:#888;">— Select category —</span>';
+                trigger.innerHTML = label + '<span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); color:#666; font-size:10px;">▾</span>';
+                // Mirror the <select>'s background (peach/green/white).
+                trigger.style.background = sel.style.background || (v ? '#fff3cd' : '#fff');
+                // If accepted, lock the trigger so FA can't accidentally re-open
+                // while the row is green. They can still click to change.
+                if (sel.dataset.accepted === 'true') {
+                    trigger.style.borderColor = '#16a34a';
+                } else {
+                    trigger.style.borderColor = '#ccc';
+                }
+            }
+
+            function openPopup() {
+                popup.hidden = false;
+                search.value = '';
+                renderList('');
+                setTimeout(() => search.focus(), 0);
+            }
+            function closePopup() {
+                popup.hidden = true;
+            }
+
+            trigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (popup.hidden) openPopup();
+                else closePopup();
+            });
+
+            search.addEventListener('input', () => renderList(search.value));
+            search.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') { closePopup(); }
+                if (e.key === 'Enter') {
+                    const first = listEl.querySelector('[data-value]');
+                    if (first) { first.click(); e.preventDefault(); }
+                }
+            });
+
+            // Close on outside click — register once per combobox.
+            document.addEventListener('click', (e) => {
+                if (!wrap.contains(e.target)) closePopup();
+            });
+
+            // Hide the native <select> visually, insert combobox before it.
+            sel.style.display = 'none';
+            sel.parentElement.insertBefore(wrap, sel);
+            wrap.appendChild(trigger);
+            wrap.appendChild(popup);
+
+            // Hook so acceptRow/onDropdownChange can call sel._cb_sync()
+            // after they mutate the <select>'s state.
+            sel._cb_sync = syncTrigger;
+            syncTrigger();
         }
 
         function renderRawData() {
@@ -2367,6 +2576,7 @@ async function uploadAll() {
                 try { renderReconciliation(); } catch (e) {}
                 try { recalcLeftTotals(); } catch (e) {}
                 try { updateAcceptState(); } catch (e) {}
+                try { attachComboboxesAll(); } catch (e) {}  // wrap new dropdown
             };
         }
 
@@ -2794,6 +3004,8 @@ async function uploadAll() {
         renderRawData();
         renderMappedData();
         renderReconciliation();
+        // Combobox-ify every map_* dropdown after the table is in the DOM.
+        attachComboboxesAll();
     </script>
 </body>
 </html>
@@ -2950,7 +3162,7 @@ async function uploadAll() {
                 "WHERE row_type = 'data' AND label IS NOT NULL AND label <> ''"
             )).fetchall()
             for r in port_rows:
-                lbl = r[0]
+                lbl = _canonical_label(r[0])  # dedupe typos/plurals/aliases
                 if lbl and lbl not in portfolio_label_sections:
                     portfolio_label_sections[lbl] = _classify_label(lbl, r[1])
         except Exception:
@@ -2958,8 +3170,9 @@ async function uploadAll() {
         # Always fold in the hardcoded CENTURY_CATEGORIES so the canonical list
         # is never missing (e.g. fresh DB, or a category no building uses yet).
         for c in CENTURY_CATEGORIES:
-            if c not in portfolio_label_sections:
-                portfolio_label_sections[c] = _classify_label(c, None)
+            canon = _canonical_label(c)
+            if canon not in portfolio_label_sections:
+                portfolio_label_sections[canon] = _classify_label(canon, None)
         # Master picker universe = sorted union.
         portfolio_labels = sorted(portfolio_label_sections.keys())
 
