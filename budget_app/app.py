@@ -7999,109 +7999,134 @@ def admin_dryrun_2026_import():
             .order_by(Budget.entity_code)\
             .offset(offset).limit(limit).all()
 
+    # ── CRITICAL: dry-run safety ────────────────────────────────────
+    # The apply chain calls _populate_building_info_from_income, which calls
+    # db.session.commit() at line 9258. That inner commit defeats any outer
+    # rollback. We intercept ALL session commits for the duration of the
+    # dry-run, converting them to flush() (visible to subsequent queries in
+    # the same txn, but never actually persisted). The outer rollback in
+    # the per-entity finally then wipes everything cleanly.
+    #
+    # This is belt-and-suspenders: even if other inner commits get added
+    # later, the dry-run stays non-destructive.
+    _orig_commit = db.session.commit
+    def _flush_only_commit():
+        # Flush makes pending writes visible to subsequent queries in this
+        # transaction (so our after_count read works), but doesn't actually
+        # persist beyond a rollback. The rollback in the per-entity `finally`
+        # block then discards all of it.
+        db.session.flush()
+
     results = []
-    for budget in budgets:
-        ec = budget.entity_code
-        entry = {
-            "entity_code": ec,
-            "building_name": budget.building_name,
-            "status": None,
-            "rows_existed": 0,
-            "rows_after": 0,
-            "rows_would_create": 0,
-            "rows_would_update": 0,
-            "file_name": None,
-            "file_modified": None,
-            "error_detail": None,
-        }
+    try:
+        db.session.commit = _flush_only_commit
 
-        # Baseline count — how many summary rows does this entity have BEFORE
-        # the dry-run. (Useful diagnostic; the SAVEPOINT-then-rollback dance
-        # below means we never actually change this number.)
-        try:
-            existed_count = BudgetSummaryRow.query.filter_by(
-                entity_code=ec, budget_year=_BY
-            ).count()
-            entry["rows_existed"] = existed_count
-        except Exception:
-            existed_count = 0
+        for budget in budgets:
+            ec = budget.entity_code
+            entry = {
+                "entity_code": ec,
+                "building_name": budget.building_name,
+                "status": None,
+                "rows_existed": 0,
+                "rows_after": 0,
+                "rows_would_create": 0,
+                "rows_would_update": 0,
+                "file_name": None,
+                "file_modified": None,
+                "error_detail": None,
+            }
 
-        # Ensure session is clean before this entity's work. Prior iteration's
-        # rollback usually leaves us clean, but be defensive.
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-
-        # 1) List SharePoint files
-        try:
-            files = _sharepoint_list_approved_budgets(ec)
-        except Exception as e:
-            entry["status"] = "sharepoint_error"
-            entry["error_detail"] = f"SP list failed: {type(e).__name__}: {str(e)[:240]}"
-            results.append(entry)
-            continue
-
-        if not files:
-            entry["status"] = "no_file"
-            entry["error_detail"] = "No file in SP folder matching 'approved' + .xlsx"
-            results.append(entry)
-            continue
-
-        # 2) Pick the most recently modified one
-        files_sorted = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)
-        chosen = files_sorted[0]
-        entry["file_name"] = chosen.get("name")
-        entry["file_modified"] = chosen.get("last_modified")
-
-        selection = {
-            "item_id": chosen.get("item_id"),
-            "filename": chosen.get("name"),
-        }
-
-        # 3) Run the apply, then ROLLBACK. We don't use begin_nested() because
-        # the existing _build_apply_approved_2026 doesn't manage its own txn —
-        # it just queues ORM ops. A plain rollback of the session unwinds them.
-        try:
-            written = _build_apply_approved_2026(
-                ec, selection, BudgetSummaryRow, _BY, apply_summary_prefix_override
-            )
-            # Count what's there now (reads pending writes within the same txn)
-            after_count = BudgetSummaryRow.query.filter_by(
-                entity_code=ec, budget_year=_BY
-            ).count()
-            entry["rows_after"] = after_count
-            entry["rows_would_create"] = max(0, after_count - existed_count)
-            # `written` from the apply = total rows it touched (insert + update).
-            # Subtract creates to get updates.
-            entry["rows_would_update"] = max(0, int(written or 0) - entry["rows_would_create"])
-            entry["status"] = "clean_import"
-        except Exception as e:
-            err_msg = str(e)
-            err_low = err_msg.lower()
-            err_type = type(e).__name__
-            short = err_msg[:300]
-            if "yrlycomp parse error" in err_low:
-                entry["status"] = "parse_error"
-            elif "extract_importable_data error" in err_low:
-                entry["status"] = "mapping_gap"
-            elif "sharepoint" in err_low or "graph" in err_low or "drive" in err_low or "404" in err_msg:
-                entry["status"] = "sharepoint_error"
-            elif "item_id" in err_low or "missing item_id" in err_low:
-                entry["status"] = "sharepoint_error"
-            elif err_type in ("IntegrityError", "DataError", "OperationalError", "ProgrammingError"):
-                entry["status"] = "apply_error"
-            else:
-                entry["status"] = "unknown_error"
-            entry["error_detail"] = f"{err_type}: {short}"
-        finally:
-            # ALWAYS rollback — we never want to actually commit a dry-run.
+            # Ensure session is clean before this entity's work. Prior iteration's
+            # rollback usually leaves us clean, but be defensive.
             try:
                 db.session.rollback()
             except Exception:
                 pass
 
-        results.append(entry)
+            # Baseline count — committed rows for this entity BEFORE the apply.
+            # After rollback the previous iteration left the session clean, so
+            # this query sees the actual persisted state.
+            try:
+                existed_count = BudgetSummaryRow.query.filter_by(
+                    entity_code=ec, budget_year=_BY
+                ).count()
+                entry["rows_existed"] = existed_count
+            except Exception:
+                existed_count = 0
+
+            # 1) List SharePoint files
+            try:
+                files = _sharepoint_list_approved_budgets(ec)
+            except Exception as e:
+                entry["status"] = "sharepoint_error"
+                entry["error_detail"] = f"SP list failed: {type(e).__name__}: {str(e)[:240]}"
+                results.append(entry)
+                continue
+
+            if not files:
+                entry["status"] = "no_file"
+                entry["error_detail"] = "No file in SP folder matching 'approved' + .xlsx"
+                results.append(entry)
+                continue
+
+            # 2) Pick the most recently modified one
+            files_sorted = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)
+            chosen = files_sorted[0]
+            entry["file_name"] = chosen.get("name")
+            entry["file_modified"] = chosen.get("last_modified")
+
+            selection = {
+                "item_id": chosen.get("item_id"),
+                "filename": chosen.get("name"),
+            }
+
+            # 3) Run the apply with commit-interception active.
+            try:
+                written = _build_apply_approved_2026(
+                    ec, selection, BudgetSummaryRow, _BY, apply_summary_prefix_override
+                )
+                # Count what's there now (reads pending writes after flush).
+                after_count = BudgetSummaryRow.query.filter_by(
+                    entity_code=ec, budget_year=_BY
+                ).count()
+                entry["rows_after"] = after_count
+                entry["rows_would_create"] = max(0, after_count - existed_count)
+                entry["rows_would_update"] = max(0, int(written or 0) - entry["rows_would_create"])
+                entry["status"] = "clean_import"
+            except Exception as e:
+                err_msg = str(e)
+                err_low = err_msg.lower()
+                err_type = type(e).__name__
+                short = err_msg[:300]
+                if "yrlycomp parse error" in err_low:
+                    entry["status"] = "parse_error"
+                elif "extract_importable_data error" in err_low:
+                    entry["status"] = "mapping_gap"
+                elif "sharepoint" in err_low or "graph" in err_low or "drive" in err_low or "404" in err_msg:
+                    entry["status"] = "sharepoint_error"
+                elif "item_id" in err_low or "missing item_id" in err_low:
+                    entry["status"] = "sharepoint_error"
+                elif err_type in ("IntegrityError", "DataError", "OperationalError", "ProgrammingError"):
+                    entry["status"] = "apply_error"
+                else:
+                    entry["status"] = "unknown_error"
+                entry["error_detail"] = f"{err_type}: {short}"
+            finally:
+                # ALWAYS rollback after each entity — wipes all pending writes
+                # (which were flush-only thanks to the commit interception).
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+
+            results.append(entry)
+    finally:
+        # Restore the real commit and clean up any final pending state.
+        db.session.commit = _orig_commit
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
     # Aggregate counts for filter/summary display
     status_counts = {}
