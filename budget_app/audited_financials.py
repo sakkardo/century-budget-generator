@@ -205,10 +205,25 @@ _CANON_LABEL_FIXES = {
 def _canonical_label(label):
     """Map near-duplicates to a single canonical label string. Used to dedupe
     the portfolio-wide picker universe so typos and plural variants don't
-    each show up as separate dropdown options."""
+    each show up as separate dropdown options.
+
+    Step 1 — whitespace normalize: collapse double spaces, regularize spaces
+    around hyphens / slashes / ampersands. Catches "Assessment - Operating"
+    vs "Assessment -Operating" vs "Assessment- Operating" (which otherwise
+    hash to 3 distinct dict keys and appear 3 times in the dropdown).
+
+    Step 2 — apply the typo/plural/alias fix table.
+    """
+    import re as _re2
     if not label:
         return label
     l = label.strip()
+    # Whitespace + separator normalize. ORDER MATTERS: collapse whitespace
+    # around separators first, then collapse interior runs of spaces.
+    l = _re2.sub(r"\s*-\s*", " - ", l)
+    l = _re2.sub(r"\s*/\s*", " / ", l)
+    l = _re2.sub(r"\s*&\s*", " & ", l)
+    l = _re2.sub(r"\s+", " ", l).strip()
     return _CANON_LABEL_FIXES.get(l.lower(), l)
 
 
@@ -2269,23 +2284,29 @@ async function uploadAll() {
             const trigger = document.createElement('button');
             trigger.type = 'button';
             trigger.className = 'cb-trigger';
-            trigger.style.cssText = 'width:100%; text-align:left; padding:4px 24px 4px 8px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; min-height:26px; position:relative; font-family:inherit;';
+            // !important on color because the page-wide `button { color:white }`
+            // CSS rule applies and makes the picked-value text invisible on
+            // the peach background otherwise.
+            trigger.style.cssText = 'width:100%; text-align:left; padding:4px 24px 4px 8px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; min-height:26px; position:relative; font-family:inherit; color:#1a1714 !important; font-weight:normal;';
 
             const popup = document.createElement('div');
             popup.className = 'cb-popup';
             // Use display:none so it stays truly hidden until openPopup().
             // Mount on body to escape table-cell clipping/overflow.
-            popup.style.cssText = 'position:fixed; z-index:10000; display:none; flex-direction:column; width:300px; max-height:380px; background:#fff; border:1px solid #999; border-radius:6px; box-shadow:0 6px 20px rgba(0,0,0,0.2); overflow:hidden;';
+            popup.style.cssText = 'position:fixed; z-index:10000; display:none; flex-direction:column; width:320px; background:#fff; border:1px solid #999; border-radius:6px; box-shadow:0 6px 20px rgba(0,0,0,0.2); color:#1a1714;';
 
             const search = document.createElement('input');
             search.type = 'text';
             search.placeholder = 'Type to search 100+ categories...';
-            search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit; flex-shrink:0;';
+            search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit; color:#1a1714; background:#fff;';
             popup.appendChild(search);
 
             const listEl = document.createElement('div');
             listEl.className = 'cb-list';
-            listEl.style.cssText = 'overflow-y:auto; flex:1; min-height:0;';
+            // Explicit max-height + overflow on the list itself (instead of
+            // relying on flex:1 inside a position:fixed parent, which doesn't
+            // size reliably across browsers).
+            listEl.style.cssText = 'overflow-y:auto; overflow-x:hidden; max-height:340px; color:#1a1714;';
             popup.appendChild(listEl);
 
             function renderList(filter) {
@@ -2336,11 +2357,13 @@ async function uploadAll() {
 
             function syncTrigger() {
                 const v = sel.value;
-                // Build trigger label HTML: value text + caret.
+                // Force dark text on every inner element — the page CSS rule
+                // `button { color:white }` cascades into spans inside the
+                // trigger, so each span needs an explicit color too.
                 const label = v
-                    ? '<span class="cb-val">' + escapeHtml(v) + '</span>'
+                    ? '<span class="cb-val" style="color:#1a1714;">' + escapeHtml(v) + '</span>'
                     : '<span style="color:#888;">— Select category —</span>';
-                trigger.innerHTML = label + '<span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); color:#666; font-size:10px;">▾</span>';
+                trigger.innerHTML = label + '<span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); color:#555; font-size:10px;">▾</span>';
                 // Mirror the <select>'s background (peach/green/white).
                 trigger.style.background = sel.style.background || (v ? '#fff3cd' : '#fff');
                 // If accepted, lock the trigger so FA can't accidentally re-open
