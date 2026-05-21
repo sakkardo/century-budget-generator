@@ -8151,6 +8151,52 @@ def admin_dryrun_2026_import():
     })
 
 
+@app.route("/api/admin/inspect-sp-xlsx/<entity_code>", methods=["GET"])
+def admin_inspect_sp_xlsx(entity_code):
+    """Debug endpoint: download an entity's 2026 SharePoint approved budget
+    and return the first 20 rows × 15 columns of every sheet as plain text.
+    Used to diagnose parse_error / no-yrlycomp-tab issues without needing
+    to download files manually."""
+    import tempfile, os as _os
+    try:
+        files = _sharepoint_list_approved_budgets(entity_code)
+        if not files:
+            return jsonify({"error": "No approved budget in SP folder"}), 404
+        files_sorted = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)
+        chosen = files_sorted[0]
+        filename, file_bytes = _sharepoint_download_item(chosen.get("id") or chosen.get("item_id"))
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(tmp_path, data_only=True)
+            out = {"entity_code": entity_code, "file_name": filename, "sheets": []}
+            for ws_name in wb.sheetnames:
+                ws = wb[ws_name]
+                rows = []
+                for r in range(1, min(21, ws.max_row + 1)):
+                    row = []
+                    for c in range(1, min(16, ws.max_column + 1)):
+                        v = ws.cell(row=r, column=c).value
+                        row.append(repr(v) if v is not None else "")
+                    rows.append({"r": r, "cells": row})
+                out["sheets"].append({
+                    "name": ws_name,
+                    "max_row": ws.max_row,
+                    "max_col": ws.max_column,
+                    "rows_1_to_20": rows,
+                })
+            return jsonify(out)
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {str(e)[:300]}"}), 500
+
+
 @app.route("/api/admin/bulk-flag-no-prior-budget", methods=["POST"])
 def admin_bulk_flag_no_prior_budget():
     """Bulk-set Budget.foundation_no_prior_budget for a list of entities.
