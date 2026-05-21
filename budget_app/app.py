@@ -8144,6 +8144,182 @@ def admin_dryrun_2026_import():
     })
 
 
+@app.route("/api/admin/commit-2026-imports", methods=["POST"])
+def admin_commit_2026_imports():
+    """COMMIT the 2026 SharePoint approved budget for explicitly-listed entities.
+
+    Sibling to /api/admin/dryrun-2026-import — same parse+apply pipeline, but
+    actually commits to the DB instead of rolling back.
+
+    Body (BOTH required for safety):
+      {
+        "entities": ["148", "168", ...],   # explicit list (no "all" mode)
+        "confirm": true                     # must be literal true
+      }
+    Cap: 50 entities per call. Bigger batches → caller chunks.
+
+    Per-entity transaction: each entity is wrapped in its own commit / rollback.
+    A failure on entity N does NOT block entities N+1..end.
+
+    What gets written per entity:
+      - BudgetSummaryRow records (col1_prior_actual, col6_approved_budget,
+        labels, sections, GL prefixes, etc.) — refresh-style upsert
+      - BuildingInfo maintenance_history / common_charges_history — only if
+        the existing record is null or zeros (preserves FA edits)
+    What does NOT get written:
+      - col7_proposed_budget (FA work, never touched)
+      - col3/4/5 overrides (FA work, never touched)
+      - Budget.wizard_completed_at — this is partial onboarding, NOT a full
+        wizard build. The FA still needs to process YSL/ExpDist/AP Aging via
+        the regular wizard.
+
+    Returns per-entity results:
+      {
+        ok: true,
+        processed: N,
+        committed_count: M,
+        results: [
+          {entity_code, building_name, committed: true/false, status: "...",
+           rows_created, rows_updated, file_name, error_detail}
+        ]
+      }
+    """
+    Budget = workflow_models["Budget"]
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY, apply_summary_prefix_override
+
+    body = request.get_json(silent=True) or {}
+    entities = body.get("entities") or []
+    if not entities:
+        return jsonify({"error": "Body must include 'entities' (non-empty list)"}), 400
+    if body.get("confirm") is not True:
+        return jsonify({
+            "error": "Body must include 'confirm': true (safety belt — this endpoint commits to DB)"
+        }), 400
+
+    # Hard cap. 50 is a balance between throughput and Railway request timeout.
+    entity_codes = [str(c).strip() for c in entities if c][:50]
+
+    budgets = Budget.query.filter(
+        Budget.entity_code.in_(entity_codes),
+        Budget.year == _BY,
+    ).order_by(Budget.entity_code).all()
+
+    # Detect any requested entities that have no Budget row — surface as error
+    found_codes = {b.entity_code for b in budgets}
+    missing = [c for c in entity_codes if c not in found_codes]
+
+    results = []
+    committed_count = 0
+    for budget in budgets:
+        ec = budget.entity_code
+        entry = {
+            "entity_code": ec,
+            "building_name": budget.building_name,
+            "committed": False,
+            "status": None,
+            "rows_existed": 0,
+            "rows_created": 0,
+            "rows_updated": 0,
+            "file_name": None,
+            "file_modified": None,
+            "error_detail": None,
+        }
+
+        # Defensive: clean session before this entity
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+        # Baseline count
+        try:
+            existed_count = BudgetSummaryRow.query.filter_by(
+                entity_code=ec, budget_year=_BY
+            ).count()
+            entry["rows_existed"] = existed_count
+        except Exception:
+            existed_count = 0
+
+        # List + pick file
+        try:
+            files = _sharepoint_list_approved_budgets(ec)
+        except Exception as e:
+            entry["status"] = "sharepoint_error"
+            entry["error_detail"] = f"SP list failed: {type(e).__name__}: {str(e)[:240]}"
+            results.append(entry)
+            continue
+
+        if not files:
+            entry["status"] = "no_file"
+            entry["error_detail"] = "No file in SP folder matching 'approved' + .xlsx"
+            results.append(entry)
+            continue
+
+        files_sorted = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)
+        chosen = files_sorted[0]
+        entry["file_name"] = chosen.get("name")
+        entry["file_modified"] = chosen.get("last_modified")
+
+        selection = {
+            "item_id": chosen.get("item_id"),
+            "filename": chosen.get("name"),
+        }
+
+        # Apply + COMMIT (not rollback like dry-run)
+        try:
+            written = _build_apply_approved_2026(
+                ec, selection, BudgetSummaryRow, _BY, apply_summary_prefix_override
+            )
+            db.session.commit()
+            after_count = BudgetSummaryRow.query.filter_by(
+                entity_code=ec, budget_year=_BY
+            ).count()
+            entry["rows_created"] = max(0, after_count - existed_count)
+            entry["rows_updated"] = max(0, int(written or 0) - entry["rows_created"])
+            entry["committed"] = True
+            entry["status"] = "committed"
+            committed_count += 1
+            logger.info(
+                f"[bulk-commit-2026] {ec}: committed — created={entry['rows_created']}, "
+                f"updated={entry['rows_updated']}, file={chosen.get('name')!r}"
+            )
+        except Exception as e:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            err_msg = str(e)
+            err_low = err_msg.lower()
+            err_type = type(e).__name__
+            short = err_msg[:300]
+            if "yrlycomp parse error" in err_low:
+                entry["status"] = "parse_error"
+            elif "extract_importable_data error" in err_low:
+                entry["status"] = "mapping_gap"
+            elif "sharepoint" in err_low or "graph" in err_low or "drive" in err_low or "404" in err_msg:
+                entry["status"] = "sharepoint_error"
+            elif err_type in ("IntegrityError", "DataError", "OperationalError", "ProgrammingError"):
+                entry["status"] = "apply_error"
+            else:
+                entry["status"] = "unknown_error"
+            entry["error_detail"] = f"{err_type}: {short}"
+            logger.warning(f"[bulk-commit-2026] {ec}: FAILED — {entry['status']}: {short}")
+
+        results.append(entry)
+
+    response = {
+        "ok": True,
+        "processed": len(results),
+        "committed_count": committed_count,
+        "results": results,
+    }
+    if missing:
+        response["entities_not_found"] = missing
+
+    return jsonify(response)
+
+
 @app.route("/admin/foundation", methods=["GET"])
 def admin_foundation_page():
     """HTML dashboard listing every entity\'s Foundation status. Lead view to
