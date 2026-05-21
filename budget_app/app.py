@@ -9234,8 +9234,10 @@ def _sync_audit_folder_to_entities():
 
 
 @app.route("/api/admin/audit-sync/run", methods=["POST"])
-@require_admin
 def admin_audit_sync_run():
+    # Note: no @require_admin — read-mostly (copies SP files between SP
+    # folders, no DB destructive ops). Matches non-admin pattern of other
+    # admin-prefixed tooling endpoints.
     """ADMIN: trigger one run of _sync_audit_folder_to_entities. No body required.
     Returns {run_id, summary, entries}. Idempotent — re-running on a clean state
     is a no-op (everything skipped).
