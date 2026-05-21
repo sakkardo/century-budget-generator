@@ -1772,39 +1772,47 @@ async function uploadAll() {
         const bldgSet = new Set(buildingLabels);
         const otherCentury = centuryCategories.filter(c => !bldgSet.has(c)).sort();
 
+        // FA dir 2026-05-21: split otherCentury by section so the dropdown
+        // always shows a clear Income / Expenses / Non-Operating breakdown,
+        // even when this building has no labels of its own (e.g. 106 / 5 W 14
+        // foundation_no_prior_budget). Without this, "Show all Century cats"
+        // produced one flat group of 70+ options with no visual hierarchy.
+        function _sectionOfCenturyCat(c) {
+            const s = (CENTURY_TO_SUMMARY[c] || '').toLowerCase();
+            if (s.includes('non-operating')) return 'non-op';
+            if (s.includes('income')) return 'income';
+            return 'expense';  // default + explicit expense rows
+        }
+        const otherIncome = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'income');
+        const otherExpense = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'expense');
+        const otherNonOp = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'non-op');
+
+        // Scope toggle declared up-front so buildSelectOptions can read it.
+        // toggleCategoryScope() further down flips this and rebuilds dropdowns.
+        let _showAllScope = false;
+
+        function _renderOptgroup(label, items, currentMapping) {
+            if (!items || items.length === 0) return '';
+            let opts = '<optgroup label="' + label + '">';
+            for (let c of items) {
+                opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+            }
+            opts += '</optgroup>';
+            return opts;
+        }
+
         function buildSelectOptions(currentMapping) {
             let opts = '<option value="">— Select category —</option>';
-            // Group 1: This building's income labels
-            if (bldgIncome.length > 0) {
-                opts += '<optgroup label="Income (this building)">';
-                for (let c of bldgIncome) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            // Group 2: This building's expense labels
-            if (bldgExpense.length > 0) {
-                opts += '<optgroup label="Expenses (this building)">';
-                for (let c of bldgExpense) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            // Group 3: This building's non-operating labels
-            if (bldgNonOp.length > 0) {
-                opts += '<optgroup label="Non-Operating (this building)">';
-                for (let c of bldgNonOp) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            // Group 4: Other Century categories not in this building's budget
-            if (otherCentury.length > 0) {
-                opts += '<optgroup label="── Other Century Categories ──">';
-                for (let c of otherCentury) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
+            // This building's labels first (most relevant to the FA).
+            opts += _renderOptgroup('Income (this building)', bldgIncome, currentMapping);
+            opts += _renderOptgroup('Expenses (this building)', bldgExpense, currentMapping);
+            opts += _renderOptgroup('Non-Operating (this building)', bldgNonOp, currentMapping);
+            // Other Century categories — only when scope = all. Broken into
+            // 3 sub-groups so Income / Expenses / Non-Op stay visually distinct.
+            if (_showAllScope) {
+                opts += _renderOptgroup('Other Century — Income', otherIncome, currentMapping);
+                opts += _renderOptgroup('Other Century — Expenses', otherExpense, currentMapping);
+                opts += _renderOptgroup('Other Century — Non-Operating', otherNonOp, currentMapping);
             }
             return opts;
         }
@@ -2541,7 +2549,8 @@ async function uploadAll() {
         // which Safari + some Edge builds ignored, leaving the FA unable to
         // reach Other Century Categories even with the checkbox on.
         // Rebuilding the options DOM is unconditional, browser-independent.
-        let _showAllScope = false;
+        // (_showAllScope itself is declared near buildSelectOptions above so
+        // both the toggle and the option builder share one source of truth.)
         function toggleCategoryScope() {
             _showAllScope = !!document.getElementById('showAllCategories').checked;
             document.querySelectorAll('select[id^="map_"]').forEach(sel => {
@@ -2553,43 +2562,6 @@ async function uploadAll() {
                 if (current) sel.value = current;
             });
         }
-        // Hook the scope-toggle into buildSelectOptions by wrapping the
-        // function: when _showAllScope is false, drop the otherCentury group.
-        const _origBuildSelectOptions = buildSelectOptions;
-        buildSelectOptions = function(currentMapping) {
-            let opts = '<option value="">— Select category —</option>';
-            if (bldgIncome.length > 0) {
-                opts += '<optgroup label="Income (this building)">';
-                for (let c of bldgIncome) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            if (bldgExpense.length > 0) {
-                opts += '<optgroup label="Expenses (this building)">';
-                for (let c of bldgExpense) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            if (bldgNonOp.length > 0) {
-                opts += '<optgroup label="Non-Operating (this building)">';
-                for (let c of bldgNonOp) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            // Only emit the "Other Century Categories" group when scope = all.
-            // No more disabled-options trick — the group simply isn't in the DOM.
-            if (_showAllScope && otherCentury.length > 0) {
-                opts += '<optgroup label="── Other Century Categories ──">';
-                for (let c of otherCentury) {
-                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
-                }
-                opts += '</optgroup>';
-            }
-            return opts;
-        };
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
             loadProfiles();
