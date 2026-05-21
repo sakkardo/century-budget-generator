@@ -150,6 +150,14 @@ _INFER_SYNONYMS = {
     "auditing": "professional",
     "admin": "administrative",
     "office": "administrative",
+    # Singular/plural pairs so "Real Estate Tax" matches "Real Estate Taxes"
+    # instead of falling through to longer (less specific) labels like
+    # "Real Estate Tax Benefit Credits" which share fewer tokens but win
+    # via substring bonus.
+    "tax": "taxes",
+    "taxes": "tax",
+    "fee": "fees",
+    "fees": "fee",
 }
 
 
@@ -2035,19 +2043,29 @@ async function uploadAll() {
                 ? rulesForDesc
                 : (rulesForDesc[section] || '');
 
-            if (!currentMapping && centuryCatSet.has(description)) {
-                currentMapping = description;
-            }
+            // FA dir 2026-05-21: auto-fill priority (most → least specific).
+            // The earlier ordering let an exact match in the long-tail
+            // "Other portfolio" tier win over a curated suggestion — which
+            // then rendered blank because long-tail options are hidden
+            // behind the "Show all" toggle.
+            //   1. existingRules (above) — definitive prior FA mapping
+            //   2. this building's own labels — col 2 lands cleanly
+            //   3. Standard Century (curated 30) — always visible, well-defined
+            //   4. heuristic suggestion — for non-obvious matches
+            //   5. long-tail exact match — only as a last resort
             if (!currentMapping && buildingLabelSet.has(description)) {
                 currentMapping = description;
             }
-            // FA dir 2026-05-21: fall back to heuristic suggestion from Python
-            // side. Tracks whether this is a guess vs. a confirmed prior rule
-            // so we can render a hint below the dropdown ("(suggested)").
+            if (!currentMapping && standardCenturySet.has(description)) {
+                currentMapping = description;
+            }
             let isSuggestion = false;
             if (!currentMapping && suggestedCategories[normalized]) {
                 currentMapping = suggestedCategories[normalized];
                 isSuggestion = true;
+            }
+            if (!currentMapping && centuryCatSet.has(description)) {
+                currentMapping = description;
             }
 
             // FA dir 2026-05-21: every unaccepted row gets the peach
