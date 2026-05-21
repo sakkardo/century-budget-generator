@@ -1832,11 +1832,21 @@ async function uploadAll() {
             // means "still needs Accept", green means "accepted".
             const bgStyle = 'background:#fff3cd;';
 
+            const _addBtnVisible = currentMapping && !buildingLabelSet.has(currentMapping);
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            // FA dir 2026-05-21: when the picked category isn't on the
+            // building's Summary tab yet, surface a one-click "Add to Summary"
+            // action. Server resolves gl_prefixes via SUMMARY_ROW_MAP, so a
+            // newly-created row immediately captures the right GL family
+            // when YSL/ExpDist refresh next.
+            html += '<button onclick="addToSummary(this)" class="add-to-summary-btn"'
+                  + ' style="padding:3px 8px; font-size:11px; background:#0ea5e9; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;'
+                  + (_addBtnVisible ? '' : ' display:none;')
+                  + '" title="Add this category as a new row on the Summary tab for this building">+ Add to Summary</button>';
             html += '</div>';
             return html;
         }
@@ -1848,11 +1858,16 @@ async function uploadAll() {
             // with makeDropdown above). Split rows without a default also
             // need attention, not blend into white.
             const bgStyle = 'background:#fff3cd;';
+            const _addBtnVisible = defaultMapping && !buildingLabelSet.has(defaultMapping);
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            html += '<button onclick="addToSummary(this)" class="add-to-summary-btn"'
+                  + ' style="padding:3px 8px; font-size:11px; background:#0ea5e9; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;'
+                  + (_addBtnVisible ? '' : ' display:none;')
+                  + '" title="Add this category as a new row on the Summary tab for this building">+ Add to Summary</button>';
             if (defaultMapping) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
             }
@@ -1883,6 +1898,107 @@ async function uploadAll() {
                 btn.style.background = '#f59e0b';
                 btn.textContent = '✓ Accept';
                 btn.disabled = false;
+            }
+            // FA dir 2026-05-21: toggle "Add to Summary" visibility based on
+            // whether the chosen category is already a row on this building's
+            // Summary tab. Show button only when picking a category that
+            // doesn't have a Summary row (so the FA can create one in one click).
+            const addBtn = el.parentElement.querySelector('.add-to-summary-btn');
+            if (addBtn) {
+                const v = el.value || '';
+                const needsAdd = v && !buildingLabelSet.has(v);
+                addBtn.style.display = needsAdd ? '' : 'none';
+                addBtn.textContent = '+ Add to Summary';
+                addBtn.disabled = false;
+                addBtn.style.background = '#0ea5e9';
+            }
+        }
+
+        // FA dir 2026-05-21: one-click "Add to Summary" for categories that
+        // aren't yet on this building's Summary tab. POSTs to the existing
+        // /api/admin/add-summary-row endpoint — server resolves gl_prefixes
+        // from SUMMARY_ROW_MAP / LABEL_ALIASES (so a new "Supplies" row will
+        // automatically capture 5405-* GLs from YSL on next refresh).
+        async function addToSummary(btn) {
+            const wrapper = btn.closest('[data-section]');
+            const sel = wrapper.querySelector('select[id^="map_"]');
+            if (!sel) return;
+            const label = sel.value;
+            if (!label) {
+                alert('Pick a category first.');
+                return;
+            }
+            // Derive the server section from CENTURY_TO_SUMMARY when possible.
+            // CENTURY_TO_SUMMARY maps a Century category → high-level summary
+            // tab section label like "Total Operating Income" / "Total Operating
+            // Expenses" / "Non-Operating Income" / "Non-Operating Expense".
+            // Fall back to the audit row's section if not in CENTURY_TO_SUMMARY.
+            function _derivedSection() {
+                // Server expects exact section strings: "Income", "Expenses",
+                // "Non-Operating Income", "Non-Operating Expenses" (see
+                // app.py:11722 docstring on /api/admin/add-summary-row).
+                const subtotal = (CENTURY_TO_SUMMARY || {})[label] || '';
+                if (subtotal === 'Total Operating Income') return 'Income';
+                if (subtotal === 'Total Operating Expenses') return 'Expenses';
+                if (subtotal === 'Non-Operating Income') return 'Non-Operating Income';
+                if (subtotal === 'Non-Operating Expense') return 'Non-Operating Expenses';
+                // Fallback from the audit dropdown's section attribute
+                const sec = (wrapper.dataset.section || '').toLowerCase();
+                if (sec === 'revenue') return 'Income';
+                if (sec === 'expense') return 'Expenses';
+                return 'Expenses';  // safest default
+            }
+            const serverSection = _derivedSection();
+
+            btn.disabled = true;
+            btn.textContent = 'Adding…';
+            btn.style.background = '#64748b';
+            try {
+                const resp = await fetch('/api/admin/add-summary-row', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        entity_code: '{{ entity_code }}',
+                        label: label,
+                        section: serverSection,
+                        // Let the server resolve gl_prefixes from SUMMARY_ROW_MAP
+                        // by leaving the field absent. The endpoint already
+                        // looks up the canonical prefix list when not provided.
+                    }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.error) {
+                    throw new Error(data.error || ('HTTP ' + resp.status));
+                }
+                // Run resolve-summary-aliases so the new row picks up its
+                // canonical gl_prefixes_json (it's added empty by add-summary-row;
+                // resolve patches in the SUMMARY_ROW_MAP prefixes after).
+                try {
+                    await fetch('/api/admin/resolve-summary-aliases/{{ entity_code }}',
+                                {method: 'POST', headers: {'Content-Type': 'application/json'}});
+                } catch (_e) { /* non-fatal */ }
+
+                // Update local state so subsequent dropdown changes don't show
+                // the button for this category anymore.
+                buildingLabelSet.add(label);
+                buildingLabels.push(label);
+                // Also add to the section-bucket so any future rebuilds
+                // (via toggleCategoryScope) place it in the right group.
+                const _sec = (wrapper.dataset.section || 'expense').toLowerCase();
+                if (_sec === 'revenue') bldgIncome.push(label);
+                else bldgExpense.push(label);
+                bldgIncome.sort();
+                bldgExpense.sort();
+
+                btn.textContent = '✓ Added to Summary';
+                btn.style.background = '#16a34a';
+                // Hide the button entirely after a brief confirmation flash
+                setTimeout(() => { btn.style.display = 'none'; }, 1500);
+            } catch (err) {
+                btn.disabled = false;
+                btn.textContent = '+ Add to Summary';
+                btn.style.background = '#0ea5e9';
+                alert('Add to Summary failed: ' + err.message);
             }
         }
 
