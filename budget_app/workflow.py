@@ -16128,7 +16128,15 @@ function _biEnsureStyles() {
     + 'table.bi-amort td:nth-child(1), table.bi-amort td:nth-child(2) { text-align:left; }'
     + 'table.bi-amort tr:hover td { background:#f0f9ff; }'
     + 'table.bi-amort tr.year-end td { border-bottom:2px solid var(--gray-300); background:#fffbeb; }'
-    + '.bi-empty { padding:32px; text-align:center; color:var(--gray-400); }';
+    + '.bi-empty { padding:32px; text-align:center; color:var(--gray-400); }'
+    /* FA dir 2026-05-21: amortization solver mode pills + computed field styling */
+    + '.bi-amort-mode-pill { padding:5px 12px; border:1px solid var(--gray-300); border-radius:999px; font-size:11px; font-weight:600; cursor:pointer; background:white; color:var(--gray-700); font-family:inherit; }'
+    + '.bi-amort-mode-pill:hover { background:var(--gray-100); border-color:var(--blue); }'
+    + '.bi-amort-mode-pill.active { background:var(--blue); color:white; border-color:var(--blue); }'
+    + '.bi-amort-params .field input.computed { background:#dcfce7 !important; border-color:#16a34a !important; color:#15803d; font-weight:600; }'
+    + '.bi-amort-tag { display:inline-block; padding:1px 6px; border-radius:3px; font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:0.4px; margin-left:6px; }'
+    + '.bi-amort-tag.computed { background:#dcfce7; color:#15803d; }'
+    + '.bi-amort-status { font-weight:500; }';
   document.head.appendChild(s);
 }
 
@@ -16151,10 +16159,17 @@ function _biDefaultMaint() {
 function _biDefaultAmort() {
   // FA directive 2026-05-11: io_months = number of initial interest-only
   // periods. 0 = standard amortization (default, no behavior change).
-  // 0 < io_months < total_periods = hybrid (I/O then amortize remaining
-  // principal over remaining periods). io_months == total_periods =
-  // pure I/O loan with balloon at maturity.
-  return { label: '', principal: 0, rate: 0, term: 0, start: '', freq: 12, io_months: 0 };
+  // FA directive 2026-05-21: payment + balloon fields added. mode picks
+  // which field the recalculator solves for:
+  //   standard:   solves payment   (needs principal + rate + term)
+  //   by_payment: solves term      (needs principal + rate + payment)
+  //   by_balance: solves balloon   (needs principal + rate + term + payment)
+  return {
+    label: '', principal: 0, rate: 0, term: 0, start: '', freq: 12, io_months: 0,
+    mode: 'standard',
+    payment: 0,      // per-period payment ($)
+    end_balance: 0,  // balloon at maturity ($)
+  };
 }
 
 function _biSaveSoon() {
@@ -16599,6 +16614,24 @@ function _biMhPropagate() {
 
 function _biRenderAmort() {
   const a = _biData.amort_config || _biDefaultAmort();
+  const mode = a.mode || 'standard';
+  // FA directive 2026-05-21: 3 input modes + payment + end_balance fields.
+  // Layout per mode:
+  //   standard:   Principal, Rate, Term required; Payment = computed
+  //   by_payment: Principal, Rate, Payment required; Term = computed
+  //   by_balance: Principal, Rate, Term, Payment required; End Balance = computed
+  // Field "input" or "computed" classes drive visual styling. The recalc
+  // function safely handles any combination \u2014 never throws.
+  function _modePill(val, label, hint) {
+    const active = (mode === val);
+    return '<button class="bi-amort-mode-pill' + (active ? ' active' : '') + '" onclick="_biAmModeSet(\'' + val + '\')" title="' + hint + '">' + label + '</button>';
+  }
+  const termClass     = (mode === 'by_payment') ? 'computed' : '';
+  const paymentClass  = (mode === 'standard')   ? 'computed' : '';
+  const balloonClass  = (mode === 'by_balance') ? 'computed' : '';
+  const termReadOnly     = (mode === 'by_payment') ? 'readonly' : '';
+  const paymentReadOnly  = (mode === 'standard')   ? 'readonly' : '';
+  const balloonReadOnly  = (mode === 'by_balance') ? 'readonly' : '';
   return ''
     + '<div class="bi-card">'
     +   '<div class="bi-card-header">'
@@ -16606,20 +16639,29 @@ function _biRenderAmort() {
     +     '<span class="bi-illus-chip">Illustrative Only</span>'
     +   '</div>'
     +   '<div class="bi-card-body">'
+    +     '<div class="bi-amort-modes" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; padding:8px; background:var(--gray-50, #f9fafb); border-radius:8px;">'
+    +       '<span style="font-size:11px; font-weight:600; color:var(--gray-500); align-self:center; margin-right:6px; text-transform:uppercase; letter-spacing:0.5px;">Solver mode:</span>'
+    +       _modePill('standard',   'Standard',   'Enter Principal + Rate + Term. System computes Payment.')
+    +       _modePill('by_payment', 'By Payment', 'Enter Principal + Rate + Payment. System computes Term.')
+    +       _modePill('by_balance', 'By Balance', 'Enter Principal + Rate + Term + Payment. System computes End Balance (balloon).')
+    +     '</div>'
     +     '<div class="bi-amort-params">'
     +       '<div class="field"><label>Label</label><input type="text" id="biAmLabel" value="' + (a.label || '').replace(/"/g, '&quot;') + '" onchange="_biAmUpd()"></div>'
+    +       '<div class="field"><label>Start Date</label><input type="month" id="biAmStart" value="' + (a.start || '') + '" onchange="_biAmUpd()"></div>'
     +       '<div class="field"><label>Original Principal</label><input type="text" id="biAmPrincipal" value="' + (a.principal ? Number(a.principal).toLocaleString() : '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
     +       '<div class="field"><label>Interest Rate (% annual)</label><input type="text" id="biAmRate" value="' + (a.rate || '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
-    +       '<div class="field"><label>Term (years)</label><input type="text" id="biAmTerm" value="' + (a.term || '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
-    +       '<div class="field"><label>Start Date</label><input type="month" id="biAmStart" value="' + (a.start || '') + '" onchange="_biAmUpd()"></div>'
+    +       '<div class="field"><label>Term (years) ' + (termClass ? '<span class="bi-amort-tag computed">computed</span>' : '') + '</label><input type="text" id="biAmTerm" class="' + termClass + '" ' + termReadOnly + ' value="' + (a.term || '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
+    +       '<div class="field"><label>Payment (per period) ' + (paymentClass ? '<span class="bi-amort-tag computed">computed</span>' : '') + '</label><input type="text" id="biAmPmt" class="' + paymentClass + '" ' + paymentReadOnly + ' value="' + (a.payment ? Number(a.payment).toLocaleString() : '') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
+    +       '<div class="field"><label>End Balance (balloon) ' + (balloonClass ? '<span class="bi-amort-tag computed">computed</span>' : '') + '</label><input type="text" id="biAmEndBal" class="' + balloonClass + '" ' + balloonReadOnly + ' value="' + (a.end_balance ? Number(a.end_balance).toLocaleString() : '0') + '" onchange="_biAmUpd()" onfocus="this.select()"></div>'
     +       '<div class="field"><label>Payment Frequency</label><select id="biAmFreq" onchange="_biAmUpd()">'
     +         '<option value="12"' + (Number(a.freq) === 12 ? ' selected' : '') + '>Monthly</option>'
     +         '<option value="4"'  + (Number(a.freq) === 4  ? ' selected' : '') + '>Quarterly</option>'
     +       '</select></div>'
-    +       '<div class="field"><label>Interest-Only Period <span style="font-weight:400; color:var(--gray-500); text-transform:none; letter-spacing:0;">(periods)</span></label><input type="text" id="biAmIO" value="' + (Number(a.io_months) > 0 ? a.io_months : '') + '" placeholder="0" onchange="_biAmUpd()" onfocus="this.select()" title="Number of initial periods that are interest-only. 0 = standard amortization. Equals total periods = pure I/O loan (balloon at maturity). Between = hybrid (I/O then amortize)."></div>'
+    +       '<div class="field"><label>Interest-Only Period <span style="font-weight:400; color:var(--gray-500); text-transform:none; letter-spacing:0;">(periods)</span></label><input type="text" id="biAmIO" value="' + (Number(a.io_months) > 0 ? a.io_months : '') + '" placeholder="0" onchange="_biAmUpd()" onfocus="this.select()" title="Number of initial periods that are interest-only. 0 = standard amortization."></div>'
     +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn primary" style="width:100%;" onclick="_biRecalcAmort()">Recalculate</button></div>'
     +       '<div class="field" style="display:flex; align-items:flex-end;"><button class="bi-btn" style="width:100%;" onclick="_biExportAmort()">Export CSV</button></div>'
     +     '</div>'
+    +     '<div id="biAmStatus" class="bi-amort-status" style="margin:8px 0; padding:8px 12px; border-radius:6px; font-size:12px; display:none;"></div>'
     +     '<div class="bi-amort-summary">'
     +       '<div class="bi-summary-card"><div class="label">Periodic Payment</div><div class="value" id="biSumPmt">\u2014</div></div>'
     +       '<div class="bi-summary-card"><div class="label">Annual Debt Service</div><div class="value" id="biSumAnnual">\u2014</div></div>'
@@ -16639,11 +16681,35 @@ function _biRenderAmort() {
     + '</div>';
 }
 
+// FA directive 2026-05-21: mode setter \u2014 flips the solver mode and re-renders
+// just the amortization card so the right fields show as "computed" vs "input".
+function _biAmModeSet(newMode) {
+  const a = _biData.amort_config || (_biData.amort_config = _biDefaultAmort());
+  if (a.mode === newMode) return;
+  a.mode = newMode;
+  // Re-render only this card to reflect the new mode's field states
+  const card = document.querySelector('.bi-card .bi-card-header h2');
+  if (card && card.textContent && card.textContent.includes('Amortization Schedule')) {
+    card.closest('.bi-card').outerHTML = _biRenderAmort();
+  } else {
+    // Fallback: full re-render
+    if (typeof renderBuildingInfoTab === 'function') {
+      const c = document.getElementById('sheetContent');
+      if (c) renderBuildingInfoTab(c);
+    }
+  }
+  _biRecalcAmort();
+  _biSaveSoon();
+}
+
 function _biAmUpd() {
   const a = _biData.amort_config || (_biData.amort_config = _biDefaultAmort());
   // FA directive 2026-05-10: read the candidate values from the DOM, then
   // short-circuit if nothing changed. Avoids re-render + save when the FA
   // tabs through fields without editing.
+  // FA dir 2026-05-21: also read payment + end_balance (new fields).
+  const pmtEl = document.getElementById('biAmPmt');
+  const endBalEl = document.getElementById('biAmEndBal');
   const cand = {
     label:     document.getElementById('biAmLabel').value || '',
     principal: _biNum(document.getElementById('biAmPrincipal').value),
@@ -16651,19 +16717,18 @@ function _biAmUpd() {
     term:      _biNum(document.getElementById('biAmTerm').value),
     start:     document.getElementById('biAmStart').value || '',
     freq:      parseInt(document.getElementById('biAmFreq').value, 10) || 12,
-    // FA directive 2026-05-11: I/O period (interest-only periods at the
-    // start of the loan). 0 = standard amortization.
     io_months: Math.max(0, Math.floor(_biNum(document.getElementById('biAmIO').value))),
+    payment:     pmtEl ? _biNum(pmtEl.value) : (a.payment || 0),
+    end_balance: endBalEl ? _biNum(endBalEl.value) : (a.end_balance || 0),
   };
-  if (a.label === cand.label && a.principal === cand.principal &&
-      a.rate === cand.rate && a.term === cand.term &&
-      a.start === cand.start && a.freq === cand.freq &&
-      (Number(a.io_months) || 0) === cand.io_months) {
-    return;
-  }
-  a.label = cand.label; a.principal = cand.principal; a.rate = cand.rate;
-  a.term = cand.term; a.start = cand.start; a.freq = cand.freq;
-  a.io_months = cand.io_months;
+  const eq = (a.label === cand.label && a.principal === cand.principal &&
+              a.rate === cand.rate && a.term === cand.term &&
+              a.start === cand.start && a.freq === cand.freq &&
+              (Number(a.io_months) || 0) === cand.io_months &&
+              (Number(a.payment) || 0) === cand.payment &&
+              (Number(a.end_balance) || 0) === cand.end_balance);
+  if (eq) return;
+  Object.assign(a, cand);
   _biRecalcAmort();
   _biSaveSoon();
 }
@@ -16672,48 +16737,152 @@ function _biRecalcAmort() {
   const a = _biData.amort_config || _biDefaultAmort();
   const body = document.getElementById('biAmBody');
   if (!body) return;
-  const principal = _biNum(a.principal);
-  const annualRate = _biNum(a.rate) / 100;
-  const termYears = _biNum(a.term);
-  const freq = parseInt(a.freq, 10) || 12;
-  const startStr = a.start || '';
-  if (!principal || !annualRate || !termYears || !freq || !startStr) {
-    // FA directive 2026-05-10: tell the FA exactly which fields are missing
-    // instead of the generic "Enter principal, rate, term, and start date".
-    const missing = [];
-    if (!principal)  missing.push('Original Principal');
-    if (!annualRate) missing.push('Interest Rate');
-    if (!termYears)  missing.push('Term (years)');
-    if (!startStr)   missing.push('Start Date');
-    const msg = (missing.length === 1)
-      ? 'Enter <strong>' + missing[0] + '</strong> to generate the schedule.'
-      : 'Enter <strong>' + missing.slice(0, -1).join('</strong>, <strong>') + '</strong> and <strong>' + missing[missing.length - 1] + '</strong> to generate the schedule.';
+  const statusEl = document.getElementById('biAmStatus');
+  function _setStatus(kind, msg) {
+    if (!statusEl) return;
+    if (!kind) { statusEl.style.display = 'none'; statusEl.innerHTML = ''; return; }
+    statusEl.style.display = 'block';
+    if (kind === 'ok') {
+      statusEl.style.background = '#dcfce7'; statusEl.style.color = '#15803d';
+      statusEl.innerHTML = '<strong>\u2713</strong> ' + msg;
+    } else if (kind === 'need') {
+      statusEl.style.background = '#fef3c7'; statusEl.style.color = '#92400e';
+      statusEl.innerHTML = '<strong>!</strong> ' + msg;
+    } else {
+      statusEl.style.background = '#fee2e2'; statusEl.style.color = '#991b1b';
+      statusEl.innerHTML = '<strong>\u26a0</strong> ' + msg;
+    }
+  }
+  function _clearOutputs(msg) {
     body.innerHTML = '<tr><td colspan="7" class="bi-empty">' + msg + '</td></tr>';
     document.getElementById('biSumPmt').textContent    = '\u2014';
     document.getElementById('biSumAnnual').textContent = '\u2014';
     document.getElementById('biSumInt').textContent    = '\u2014';
     document.getElementById('biSumMat').textContent    = '\u2014';
+  }
+
+  const mode = (a.mode || 'standard');
+  const principal = _biNum(a.principal);
+  const annualRate = _biNum(a.rate) / 100;
+  let termYears = _biNum(a.term);
+  const freq = parseInt(a.freq, 10) || 12;
+  const startStr = a.start || '';
+  let payment = _biNum(a.payment);
+  const endBalanceInput = _biNum(a.end_balance);
+  const periodRate = (annualRate || 0) / freq;
+
+  // FA dir 2026-05-21: solver picks which variable to compute from the mode.
+  // ALWAYS returns a usable state \u2014 no throws. Insufficient info \u2192 yellow
+  // "need more info" status, no schedule rendered.
+  const needs = [];
+  if (!principal)  needs.push('Original Principal');
+  if (!annualRate) needs.push('Interest Rate');
+
+  // Compute one variable based on mode
+  let totalPeriods = 0;
+  let endBalance = 0;
+  let solverNote = '';
+  if (mode === 'standard') {
+    if (!termYears) needs.push('Term (years)');
+    if (needs.length > 0) {
+      _clearOutputs('Enter <strong>' + needs.join('</strong> and <strong>') + '</strong>.');
+      _setStatus('need', 'Need: ' + needs.join(', '));
+      return;
+    }
+    totalPeriods = Math.round(termYears * freq);
+    endBalance = 0;
+    // Payment computed by the existing engine below
+    solverNote = 'Standard amortization \u2014 payment computed from principal, rate, term.';
+  } else if (mode === 'by_payment') {
+    if (!payment) needs.push('Payment (per period)');
+    if (needs.length > 0) {
+      _clearOutputs('Enter <strong>' + needs.join('</strong> and <strong>') + '</strong>.');
+      _setStatus('need', 'Need: ' + needs.join(', '));
+      return;
+    }
+    // n = log( M / (M - P*r) ) / log(1+r) \u2014 closed-form
+    const interestOnly = principal * periodRate;
+    if (payment <= interestOnly + 1e-6) {
+      _clearOutputs('Payment is at or below interest-only. Loan never amortizes.');
+      _setStatus('need', 'Payment must exceed interest-only of $' + interestOnly.toFixed(2) + '/period.');
+      return;
+    }
+    const n_raw = Math.log(payment / (payment - principal * periodRate)) / Math.log(1 + periodRate);
+    totalPeriods = Math.ceil(n_raw);
+    termYears = totalPeriods / freq;
+    a.term = Math.round(termYears * 100) / 100; // round to 2 decimals
+    // Reflect computed term in the input
+    const termEl = document.getElementById('biAmTerm');
+    if (termEl) termEl.value = a.term;
+    endBalance = 0;
+    solverNote = 'Term computed from payment: ' + termYears.toFixed(2) + ' years (' + totalPeriods + ' periods).';
+  } else if (mode === 'by_balance') {
+    if (!termYears) needs.push('Term (years)');
+    if (!payment) needs.push('Payment (per period)');
+    if (needs.length > 0) {
+      _clearOutputs('Enter <strong>' + needs.join('</strong> and <strong>') + '</strong>.');
+      _setStatus('need', 'Need: ' + needs.join(', '));
+      return;
+    }
+    totalPeriods = Math.round(termYears * freq);
+    // B = P*(1+r)^n - M * ((1+r)^n - 1) / r
+    if (periodRate > 0) {
+      const growth = Math.pow(1 + periodRate, totalPeriods);
+      endBalance = principal * growth - payment * (growth - 1) / periodRate;
+    } else {
+      endBalance = principal - payment * totalPeriods;
+    }
+    a.end_balance = Math.round(endBalance * 100) / 100;
+    const endBalEl = document.getElementById('biAmEndBal');
+    if (endBalEl) endBalEl.value = a.end_balance.toLocaleString();
+    if (endBalance < -1) {
+      _setStatus('warn', 'Payment is higher than needed \u2014 schedule overpays by $' + Math.abs(endBalance).toFixed(2) + ' at maturity.');
+    } else {
+      solverNote = 'End balance computed: $' + endBalance.toFixed(2) + ' balloon at maturity.';
+    }
+  } else {
+    _clearOutputs('Unknown solver mode.');
+    _setStatus('warn', 'Unknown solver mode: ' + mode);
     return;
   }
-  const totalPeriods = Math.round(termYears * freq);
-  const periodRate = annualRate / freq;
-  // FA directive 2026-05-11: I/O support.
-  //   io_months = 0                  → standard amortization (current behavior)
-  //   0 < io_months < totalPeriods   → hybrid (I/O then amortize remaining principal over remaining periods)
-  //   io_months >= totalPeriods      → pure I/O with balloon at maturity
-  // Clamp to [0, totalPeriods] for safety.
+
+  // Need start date for schedule display. If missing, generate schedule but
+  // use a placeholder start (today). FA can add real start later.
+  let effectiveStart = startStr;
+  if (!effectiveStart) {
+    const now = new Date();
+    effectiveStart = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  }
+  // Update a.start in memory only if user hasn't set one \u2014 don't override FA's choice
+  const startStrUsed = effectiveStart;
+
+  if (solverNote && statusEl && statusEl.style.display === 'none') {
+    _setStatus('ok', solverNote);
+  } else if (!solverNote) {
+    _setStatus(null);
+  }
+  // FA directive 2026-05-11: I/O support. Clamp for safety.
   const ioPeriods = Math.max(0, Math.min(totalPeriods, Math.floor(Number(a.io_months) || 0)));
   const isPureIO = ioPeriods >= totalPeriods;
   const isHybrid = ioPeriods > 0 && ioPeriods < totalPeriods;
   const ioPmt = principal * periodRate;  // interest-only payment
-  // Amortizing payment AFTER the I/O period (recast on remaining principal
-  // over remaining periods). For standard amortization (ioPeriods=0) this
-  // collapses to the original formula.
   const amortPeriods = totalPeriods - ioPeriods;
-  const amortPmt = amortPeriods > 0
-    ? principal * periodRate / (1 - Math.pow(1 + periodRate, -amortPeriods))
-    : 0;
-  const parts = startStr.split('-');
+  // FA dir 2026-05-21: amortPmt depends on solver mode.
+  //   standard  : computed via PMT formula (end balance = 0)
+  //   by_payment: user-supplied payment (term was just computed to fit it)
+  //   by_balance: user-supplied payment (end balance was just computed)
+  let amortPmt;
+  if (mode === 'standard') {
+    amortPmt = amortPeriods > 0
+      ? principal * periodRate / (1 - Math.pow(1 + periodRate, -amortPeriods))
+      : 0;
+  } else {
+    amortPmt = payment;
+  }
+  // Suppress the "force last period to zero" rounding-fix when there's a
+  // legitimate balloon at maturity (by_balance mode with non-zero residual).
+  const allowBalloonResidual = (mode === 'by_balance' && Math.abs(endBalance) > 0.5);
+  const parts = startStrUsed.split('-');
   const sy = parseInt(parts[0], 10);
   const sm = parseInt(parts[1], 10);
   const startDate = new Date(sy, (sm || 1) - 1, 1);
@@ -16739,7 +16908,10 @@ function _biRecalcAmort() {
     } else {
       pmt = amortPmt;
       principalPaid = pmt - interest;
-      if (i === totalPeriods) principalPaid = beg;   // kill rounding drift
+      // FA dir 2026-05-21: skip the rounding-fix on the last period when a
+      // balloon residual is expected (by_balance mode). Otherwise force the
+      // balance to zero to kill rounding drift.
+      if (i === totalPeriods && !allowBalloonResidual) principalPaid = beg;
       if (firstAmortPmt === null) firstAmortPmt = pmt;
     }
     const end = beg - principalPaid;
