@@ -1832,24 +1832,11 @@ async function uploadAll() {
             // means "still needs Accept", green means "accepted".
             const bgStyle = 'background:#fff3cd;';
 
-            // FA dir 2026-05-21: the "+ Add to Summary" action is now a
-            // subtle inline link below the dropdown — only appears when the
-            // picked category isn't already on this building's Summary tab.
-            // Earlier this was a bright cyan button on every row; visually too
-            // loud given most picks don't need it. Same click behavior, lighter
-            // visual treatment.
-            const _addLinkVisible = currentMapping && !buildingLabelSet.has(currentMapping);
-            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; flex-direction:column; gap:2px;">';
-            html += '<div style="display:flex; align-items:center; gap:4px;">';
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
-            html += '</div>';
-            html += '<a href="javascript:void(0)" onclick="addToSummary(this); return false;" class="add-to-summary-link"'
-                  + ' style="font-size:10px; color:#0369a1; text-decoration:underline; cursor:pointer; padding-left:2px;'
-                  + (_addLinkVisible ? '' : ' display:none;')
-                  + '" title="This category is not on the building Summary tab yet. Click to add it.">⚠ Not on Summary &mdash; add this row</a>';
             html += '</div>';
             return html;
         }
@@ -1861,18 +1848,11 @@ async function uploadAll() {
             // with makeDropdown above). Split rows without a default also
             // need attention, not blend into white.
             const bgStyle = 'background:#fff3cd;';
-            const _addLinkVisible = defaultMapping && !buildingLabelSet.has(defaultMapping);
-            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; flex-direction:column; gap:2px;">';
-            html += '<div style="display:flex; align-items:center; gap:4px;">';
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
-            html += '</div>';
-            html += '<a href="javascript:void(0)" onclick="addToSummary(this); return false;" class="add-to-summary-link"'
-                  + ' style="font-size:10px; color:#0369a1; text-decoration:underline; cursor:pointer; padding-left:2px;'
-                  + (_addLinkVisible ? '' : ' display:none;')
-                  + '" title="This category is not on the building Summary tab yet. Click to add it.">⚠ Not on Summary &mdash; add this row</a>';
             if (defaultMapping) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
             }
@@ -1904,109 +1884,11 @@ async function uploadAll() {
                 btn.textContent = '✓ Accept';
                 btn.disabled = false;
             }
-            // FA dir 2026-05-21: subtle inline link (not a button) — only
-            // appears when the picked category isn't already on this
-            // building's Summary tab. Click triggers addToSummary().
-            // Wrapper is now a flex column: dropdown row + link below.
-            const wrapper = el.closest('[data-section]');
-            const addLink = wrapper && wrapper.querySelector('.add-to-summary-link');
-            if (addLink) {
-                const v = el.value || '';
-                const needsAdd = v && !buildingLabelSet.has(v);
-                addLink.style.display = needsAdd ? '' : 'none';
-                addLink.innerHTML = '⚠ Not on Summary &mdash; add this row';
-                addLink.style.color = '#0369a1';
-                addLink.style.pointerEvents = '';
-            }
-        }
-
-        // FA dir 2026-05-21: one-click "Add to Summary" for categories that
-        // aren't yet on this building's Summary tab. Invoked from a subtle
-        // inline link below the dropdown (visible only when the pick isn't
-        // already a Summary row). POSTs to /api/admin/add-summary-row — server
-        // resolves gl_prefixes from SUMMARY_ROW_MAP / LABEL_ALIASES so a new
-        // "Supplies" row immediately captures 5405-* GLs from YSL on refresh.
-        async function addToSummary(linkEl) {
-            const wrapper = linkEl.closest('[data-section]');
-            const sel = wrapper.querySelector('select[id^="map_"]');
-            if (!sel) return;
-            const label = sel.value;
-            if (!label) {
-                alert('Pick a category first.');
-                return;
-            }
-            // Derive the server section from CENTURY_TO_SUMMARY when possible.
-            // CENTURY_TO_SUMMARY maps a Century category → high-level summary
-            // tab section label like "Total Operating Income" / "Total Operating
-            // Expenses" / "Non-Operating Income" / "Non-Operating Expense".
-            // Fall back to the audit row's section if not in CENTURY_TO_SUMMARY.
-            function _derivedSection() {
-                // Server expects exact section strings: "Income", "Expenses",
-                // "Non-Operating Income", "Non-Operating Expenses" (see
-                // app.py:11722 docstring on /api/admin/add-summary-row).
-                const subtotal = (CENTURY_TO_SUMMARY || {})[label] || '';
-                if (subtotal === 'Total Operating Income') return 'Income';
-                if (subtotal === 'Total Operating Expenses') return 'Expenses';
-                if (subtotal === 'Non-Operating Income') return 'Non-Operating Income';
-                if (subtotal === 'Non-Operating Expense') return 'Non-Operating Expenses';
-                // Fallback from the audit dropdown's section attribute
-                const sec = (wrapper.dataset.section || '').toLowerCase();
-                if (sec === 'revenue') return 'Income';
-                if (sec === 'expense') return 'Expenses';
-                return 'Expenses';  // safest default
-            }
-            const serverSection = _derivedSection();
-
-            linkEl.style.pointerEvents = 'none';
-            linkEl.innerHTML = 'Adding&hellip;';
-            linkEl.style.color = '#64748b';
-            try {
-                const resp = await fetch('/api/admin/add-summary-row', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        entity_code: '{{ entity_code }}',
-                        label: label,
-                        section: serverSection,
-                        // Let the server resolve gl_prefixes from SUMMARY_ROW_MAP
-                        // by leaving the field absent. The endpoint already
-                        // looks up the canonical prefix list when not provided.
-                    }),
-                });
-                const data = await resp.json();
-                if (!resp.ok || data.error) {
-                    throw new Error(data.error || ('HTTP ' + resp.status));
-                }
-                // Run resolve-summary-aliases so the new row picks up its
-                // canonical gl_prefixes_json (it's added empty by add-summary-row;
-                // resolve patches in the SUMMARY_ROW_MAP prefixes after).
-                try {
-                    await fetch('/api/admin/resolve-summary-aliases/{{ entity_code }}',
-                                {method: 'POST', headers: {'Content-Type': 'application/json'}});
-                } catch (_e) { /* non-fatal */ }
-
-                // Update local state so subsequent dropdown changes don't show
-                // the button for this category anymore.
-                buildingLabelSet.add(label);
-                buildingLabels.push(label);
-                // Also add to the section-bucket so any future rebuilds
-                // (via toggleCategoryScope) place it in the right group.
-                const _sec = (wrapper.dataset.section || 'expense').toLowerCase();
-                if (_sec === 'revenue') bldgIncome.push(label);
-                else bldgExpense.push(label);
-                bldgIncome.sort();
-                bldgExpense.sort();
-
-                linkEl.innerHTML = '&check; Added to Summary';
-                linkEl.style.color = '#15803d';
-                // Hide entirely after a brief confirmation flash
-                setTimeout(() => { linkEl.style.display = 'none'; }, 1500);
-            } catch (err) {
-                linkEl.style.pointerEvents = '';
-                linkEl.innerHTML = '⚠ Not on Summary &mdash; add this row';
-                linkEl.style.color = '#0369a1';
-                alert('Add to Summary failed: ' + err.message);
-            }
+            // FA dir 2026-05-21: Add-to-Summary action removed per FA review.
+            // Audit mapping no longer auto-creates Summary rows. If a picked
+            // category doesn't exist as a Summary row, the audit data lands
+            // in mapped_data but doesn't surface in Col 2 until the FA
+            // manually adds the row from the Summary tab's "+ Add Row" action.
         }
 
         function updateAcceptState() {
