@@ -22269,9 +22269,42 @@ async function sumShowInsert(secKey, secLabel) {
         searchEl.value = el.dataset.gl;
         resultsEl.style.display = 'none';
         pickedEl.style.display = 'block';
-        pickedEl.innerHTML = '<div><b>Picked: </b><code>' + el.dataset.gl + '</code> · ' + (el.dataset.desc || '(no desc)') + '</div>' +
-          '<div style="margin-top:4px;font-size:11px;color:var(--gray-600);">Row label will be: <input id="sumInsGLPickedLabel" type="text" value="' + (el.dataset.desc || el.dataset.gl).replace(/"/g, '&quot;') + '" style="margin-left:4px;padding:3px 6px;border:1px solid var(--gray-300);border-radius:3px;font-size:12px;width:55%;"></div>' +
-          '<div style="margin-top:4px;font-size:11px;color:var(--gray-600);">Aggregates GL prefix: <code>' + el.dataset.base + '</code> (matches all sub-accounts under ' + el.dataset.base + '-XXXX)</div>';
+        // FA dir 2026-05-21: scope toggle. Default to 8-digit (exact) since the
+        // FA wants Add Row to capture the specific GL, not aggregate the whole
+        // 4-digit family. 4-digit option still available when the FA actually
+        // wants all sub-accounts to roll up.
+        const gl8 = el.dataset.gl;
+        const gl4 = el.dataset.base;
+        pickedEl.innerHTML = '<div><b>Picked: </b><code>' + gl8 + '</code> · ' + (el.dataset.desc || '(no desc)') + '</div>' +
+          '<div style="margin-top:4px;font-size:11px;color:var(--gray-600);">Row label will be: <input id="sumInsGLPickedLabel" type="text" value="' + (el.dataset.desc || gl8).replace(/"/g, '&quot;') + '" style="margin-left:4px;padding:3px 6px;border:1px solid var(--gray-300);border-radius:3px;font-size:12px;width:55%;"></div>' +
+          '<div style="margin-top:8px;display:flex;gap:6px;font-size:11px;">' +
+            '<label style="flex:1;padding:6px 8px;border:1px solid var(--blue);background:var(--blue-light, #f5efe7);border-radius:6px;cursor:pointer;display:block;">' +
+              '<input type="radio" name="sumInsScope" value="exact" checked style="margin-right:4px;">' +
+              '<b>Just this GL</b> <code>' + gl8 + '</code><br>' +
+              '<span style="color:var(--gray-600);">Matches only this exact account. Recommended.</span>' +
+            '</label>' +
+            '<label style="flex:1;padding:6px 8px;border:1px solid var(--gray-300);background:white;border-radius:6px;cursor:pointer;display:block;">' +
+              '<input type="radio" name="sumInsScope" value="prefix" style="margin-right:4px;">' +
+              '<b>All sub-accounts</b> <code>' + gl4 + '-XXXX</code><br>' +
+              '<span style="color:var(--gray-600);">Aggregates the whole 4-digit family.</span>' +
+            '</label>' +
+          '</div>';
+        // Visual feedback for the radios
+        const scopeRadios = pickedEl.querySelectorAll('input[name="sumInsScope"]');
+        scopeRadios.forEach(r => {
+          r.addEventListener('change', () => {
+            scopeRadios.forEach(rr => {
+              const lbl = rr.parentElement;
+              if (rr.checked) {
+                lbl.style.borderColor = 'var(--blue)';
+                lbl.style.background = 'var(--blue-light, #f5efe7)';
+              } else {
+                lbl.style.borderColor = 'var(--gray-300)';
+                lbl.style.background = 'white';
+              }
+            });
+          });
+        });
       };
     });
   }
@@ -22432,9 +22465,13 @@ async function sumDoInsert(secKey) {
     // FA can rename the auto-suggested label
     const labelEl = document.getElementById('sumInsGLPickedLabel');
     label = (labelEl && labelEl.value.trim()) || picked.desc || picked.gl;
-    // Use the 4-digit GL base as the prefix so all sub-accounts under it
-    // (e.g., 4800-0000, 4800-0010) flow into the new row.
-    gl_prefixes = [picked.base];
+    // FA dir 2026-05-21: scope picker. "exact" = 8-digit specific GL only
+    // (default), "prefix" = 4-digit base aggregates all sub-accounts.
+    // The matcher (gl_matches_prefixes) treats strings with "-" as exact
+    // and without "-" as 4-digit prefix automatically.
+    const scopeRadios = document.getElementsByName('sumInsScope');
+    const scope = (Array.from(scopeRadios).find(r => r.checked) || {}).value || 'exact';
+    gl_prefixes = (scope === 'prefix') ? [picked.base] : [picked.gl];
   } else if (mode === 'custom') {
     const ci = document.getElementById('sumInsCustomLabel');
     label = (ci ? ci.value : '').trim();
@@ -27757,11 +27794,11 @@ PM_EDIT_TEMPLATE = r"""
             <th class="number">{{ estimate_label }}<br>Estimate</th>
             <th class="number">12 Month<br>Forecast</th>
             <th class="number">Current<br>Budget</th>
-            <th class="number" title="Auto-derived from (Proposed − Current Budget) / Current Budget">Increase<br>%</th>
-            <th class="number" title="Auto-derived from Proposed − Current Budget">Increase<br>$</th>
+            <th class="number" title="(Proposed − Current Budget) / Current Budget">% Inc vs<br>Curr Budget</th>
+            <th class="number" title="Proposed − Current Budget">$ Inc vs<br>Curr Budget</th>
             <th class="number">2027 Proposed<br>Budget</th>
-            <th class="number">$<br>Variance</th>
-            <th class="number">%<br>Change</th>
+            <th class="number" title="(Proposed − 12-Mo Forecast) / 12-Mo Forecast">% Inc vs<br>12-Mo Forecast</th>
+            <th class="number" title="Proposed − 12-Mo Forecast">$ Inc vs<br>12-Mo Forecast</th>
             <th class="col-notes">Notes</th>
           </tr>
         </thead>
@@ -27779,6 +27816,26 @@ const LINES = {{ lines_json | safe }};
 const ALL_GL_CODES = {{ all_gl_json | safe }};
 const YTD_MONTHS = {{ ytd_months }};
 const REMAINING_MONTHS = {{ remaining_months }};
+
+// FA dir 2026-05-21: PM is allowed to edit a small, FA-curated subset of
+// G&A GLs. All other G&A lines stay visible (so the PM sees the full
+// picture) but the Proposed input is locked. Portfolio-wide allowlist.
+// Adjusting this list is a code change — keeps it deliberate.
+const PM_EDITABLE_GA_GLS = new Set([
+  '6505-0000',  // Engineering & Architectural Fees
+  '6515-0000',  // Legal Fees
+  '6590-0000',  // Other Professional Fees
+  '6720-0000',  // (pending FA label confirmation)
+  '6726-0000',  // (pending FA label confirmation)
+  '6740-0000',  // (pending FA label confirmation)
+]);
+function pmGaLineLocked(line) {
+  // Returns true if this line is on the G&A sheet AND its GL is NOT in
+  // the editable allowlist. Used by the row renderer to disable the
+  // Proposed input + show a lock icon.
+  if (!line || (line.sheet_name || '') !== 'Gen & Admin') return false;
+  return !PM_EDITABLE_GA_GLS.has(line.gl_code || '');
+}
 
 // FA dir 2026-05-17: GL-prefix → Gen & Admin sub-category fallback (mirrors
 // budget_system/GL_Mapping.csv Sub-Category column). Used by PM_SHEET_CATEGORIES
@@ -29137,8 +29194,11 @@ function pmLineChanged(gl, field, value) {
     const estimate = computeEstimate(line);
     const forecast = computeForecast(line);
     const proposed = computeProposed(line);
-    const variance = (line.current_budget || 0) - forecast;
-    const pctChange = (forecast && isFinite(forecast)) ? (((line.current_budget || 0) - forecast) / forecast) : 0;
+    // FA dir 2026-05-21: variance + pctChange now compare PROPOSED vs FORECAST
+    // (was current_budget vs forecast). Column headers relabeled to
+    // "% Inc vs 12-Mo Forecast" and "$ Inc vs 12-Mo Forecast".
+    const variance = proposed - forecast;
+    const pctChange = (forecast && isFinite(forecast)) ? ((proposed - forecast) / forecast) : 0;
 
     // Update cells in DOM
     const estEl = document.getElementById('pm_est_' + gl);
@@ -29332,8 +29392,9 @@ function renderTable() {
             const estimate = computeEstimate(line);
             const forecast = computeForecast(line);
             const proposed = computeProposed(line);
-            const variance = (line.current_budget || 0) - forecast;
-            const pctChange = forecast ? (((line.current_budget || 0) - forecast) / forecast) : 0;
+            // FA dir 2026-05-21: $ Inc / % Inc vs 12-Mo Forecast = proposed - forecast
+            const variance = proposed - forecast;
+            const pctChange = forecast ? ((proposed - forecast) / forecast) : 0;
 
             catTotals.prior += (line.prior_year || 0);
             catTotals.ytd += (line.ytd_actual || 0);
@@ -29420,17 +29481,36 @@ function renderTable() {
                 </td>
                   `;
                 })()}
+                ${(function(){
+                  // FA dir 2026-05-21: G&A allowlist gate. For G&A rows whose
+                  // GL is not in PM_EDITABLE_GA_GLS, lock the input and show
+                  // a small lock icon so the PM sees why.
+                  const _gaLocked = pmGaLineLocked(line);
+                  const _lineCanEdit = CAN_EDIT && !_gaLocked;
+                  const _propDisabledAttr = _lineCanEdit ? '' : 'disabled';
+                  const _propTitle = _gaLocked
+                    ? 'Locked — this G&A GL is managed by the FA. Contact your FA if a change is needed.'
+                    : '2027 Proposed Budget — type a dollar amount. Increase $ and Increase % derive automatically.';
+                  const _lockIcon = _gaLocked
+                    ? '<span class="pm-ga-lock" title="FA-only G&A account" style="position:absolute; left:6px; top:50%; transform:translateY(-50%); font-size:11px; color:var(--gray-500); pointer-events:none;">🔒</span>'
+                    : '';
+                  const _noChangeBtn = (!line.pm_review_state && _lineCanEdit && (line.proposed_budget === null || line.proposed_budget === undefined || line.proposed_budget === ''))
+                    ? `<button class="pm-no-change-inline" onclick="pmRmNoChange('${gl}')" title="Set Proposed = Current Budget (${fmt(line.current_budget || 0)})">=</button>`
+                    : '';
+                  return `
                 <td class="number" style="position:relative; white-space:nowrap;">
-                    <input id="pm_prop_${gl}" class="pm-cell pm-cell-proposed" type="text" value="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? fmt(parseFloat(line.proposed_budget) || 0) : ''}" data-raw="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? String(Math.round(parseFloat(line.proposed_budget) || 0)) : ''}" data-gl="${gl}" data-field="proposed_budget" placeholder="Type proposed $..." onfocus="pmProposedFocus(this)" onblur="pmProposedBlur(this)" ${CAN_EDIT ? '' : 'disabled'} title="2027 Proposed Budget — type a dollar amount. Increase $ and Increase % derive automatically.">
-                    ${!line.pm_review_state && CAN_EDIT && (line.proposed_budget === null || line.proposed_budget === undefined || line.proposed_budget === '') ? `<button class="pm-no-change-inline" onclick="pmRmNoChange('${gl}')" title="Set Proposed = Current Budget (${fmt(line.current_budget || 0)})">=</button>` : ''}
+                    ${_lockIcon}
+                    <input id="pm_prop_${gl}" class="pm-cell pm-cell-proposed${_gaLocked ? ' pm-cell-ga-locked' : ''}" type="text" value="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? fmt(parseFloat(line.proposed_budget) || 0) : ''}" data-raw="${(line.proposed_budget !== null && line.proposed_budget !== undefined && line.proposed_budget !== '') ? String(Math.round(parseFloat(line.proposed_budget) || 0)) : ''}" data-gl="${gl}" data-field="proposed_budget" placeholder="${_gaLocked ? '' : 'Type proposed $...'}" onfocus="pmProposedFocus(this)" onblur="pmProposedBlur(this)" ${_propDisabledAttr} title="${_propTitle}" style="${_gaLocked ? 'padding-left:22px; background:var(--gray-100); color:var(--gray-500);' : ''}">
+                    ${_noChangeBtn}
+                </td>`;
+                })()}
+                <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_pct_${gl}'))">
+                    <span class="pm-fx">fx</span>
+                    <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(proposed)} − ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
                 </td>
                 <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_var_${gl}'))">
                     <span class="pm-fx">fx</span>
-                    <input id="pm_var_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(variance)}" data-raw="${Math.round(variance)}" data-formula="= ${fmt(line.current_budget || 0)} - ${fmt(forecast)}" data-gl="${gl}" data-field="variance" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
-                </td>
-                <td class="number" style="position:relative; cursor:pointer;" onclick="pmFxCellFocus(document.getElementById('pm_pct_${gl}'))">
-                    <span class="pm-fx">fx</span>
-                    <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(line.current_budget || 0)} - ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none;">
+                    <input id="pm_var_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(variance)}" data-raw="${Math.round(variance)}" data-formula="= ${fmt(proposed)} − ${fmt(forecast)}" data-gl="${gl}" data-field="variance" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
                 </td>
                 <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required at >10%' : 'Add context...'}" maxlength="500" style="min-width:140px; width:100%;"></td>
             `;
@@ -29438,7 +29518,9 @@ function renderTable() {
         });
 
         // Subtotal
-        const catVar = catTotals.budget - catTotals.forecast;
+        // FA dir 2026-05-21: catVar now = subtotal_proposed − subtotal_forecast
+        const catVar = catTotals.proposed - catTotals.forecast;
+        const catVarPct = catTotals.forecast ? (catVar / catTotals.forecast) : 0;
         // FA dir 2026-05-18 (visual cleanup v3): derive Inc% / Inc$ pills on
         // subtotal rows too, so the cells line up with data rows instead of
         // being empty white gaps. Pills compare sum_proposed vs sum_curr_budget.
@@ -29463,8 +29545,8 @@ function renderTable() {
             <td class="number"><span class="pm-pill ${_catKlass}" id="pm_subtotal_incpct_${cat}">${_catPctTxt}</span></td>
             <td class="number"><span class="pm-pill ${_catKlass}" id="pm_subtotal_incdol_${cat}">${_catDollarTxt}</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_proposed_${cat}" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(catTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catTotals.proposed)}</span></td>
+            <td class="number pm-fx-td" id="pm_subtotal_varpct_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="varpct" data-raw="${catVarPct}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${(catVarPct*100).toFixed(1)}%</span></td>
             <td class="number pm-fx-td" id="pm_subtotal_variance_${cat}" style="position:relative; cursor:pointer; color:${catVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(catVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(catVar)}</span></td>
-            <td></td>
             <td class="col-notes"></td>
         `;
         tbody.appendChild(subRow);
@@ -29473,8 +29555,9 @@ function renderTable() {
     }
 
     // Grand total
-    const grandVar = grandTotals.budget - grandTotals.forecast;
-    const grandPct = grandTotals.forecast ? ((grandTotals.budget - grandTotals.forecast) / grandTotals.forecast) : 0;
+    // FA dir 2026-05-21: grandVar / grandPct now = grand_proposed − grand_forecast
+    const grandVar = grandTotals.proposed - grandTotals.forecast;
+    const grandPct = grandTotals.forecast ? ((grandTotals.proposed - grandTotals.forecast) / grandTotals.forecast) : 0;
     // FA dir 2026-05-18 (visual cleanup v3): grand-total Inc% / Inc$ pills
     // mirror the subtotal pattern. Compares total proposed vs total curr budget.
     const _gDelta = grandTotals.proposed - grandTotals.budget;
@@ -29498,8 +29581,8 @@ function renderTable() {
         <td class="number"><span class="pm-pill ${_gKlass}" id="pm_grandtotal_incpct">${_gPctTxt}</span></td>
         <td class="number"><span class="pm-pill ${_gKlass}" id="pm_grandtotal_incdol">${_gDollarTxt}</span></td>
         <td class="number pm-fx-td" id="pm_grandtotal_proposed" style="position:relative; cursor:pointer;" data-col="proposed" data-raw="${Math.round(grandTotals.proposed)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandTotals.proposed)}</span></td>
+        <td class="number" id="pm_grandtotal_pct" style="color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};">${(grandPct * 100).toFixed(1)}%</td>
         <td class="number pm-fx-td" id="pm_grandtotal_variance" style="position:relative; cursor:pointer; color:${grandVar >= 0 ? 'var(--red)' : 'var(--green)'};" data-col="variance" data-raw="${Math.round(grandVar)}" onclick="pmSubtotalFocus(this)"><span class="sub-val">${fmt(grandVar)}</span></td>
-        <td class="number" id="pm_grandtotal_pct">${(grandPct * 100).toFixed(1)}%</td>
         <td class="col-notes"></td>
     `;
     tbody.appendChild(grandRow);
