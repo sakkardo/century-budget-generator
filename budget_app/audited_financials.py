@@ -1616,9 +1616,12 @@ async function uploadAll() {
         <div class="column">
             <h3>Extracted Data — Map Each Item</h3>
             <div id="rawData"></div>
-            <div style="margin-top:16px; display:flex; gap:10px;">
-                <button id="saveApplyBtn" onclick="saveAndApplyRules()" class="btn-green" style="flex:1;" title="Save your dropdown selections as reusable rules on this auditor's profile, then re-apply them to this upload. One click does both.">Save &amp; Apply Profile Rules</button>
-            </div>
+            <!-- FA dir 2026-05-21: Save & Apply Profile Rules removed.
+                 Audits drift even within the same auditor — accumulating
+                 reusable rules planted wrong defaults on subsequent audits.
+                 Each audit now gets mapped fresh; Confirm & Save below is
+                 the only path forward. Profile picker (above) still useful
+                 for "who audited this" tracking + auto-detect. -->
             <div id="saveApplyStatus" style="margin-top:6px; font-size:12px; color:var(--gray-500);"></div>
         </div>
 
@@ -2487,90 +2490,11 @@ async function uploadAll() {
             if (cb) { cb.checked = false; toggleCategoryScope(); }
         });
 
-        // FA dir 2026-05-21: combined "Save & Apply Profile Rules" replaces
-        // the old two-button flow (Save All Mappings + Re-Apply & Refresh).
-        // Single click does:
-        //   1) Read every set dropdown
-        //   2) POST each as a rule on the current auditor profile (parallel)
-        //   3) Wait for all rule saves to complete
-        //   4) POST /api/af/map/<id> to re-apply profile rules to this upload
-        //   5) Reload the page so the dropdowns reflect the new mappings
-        async function saveAndApplyRules() {
-            const btn = document.getElementById('saveApplyBtn');
-            const status = document.getElementById('saveApplyStatus');
-            // Use the live state instead of the stale page-load profileId.
-            // If the FA changed the profile after page load, _currentProfileId
-            // is the source of truth.
-            const _pid = _currentProfileId || profileId;
-            if (!_pid) {
-                alert('No auditor profile assigned — pick one above first.');
-                return;
-            }
-            const selects = document.querySelectorAll('select[id^="map_"]');
-            const rules = [];
-            selects.forEach(s => {
-                if (s.value) {
-                    rules.push({
-                        auditor_line_item: s.dataset.desc,
-                        century_category: stripCatSuffix(s.value),
-                        split_pct: 1.0
-                    });
-                }
-            });
-            if (rules.length === 0) {
-                alert('No mappings to save — pick a Century category for at least one row.');
-                return;
-            }
-
-            // Disable button + show progress
-            btn.disabled = true;
-            const _origLabel = btn.textContent;
-            btn.textContent = 'Saving ' + rules.length + ' rules…';
-            btn.style.opacity = '0.6';
-            status.textContent = '';
-
-            // Step 1+2+3: save all rules in parallel
-            const saves = rules.map(rule =>
-                fetch('/api/af/profiles/' + _pid + '/rules', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(rule)
-                }).then(r => r.json()).catch(e => ({success: false, error: String(e)}))
-            );
-            let savedCount = 0, errCount = 0;
-            try {
-                const results = await Promise.all(saves);
-                results.forEach(r => { if (r.success) savedCount++; else errCount++; });
-            } catch (e) {
-                btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
-                status.innerHTML = '<span style="color:var(--red);">Save failed: ' + escapeHtml(String(e)) + '</span>';
-                return;
-            }
-
-            // Step 4: re-apply rules to this upload
-            btn.textContent = 'Applying rules to this audit…';
-            try {
-                const r = await fetch('/api/af/map/{{ upload_id }}', {method: 'POST'});
-                const data = await r.json();
-                if (!data.success) {
-                    btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
-                    status.innerHTML = '<span style="color:var(--red);">Mapping error: '
-                        + escapeHtml(data.error || 'unknown') + '</span>';
-                    return;
-                }
-            } catch (e) {
-                btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
-                status.innerHTML = '<span style="color:var(--red);">Apply failed: ' + escapeHtml(String(e)) + '</span>';
-                return;
-            }
-
-            // Step 5: reload — flash a quick status before redirecting
-            status.innerHTML = '<span style="color:var(--green);">✓ ' + savedCount
-                + ' rule' + (savedCount === 1 ? '' : 's') + ' saved & applied'
-                + (errCount > 0 ? ' (' + errCount + ' failed)' : '')
-                + ' — refreshing…</span>';
-            setTimeout(() => location.reload(), 600);
-        }
+        // FA dir 2026-05-21: removed saveAndApplyRules() function.
+        // Audits vary too much between cycles even within the same auditor
+        // for reusable rules to be reliable. Each audit gets mapped fresh
+        // via the dropdowns directly. Confirm & Save reads dropdowns and
+        // writes mapped_data on confirm — no rule layer in between.
 
         function confirmExtraction(uploadId, force) {
             // Build mapped_data from the DOM dropdowns BEFORE confirming.
