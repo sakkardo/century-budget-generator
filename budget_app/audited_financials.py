@@ -338,6 +338,14 @@ def create_audited_financials_blueprint(db):
 
         unmapped = []
 
+        # FA dir 2026-05-21: tolerant accumulator. If a profile rule points at
+        # a category that isn't in CENTURY_CATEGORIES (stale rule, typo, or
+        # renamed category), accept it on-the-fly instead of crashing with a
+        # KeyError that leaks 'Gas-Heating' up to the FA.
+        def _ensure_cat(c):
+            if c not in mapped:
+                mapped[c] = {"total": 0, "years": [], "year_totals": [0] * num_years,
+                              "_stale_category": True}
         # Process revenue items
         if "revenue" in extracted and "items" in extracted["revenue"]:
             for item in extracted["revenue"]["items"]:
@@ -348,6 +356,7 @@ def create_audited_financials_blueprint(db):
                 if rule and confidence > 0.5:
                     cat = rule.century_category
                     pct = rule.split_pct
+                    _ensure_cat(cat)
                     for i, amount in enumerate(amounts):
                         if isinstance(amount, (int, float)):
                             mapped[cat]["total"] += amount * pct
@@ -383,6 +392,7 @@ def create_audited_financials_blueprint(db):
                     if rule and confidence > 0.5:
                         cat = rule.century_category
                         pct = rule.split_pct
+                        _ensure_cat(cat)
                         for i, amount in enumerate(amounts):
                             if isinstance(amount, (int, float)):
                                 mapped[cat]["total"] += amount * pct
