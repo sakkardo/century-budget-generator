@@ -8174,6 +8174,10 @@ def admin_inspect_sp_xlsx(entity_code):
             out = {"entity_code": entity_code, "file_name": filename, "sheets": []}
             for ws_name in wb.sheetnames:
                 ws = wb[ws_name]
+                # Skip ChartSheet (or anything not a regular Worksheet)
+                if not hasattr(ws, "max_row") or not hasattr(ws, "cell"):
+                    out["sheets"].append({"name": ws_name, "type": type(ws).__name__, "skipped": True})
+                    continue
                 rows = []
                 for r in range(1, min(21, ws.max_row + 1)):
                     row = []
