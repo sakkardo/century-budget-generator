@@ -2180,6 +2180,7 @@ async function uploadAll() {
                 newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping, amount1) + '</td></tr>';
             });
             row.insertAdjacentHTML('afterend', newRows);
+            cleanupComboboxesInNode(row);  // remove old popup from body
             row.remove();
             renderReconciliation();
             recalcLeftTotals();
@@ -2204,7 +2205,10 @@ async function uploadAll() {
             // sub-rows. This preserves position in the table.
             const firstSub = subRows[0];
             firstSub.insertAdjacentHTML('beforebegin', originalHTML);
-            subRows.forEach(r => r.remove());
+            subRows.forEach(r => {
+                cleanupComboboxesInNode(r);  // pop popups from body
+                r.remove();
+            });
             // Clean up the cache entry — same split can be re-triggered later.
             delete window._splitOriginalHTML[splitId];
             renderReconciliation();
@@ -2236,6 +2240,27 @@ async function uploadAll() {
             });
         }
 
+        // When a row is removed (splitRow / unsplitRow / deleteMappingRow),
+        // its <select>'s popup is still mounted on document.body. Walk the
+        // node we're about to remove and yank popups so they don't leak.
+        function cleanupComboboxesInNode(node) {
+            if (!node) return;
+            const sels = node.matches && node.matches('select[id^="map_"]')
+                ? [node]
+                : Array.from(node.querySelectorAll('select[id^="map_"]'));
+            sels.forEach(s => {
+                if (s._cb_popup && s._cb_popup.parentNode) {
+                    s._cb_popup.parentNode.removeChild(s._cb_popup);
+                }
+            });
+        }
+
+        // Single popup shared across all comboboxes — only one can be open
+        // at a time. Lives on document.body so it floats above the table
+        // without absolute-position weirdness inside table cells.
+        let _cbActivePopup = null;
+        let _cbActiveSel = null;
+
         function attachCombobox(sel) {
             const wrap = document.createElement('div');
             wrap.className = 'cb-wrap';
@@ -2248,18 +2273,19 @@ async function uploadAll() {
 
             const popup = document.createElement('div');
             popup.className = 'cb-popup';
-            popup.style.cssText = 'position:absolute; z-index:10000; top:100%; left:0; min-width:300px; max-width:420px; background:#fff; border:1px solid #999; border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,0.18); max-height:380px; display:flex; flex-direction:column; margin-top:2px;';
-            popup.hidden = true;
+            // Use display:none so it stays truly hidden until openPopup().
+            // Mount on body to escape table-cell clipping/overflow.
+            popup.style.cssText = 'position:fixed; z-index:10000; display:none; flex-direction:column; width:300px; max-height:380px; background:#fff; border:1px solid #999; border-radius:6px; box-shadow:0 6px 20px rgba(0,0,0,0.2); overflow:hidden;';
 
             const search = document.createElement('input');
             search.type = 'text';
             search.placeholder = 'Type to search 100+ categories...';
-            search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit;';
+            search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit; flex-shrink:0;';
             popup.appendChild(search);
 
             const listEl = document.createElement('div');
             listEl.className = 'cb-list';
-            listEl.style.cssText = 'overflow-y:auto; max-height:340px;';
+            listEl.style.cssText = 'overflow-y:auto; flex:1; min-height:0;';
             popup.appendChild(listEl);
 
             function renderList(filter) {
@@ -2327,20 +2353,47 @@ async function uploadAll() {
             }
 
             function openPopup() {
-                popup.hidden = false;
+                // Close any other open popup first — only one combobox open
+                // at a time across the page.
+                if (_cbActivePopup && _cbActivePopup !== popup) {
+                    _cbActivePopup.style.display = 'none';
+                }
+                _cbActivePopup = popup;
+                _cbActiveSel = sel;
+                // Position relative to trigger using viewport coords. Open
+                // upward if there isn't room below.
+                const rect = trigger.getBoundingClientRect();
+                const spaceBelow = window.innerHeight - rect.bottom;
+                const popupMaxH = 380;
+                popup.style.display = 'flex';
+                popup.style.left = rect.left + 'px';
+                if (spaceBelow >= popupMaxH || spaceBelow >= rect.top) {
+                    popup.style.top = (rect.bottom + 4) + 'px';
+                    popup.style.bottom = 'auto';
+                } else {
+                    popup.style.top = 'auto';
+                    popup.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+                }
                 search.value = '';
                 renderList('');
                 setTimeout(() => search.focus(), 0);
             }
             function closePopup() {
-                popup.hidden = true;
+                popup.style.display = 'none';
+                if (_cbActivePopup === popup) {
+                    _cbActivePopup = null;
+                    _cbActiveSel = null;
+                }
             }
 
             trigger.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (popup.hidden) openPopup();
-                else closePopup();
+                const isOpen = popup.style.display === 'flex';
+                if (isOpen) closePopup();
+                else openPopup();
             });
+            // Stop popup clicks from bubbling to the document-level close handler.
+            popup.addEventListener('click', (e) => { e.stopPropagation(); });
 
             search.addEventListener('input', () => renderList(search.value));
             search.addEventListener('keydown', (e) => {
@@ -2351,22 +2404,47 @@ async function uploadAll() {
                 }
             });
 
-            // Close on outside click — register once per combobox.
-            document.addEventListener('click', (e) => {
-                if (!wrap.contains(e.target)) closePopup();
-            });
-
             // Hide the native <select> visually, insert combobox before it.
             sel.style.display = 'none';
             sel.parentElement.insertBefore(wrap, sel);
             wrap.appendChild(trigger);
-            wrap.appendChild(popup);
+            // Popup mounts on document.body — escapes table cell clipping
+            // and z-index battles.
+            document.body.appendChild(popup);
 
             // Hook so acceptRow/onDropdownChange can call sel._cb_sync()
             // after they mutate the <select>'s state.
             sel._cb_sync = syncTrigger;
+            // Track popup so it can be cleaned up if the select is removed
+            // (e.g. splitRow replaces the row).
+            sel._cb_popup = popup;
             syncTrigger();
         }
+
+        // Single document-level click handler — closes whatever combobox
+        // popup is currently open if the click lands outside both the
+        // popup and its trigger. One listener for the whole page (registering
+        // one per combobox was the previous bug).
+        document.addEventListener('click', (e) => {
+            if (!_cbActivePopup) return;
+            // If the click is inside the popup or inside the active combobox
+            // trigger, leave it alone.
+            if (_cbActivePopup.contains(e.target)) return;
+            const sel = _cbActiveSel;
+            const wrap = sel && sel.parentElement && sel.parentElement.querySelector('.cb-wrap');
+            if (wrap && wrap.contains(e.target)) return;
+            _cbActivePopup.style.display = 'none';
+            _cbActivePopup = null;
+            _cbActiveSel = null;
+        });
+        // Close on scroll / resize so the popup doesn't float over old positions.
+        window.addEventListener('scroll', () => {
+            if (_cbActivePopup) {
+                _cbActivePopup.style.display = 'none';
+                _cbActivePopup = null;
+                _cbActiveSel = null;
+            }
+        }, true);
 
         function renderRawData() {
             const container = document.getElementById('rawData');
@@ -2488,6 +2566,7 @@ async function uploadAll() {
             if (!tr) return;
             const desc = tr.querySelector('td')?.textContent?.trim().split('\\n')[0] || 'this row';
             if (!confirm('Delete \"' + desc.slice(0, 60) + '\"?\\n\\nThe line is removed from this mapping but the original auditor extraction is preserved.')) return;
+            cleanupComboboxesInNode(tr);
             tr.parentNode.removeChild(tr);
             try { renderReconciliation(); } catch (e) {}
             try { recalcLeftTotals(); } catch (e) {}
