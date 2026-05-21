@@ -1832,21 +1832,24 @@ async function uploadAll() {
             // means "still needs Accept", green means "accepted".
             const bgStyle = 'background:#fff3cd;';
 
-            const _addBtnVisible = currentMapping && !buildingLabelSet.has(currentMapping);
-            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
+            // FA dir 2026-05-21: the "+ Add to Summary" action is now a
+            // subtle inline link below the dropdown — only appears when the
+            // picked category isn't already on this building's Summary tab.
+            // Earlier this was a bright cyan button on every row; visually too
+            // loud given most picks don't need it. Same click behavior, lighter
+            // visual treatment.
+            const _addLinkVisible = currentMapping && !buildingLabelSet.has(currentMapping);
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; flex-direction:column; gap:2px;">';
+            html += '<div style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
-            // FA dir 2026-05-21: when the picked category isn't on the
-            // building's Summary tab yet, surface a one-click "Add to Summary"
-            // action. Server resolves gl_prefixes via SUMMARY_ROW_MAP, so a
-            // newly-created row immediately captures the right GL family
-            // when YSL/ExpDist refresh next.
-            html += '<button onclick="addToSummary(this)" class="add-to-summary-btn"'
-                  + ' style="padding:3px 8px; font-size:11px; background:#0ea5e9; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;'
-                  + (_addBtnVisible ? '' : ' display:none;')
-                  + '" title="Add this category as a new row on the Summary tab for this building">+ Add to Summary</button>';
+            html += '</div>';
+            html += '<a href="javascript:void(0)" onclick="addToSummary(this); return false;" class="add-to-summary-link"'
+                  + ' style="font-size:10px; color:#0369a1; text-decoration:underline; cursor:pointer; padding-left:2px;'
+                  + (_addLinkVisible ? '' : ' display:none;')
+                  + '" title="This category is not on the building Summary tab yet. Click to add it.">⚠ Not on Summary &mdash; add this row</a>';
             html += '</div>';
             return html;
         }
@@ -1858,16 +1861,18 @@ async function uploadAll() {
             // with makeDropdown above). Split rows without a default also
             // need attention, not blend into white.
             const bgStyle = 'background:#fff3cd;';
-            const _addBtnVisible = defaultMapping && !buildingLabelSet.has(defaultMapping);
-            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
+            const _addLinkVisible = defaultMapping && !buildingLabelSet.has(defaultMapping);
+            let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; flex-direction:column; gap:2px;">';
+            html += '<div style="display:flex; align-items:center; gap:4px;">';
             html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
-            html += '<button onclick="addToSummary(this)" class="add-to-summary-btn"'
-                  + ' style="padding:3px 8px; font-size:11px; background:#0ea5e9; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;'
-                  + (_addBtnVisible ? '' : ' display:none;')
-                  + '" title="Add this category as a new row on the Summary tab for this building">+ Add to Summary</button>';
+            html += '</div>';
+            html += '<a href="javascript:void(0)" onclick="addToSummary(this); return false;" class="add-to-summary-link"'
+                  + ' style="font-size:10px; color:#0369a1; text-decoration:underline; cursor:pointer; padding-left:2px;'
+                  + (_addLinkVisible ? '' : ' display:none;')
+                  + '" title="This category is not on the building Summary tab yet. Click to add it.">⚠ Not on Summary &mdash; add this row</a>';
             if (defaultMapping) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
             }
@@ -1899,28 +1904,30 @@ async function uploadAll() {
                 btn.textContent = '✓ Accept';
                 btn.disabled = false;
             }
-            // FA dir 2026-05-21: toggle "Add to Summary" visibility based on
-            // whether the chosen category is already a row on this building's
-            // Summary tab. Show button only when picking a category that
-            // doesn't have a Summary row (so the FA can create one in one click).
-            const addBtn = el.parentElement.querySelector('.add-to-summary-btn');
-            if (addBtn) {
+            // FA dir 2026-05-21: subtle inline link (not a button) — only
+            // appears when the picked category isn't already on this
+            // building's Summary tab. Click triggers addToSummary().
+            // Wrapper is now a flex column: dropdown row + link below.
+            const wrapper = el.closest('[data-section]');
+            const addLink = wrapper && wrapper.querySelector('.add-to-summary-link');
+            if (addLink) {
                 const v = el.value || '';
                 const needsAdd = v && !buildingLabelSet.has(v);
-                addBtn.style.display = needsAdd ? '' : 'none';
-                addBtn.textContent = '+ Add to Summary';
-                addBtn.disabled = false;
-                addBtn.style.background = '#0ea5e9';
+                addLink.style.display = needsAdd ? '' : 'none';
+                addLink.innerHTML = '⚠ Not on Summary &mdash; add this row';
+                addLink.style.color = '#0369a1';
+                addLink.style.pointerEvents = '';
             }
         }
 
         // FA dir 2026-05-21: one-click "Add to Summary" for categories that
-        // aren't yet on this building's Summary tab. POSTs to the existing
-        // /api/admin/add-summary-row endpoint — server resolves gl_prefixes
-        // from SUMMARY_ROW_MAP / LABEL_ALIASES (so a new "Supplies" row will
-        // automatically capture 5405-* GLs from YSL on next refresh).
-        async function addToSummary(btn) {
-            const wrapper = btn.closest('[data-section]');
+        // aren't yet on this building's Summary tab. Invoked from a subtle
+        // inline link below the dropdown (visible only when the pick isn't
+        // already a Summary row). POSTs to /api/admin/add-summary-row — server
+        // resolves gl_prefixes from SUMMARY_ROW_MAP / LABEL_ALIASES so a new
+        // "Supplies" row immediately captures 5405-* GLs from YSL on refresh.
+        async function addToSummary(linkEl) {
+            const wrapper = linkEl.closest('[data-section]');
             const sel = wrapper.querySelector('select[id^="map_"]');
             if (!sel) return;
             const label = sel.value;
@@ -1950,9 +1957,9 @@ async function uploadAll() {
             }
             const serverSection = _derivedSection();
 
-            btn.disabled = true;
-            btn.textContent = 'Adding…';
-            btn.style.background = '#64748b';
+            linkEl.style.pointerEvents = 'none';
+            linkEl.innerHTML = 'Adding&hellip;';
+            linkEl.style.color = '#64748b';
             try {
                 const resp = await fetch('/api/admin/add-summary-row', {
                     method: 'POST',
@@ -1990,14 +1997,14 @@ async function uploadAll() {
                 bldgIncome.sort();
                 bldgExpense.sort();
 
-                btn.textContent = '✓ Added to Summary';
-                btn.style.background = '#16a34a';
-                // Hide the button entirely after a brief confirmation flash
-                setTimeout(() => { btn.style.display = 'none'; }, 1500);
+                linkEl.innerHTML = '&check; Added to Summary';
+                linkEl.style.color = '#15803d';
+                // Hide entirely after a brief confirmation flash
+                setTimeout(() => { linkEl.style.display = 'none'; }, 1500);
             } catch (err) {
-                btn.disabled = false;
-                btn.textContent = '+ Add to Summary';
-                btn.style.background = '#0ea5e9';
+                linkEl.style.pointerEvents = '';
+                linkEl.innerHTML = '⚠ Not on Summary &mdash; add this row';
+                linkEl.style.color = '#0369a1';
                 alert('Add to Summary failed: ' + err.message);
             }
         }
@@ -2036,6 +2043,12 @@ async function uploadAll() {
 
         // Split a consolidated row into individual source_line rows
         // Each sub-row inherits the parent's current mapping
+        // FA dir 2026-05-21: caches each split's original parent-row HTML so
+        // unsplitRow() can restore it. Keyed by a unique splitId stamped on
+        // every child row this split creates. Cleared when unsplit fires.
+        window._splitOriginalHTML = window._splitOriginalHTML || {};
+        let _splitIdCounter = 0;
+
         function splitRow(btn) {
             const row = btn.closest('tr');
             const sourceData = JSON.parse(btn.dataset.sources);
@@ -2045,14 +2058,32 @@ async function uploadAll() {
             const parentSelect = row.querySelector('select[id^="map_"]');
             const parentMapping = parentSelect ? parentSelect.value : '';
             const parentGroup = row.dataset.group || '';
+
+            // FA dir 2026-05-21: cache the ORIGINAL parent HTML before we
+            // destroy it. unsplitRow() will re-insert this exact HTML to
+            // recombine the rows when the FA changes their mind.
+            const splitId = 'split-' + (++_splitIdCounter) + '-' + Date.now();
+            window._splitOriginalHTML[splitId] = row.outerHTML;
+
             let newRows = '';
-            for (let sl of sourceData) {
+            sourceData.forEach((sl, idx) => {
                 const desc = sl.auditor_desc || sl.description || '?';
                 const amounts = sl.amounts || [];
                 const amount0 = amounts[0] || 0;
                 const mapId = 'map_' + itemIndex;  // peek before makeDropdownWithDefault increments
-                newRows += '<tr data-group="' + parentGroup + '" style="border-bottom:1px solid #eee; background:#fffbeb;">';
-                newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc + '</td>';
+                const isFirst = (idx === 0);
+                newRows += '<tr data-group="' + parentGroup + '" data-split-id="' + splitId + '" style="border-bottom:1px solid #eee; background:#fffbeb;">';
+                // Wrap the description so we can append the Unsplit link to
+                // the FIRST sub-row (not every one — only need one to undo).
+                newRows += '<td style="padding:6px 6px 6px 30px; font-style:italic;">' + desc;
+                if (isFirst) {
+                    newRows += '<a href="javascript:void(0)" onclick="unsplitRow(this); return false;" class="unsplit-link"'
+                            + ' data-split-id="' + splitId + '"'
+                            + ' style="margin-left:10px; font-size:10px; color:#0369a1; text-decoration:underline; cursor:pointer; font-style:normal;"'
+                            + ' title="Recombine these split rows back into the original single row.">'
+                            + '↩ Unsplit (recombine into one row)</a>';
+                }
+                newRows += '</td>';
                 for (let yi = 0; yi < amounts.length; yi++) {
                     newRows += '<td style="text-align:right; padding:4px;">';
                     if (yi === 0) { newRows += makeAmtInput(amounts[yi], mapId); }
@@ -2062,11 +2093,37 @@ async function uploadAll() {
                 for (let i = amounts.length; i < years.length; i++) { newRows += '<td style="text-align:right; padding:4px;">' + makeAmtReadonly(0) + '</td>'; }
                 const amount1 = amounts[1] || 0;
                 newRows += '<td style="padding:4px;">' + makeDropdownWithDefault(desc, amount0, section, parentMapping, amount1) + '</td></tr>';
-            }
+            });
             row.insertAdjacentHTML('afterend', newRows);
             row.remove();
             renderReconciliation();
             recalcLeftTotals();
+        }
+
+        // FA dir 2026-05-21: undo Split. Removes all sub-rows that share the
+        // splitId and re-inserts the original parent row HTML in their place.
+        // The original HTML includes the original dropdown (Mapping reverts
+        // to whatever was picked at the moment of splitting).
+        function unsplitRow(linkEl) {
+            const splitId = linkEl.dataset.splitId;
+            if (!splitId) return;
+            const originalHTML = window._splitOriginalHTML[splitId];
+            if (!originalHTML) {
+                alert('Could not find the original row to restore.');
+                return;
+            }
+            const subRows = document.querySelectorAll('tr[data-split-id="' + splitId + '"]');
+            if (subRows.length === 0) return;
+            // Insert the original BEFORE the first sub-row, then delete all
+            // sub-rows. This preserves position in the table.
+            const firstSub = subRows[0];
+            firstSub.insertAdjacentHTML('beforebegin', originalHTML);
+            subRows.forEach(r => r.remove());
+            // Clean up the cache entry — same split can be re-triggered later.
+            delete window._splitOriginalHTML[splitId];
+            renderReconciliation();
+            recalcLeftTotals();
+            updateAcceptState();
         }
 
         function renderRawData() {
