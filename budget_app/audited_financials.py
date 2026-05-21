@@ -122,6 +122,81 @@ def _category_section(century_category):
     return "expense"
 
 
+# FA dir 2026-05-21: heuristic auto-suggest for audit line → Century category.
+# Used after extraction so the FA mostly just clicks Accept instead of picking
+# every category by hand. 99% of audit lines are obvious ("Maintenance" →
+# Maintenance, "Insurance" → Insurance, "Real estate taxes" → Real Estate
+# Taxes). We score on token overlap + substring + section-hint, return None
+# when confidence is too low so the FA picks manually instead of seeing a
+# bad default.
+_INFER_STOPWORDS = {
+    "and", "or", "the", "a", "an", "of", "to", "for", "in", "on", "with",
+    "amp", "from", "by", "at",
+}
+
+def _infer_category(description, candidates, sections_by_label, section_hint=None):
+    """Pick the best Century category for an audit line description.
+
+    Args:
+        description: auditor's text for the line (e.g. "Repairs and Maintenance")
+        candidates: iterable of candidate category labels (the dropdown universe)
+        sections_by_label: dict label → 'Total Operating Income' /
+            'Total Operating Expenses' / 'Non-Operating Income'. Used to bias
+            scoring with the section_hint so revenue lines don't get mapped
+            to expense categories and vice versa.
+        section_hint: 'revenue' or 'expense' — which P&L section of the audit
+            this line was extracted from.
+
+    Returns: best-match label string, or None if confidence is too low.
+    """
+    import re as _re
+    if not description or not candidates:
+        return None
+    desc_low = description.lower().strip()
+    desc_tokens = set(_re.findall(r"[a-z0-9]+", desc_low)) - _INFER_STOPWORDS
+    if not desc_tokens:
+        return None
+    best = None
+    best_score = 0.0
+    for label in candidates:
+        if not label:
+            continue
+        label_low = label.lower().strip()
+        label_tokens = set(_re.findall(r"[a-z0-9]+", label_low)) - _INFER_STOPWORDS
+        if not label_tokens:
+            continue
+        overlap = desc_tokens & label_tokens
+        if not overlap:
+            continue
+        # coverage = fraction of label tokens matched; precision = fraction of
+        # description tokens that hit a label. We weight coverage higher so
+        # short labels like "Insurance" beat partial matches of longer labels.
+        coverage = len(overlap) / len(label_tokens)
+        precision = len(overlap) / max(len(desc_tokens), 1)
+        score = coverage * 0.7 + precision * 0.3
+        # substring bonus — whole-label match in description is a strong signal
+        if label_low in desc_low or desc_low in label_low:
+            score += 0.3
+        # section hint: bias toward labels in the same P&L section, hard-penalize
+        # cross-section matches (e.g. revenue line shouldn't map to expense cat)
+        if section_hint:
+            sec = (sections_by_label.get(label) or "").lower()
+            if section_hint == "revenue":
+                if "income" in sec:
+                    score += 0.2
+                elif "expense" in sec:
+                    score -= 0.5
+            elif section_hint == "expense":
+                if "expense" in sec:
+                    score += 0.2
+                elif "income" in sec and "non-operating" not in sec:
+                    score -= 0.5
+        if score > best_score:
+            best_score = score
+            best = label
+    return best if best_score >= 0.5 else None
+
+
 def create_audited_financials_blueprint(db):
     """
     Create and configure the audited financials blueprint.
@@ -1652,6 +1727,12 @@ async function uploadAll() {
         const buildingLabelSet = new Set(buildingLabels);
         const buildingLabelSections = {{ building_label_sections_json }};
         const centuryCatSet = new Set(centuryCategories);
+        // FA dir 2026-05-21: heuristic-suggested category per audit line.
+        // Keyed by normalized (lowercase, trimmed) description. Used in
+        // makeDropdown() as the default selection when no explicit mapping
+        // is in mapped_data already. Lands in PEACH (needs Accept) so the
+        // FA must consciously confirm before it counts.
+        const suggestedCategories = {{ suggested_categories_json }};
         const profileId = {{ profile_id }};
         let itemIndex = 0;
 
@@ -1789,7 +1870,15 @@ async function uploadAll() {
 
         // Scope toggle declared up-front so buildSelectOptions can read it.
         // toggleCategoryScope() further down flips this and rebuilds dropdowns.
-        let _showAllScope = false;
+        // Auto-on when: (a) building has no labels of its own (e.g. entity 106
+        // foundation_no_prior_budget) — otherwise the picker would be empty,
+        // OR (b) any auto-suggestion lands outside the building's labels —
+        // otherwise the suggested option wouldn't be in the DOM and the
+        // dropdown would render blank instead of pre-filling the suggestion.
+        let _showAllScope = (
+            (bldgIncome.length + bldgExpense.length + bldgNonOp.length) === 0 ||
+            Object.values(suggestedCategories).some(s => s && !buildingLabelSet.has(s))
+        );
 
         function _renderOptgroup(label, items, currentMapping) {
             if (!items || items.length === 0) return '';
@@ -1831,6 +1920,14 @@ async function uploadAll() {
             if (!currentMapping && buildingLabelSet.has(description)) {
                 currentMapping = description;
             }
+            // FA dir 2026-05-21: fall back to heuristic suggestion from Python
+            // side. Tracks whether this is a guess vs. a confirmed prior rule
+            // so we can render a hint below the dropdown ("(suggested)").
+            let isSuggestion = false;
+            if (!currentMapping && suggestedCategories[normalized]) {
+                currentMapping = suggestedCategories[normalized];
+                isSuggestion = true;
+            }
 
             // FA dir 2026-05-21: every unaccepted row gets the peach
             // background so it visually signals "needs your input". Previous
@@ -1841,11 +1938,14 @@ async function uploadAll() {
             const bgStyle = 'background:#fff3cd;';
 
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" data-suggested="' + (isSuggestion ? 'true' : 'false') + '" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
             html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
             html += '</div>';
+            if (isSuggestion) {
+                html += '<div class="suggested-hint" style="font-size:10px; color:#7c6500; font-style:italic; margin-top:2px;">💡 suggested — please confirm or change</div>';
+            }
             return html;
         }
 
@@ -1878,6 +1978,9 @@ async function uploadAll() {
             btn.textContent = '✓';
             btn.disabled = true;
             btn.title = 'Accepted';
+            // Clear the "(suggested)" hint — once confirmed, it's no longer a guess.
+            const hint = wrapper.parentElement && wrapper.parentElement.querySelector('.suggested-hint');
+            if (hint) hint.style.display = 'none';
             updateAcceptState();
             renderReconciliation();
         }
@@ -1892,6 +1995,13 @@ async function uploadAll() {
                 btn.textContent = '✓ Accept';
                 btn.disabled = false;
             }
+            // Once the FA picks something different, the suggestion-flag is
+            // no longer meaningful — hide the hint so the row reads as the
+            // FA's own choice instead of "computer guessed this".
+            el.dataset.suggested = 'false';
+            const wrapper = el.closest('[data-section]');
+            const hint = wrapper && wrapper.parentElement && wrapper.parentElement.querySelector('.suggested-hint');
+            if (hint) hint.style.display = 'none';
             // FA dir 2026-05-21: Add-to-Summary action removed per FA review.
             // Audit mapping no longer auto-creates Summary rows. If a picked
             // category doesn't exist as a Summary row, the audit data lands
@@ -2565,26 +2675,11 @@ async function uploadAll() {
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
             loadProfiles();
-            // FA dir 2026-05-21: default scope depends on whether the entity
-            // has any summary rows of its own. Entities flagged with
-            // foundation_no_prior_budget (like 106 / 5 West 14th) have an
-            // empty buildingLabels list — restricting to "this building"
-            // produces an empty dropdown. Auto-enable show-all for those.
-            const _bldgHasLabels = (bldgIncome.length + bldgExpense.length + bldgNonOp.length) > 0;
+            // _showAllScope was already computed at script eval time (above),
+            // so the initial dropdown render used the right scope. Here we
+            // just sync the checkbox UI to match. No rebuild needed.
             const cb = document.getElementById('showAllCategories');
-            if (!_bldgHasLabels) {
-                _showAllScope = true;
-                if (cb) cb.checked = true;
-                // Rebuild dropdowns so options actually populate.
-                document.querySelectorAll('select[id^="map_"]').forEach(sel => {
-                    const current = sel.value;
-                    sel.innerHTML = buildSelectOptions(current);
-                    if (current) sel.value = current;
-                });
-            } else {
-                _showAllScope = false;
-                if (cb) cb.checked = false;
-            }
+            if (cb) cb.checked = _showAllScope;
         });
 
         // FA dir 2026-05-21: removed saveAndApplyRules() function.
@@ -2808,11 +2903,82 @@ async function uploadAll() {
             building_labels = []
             building_label_sections = {}
 
-        html = html.replace("{{ century_categories_json }}", json.dumps(sorted(CENTURY_CATEGORIES)))
-        html = html.replace("{{ century_to_summary_json }}", json.dumps(CENTURY_TO_SUMMARY))
+        # FA dir 2026-05-21: pull the PORTFOLIO-WIDE label universe so the
+        # dropdown shows every category that exists on any 2026 building's
+        # 2024 Actuals column, not just the hardcoded CENTURY_CATEGORIES.
+        # This way an FA mapping building 212 can still pick "Storage Income"
+        # even though 212 doesn't have a Storage row of its own. Sections come
+        # from budget_summary_rows.section (set by the 2026-approved parser),
+        # falling back to _classify_label heuristics if blank.
+        portfolio_label_sections = {}
+        try:
+            port_rows = db.session.execute(db.text(
+                "SELECT DISTINCT label, section FROM budget_summary_rows "
+                "WHERE row_type = 'data' AND label IS NOT NULL AND label <> ''"
+            )).fetchall()
+            for r in port_rows:
+                lbl = r[0]
+                if lbl and lbl not in portfolio_label_sections:
+                    portfolio_label_sections[lbl] = _classify_label(lbl, r[1])
+        except Exception:
+            portfolio_label_sections = {}
+        # Always fold in the hardcoded CENTURY_CATEGORIES so the canonical list
+        # is never missing (e.g. fresh DB, or a category no building uses yet).
+        for c in CENTURY_CATEGORIES:
+            if c not in portfolio_label_sections:
+                portfolio_label_sections[c] = _classify_label(c, None)
+        # Master picker universe = sorted union.
+        portfolio_labels = sorted(portfolio_label_sections.keys())
+
+        # FA dir 2026-05-21: auto-suggest a Century category per audit line.
+        # Heuristic only (token overlap + substring + section hint). 99% of
+        # audit lines map cleanly ("Maintenance" → Maintenance, "Insurance"
+        # → Insurance). FA sees the suggestion pre-selected in peach (needs
+        # Accept), can override before confirming. Inference candidate set =
+        # building's own labels FIRST (preferred when both exist), portfolio
+        # universe as fallback. Building-first because if 212's summary calls
+        # it "R & M" and the portfolio has "Repairs & Maintenance", the FA's
+        # own summary label is the right choice for col 2 to land cleanly.
+        def _suggest(desc, section_hint):
+            # building-first
+            s = _infer_category(desc, building_labels, building_label_sections, section_hint)
+            if s:
+                return s
+            # fall back to portfolio universe
+            return _infer_category(desc, portfolio_labels, portfolio_label_sections, section_hint)
+
+        suggested_categories = {}  # description (normalized) → suggested label
+        try:
+            for sect_key, hint in (("revenue", "revenue"), ("expense", "expense")):
+                sect = (raw_extraction.get(sect_key) or {})
+                for item in (sect.get("items") or []):
+                    desc = (item.get("description") or "").strip()
+                    if not desc:
+                        continue
+                    key = desc.lower().strip()
+                    if key in suggested_categories:
+                        continue
+                    sugg = _suggest(desc, hint)
+                    if sugg:
+                        suggested_categories[key] = sugg
+        except Exception:
+            suggested_categories = {}
+
+        # Extend CENTURY_TO_SUMMARY with portfolio labels (the JS dropdown
+        # subdivider reads CENTURY_TO_SUMMARY to bucket "Other Century" into
+        # Income / Expenses / Non-Op). Without this, portfolio-only labels
+        # would land in the default Expenses bucket regardless of section.
+        century_to_summary_extended = dict(CENTURY_TO_SUMMARY)
+        for lbl, summary_row in portfolio_label_sections.items():
+            if lbl not in century_to_summary_extended:
+                century_to_summary_extended[lbl] = summary_row
+
+        html = html.replace("{{ century_categories_json }}", json.dumps(portfolio_labels))
+        html = html.replace("{{ century_to_summary_json }}", json.dumps(century_to_summary_extended))
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
         html = html.replace("{{ building_labels_json }}", json.dumps(building_labels))
         html = html.replace("{{ building_label_sections_json }}", json.dumps(building_label_sections))
+        html = html.replace("{{ suggested_categories_json }}", json.dumps(suggested_categories))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
         # FA dir 2026-05-21: pass Claude-detected auditor firm name so JS can
         # auto-select the matching profile in the dropdown.
