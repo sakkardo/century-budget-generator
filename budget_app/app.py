@@ -8151,6 +8151,78 @@ def admin_dryrun_2026_import():
     })
 
 
+@app.route("/api/admin/bulk-flag-no-prior-budget", methods=["POST"])
+def admin_bulk_flag_no_prior_budget():
+    """Bulk-set Budget.foundation_no_prior_budget for a list of entities.
+
+    Used for buildings that genuinely don't have a 2026 approved budget
+    in SharePoint (Century never produced one). Flipping the flag tells
+    the Foundation gate to use a build-from-scratch flow instead of
+    waiting for an import.
+
+    Body (BOTH required for safety):
+      {
+        "entities": ["122", "123", ...],   # explicit list
+        "value": true,                      # true to flag, false to unflag
+        "confirm": true                     # safety belt
+      }
+
+    Returns per-entity results.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    entities = body.get("entities") or []
+    if not entities:
+        return jsonify({"error": "Body must include 'entities' (non-empty list)"}), 400
+    if body.get("confirm") is not True:
+        return jsonify({"error": "Body must include 'confirm': true"}), 400
+    value = bool(body.get("value", True))
+
+    entity_codes = [str(c).strip() for c in entities if c]
+
+    budgets = Budget.query.filter(
+        Budget.entity_code.in_(entity_codes),
+        Budget.year == _BY,
+    ).all()
+    found = {b.entity_code: b for b in budgets}
+
+    results = []
+    flipped = 0
+    skipped = 0
+    for ec in entity_codes:
+        b = found.get(ec)
+        if not b:
+            results.append({"entity_code": ec, "status": "not_found"})
+            continue
+        before = bool(b.foundation_no_prior_budget)
+        if before == value:
+            results.append({"entity_code": ec, "status": "already_set",
+                            "foundation_no_prior_budget": value})
+            skipped += 1
+            continue
+        b.foundation_no_prior_budget = value
+        flipped += 1
+        results.append({"entity_code": ec, "status": "flipped",
+                        "before": before, "after": value})
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"commit failed: {type(e).__name__}: {str(e)[:240]}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "processed": len(entity_codes),
+        "flipped": flipped,
+        "already_set": skipped,
+        "value": value,
+        "results": results,
+    })
+
+
 @app.route("/api/admin/commit-2026-imports", methods=["POST"])
 def admin_commit_2026_imports():
     """COMMIT the 2026 SharePoint approved budget for explicitly-listed entities.
