@@ -210,6 +210,9 @@ def _run_idempotent_migrations():
         # Idempotent: ALTER COLUMN TYPE is a no-op if already at target width.
         "ALTER TABLE budget_summary_rows ALTER COLUMN footnote_marker TYPE VARCHAR(255)",
         "ALTER TABLE budget_summary_rows ALTER COLUMN row_type TYPE VARCHAR(255)",
+        # FA dir 2026-05-21: store Claude-detected auditor firm name so the
+        # review page can auto-select the matching profile.
+        "ALTER TABLE audit_uploads ADD COLUMN IF NOT EXISTS detected_firm VARCHAR(255)",
         # FA dir 2026-05-21: portfolio smoke test runs. Each row is one full-
         # portfolio dry-run sweep. We persist the per-entity result JSON so
         # subsequent runs can diff vs the last one to surface regressions.
@@ -9649,6 +9652,32 @@ def _build_apply_audit_2025(entity_code, selection):
     upload.raw_extraction = json.dumps(extracted)
     upload.status = "extracted"
     upload.updated_at = _dt.utcnow()
+    # FA dir 2026-05-21: capture auditor firm name from Claude extraction so
+    # the review page can auto-select the matching AuditorProfile.
+    _detected_firm = (extracted.get("auditor_firm") or "").strip() or None
+    if _detected_firm:
+        # Cap to model column width (varchar 255) defensively
+        upload.detected_firm = _detected_firm[:255]
+        # Auto-link to a matching profile if exactly one fuzzy-matches.
+        try:
+            AuditorProfile = af_models["AuditorProfile"]
+            profs = AuditorProfile.query.all()
+            firm_lower = _detected_firm.lower()
+            matches = [p for p in profs
+                       if p.firm_name and (
+                           p.firm_name.lower() == firm_lower
+                           or p.firm_name.lower() in firm_lower
+                           or firm_lower in p.firm_name.lower()
+                       )]
+            if len(matches) == 1:
+                upload.profile_id = matches[0].id
+                logger.info(
+                    f"[audit auto-detect] {entity_code}: auto-linked profile "
+                    f"id={matches[0].id} firm={matches[0].firm_name!r} "
+                    f"(detected={_detected_firm!r})"
+                )
+        except Exception as _e:
+            logger.warning(f"[audit auto-detect] profile match failed for {entity_code}: {_e}")
 
     # The extracted dict has nested structure: revenue.items (list) and
     # expenses.categories (list of dicts each containing items list).

@@ -215,6 +215,10 @@ def create_audited_financials_blueprint(db):
         # streaming bytes through this app — robust against Railway's
         # ephemeral local filesystem.
         sharepoint_web_url = db.Column(db.Text, nullable=True)
+        # FA dir 2026-05-21: Claude extracts the auditor firm name from the
+        # PDF cover/signature page. Used to auto-select the matching auditor
+        # profile on the review page so FAs don't have to pick from a dropdown.
+        detected_firm = db.Column(db.String(255), nullable=True)
         status = db.Column(db.String(20), default="uploaded")  # uploaded, extracted, mapped, confirmed
         confirmed_by = db.Column(db.String(255), default="")
         confirmed_at = db.Column(db.DateTime, nullable=True)
@@ -480,11 +484,20 @@ You are analyzing an audited financial statement for {building_name}.
 Find the Schedule of Expenses and Schedule of Revenue pages, AND any
 supplementary schedules that break down categories into sub-items.
 
+ALSO identify the auditing firm name from the cover page, signature page,
+or any "Independent Auditor's Report" header. Examples of common firms:
+  - "PKF O'Connor Davies LLP"
+  - "Marks Paneth LLP"
+  - "Anchin, Block & Anchin LLP"
+  - "Frankel Loughran Starr & Vallone LLP"
+Return the EXACT firm name as it appears on the audit (including LLP/P.C./etc.).
+
 {cat_instruction}
 
 Return ONLY valid JSON (no markdown, no code blocks) with this structure:
 {{
   "building_name": "{building_name}",
+  "auditor_firm": "PKF O'Connor Davies LLP",
   "fiscal_years": [2025, 2024],
   "revenue": {{
     "items": [
@@ -1594,9 +1607,9 @@ async function uploadAll() {
             <h3>Extracted Data — Map Each Item</h3>
             <div id="rawData"></div>
             <div style="margin-top:16px; display:flex; gap:10px;">
-                <button onclick="saveAllRules()" class="btn-green" style="flex:1;">Save All Mappings</button>
-                <button onclick="remapUpload()" style="flex:1;">Re-Apply &amp; Refresh</button>
+                <button id="saveApplyBtn" onclick="saveAndApplyRules()" class="btn-green" style="flex:1;" title="Save your dropdown selections as reusable rules on this auditor's profile, then re-apply them to this upload. One click does both.">Save &amp; Apply Profile Rules</button>
             </div>
+            <div id="saveApplyStatus" style="margin-top:6px; font-size:12px; color:var(--gray-500);"></div>
         </div>
 
         <div class="column">
@@ -2341,19 +2354,55 @@ async function uploadAll() {
         // ─── F2: profile picker + scope toggle ───
         let _profiles = [];
         let _currentProfileId = profileId || null;
+        // FA dir 2026-05-21: Claude-detected auditor firm. Used to auto-select
+        // the matching profile when the FA hasn't manually picked one yet.
+        const DETECTED_FIRM = {{ detected_firm_json }};
+
+        function _fuzzyFirmMatch(detected, profiles) {
+            // Return matching profile(s). Lowercase substring match in either
+            // direction. Filters out clearly noise (sub-3-char firm names).
+            if (!detected) return [];
+            const d = String(detected).toLowerCase().trim();
+            if (d.length < 3) return [];
+            return (profiles || []).filter(p => {
+                const f = String(p.firm_name || '').toLowerCase().trim();
+                if (!f || f.length < 3) return false;
+                return f === d || f.indexOf(d) !== -1 || d.indexOf(f) !== -1;
+            });
+        }
+
         function loadProfiles() {
             fetch('/api/af/profiles').then(r => r.json()).then(j => {
                 _profiles = j.profiles || [];
+
+                // FA dir 2026-05-21: auto-select on FIRST load only (when no
+                // profile is currently assigned). Don't override the FA's
+                // explicit pick on subsequent renders.
+                let autoSelected = false;
+                if (!_currentProfileId && DETECTED_FIRM) {
+                    const matches = _fuzzyFirmMatch(DETECTED_FIRM, _profiles);
+                    if (matches.length === 1) {
+                        _currentProfileId = matches[0].id;
+                        autoSelected = true;
+                        // Persist the auto-selection to the upload row
+                        fetch('/api/af/uploads/' + {{ upload_id }}, {
+                            method: 'PATCH',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({profile_id: matches[0].id})
+                        }).catch(() => {/* non-fatal */});
+                    }
+                }
+
                 const sel = document.getElementById('profilePicker');
                 const cur = _currentProfileId;
                 let opts = '<option value="">— Pick auditor profile to enable Save —</option>';
                 _profiles.forEach(p => {
-                    const sel = (cur && p.id === cur) ? ' selected' : '';
+                    const _selAttr = (cur && p.id === cur) ? ' selected' : '';
                     const label = p.firm_name || p.name;
-                    opts += '<option value="' + p.id + '"' + sel + '>' + escapeHtml(label) + '</option>';
+                    opts += '<option value="' + p.id + '"' + _selAttr + '>' + escapeHtml(label) + '</option>';
                 });
                 sel.innerHTML = opts;
-                updateProfileStatus();
+                updateProfileStatus(autoSelected);
             }).catch(err => {
                 document.getElementById('profileStatus').textContent = 'Profile load failed: ' + err;
             });
@@ -2361,12 +2410,32 @@ async function uploadAll() {
         function escapeHtml(s) {
             return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
-        function updateProfileStatus() {
+        function updateProfileStatus(autoSelected) {
             const el = document.getElementById('profileStatus');
             if (!el) return;
             if (_currentProfileId) {
                 const p = _profiles.find(x => x.id === _currentProfileId);
-                el.innerHTML = '<span style="color:#15803d;">✓ ' + escapeHtml((p && (p.firm_name || p.name)) || 'profile #' + _currentProfileId) + '</span>';
+                const firmLabel = (p && (p.firm_name || p.name)) || 'profile #' + _currentProfileId;
+                if (autoSelected) {
+                    el.innerHTML = '<span style="color:#15803d;">✓ Auto-detected: <b>'
+                        + escapeHtml(firmLabel) + '</b></span>'
+                        + (DETECTED_FIRM ? ' <span style="color:var(--gray-500); font-size:11px;">(from PDF: "'
+                            + escapeHtml(DETECTED_FIRM) + '")</span>' : '');
+                } else {
+                    el.innerHTML = '<span style="color:#15803d;">✓ ' + escapeHtml(firmLabel) + '</span>';
+                }
+                return;
+            }
+            // No profile assigned. If Claude detected a firm but we have no
+            // matching profile, surface a Create-Profile CTA.
+            if (DETECTED_FIRM) {
+                const enc = encodeURIComponent(DETECTED_FIRM);
+                el.innerHTML = '<span style="color:#b45309;">⚠ Detected '
+                    + '<b>"' + escapeHtml(DETECTED_FIRM) + '"</b> in this audit — '
+                    + 'no matching profile.</span> '
+                    + '<a href="/audited-financials/profiles?prefill_firm=' + enc + '" '
+                    + 'target="_blank" style="font-size:12px; color:var(--blue); text-decoration:underline;">'
+                    + 'Create profile from this audit ↗</a>';
             } else {
                 el.innerHTML = '<span style="color:#b45309;">⚠ No profile assigned — Save Mappings is disabled</span>';
             }
@@ -2408,9 +2477,25 @@ async function uploadAll() {
             if (cb) { cb.checked = false; toggleCategoryScope(); }
         });
 
-        function saveAllRules() {
-            if (!profileId) { alert('No auditor profile assigned'); return; }
-
+        // FA dir 2026-05-21: combined "Save & Apply Profile Rules" replaces
+        // the old two-button flow (Save All Mappings + Re-Apply & Refresh).
+        // Single click does:
+        //   1) Read every set dropdown
+        //   2) POST each as a rule on the current auditor profile (parallel)
+        //   3) Wait for all rule saves to complete
+        //   4) POST /api/af/map/<id> to re-apply profile rules to this upload
+        //   5) Reload the page so the dropdowns reflect the new mappings
+        async function saveAndApplyRules() {
+            const btn = document.getElementById('saveApplyBtn');
+            const status = document.getElementById('saveApplyStatus');
+            // Use the live state instead of the stale page-load profileId.
+            // If the FA changed the profile after page load, _currentProfileId
+            // is the source of truth.
+            const _pid = _currentProfileId || profileId;
+            if (!_pid) {
+                alert('No auditor profile assigned — pick one above first.');
+                return;
+            }
             const selects = document.querySelectorAll('select[id^="map_"]');
             const rules = [];
             selects.forEach(s => {
@@ -2422,39 +2507,59 @@ async function uploadAll() {
                     });
                 }
             });
+            if (rules.length === 0) {
+                alert('No mappings to save — pick a Century category for at least one row.');
+                return;
+            }
 
-            if (rules.length === 0) { alert('No mappings to save'); return; }
+            // Disable button + show progress
+            btn.disabled = true;
+            const _origLabel = btn.textContent;
+            btn.textContent = 'Saving ' + rules.length + ' rules…';
+            btn.style.opacity = '0.6';
+            status.textContent = '';
 
-            // Save rules one by one (non-destructive add)
-            let saved = 0;
-            let errors = 0;
-            for (let rule of rules) {
-                fetch('/api/af/profiles/' + profileId + '/rules', {
+            // Step 1+2+3: save all rules in parallel
+            const saves = rules.map(rule =>
+                fetch('/api/af/profiles/' + _pid + '/rules', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(rule)
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) saved++;
-                    else errors++;
-                    if (saved + errors === rules.length) {
-                        alert(saved + ' rules saved. Click "Re-Apply & Refresh" to see updated mappings.');
-                    }
-                });
+                }).then(r => r.json()).catch(e => ({success: false, error: String(e)}))
+            );
+            let savedCount = 0, errCount = 0;
+            try {
+                const results = await Promise.all(saves);
+                results.forEach(r => { if (r.success) savedCount++; else errCount++; });
+            } catch (e) {
+                btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
+                status.innerHTML = '<span style="color:var(--red);">Save failed: ' + escapeHtml(String(e)) + '</span>';
+                return;
             }
-        }
 
-        function remapUpload() {
-            fetch('/api/af/map/{{ upload_id }}', { method: 'POST' })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    location.reload();
-                } else {
-                    alert('Mapping error: ' + data.error);
+            // Step 4: re-apply rules to this upload
+            btn.textContent = 'Applying rules to this audit…';
+            try {
+                const r = await fetch('/api/af/map/{{ upload_id }}', {method: 'POST'});
+                const data = await r.json();
+                if (!data.success) {
+                    btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
+                    status.innerHTML = '<span style="color:var(--red);">Mapping error: '
+                        + escapeHtml(data.error || 'unknown') + '</span>';
+                    return;
                 }
-            });
+            } catch (e) {
+                btn.disabled = false; btn.textContent = _origLabel; btn.style.opacity = '1';
+                status.innerHTML = '<span style="color:var(--red);">Apply failed: ' + escapeHtml(String(e)) + '</span>';
+                return;
+            }
+
+            // Step 5: reload — flash a quick status before redirecting
+            status.innerHTML = '<span style="color:var(--green);">✓ ' + savedCount
+                + ' rule' + (savedCount === 1 ? '' : 's') + ' saved & applied'
+                + (errCount > 0 ? ' (' + errCount + ' failed)' : '')
+                + ' — refreshing…</span>';
+            setTimeout(() => location.reload(), 600);
         }
 
         function confirmExtraction(uploadId, force) {
@@ -2678,6 +2783,12 @@ async function uploadAll() {
         html = html.replace("{{ building_labels_json }}", json.dumps(building_labels))
         html = html.replace("{{ building_label_sections_json }}", json.dumps(building_label_sections))
         html = html.replace("{{ profile_id }}", str(upload.profile_id or 0))
+        # FA dir 2026-05-21: pass Claude-detected auditor firm name so JS can
+        # auto-select the matching profile in the dropdown.
+        html = html.replace(
+            "{{ detected_firm_json }}",
+            json.dumps((getattr(upload, "detected_firm", None) or "")),
+        )
 
         return render_template_string(html)
 
