@@ -2473,21 +2473,69 @@ async function uploadAll() {
                 location.reload();
             });
         }
+        // FA dir 2026-05-21: rebuild every map_* dropdown's options when the
+        // checkbox toggles. Previous version used `optgroup { display:none }`
+        // which Safari + some Edge builds ignored, leaving the FA unable to
+        // reach Other Century Categories even with the checkbox on.
+        // Rebuilding the options DOM is unconditional, browser-independent.
+        let _showAllScope = false;
         function toggleCategoryScope() {
-            const showAll = document.getElementById('showAllCategories').checked;
-            document.querySelectorAll('select[id^="map_"] optgroup').forEach(g => {
-                if ((g.label || '').includes('Other Century')) {
-                    g.style.display = showAll ? '' : 'none';
-                    g.querySelectorAll('option').forEach(o => o.disabled = !showAll);
-                }
+            _showAllScope = !!document.getElementById('showAllCategories').checked;
+            document.querySelectorAll('select[id^="map_"]').forEach(sel => {
+                const current = sel.value;  // preserve selection across rebuild
+                sel.innerHTML = buildSelectOptions(current);
+                // Try to restore — if the previously-selected option is now
+                // outside the visible scope, the rebuild will have left it
+                // unset and we just leave it that way (FA will see empty).
+                if (current) sel.value = current;
             });
         }
+        // Hook the scope-toggle into buildSelectOptions by wrapping the
+        // function: when _showAllScope is false, drop the otherCentury group.
+        const _origBuildSelectOptions = buildSelectOptions;
+        buildSelectOptions = function(currentMapping) {
+            let opts = '<option value="">— Select category —</option>';
+            if (bldgIncome.length > 0) {
+                opts += '<optgroup label="Income (this building)">';
+                for (let c of bldgIncome) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            if (bldgExpense.length > 0) {
+                opts += '<optgroup label="Expenses (this building)">';
+                for (let c of bldgExpense) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            if (bldgNonOp.length > 0) {
+                opts += '<optgroup label="Non-Operating (this building)">';
+                for (let c of bldgNonOp) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            // Only emit the "Other Century Categories" group when scope = all.
+            // No more disabled-options trick — the group simply isn't in the DOM.
+            if (_showAllScope && otherCentury.length > 0) {
+                opts += '<optgroup label="── Other Century Categories ──">';
+                for (let c of otherCentury) {
+                    opts += '<option value="' + c + '"' + (c === currentMapping ? ' selected' : '') + '>' + c + '</option>';
+                }
+                opts += '</optgroup>';
+            }
+            return opts;
+        };
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
             loadProfiles();
             // Default to building-only scope
             const cb = document.getElementById('showAllCategories');
-            if (cb) { cb.checked = false; toggleCategoryScope(); }
+            if (cb) { cb.checked = false; }
+            _showAllScope = false;
+            // No initial rebuild — dropdowns are rendered server-side already.
+            // toggleCategoryScope() runs only when user clicks the checkbox.
         });
 
         // FA dir 2026-05-21: removed saveAndApplyRules() function.
