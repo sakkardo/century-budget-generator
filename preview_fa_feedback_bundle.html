@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FA Feedback Preview — 4 Changes</title>
+<style>
+  :root {
+    --bg: #f9fafb;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --border-strong: #cbd5e1;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --blue: #5a4a3f;
+    --blue-dark: #3f342c;
+    --blue-light: #f5efe7;
+    --green: #16a34a;
+    --green-light: #dcfce7;
+    --amber: #d97706;
+    --amber-light: #fef3c7;
+    --red: #dc2626;
+    --red-light: #fee2e2;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --teal: #0d9488;
+    --purple: #7c3aed;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--gray-100); color: var(--text); margin: 0; padding: 0; font-size: 13px; }
+  .page { max-width: 1280px; margin: 0 auto; padding: 24px; }
+
+  /* Top header */
+  .top-head {
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dark) 100%);
+    color: white;
+    padding: 18px 24px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .top-head h1 { font-size: 18px; margin: 0 0 6px 0; }
+  .top-head p { margin: 0; color: rgba(255,255,255,0.85); font-size: 13px; }
+
+  /* Section header */
+  .section {
+    background: var(--card);
+    border-radius: 12px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .section-head {
+    background: var(--gray-50);
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .section-head .num {
+    background: var(--blue);
+    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .section-head h2 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  .section-head .scope {
+    background: var(--blue-light);
+    color: var(--blue);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .section-body { padding: 20px; }
+
+  /* Annotation strip */
+  .annotation {
+    background: #fffbeb;
+    border-left: 3px solid #fcd34d;
+    padding: 10px 14px;
+    margin: 0 0 16px 0;
+    font-size: 12px;
+    color: #78350f;
+    border-radius: 0 6px 6px 0;
+  }
+  .annotation strong { color: #92400e; }
+
+  /* === Section 1: Add Row Modal === */
+  .modal-mock {
+    border: 2px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 18px;
+    max-width: 480px;
+    margin: 0 auto;
+    background: white;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+  }
+  .modal-mock h3 { font-size: 15px; font-weight: 700; color: var(--blue-dark); margin: 0 0 4px 0; }
+  .modal-mock .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .modal-mock label { display: block; font-size: 12px; font-weight: 600; color: var(--gray-700); margin: 12px 0 4px; }
+  .modal-mock input[type=text] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'SF Mono', Monaco, monospace;
+  }
+  .modal-mock .examples {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .modal-mock .examples code { background: var(--gray-100); padding: 1px 6px; border-radius: 3px; }
+  .modal-mock .auto-label {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--green-light);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--green);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .modal-mock .btn-row { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
+  .modal-mock .btn-primary {
+    background: var(--blue); color: white; border: none; padding: 7px 16px;
+    border-radius: 6px; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  .modal-mock .btn-secondary {
+    background: white; color: var(--gray-700); border: 1px solid var(--border-strong);
+    padding: 7px 16px; border-radius: 6px; font-weight: 500; font-size: 13px; cursor: pointer;
+  }
+
+  /* === Section 2: PM variance columns === */
+  .pm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .pm-table th, .pm-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--gray-100);
+    text-align: right;
+  }
+  .pm-table th {
+    background: var(--gray-50);
+    font-weight: 600;
+    color: var(--gray-700);
+    border-bottom: 2px solid var(--border-strong);
+    text-align: right;
+    font-size: 11px;
+    letter-spacing: 0.2px;
+  }
+  .pm-table th:nth-child(1), .pm-table td:nth-child(1),
+  .pm-table th:nth-child(2), .pm-table td:nth-child(2) {
+    text-align: left;
+  }
+  .pm-table .col-new { background: #fffbeb; }
+  .pm-table .col-new th { color: var(--amber); }
+  .pm-table .gl { font-family: 'SF Mono', Monaco, monospace; color: var(--muted); }
+  .pm-table .num { font-variant-numeric: tabular-nums; }
+  .pm-table .pos { color: var(--green); }
+  .pm-table .neg { color: var(--red); }
+  .pm-table .input-mock {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--blue-light);
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    min-width: 60px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .legend {
+    margin-top: 12px;
+    display: flex;
+    gap: 18px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+  .legend-swatch.new { background: #fffbeb; border: 1px solid #fcd34d; }
+  .legend-swatch.editable { background: var(--blue-light); border: 1px solid #ddd; }
+
+  /* === Section 3: G&A Editability === */
+  .ga-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .ga-table th, .ga-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--gray-100);
+  }
+  .ga-table th {
+    background: var(--gray-50);
+    font-weight: 600;
+    color: var(--gray-700);
+    border-bottom: 2px solid var(--border-strong);
+    font-size: 11px;
+    letter-spacing: 0.2px;
+  }
+  .ga-table .gl { font-family: 'SF Mono', Monaco, monospace; color: var(--muted); white-space: nowrap; }
+  .ga-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ga-row-editable { background: white; }
+  .ga-row-readonly { background: var(--gray-50); color: var(--gray-500); }
+  .ga-row-readonly .editable-input { color: var(--gray-400); }
+  .ga-input-editable {
+    padding: 3px 8px;
+    background: var(--blue-light);
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    min-width: 80px;
+    text-align: right;
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+  }
+  .ga-input-readonly {
+    padding: 3px 8px;
+    background: var(--gray-100);
+    border: 1px dashed var(--gray-300);
+    border-radius: 4px;
+    min-width: 80px;
+    text-align: right;
+    display: inline-block;
+    color: var(--gray-500);
+    font-variant-numeric: tabular-nums;
+    position: relative;
+  }
+  .lock-icon { color: var(--gray-400); font-size: 10px; margin-right: 4px; }
+  .ga-table .tooltip-trigger {
+    cursor: help;
+    border-bottom: 1px dotted var(--gray-400);
+  }
+
+  /* === Section 4: Amortization Builder === */
+  .amort-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    background: white;
+  }
+  .amort-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .amort-grid .full { grid-column: 1 / -1; }
+  .amort-input {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .amort-input label {
+    flex: 1;
+    font-size: 12px;
+    color: var(--gray-700);
+    font-weight: 500;
+  }
+  .amort-input input {
+    width: 130px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 12px;
+  }
+  .amort-input input.computed {
+    background: var(--green-light);
+    color: var(--green);
+    border-color: var(--green);
+  }
+  .amort-input input.locked {
+    background: var(--gray-100);
+    color: var(--gray-500);
+    border-style: dashed;
+  }
+  .amort-input .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+  }
+  .amort-input .badge.computed { background: var(--green-light); color: var(--green); }
+  .amort-input .badge.input { background: var(--blue-light); color: var(--blue); }
+  .amort-input .badge.locked { background: var(--gray-200); color: var(--gray-500); }
+
+  .mode-selector {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .mode-pill {
+    padding: 6px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    background: white;
+    color: var(--gray-700);
+  }
+  .mode-pill.active {
+    background: var(--blue);
+    color: white;
+    border-color: var(--blue);
+  }
+
+  .recalc-row {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .recalc-btn {
+    background: var(--blue);
+    color: white;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .status-pill {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .status-pill.ok { background: var(--green-light); color: var(--green); }
+  .status-pill.need { background: var(--amber-light); color: var(--amber); }
+
+  .schedule-preview {
+    margin-top: 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .schedule-preview .head {
+    background: var(--gray-50);
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--gray-700);
+    border-bottom: 1px solid var(--border);
+  }
+  .schedule-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .schedule-preview td, .schedule-preview th {
+    padding: 4px 10px;
+    text-align: right;
+    border-bottom: 1px solid var(--gray-100);
+    font-variant-numeric: tabular-nums;
+  }
+  .schedule-preview th {
+    background: white;
+    color: var(--gray-500);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+  }
+
+  .math-note {
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: var(--gray-50);
+    border-left: 3px solid var(--gray-300);
+    font-size: 11px;
+    color: var(--gray-700);
+    border-radius: 0 6px 6px 0;
+  }
+  .math-note code { background: white; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  /* Footer */
+  .summary-foot {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 24px;
+    margin-top: 20px;
+  }
+  .summary-foot h3 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--blue-dark);
+  }
+  .summary-foot ul {
+    margin: 0;
+    padding-left: 20px;
+    font-size: 13px;
+    color: var(--gray-700);
+    line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="top-head">
+    <h1>FA Feedback Preview Bundle — 4 changes</h1>
+    <p>Building these 4 changes together. Review the visual + interaction logic below before I write any production code.</p>
+  </div>
+
+  <!-- ============================= -->
+  <!-- SECTION 1: Add Row 8-digit GL -->
+  <!-- ============================= -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num">1</span>
+      <h2>Summary tab: Add Row accepts 8-digit GLs + auto-fills label</h2>
+      <span class="scope">Portfolio-wide</span>
+    </div>
+    <div class="section-body">
+      <div class="annotation">
+        <strong>Change:</strong> Add Row modal now accepts either a 4-digit prefix (<code>6315</code> — old behavior, matches all 6315-xxxx) OR a full 8-digit GL (<code>6315-0010</code> — new, exact-match only). As soon as the FA types a valid GL, the matching label from GL_Mapping.csv auto-fills below.
+      </div>
+
+      <div class="modal-mock">
+        <h3>Add Row to Expenses</h3>
+        <div class="sub">Map a GL or GL group to this row.</div>
+
+        <label>GL Code or Prefix</label>
+        <input type="text" value="6315-0010" placeholder="e.g. 6315-0010 or 6315">
+
+        <div class="auto-label">
+          <span style="font-size: 14px;">✓</span>
+          <span>Auto-filled label: <strong>Real Estate Tax Abatement</strong></span>
+        </div>
+
+        <label>Row Label (override if needed)</label>
+        <input type="text" value="Real Estate Tax Abatement" placeholder="Auto-filled from GL Mapping">
+
+        <div class="examples">
+          <strong>Examples:</strong><br>
+          <code>6315</code> — matches all 6315-xxxx (Real Estate Tax + all credits)<br>
+          <code>6315-0010</code> — matches only Real Estate Tax Abatement<br>
+          <code>4130-0030</code> — matches only Laundry income<br>
+          <code>5260</code> — matches all 5260-xxxx (Fuel)
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-secondary">Cancel</button>
+          <button class="btn-primary">Add Row</button>
+        </div>
+      </div>
+
+      <div class="math-note" style="max-width: 480px; margin: 14px auto 0;">
+        <strong>Behavior:</strong> The matcher (<code>gl_matches_prefixes</code>) already supports both modes — entries with a dash use exact match, entries without use prefix match. UI just needs to accept both + show the auto-label preview.
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= -->
+  <!-- SECTION 2: PM variance columns -->
+  <!-- ============================= -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num">2</span>
+      <h2>PM portal: relabel cols 8/9, add cols 11/12 (vs forecast)</h2>
+      <span class="scope">Portfolio-wide</span>
+    </div>
+    <div class="section-body">
+      <div class="annotation">
+        <strong>Change:</strong> Cols 8 + 9 keep their current formulas but get clearer labels. New cols 11 + 12 show increase vs the 12-Mo Forecast (a more meaningful comparison since it includes YTD actuals + estimate).
+      </div>
+
+      <table class="pm-table">
+        <thead>
+          <tr>
+            <th>GL</th>
+            <th>Description</th>
+            <th>YTD Actual</th>
+            <th>12-Mo Forecast</th>
+            <th>Curr Budget</th>
+            <th>Increase %<br><span style="font-weight:400;color:var(--muted);">(PM input)</span></th>
+            <th>Proposed</th>
+            <th>% Inc vs<br>Curr Budget</th>
+            <th>$ Inc vs<br>Curr Budget</th>
+            <th>Notes</th>
+            <th class="col-new">% Inc vs<br>12-Mo Forecast</th>
+            <th class="col-new">$ Inc vs<br>12-Mo Forecast</th>
+          </tr>
+          <tr style="font-size:10px;color:var(--muted);">
+            <th></th><th></th><th>(col 3)</th><th>(col 4)</th><th>(col 5)</th>
+            <th>(col 6)</th><th>(col 7)</th>
+            <th>(col 8)</th><th>(col 9)</th><th>(col 10)</th>
+            <th class="col-new">(col 11 NEW)</th><th class="col-new">(col 12 NEW)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="gl">5666-0000</td>
+            <td>Door Repairs</td>
+            <td class="num">1,250</td>
+            <td class="num">2,800</td>
+            <td class="num">3,000</td>
+            <td class="num"><span class="input-mock">3.0%</span></td>
+            <td class="num">3,090</td>
+            <td class="num pos">+3.0%</td>
+            <td class="num pos">+90</td>
+            <td>—</td>
+            <td class="num pos col-new">+10.4%</td>
+            <td class="num pos col-new">+290</td>
+          </tr>
+          <tr>
+            <td class="gl">5837-0001</td>
+            <td>Alarm / Security System Maint</td>
+            <td class="num">6,800</td>
+            <td class="num">15,200</td>
+            <td class="num">14,500</td>
+            <td class="num"><span class="input-mock">5.0%</span></td>
+            <td class="num">15,225</td>
+            <td class="num pos">+5.0%</td>
+            <td class="num pos">+725</td>
+            <td>—</td>
+            <td class="num pos col-new">+0.2%</td>
+            <td class="num pos col-new">+25</td>
+          </tr>
+          <tr>
+            <td class="gl">5612-0000</td>
+            <td>Refrigerator Repairs</td>
+            <td class="num">0</td>
+            <td class="num">1,200</td>
+            <td class="num">1,500</td>
+            <td class="num"><span class="input-mock">-10.0%</span></td>
+            <td class="num">1,350</td>
+            <td class="num neg">-10.0%</td>
+            <td class="num neg">-150</td>
+            <td>down trend</td>
+            <td class="num pos col-new">+12.5%</td>
+            <td class="num pos col-new">+150</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="legend">
+        <div><span class="legend-swatch new"></span>New columns</div>
+        <div><span class="legend-swatch editable"></span>PM input</div>
+        <div>All other columns: read-only</div>
+      </div>
+
+      <div class="math-note" style="margin-top: 16px;">
+        <strong>Formulas:</strong><br>
+        Col 8 (% Inc vs Curr Budget) = <code>(proposed − current_budget) / current_budget × 100</code><br>
+        Col 9 ($ Inc vs Curr Budget) = <code>proposed − current_budget</code><br>
+        <strong>Col 11 (% Inc vs Forecast)</strong> = <code>(proposed − forecast) / forecast × 100</code><br>
+        <strong>Col 12 ($ Inc vs Forecast)</strong> = <code>proposed − forecast</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= -->
+  <!-- SECTION 3: G&A Editability     -->
+  <!-- ============================= -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num">3</span>
+      <h2>PM portal G&amp;A: lock all GLs except the 6 PM-editable ones</h2>
+      <span class="scope">Portfolio-wide</span>
+    </div>
+    <div class="section-body">
+      <div class="annotation">
+        <strong>Change:</strong> All G&amp;A GLs are still <em>visible</em> to PMs so they can see the full budget. Only the 6 PM-editable ones have active input fields. The rest show the current value as read-only with a lock icon + tooltip.
+      </div>
+
+      <table class="ga-table">
+        <thead>
+          <tr>
+            <th>GL</th>
+            <th>Description</th>
+            <th class="num">Current Budget</th>
+            <th class="num">PM Proposed</th>
+            <th>Editable?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="ga-row-editable">
+            <td class="gl">6505-0000</td>
+            <td>Engineering &amp; Architectural Fees</td>
+            <td class="num">5,000</td>
+            <td class="num"><span class="ga-input-editable">5,250</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-readonly">
+            <td class="gl">6510-0000</td>
+            <td>Management Fees</td>
+            <td class="num">125,000</td>
+            <td class="num"><span class="ga-input-readonly"><span class="lock-icon">🔒</span> 128,750</span></td>
+            <td><span class="tooltip-trigger" title="FA-controlled — managers cannot edit this GL">FA-only</span></td>
+          </tr>
+          <tr class="ga-row-editable">
+            <td class="gl">6515-0000</td>
+            <td>Legal Fees</td>
+            <td class="num">8,500</td>
+            <td class="num"><span class="ga-input-editable">9,000</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-readonly">
+            <td class="gl">6520-0000</td>
+            <td>Real Estate Tax Certiorari Fees</td>
+            <td class="num">2,500</td>
+            <td class="num"><span class="ga-input-readonly"><span class="lock-icon">🔒</span> 2,500</span></td>
+            <td><span class="tooltip-trigger" title="FA-only">FA-only</span></td>
+          </tr>
+          <tr class="ga-row-readonly">
+            <td class="gl">6525-0000</td>
+            <td>Accounting Fees</td>
+            <td class="num">15,000</td>
+            <td class="num"><span class="ga-input-readonly"><span class="lock-icon">🔒</span> 15,750</span></td>
+            <td><span class="tooltip-trigger" title="FA-only">FA-only</span></td>
+          </tr>
+          <tr class="ga-row-editable">
+            <td class="gl">6590-0000</td>
+            <td>Other Professional Fees</td>
+            <td class="num">3,000</td>
+            <td class="num"><span class="ga-input-editable">3,000</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-editable">
+            <td class="gl">6720-0000</td>
+            <td>[Awaiting label — please confirm GL]</td>
+            <td class="num">—</td>
+            <td class="num"><span class="ga-input-editable">—</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-editable">
+            <td class="gl">6726-0000</td>
+            <td>[Awaiting label — please confirm GL]</td>
+            <td class="num">—</td>
+            <td class="num"><span class="ga-input-editable">—</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-editable">
+            <td class="gl">6740-0000</td>
+            <td>[Awaiting label — please confirm GL]</td>
+            <td class="num">—</td>
+            <td class="num"><span class="ga-input-editable">—</span></td>
+            <td><span style="color:var(--green); font-weight:600;">✓ PM</span></td>
+          </tr>
+          <tr class="ga-row-readonly">
+            <td class="gl">6706-0000</td>
+            <td>Office Expense</td>
+            <td class="num">2,000</td>
+            <td class="num"><span class="ga-input-readonly"><span class="lock-icon">🔒</span> 2,100</span></td>
+            <td><span class="tooltip-trigger" title="FA-only">FA-only</span></td>
+          </tr>
+          <tr class="ga-row-readonly">
+            <td class="gl">6710-0000</td>
+            <td>Postage Expense</td>
+            <td class="num">1,200</td>
+            <td class="num"><span class="ga-input-readonly"><span class="lock-icon">🔒</span> 1,260</span></td>
+            <td><span class="tooltip-trigger" title="FA-only">FA-only</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="math-note" style="margin-top: 14px;">
+        <strong>Editable allowlist (portfolio-wide):</strong> <code>6505-0000</code>, <code>6515-0000</code>, <code>6590-0000</code>, <code>6720-0000</code>, <code>6726-0000</code>, <code>6740-0000</code>.<br>
+        <strong>Confirmation needed:</strong> 6720 / 6726 / 6740 don't currently exist in <code>GL_Mapping.csv</code>. Once you confirm the correct codes (or if they're new GLs to be added), I'll wire up the lock on everything else.
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= -->
+  <!-- SECTION 4: Amortization Builder -->
+  <!-- ============================= -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num">4</span>
+      <h2>Building Info: flexible amortization builder (no errors on recalc)</h2>
+      <span class="scope">Power-tool — used when 2026 P&amp;I needs override (refi, new loan, etc.)</span>
+    </div>
+    <div class="section-body">
+      <div class="annotation">
+        <strong>Approach:</strong> Default 2027 P&amp;I = 2026 GL values + FA's % increase (no change). The builder is a power tool the FA opens only when modeling a refi, new loan, or weird amortization. Now supports 4 input modes — enter whatever you know, system solves the rest.
+      </div>
+
+      <div class="amort-card">
+        <div class="mode-selector">
+          <div class="mode-pill">Standard (P + R + N)</div>
+          <div class="mode-pill active">By Payment (P + R + M)</div>
+          <div class="mode-pill">By Balance (B at year X)</div>
+          <div class="mode-pill">Interest-Only Period</div>
+        </div>
+
+        <div class="amort-grid">
+          <div class="amort-input">
+            <label>Loan label</label>
+            <input type="text" value="First Mortgage" style="width:160px; text-align:left; font-family:inherit;">
+          </div>
+          <div class="amort-input">
+            <label>Start date</label>
+            <input type="text" value="2024-06-01" style="width:130px; font-family:inherit;">
+          </div>
+
+          <div class="amort-input">
+            <label>Principal (P) <span class="badge input">input</span></label>
+            <input type="text" value="2,500,000.00">
+          </div>
+          <div class="amort-input">
+            <label>Annual Rate (R) <span class="badge input">input</span></label>
+            <input type="text" value="5.500%">
+          </div>
+
+          <div class="amort-input">
+            <label>Term (N, months) <span class="badge computed">computed</span></label>
+            <input type="text" value="240" class="computed" readonly>
+          </div>
+          <div class="amort-input">
+            <label>Monthly Payment (M) <span class="badge input">input</span></label>
+            <input type="text" value="17,194.84">
+          </div>
+
+          <div class="amort-input">
+            <label>End Balance (balloon) <span class="badge computed">computed</span></label>
+            <input type="text" value="0.00" class="computed" readonly>
+          </div>
+          <div class="amort-input">
+            <label>Frequency (per year)</label>
+            <input type="text" value="12">
+          </div>
+
+          <div class="amort-input">
+            <label>Interest-Only months <span class="badge locked">N/A in this mode</span></label>
+            <input type="text" value="0" class="locked" readonly>
+          </div>
+          <div class="amort-input">
+            <label>2027 Total P&amp;I <span class="badge computed">derived</span></label>
+            <input type="text" value="206,338.08" class="computed" readonly>
+          </div>
+        </div>
+
+        <div class="recalc-row">
+          <button class="recalc-btn">Recalculate</button>
+          <span class="status-pill ok">✓ Math closes — 240 months at $17,194.84 amortizes $2.5M @ 5.5% to $0</span>
+        </div>
+
+        <div class="schedule-preview">
+          <div class="head">2027 schedule (month-by-month, first 6 shown)</div>
+          <table>
+            <thead>
+              <tr>
+                <th style="text-align:left;">Month</th>
+                <th>Beg Balance</th>
+                <th>Payment</th>
+                <th>Interest</th>
+                <th>Principal</th>
+                <th>End Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="text-align:left;">Jan 2027</td><td>2,372,455.12</td><td>17,194.84</td><td>10,873.42</td><td>6,321.42</td><td>2,366,133.70</td></tr>
+              <tr><td style="text-align:left;">Feb 2027</td><td>2,366,133.70</td><td>17,194.84</td><td>10,844.45</td><td>6,350.39</td><td>2,359,783.31</td></tr>
+              <tr><td style="text-align:left;">Mar 2027</td><td>2,359,783.31</td><td>17,194.84</td><td>10,815.34</td><td>6,379.50</td><td>2,353,403.81</td></tr>
+              <tr><td style="text-align:left;">Apr 2027</td><td>2,353,403.81</td><td>17,194.84</td><td>10,786.10</td><td>6,408.74</td><td>2,346,995.07</td></tr>
+              <tr><td style="text-align:left;">May 2027</td><td>2,346,995.07</td><td>17,194.84</td><td>10,756.72</td><td>6,438.12</td><td>2,340,556.95</td></tr>
+              <tr><td style="text-align:left;">Jun 2027</td><td>2,340,556.95</td><td>17,194.84</td><td>10,727.22</td><td>6,467.62</td><td>2,334,089.33</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="math-note">
+          <strong>How the 4 modes work — math always closes, never errors:</strong>
+          <table style="width:100%; margin-top:8px; font-size:11px;">
+            <tr style="background:white;"><td><strong>Mode</strong></td><td><strong>You enter</strong></td><td><strong>System computes</strong></td></tr>
+            <tr><td>Standard</td><td>Principal, Rate, Term</td><td>Payment, full schedule, balloon=0</td></tr>
+            <tr><td>By Payment</td><td>Principal, Rate, Payment</td><td>Term (closed-form: <code>n = log(M/(M-Pr)) / log(1+r)</code>)</td></tr>
+            <tr><td>By Balance</td><td>Principal, Rate, Term, Payment</td><td>Balloon balance at end (solves for B)</td></tr>
+            <tr><td>Interest-Only</td><td>Principal, Rate, IO months, Total term</td><td>IO payment during IO period + amortizing payment after</td></tr>
+          </table>
+          <p style="margin-top:8px;">
+            <strong>Error-proof recalculate:</strong> If you provide too few inputs to solve, status pill turns yellow <span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:99px;font-weight:600;font-size:10px;">! need more info</span> and tells you which field is missing. Never throws, never breaks the page. Schedule preview hides until math closes.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= -->
+  <!-- Summary / next steps           -->
+  <!-- ============================= -->
+  <div class="summary-foot">
+    <h3>What I'll build once you sign off on this preview</h3>
+    <ul>
+      <li><strong>Item 1 (Add Row 8-digit + auto-label):</strong> UI change in <code>sumShowInsert</code> modal. Hit <code>/api/gl-mapping/lookup/&lt;gl&gt;</code> (new tiny endpoint) to get the canonical label. ~1.5 hours.</li>
+      <li><strong>Item 2 (PM variance cols):</strong> Relabel 8/9, add 11/12 with forecast formulas. Update PM_EDIT_TEMPLATE column definitions + render logic. ~2 hours.</li>
+      <li><strong>Item 3 (G&amp;A lock):</strong> Add <code>PM_EDITABLE_GA_GLS</code> constant, render lock icons + disable inputs on non-allowlist rows. ~1.5 hours. <strong>Needs you to confirm 6720/6726/6740 codes first.</strong></li>
+      <li><strong>Item 4 (Amortization flex modes):</strong> Extend the builder JS with the 4 modes + the solver math (closed-form where possible, Newton-Raphson for rate solving). Safe recalculate with "need more info" status. ~4-6 hours including testing on edge cases.</li>
+    </ul>
+    <h3 style="margin-top:14px;">Tell me to proceed (or what to change) and I'll start writing code.</h3>
+  </div>
+</div>
+
+</body>
+</html>
