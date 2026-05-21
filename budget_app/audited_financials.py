@@ -134,6 +134,36 @@ _INFER_STOPWORDS = {
     "amp", "from", "by", "at",
 }
 
+# Tiny synonym map so token-overlap doesn't fail on simple stem mismatches
+# (audit says "Electricity" but the canonical category is "Electric") or on
+# common rewrites ("Wages" / "Salaries" → Payroll). Keep this dict short —
+# the goal is to nail the obvious 90% cases, not exhaustively map English.
+_INFER_SYNONYMS = {
+    "electricity": "electric",
+    "wages": "payroll",
+    "salary": "payroll",
+    "salaries": "payroll",
+    "compensation": "payroll",
+    "legal": "professional",
+    "accounting": "professional",
+    "audit": "professional",
+    "auditing": "professional",
+    "admin": "administrative",
+    "office": "administrative",
+}
+
+
+def _expand_tokens(tokens):
+    """Expand a token set with known synonyms so e.g. 'electricity' also
+    matches a category label tokenized as 'electric'."""
+    out = set(tokens)
+    for t in tokens:
+        syn = _INFER_SYNONYMS.get(t)
+        if syn:
+            out.add(syn)
+    return out
+
+
 def _infer_category(description, candidates, sections_by_label, section_hint=None):
     """Pick the best Century category for an audit line description.
 
@@ -153,9 +183,10 @@ def _infer_category(description, candidates, sections_by_label, section_hint=Non
     if not description or not candidates:
         return None
     desc_low = description.lower().strip()
-    desc_tokens = set(_re.findall(r"[a-z0-9]+", desc_low)) - _INFER_STOPWORDS
-    if not desc_tokens:
+    desc_tokens_raw = set(_re.findall(r"[a-z0-9]+", desc_low)) - _INFER_STOPWORDS
+    if not desc_tokens_raw:
         return None
+    desc_tokens = _expand_tokens(desc_tokens_raw)
     best = None
     best_score = 0.0
     for label in candidates:
@@ -165,7 +196,9 @@ def _infer_category(description, candidates, sections_by_label, section_hint=Non
         label_tokens = set(_re.findall(r"[a-z0-9]+", label_low)) - _INFER_STOPWORDS
         if not label_tokens:
             continue
-        overlap = desc_tokens & label_tokens
+        # Expand label tokens too — so a synonym match works in either direction.
+        label_tokens_expanded = _expand_tokens(label_tokens)
+        overlap = desc_tokens & label_tokens_expanded
         if not overlap:
             continue
         # coverage = fraction of label tokens matched; precision = fraction of
