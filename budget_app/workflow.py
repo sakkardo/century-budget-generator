@@ -1534,8 +1534,12 @@ def create_workflow_blueprint(db):
         display_order = db.Column(db.Integer, nullable=False)
         label = db.Column(db.String(255), nullable=False)
         section = db.Column(db.String(100), nullable=True)  # Income, Expenses, Non-Operating Income, etc.
-        row_type = db.Column(db.String(20), nullable=False)  # data, subtotal, section_header
-        footnote_marker = db.Column(db.String(20), nullable=True)
+        # FA dir 2026-05-20: widened from VARCHAR(20) → 255 after 834 hit
+        # StringDataRightTruncation during dry-run import (its yrlycomp put
+        # a long value in one of these). Matches the schema migration in
+        # app.py _run_idempotent_migrations.
+        row_type = db.Column(db.String(255), nullable=False)  # data, subtotal, section_header
+        footnote_marker = db.Column(db.String(255), nullable=True)
 
         # Imported columns (from approved budget Excel)
         col1_prior_actual = db.Column(db.Float, nullable=True)      # 2024 Actual*

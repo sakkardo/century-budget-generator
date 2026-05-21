@@ -203,6 +203,13 @@ def _run_idempotent_migrations():
         # JSON array of last-N snapshots (current state pushed before each
         # write). Restore endpoint reads from here. Cap enforced in app code.
         "ALTER TABLE building_info ADD COLUMN IF NOT EXISTS snapshots_json TEXT",
+        # FA dir 2026-05-20: widen overly-narrow varchar columns on
+        # budget_summary_rows. The dry-run sweep hit StringDataRightTruncation
+        # on building 834 — its yrlycomp had a value > 20 chars in either
+        # footnote_marker or row_type. Widen to 255 (matches `label`).
+        # Idempotent: ALTER COLUMN TYPE is a no-op if already at target width.
+        "ALTER TABLE budget_summary_rows ALTER COLUMN footnote_marker TYPE VARCHAR(255)",
+        "ALTER TABLE budget_summary_rows ALTER COLUMN row_type TYPE VARCHAR(255)",
         # FA directive 2026-05-05: per-position benefit adjustments on payroll tab.
         # Lets the FA flag "N of M employees in this position have an extra
         # rate × periods adjustment on welfare/pension/etc". Math is additive
