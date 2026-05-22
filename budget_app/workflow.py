@@ -11581,6 +11581,18 @@ DASHBOARD_TEMPLATE = r"""
         <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
           style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
       </div>
+      <!-- FA dir 2026-05-22: legend for the Data Status mini-tiles. -->
+      <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+        <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Data Status tiles</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">B</span></span> 2026 Budget summary</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">E</span></span> Expense Distribution</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">Y</span></span> YSL (Yardi GL)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">A</span></span> AP Aging</span>
+        <span style="color:var(--gray-300); margin:0 2px;">·</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:18px; height:14px;">✓</span> ingested</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:18px; height:14px;">✗</span> missing</span>
+        <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard ↗</span>
+      </div>
       <div id="buildingsTableWrap">
         <table id="budgets-table">
           <thead>

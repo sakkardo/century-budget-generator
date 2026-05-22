@@ -890,14 +890,20 @@ header {
 </head>
 <body>
 
-<!-- Header -->
+<!-- Header (FA dir 2026-05-22: rebuilt nav to match the rest of the app —
+     "Dashboard" was hardcoded `locked` with an alert popup that did nothing,
+     "Home" routed to /dashboard, and the logo had a "← " arrow that implied
+     back-direction even though it pointed forward. Now matches the dashboard,
+     PM portal, and audited-financials nav.) -->
 <header>
   <div class="header-left">
-    <a href="/dashboard" class="header-logo" style="text-decoration:none;color:white;">← Century Budget</a>
+    <a href="/" class="header-logo" style="text-decoration:none;color:white;">Century Budget</a>
     <nav class="header-nav">
-      <a href="/dashboard" class="nav-item">Home</a>
-      <a class="nav-item active" onclick="showStep(1)">Wizard</a>
-      <a class="nav-item locked" onclick="alert(\'Complete the wizard first\')">Dashboard</a>
+      <a href="/" class="nav-item">Home</a>
+      <a class="nav-item active" onclick="showStep(1)" style="cursor:pointer;">Wizard</a>
+      <a href="/dashboard" class="nav-item">FA Dashboard</a>
+      <a href="/pm" class="nav-item">PM Portal</a>
+      <a href="/audited-financials" class="nav-item">Audited Financials</a>
     </nav>
   </div>
   <div class="header-right">
@@ -2358,9 +2364,7 @@ function _updateWizardChrome(stepNum) {
     crumb.className = 'wiz-crumb';
     crumb.style.cssText = 'font-size:12px; color:var(--gray-500); margin-bottom:8px;';
     crumb.innerHTML =
-      '<a href="/dashboard" style="color:var(--blue); text-decoration:none; font-weight:600;">← FA Dashboard</a>' +
-      '<span style="color:var(--gray-300); margin:0 8px;">·</span>' +
-      '<a href="/" style="color:var(--blue); text-decoration:none;">Home</a>';
+      '<a href="/dashboard" style="color:var(--blue); text-decoration:none; font-weight:600;">← Back to FA Dashboard</a>';
     hdr.insertBefore(crumb, hdr.firstChild);
   });
   // Append entity context onto the visible step's h1. Idempotent — strip
