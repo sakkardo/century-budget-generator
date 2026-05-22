@@ -2345,6 +2345,36 @@ async function uploadAll() {
             search.style.cssText = 'padding:8px 10px; font-size:13px; border:none; border-bottom:1px solid #ddd; outline:none; font-family:inherit; color:#1a1714; background:#fff;';
             popup.appendChild(search);
 
+            // FA dir 2026-05-22: in-popup toggle for the Other-portfolio tier.
+            // Lives between search and list so it's right where the FA looks
+            // when the curated list doesn't have what they need. Syncs with
+            // the page-level "Show all" checkbox so toggling either updates
+            // both. Hidden while the FA is actively typing — search already
+            // reaches the full universe so the button isn't useful then.
+            const expandBtn = document.createElement('button');
+            expandBtn.type = 'button';
+            expandBtn.className = 'cb-expand';
+            expandBtn.style.cssText = 'padding:6px 10px; font-size:11px; border:none; border-bottom:1px solid #eee; background:#fafafa; cursor:pointer; text-align:left; color:#475569; font-family:inherit; width:100%; display:block;';
+            const _totalOther = otherIncome.length + otherExpense.length + otherNonOp.length;
+            function syncExpandBtn() {
+                if (_showAllScope) {
+                    expandBtn.textContent = '✕  Hide portfolio long-tail';
+                } else {
+                    expandBtn.textContent = '+  Show all ' + _totalOther + ' portfolio categories';
+                }
+            }
+            syncExpandBtn();
+            expandBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                _showAllScope = !_showAllScope;
+                // Sync the page-level checkbox UI too.
+                const cb = document.getElementById('showAllCategories');
+                if (cb) cb.checked = _showAllScope;
+                syncExpandBtn();
+                renderList(search.value);
+            });
+            popup.appendChild(expandBtn);
+
             const listEl = document.createElement('div');
             listEl.className = 'cb-list';
             // Explicit max-height + overflow on the list itself (instead of
@@ -2455,10 +2485,15 @@ async function uploadAll() {
                     popup.style.top = 'auto';
                     popup.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
                 }
-                // List takes whatever's left after the search bar (~44px).
-                listEl.style.maxHeight = Math.max(120, popupMaxH - 44) + 'px';
+                // List takes whatever's left after the search bar + expand
+                // button (~76px total of fixed chrome).
+                listEl.style.maxHeight = Math.max(120, popupMaxH - 76) + 'px';
                 search.value = '';
                 renderList('');
+                // Refresh button label + ensure it's visible (it may have been
+                // hidden by a previous typing session on this same combobox).
+                syncExpandBtn();
+                expandBtn.style.display = 'block';
                 setTimeout(() => search.focus(), 0);
             }
             function closePopup() {
@@ -2478,7 +2513,12 @@ async function uploadAll() {
             // Stop popup clicks from bubbling to the document-level close handler.
             popup.addEventListener('click', (e) => { e.stopPropagation(); });
 
-            search.addEventListener('input', () => renderList(search.value));
+            search.addEventListener('input', () => {
+                renderList(search.value);
+                // Hide the expand toggle while the FA is searching — search
+                // reaches the long-tail anyway, the button would just clutter.
+                expandBtn.style.display = search.value.trim() ? 'none' : 'block';
+            });
             search.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') { closePopup(); }
                 if (e.key === 'Enter') {
@@ -3082,11 +3122,21 @@ async function uploadAll() {
             if (_cbActivePopup && _cbActiveSel) {
                 const popup = _cbActivePopup;
                 const search = popup.querySelector('input[type="text"]');
-                const listEl = popup.querySelector('.cb-list');
-                // Trigger the popup's own renderList. The closure is the
-                // only thing that knows how to render, so dispatch an input
-                // event on the search box (which is wired to renderList).
+                // Trigger the popup's own renderList via input event +
+                // refresh the in-popup expand button label.
                 if (search) search.dispatchEvent(new Event('input'));
+                const expandBtn = popup.querySelector('.cb-expand');
+                if (expandBtn) {
+                    // Re-derive the label without needing closure access.
+                    if (_showAllScope) {
+                        expandBtn.textContent = '✕  Hide portfolio long-tail';
+                    } else {
+                        // Count is the same across all comboboxes — read it
+                        // from the underlying globals.
+                        const n = otherIncome.length + otherExpense.length + otherNonOp.length;
+                        expandBtn.textContent = '+  Show all ' + n + ' portfolio categories';
+                    }
+                }
             }
         }
         // Initialize on load
