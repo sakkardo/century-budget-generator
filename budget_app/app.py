@@ -9434,6 +9434,109 @@ def admin_audit_sync_log():
     return jsonify({"count": len(rows), "rows": [r.to_dict() for r in rows]})
 
 
+# FA dir 2026-05-22: parser dry-run for approved_2026 Excel files. Visual
+# debug tool — surfaces what parse_yrlycomp sees inside a building's
+# approved_2026 file WITHOUT writing anything to the DB. Used to diagnose
+# silent rows=0 failures (entities 710, 847) by comparing against a known-
+# working file (entity 148). Returns sheet list, header detection result,
+# raw first-20-rows preview, and the importable_data row count.
+@app.route("/api/admin/parser-dryrun/<entity_code>", methods=["GET"])
+def admin_parser_dryrun(entity_code):
+    """Dry-run parse_yrlycomp against the entity's approved_2026 SP file.
+    Returns the parser's view without persisting anything.
+    """
+    import sys as _sys, tempfile, os as _os
+    from pathlib import Path as _Path
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code, force_refresh=False)
+    except Exception as e:
+        return jsonify({"error": f"SP scan failed: {e}"}), 500
+    files = (sp.get("by_source_type") or {}).get("approved_2026") or []
+    if not files:
+        return jsonify({"error": "no approved_2026 file in SharePoint", "sp_state": sp.get("by_source_type", {}).keys()}), 404
+    primary = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)[0]
+    item_id = primary.get("item_id") or primary.get("id")
+    try:
+        filename, file_bytes = _sharepoint_download_item(item_id)
+    except Exception as e:
+        return jsonify({"error": f"download failed: {e}"}), 500
+
+    # Run the parser
+    bs_path = str(_Path(__file__).resolve().parent.parent / "budget_summary")
+    if bs_path not in _sys.path:
+        _sys.path.insert(0, bs_path)
+
+    import openpyxl
+    from budget_summary_parser import parse_yrlycomp, find_yrlycomp_tab
+    from batch_import import extract_importable_data
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        # Open the workbook directly so we can also report sheet names
+        wb = openpyxl.load_workbook(tmp_path, data_only=True, read_only=False)
+        sheet_names = list(wb.sheetnames)
+        yrlycomp_sheet = find_yrlycomp_tab(wb)
+        yrlycomp_name = yrlycomp_sheet.title if yrlycomp_sheet else None
+        # Raw preview — first 20 rows × 12 cols of the yrlycomp sheet
+        raw_preview = []
+        if yrlycomp_sheet:
+            for r in range(1, 21):
+                row_cells = []
+                for c in range(1, 13):
+                    v = yrlycomp_sheet.cell(row=r, column=c).value
+                    if v is None:
+                        row_cells.append("")
+                    elif isinstance(v, (int, float)):
+                        # Truncate floats to int-looking display
+                        row_cells.append(str(v))
+                    else:
+                        row_cells.append(str(v)[:60])
+                raw_preview.append(row_cells)
+        wb.close()
+
+        # Now run the actual parser
+        parsed = parse_yrlycomp(tmp_path)
+        parser_error = parsed.get("error") if isinstance(parsed, dict) else None
+        parsed_rows = (parsed.get("rows") or []) if isinstance(parsed, dict) else []
+
+        # And the post-parse extractor
+        from workflow import BUDGET_YEAR as _BY
+        importable = None
+        if not parser_error:
+            try:
+                importable = extract_importable_data(parsed, expected_col1_year=_BY - 3)
+            except Exception as e:
+                importable = {"error": f"extract_importable_data exception: {e}"}
+        importable_rows = (importable.get("rows") or []) if importable else []
+        return jsonify({
+            "entity_code": entity_code,
+            "filename": filename,
+            "sheet_names": sheet_names,
+            "yrlycomp_tab_found": yrlycomp_name,
+            "raw_yrlycomp_preview": raw_preview,
+            "parser": {
+                "error": parser_error,
+                "header_row": parsed.get("header_row") if isinstance(parsed, dict) else None,
+                "columns": parsed.get("columns") if isinstance(parsed, dict) else None,
+                "rows_count": len(parsed_rows),
+                "first_5_rows": parsed_rows[:5] if parsed_rows else [],
+            },
+            "importable": {
+                "error": importable.get("error") if importable else None,
+                "rows_count": len(importable_rows),
+                "col1_warning": importable.get("col1_warning") if importable else None,
+                "first_3_rows": importable_rows[:3] if importable_rows else [],
+            },
+        })
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
 # FA dir 2026-05-22: build_failures helpers — log per-source parse failures
 # to a persistent table so the FA dashboard can surface silent-fail entities.
 # The outer transaction during build-budget is about to roll back when this
