@@ -1814,6 +1814,11 @@ async function uploadAll() {
     <div class="confirm-section">
         <h3>Confirm Extraction</h3>
         <p>Accept each line item above, then confirm to save as official actuals for this building/year.</p>
+        <!-- FA dir 2026-05-22: bulk-accept all rows that already have a category
+             picked (suggested or manually chosen) so an FA can confirm 11
+             lines in 1 click instead of 11. The button's label shows the
+             current pending count so the FA knows what they're accepting. -->
+        <button id="acceptAllBtn" onclick="acceptAllPickedRows()" style="margin-right:8px; padding:10px 18px; background:#0369a1; color:#fff; border:none; border-radius:4px; font-weight:600; cursor:pointer;" title="Accept every row that has a category picked (skips empty rows)">✓ Accept all suggested</button>
         <button id="confirmBtn" class="btn-green" disabled style="opacity:0.4; cursor:not-allowed;" onclick="confirmExtraction({{ upload_id }}, false)">Confirm & Save</button>
         <button id="overrideBtn" disabled style="opacity:0.4; cursor:not-allowed; margin-left:8px; padding:10px 18px; background:#b45309; color:#fff; border:none; border-radius:4px; font-weight:600;" onclick="confirmExtraction({{ upload_id }}, true)" title="Save anyway when totals don't reconcile — use only if the mismatch is intentional">Override & Save (Skip Validation)</button>
         <div id="confirmStatus"></div>
@@ -2190,9 +2195,13 @@ async function uploadAll() {
             const allSelects = document.querySelectorAll('select[id^="map_"]');
             let allAccepted = true;
             let acceptedCount = 0;
+            let pendingWithPick = 0;  // not yet accepted but has a category picked
             allSelects.forEach(s => {
                 if (s.dataset.accepted === 'true') acceptedCount++;
-                else allAccepted = false;
+                else {
+                    allAccepted = false;
+                    if (s.value) pendingWithPick++;
+                }
             });
             const total = allSelects.length;
             // Update accept counter
@@ -2200,6 +2209,18 @@ async function uploadAll() {
             if (counter) {
                 counter.textContent = acceptedCount + ' / ' + total + ' accepted';
                 counter.style.color = allAccepted ? '#16a34a' : '#d97706';
+            }
+            // FA dir 2026-05-22: "Accept all suggested" button reflects how
+            // many rows it'll process. Hide entirely if nothing pending —
+            // when all 11 rows are accepted, the button stops being useful.
+            const acceptAllBtn = document.getElementById('acceptAllBtn');
+            if (acceptAllBtn) {
+                if (pendingWithPick === 0) {
+                    acceptAllBtn.style.display = 'none';
+                } else {
+                    acceptAllBtn.style.display = '';
+                    acceptAllBtn.textContent = '✓ Accept all ' + pendingWithPick + ' suggested';
+                }
             }
             // Enable/disable confirm button
             const confirmBtn = document.getElementById('confirmBtn');
@@ -2214,6 +2235,44 @@ async function uploadAll() {
                 overrideBtn.disabled = !allAccepted;
                 overrideBtn.style.opacity = allAccepted ? '1' : '0.4';
                 overrideBtn.style.cursor = allAccepted ? 'pointer' : 'not-allowed';
+            }
+        }
+
+        // FA dir 2026-05-22: bulk-accept every row that already has a
+        // category picked. Skips rows with no selection (FA needs to
+        // pick something first — auto-suggest leaves these blank when
+        // confidence is too low). Each accept fires the same code path
+        // as clicking the per-row Accept button so reconciliation and
+        // mapped_data stay in sync.
+        function acceptAllPickedRows() {
+            const selects = document.querySelectorAll('select[id^="map_"]');
+            let accepted = 0;
+            let skipped = 0;
+            selects.forEach(sel => {
+                if (sel.dataset.accepted === 'true') return;  // already done
+                if (!sel.value) { skipped++; return; }         // blank — needs FA
+                // Find the row's Accept button and click it programmatically
+                // (cleaner than duplicating the acceptRow logic here).
+                const wrapper = sel.closest('[data-section]');
+                const btn = wrapper && wrapper.querySelector('.accept-btn');
+                if (btn && !btn.disabled) {
+                    acceptRow(btn);
+                    accepted++;
+                }
+            });
+            // Tell the FA what happened — most of the time everything maps,
+            // but if a few were blank they need to know to scroll up + pick.
+            const status = document.getElementById('confirmStatus');
+            if (status) {
+                let msg = '<div style="margin-top:8px; padding:8px 12px; background:#ecfdf5; border:1px solid #6ee7b7; border-radius:6px; color:#065f46; font-size:13px;">';
+                msg += '<b>Accepted ' + accepted + ' row' + (accepted === 1 ? '' : 's') + '.</b>';
+                if (skipped > 0) {
+                    msg += ' <span style="color:#92400e;">' + skipped + ' row' + (skipped === 1 ? ' was' : 's were') + ' blank — pick a category for each, then re-click Accept all.</span>';
+                } else {
+                    msg += ' Review the totals + click Confirm & Save below.';
+                }
+                msg += '</div>';
+                status.innerHTML = msg;
             }
         }
 

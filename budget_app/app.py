@@ -404,6 +404,28 @@ def _run_idempotent_migrations():
         )
         """,
         "CREATE INDEX IF NOT EXISTS ix_sp_inventory_entity ON sp_inventory (entity_code)",
+        # FA dir 2026-05-22: build_failures table. When a per-source parser
+        # throws during the wizard build (or earlier parse-on-click), we now
+        # persist the failure so the dashboard can surface silent fails
+        # (entity 847 had all files in SP but 0 summary rows — no error
+        # surface anywhere). Insert one row per (entity, source_type, ts).
+        """
+        CREATE TABLE IF NOT EXISTS build_failures (
+            id SERIAL PRIMARY KEY,
+            entity_code VARCHAR(50) NOT NULL,
+            source_type VARCHAR(40) NOT NULL,
+            filename VARCHAR(500),
+            phase VARCHAR(40) NOT NULL DEFAULT 'parse',
+            error_class VARCHAR(120),
+            error_text TEXT,
+            failed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_build_failures_entity_failed "
+        "ON build_failures (entity_code, failed_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_build_failures_unresolved "
+        "ON build_failures (entity_code) WHERE resolved_at IS NULL",
     ]
     with app.app_context():
         for stmt in statements:
@@ -9412,6 +9434,91 @@ def admin_audit_sync_log():
     return jsonify({"count": len(rows), "rows": [r.to_dict() for r in rows]})
 
 
+# FA dir 2026-05-22: build_failures helpers — log per-source parse failures
+# to a persistent table so the FA dashboard can surface silent-fail entities.
+# The outer transaction during build-budget is about to roll back when this
+# fires, so we open a fresh session (engine-level connection) to commit the
+# failure row independently.
+def _log_build_failure(entity_code, source_type, filename, phase, exc):
+    """Insert a row into build_failures using a fresh connection so the
+    insert survives the outer transaction's rollback."""
+    try:
+        err_class = exc.__class__.__name__
+        err_text = str(exc)[:2000]
+        # Use db.engine.connect() to bypass the about-to-rollback session
+        with db.engine.connect() as conn:
+            conn.execute(db.text("""
+                INSERT INTO build_failures
+                  (entity_code, source_type, filename, phase, error_class, error_text)
+                VALUES (:ec, :st, :fn, :ph, :ec_class, :et)
+            """), {
+                "ec": entity_code, "st": source_type,
+                "fn": (filename or "")[:500], "ph": phase[:40],
+                "ec_class": err_class[:120], "et": err_text,
+            })
+            conn.commit()
+    except Exception as _e:
+        logger.warning(f"_log_build_failure swallowed: {_e}")
+
+
+@app.route("/api/admin/build-failures", methods=["GET"])
+def admin_build_failures():
+    """List recent unresolved build failures across the portfolio. Used by
+    the FA Dashboard to surface silent-fail entities. Query params:
+    entity_code (filter), resolved (true/false/all, default false), limit.
+    """
+    try:
+        limit = min(max(int(request.args.get("limit", "200")), 1), 1000)
+    except ValueError:
+        limit = 200
+    ec = request.args.get("entity_code") or None
+    resolved = (request.args.get("resolved") or "false").lower()
+    where = []
+    params = {"limit": limit}
+    if ec:
+        where.append("entity_code = :ec")
+        params["ec"] = ec
+    if resolved == "false":
+        where.append("resolved_at IS NULL")
+    elif resolved == "true":
+        where.append("resolved_at IS NOT NULL")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    try:
+        rows = db.session.execute(db.text(
+            "SELECT id, entity_code, source_type, filename, phase, "
+            "       error_class, error_text, failed_at, resolved_at "
+            f"FROM build_failures{where_sql} "
+            "ORDER BY failed_at DESC LIMIT :limit"
+        ), params).fetchall()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "failures": [{
+            "id": r[0], "entity_code": r[1], "source_type": r[2],
+            "filename": r[3], "phase": r[4],
+            "error_class": r[5], "error_text": (r[6] or "")[:500],
+            "failed_at": r[7].isoformat() if r[7] else None,
+            "resolved_at": r[8].isoformat() if r[8] else None,
+        } for r in rows],
+        "count": len(rows),
+    })
+
+
+@app.route("/api/admin/build-failures/<int:fid>/resolve", methods=["POST"])
+def admin_build_failures_resolve(fid):
+    """Mark a build failure resolved (FA fixed the underlying issue)."""
+    try:
+        db.session.execute(db.text(
+            "UPDATE build_failures SET resolved_at = CURRENT_TIMESTAMP WHERE id = :id"
+        ), {"id": fid})
+        db.session.commit()
+        return jsonify({"ok": True, "id": fid})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/wizard/<entity_code>/build-budget", methods=["POST"])
 def wizard_build_budget(entity_code):
     """All-or-nothing build trigger.
@@ -9474,6 +9581,11 @@ def wizard_build_budget(entity_code):
                 summary["summary_rows_written"] += rows_count
             except Exception as e:
                 logger.exception("approved_2026 parse failed")
+                try:
+                    _log_build_failure(entity_code, "approved_2026",
+                                       sel.get("filename"), "parse", e)
+                except Exception as _le:
+                    logger.warning(f"build_failures insert skipped: {_le}")
                 raise RuntimeError(f"2026 Approved Budget parse failed: {e}")
 
         # FA dir 2026-05-21: Phase B.2 wiring complete. YSL/ExpDist/AP Aging/
@@ -9510,6 +9622,13 @@ def wizard_build_budget(entity_code):
                     })
             except Exception as e:
                 logger.exception(f"{st} parse failed for {entity_code}")
+                # FA dir 2026-05-22: log to build_failures so silent fails
+                # show up on the dashboard. Use a separate session to insert
+                # because the outer transaction is about to roll back.
+                try:
+                    _log_build_failure(entity_code, st, sel.get("filename"), "parse", e)
+                except Exception as _le:
+                    logger.warning(f"build_failures insert skipped: {_le}")
                 raise RuntimeError(f"{st} parse failed: {e}")
 
         # Seed Budget.assumptions_json from staged wizard assumptions.

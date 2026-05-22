@@ -1794,6 +1794,21 @@ function renderFoundationPanel() {
     apprHtml += "<div style=\"color:#15803d; font-weight:700; font-size:13px;\">\u2713 Acknowledged \u00b7 No prior budget</div>";
     apprHtml += "<div style=\"font-size:11px; color:var(--gray-600,#4b5563); margin-top:4px;\">Audit mapping will use default Century categories.</div>";
     apprHtml += "</div>";
+    // FA dir 2026-05-22: mismatch detector. The acknowledged_missing flag
+    // was set by an FA, but if SP actually has an approved_2026 file the
+    // build will skip it and budget_summary_rows stays empty (see entity
+    // 710 \u2014 0 rows despite the file being present). Offer a one-click fix.
+    if (apprFiles.length > 0) {
+      apprHtml += "<div style=\"margin-top:10px; background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; padding:10px 12px;\">";
+      apprHtml += "<div style=\"font-weight:700; color:#92400e; font-size:13px;\">\u26a0 Mismatch detected</div>";
+      apprHtml += "<div style=\"font-size:12px; color:#78350f; margin-top:4px;\">";
+      apprHtml += "We found a 2026 budget file in SharePoint (";
+      apprHtml += "<span style=\"font-family:ui-monospace,monospace; font-size:11px;\">" + escapeHtml(apprFiles[0].name) + "</span>";
+      apprHtml += ") even though this entity is flagged \"no prior budget.\" The file will be skipped at build time unless you clear the flag.";
+      apprHtml += "</div>";
+      apprHtml += "<button data-action=\"foundation-unack-noprior\" style=\"margin-top:8px; font-size:12px; padding:6px 12px; border:1px solid #b45309; background:#b45309; color:#fff; border-radius:4px; cursor:pointer; font-weight:600;\">Clear flag &amp; use this file</button>";
+      apprHtml += "</div>";
+    }
   } else if (fs.approved_budget === "in_sp_not_imported") {
     apprHtml += "<div style=\"background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px; margin-bottom:10px;\">";
     apprHtml += "<div style=\"font-family:ui-monospace,monospace; font-size:12px; color:var(--gray-700,#374151);\">\ud83d\udcc4 " + escapeHtml(apprFiles[0] ? apprFiles[0].name : "(file)") + "</div>";
@@ -1876,6 +1891,31 @@ function renderFoundationPanel() {
   panel.querySelectorAll('button[data-action="foundation-ack-noprior"]').forEach(function (btn) {
     btn.addEventListener("click", acknowledgeNoPriorBudget);
   });
+  // FA dir 2026-05-22: clear-flag handler for the mismatch banner.
+  panel.querySelectorAll('button[data-action="foundation-unack-noprior"]').forEach(function (btn) {
+    btn.addEventListener("click", clearNoPriorBudgetFlag);
+  });
+}
+
+function clearNoPriorBudgetFlag() {
+  if (!selectedEntity) return;
+  if (!confirm("Clear the no-prior-budget flag for this entity? The 2026 Approved Budget file in SharePoint will then be used during the build.")) return;
+  fetch("/api/wizard/" + selectedEntity + "/acknowledge-no-prior-budget", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({acknowledged: false}),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.ok) {
+        // Re-render the foundation panel so the banner disappears and the
+        // approved_2026 file shows up in its "ready to import" state.
+        loadFoundationStatus();
+      } else {
+        alert("Could not clear flag: " + (data.error || "unknown"));
+      }
+    })
+    .catch(function (err) { alert("Request failed: " + err); });
 }
 
 function acknowledgeNoPriorBudget() {
