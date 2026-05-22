@@ -11447,6 +11447,58 @@ DASHBOARD_TEMPLATE = r"""
     background: var(--blue-light);
     color: var(--blue);
   }
+  /* FA dir 2026-05-22 (B2): per-source mini-tile data status. */
+  .ds-tiles {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .ds-tile {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    height: 30px;
+    padding: 2px 4px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    cursor: pointer;
+    line-height: 1;
+    transition: transform 0.1s, box-shadow 0.1s;
+  }
+  .ds-tile:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+  }
+  .ds-tile .t-letter {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .ds-tile .t-dt {
+    font-size: 9px;
+    margin-top: 1px;
+    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+  }
+  .ds-tile.ok {
+    background: #def7ec;
+    color: #065f46;
+    border-color: #a7f3d0;
+  }
+  .ds-tile.miss {
+    background: #fef2f2;
+    color: #991b1b;
+    border-color: #fecaca;
+  }
+  .ds-tile.ready {
+    background: #fef3c7;
+    color: #92400e;
+    border-color: #fcd34d;
+  }
   .pill-fa_review {
     background: var(--orange-light);
     color: var(--orange);
@@ -11754,17 +11806,30 @@ function renderBudgets(budgets) {
         `</div></div>`;
     }
 
-    // Compact data status: icons + dates on one line
+    // FA dir 2026-05-22 (B2): mini-tile data status. Each source = one
+    // color-coded square (B/E/Y/A) with tooltip on hover showing the date,
+    // and click → jumps to the wizard at Step 2 for that source. Replaces
+    // the previous `✗Bud — ✗Exp — ✓YSL 5/21 ✗AP —` text cell which was
+    // hard to scan across 147 rows and didn't link to a fix path.
     const ts = b.timestamps || {};
-    function fmtDt(iso) { if (!iso) return '—'; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
+    function fmtDt(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
     const dataItems = [
-      { label: 'Bud', ok: !!ts.budget_summary, dt: ts.budget_summary, tip: 'Budget summary imported' },
-      { label: 'Exp', ok: b.has_expenses, dt: ts.expense_dist, tip: 'Expense distribution' },
-      { label: 'YSL', ok: !!ts.ysl, dt: ts.ysl, tip: 'YSL data from Yardi' },
-      { label: 'AP', ok: !!ts.open_ap, dt: ts.open_ap, tip: 'AP Aging imported' }
+      { letter: 'B', label: 'Budget',  ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget' },
+      { letter: 'E', label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution' },
+      { letter: 'Y', label: 'YSL',     ok: !!ts.ysl,             dt: ts.ysl,            focus: 'ysl' },
+      { letter: 'A', label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging' },
     ];
-    const dataHtml = '<div style="font-size:11px; display:flex; gap:8px; flex-wrap:nowrap; white-space:nowrap;">' +
-      dataItems.map(i => `<span title="${i.tip}" style="color:${i.ok ? 'var(--green)' : 'var(--gray-300)'};">${i.ok ? '&#10003;' : '&#10007;'}${i.label} <span style="font-size:10px;">${fmtDt(i.dt)}</span></span>`).join('') +
+    const dataHtml = '<div class="ds-tiles">' +
+      dataItems.map(function (i) {
+        const cls = i.ok ? 'ds-tile ok' : 'ds-tile miss';
+        const dt = fmtDt(i.dt);
+        const tipBody = i.ok ? (i.label + ' — ingested ' + (dt || '?')) : (i.label + ' — not ingested · click to open wizard');
+        const wizUrl = '/wizard/' + b.entity_code + '?step=2&focus=' + i.focus;
+        return '<a href="' + wizUrl + '" class="' + cls + '" title="' + tipBody.replace(/"/g, '&quot;') + '" data-focus="' + i.focus + '">' +
+                 '<span class="t-letter">' + i.letter + '</span>' +
+                 (i.ok && dt ? '<span class="t-dt">' + dt + '</span>' : '') +
+               '</a>';
+      }).join('') +
       '</div>';
 
     // SLA: days in current status (using updated_at as proxy)
