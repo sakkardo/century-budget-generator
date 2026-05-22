@@ -667,7 +667,13 @@ If a category is a direct 1:1 match (auditor used the same name), still include 
 Extract all line items using the auditor's own descriptions.
 """
 
-            extraction_prompt = f"""
+            # FA dir 2026-05-22: tighten prompt to prevent prose responses
+            # (entity 847 — Claude wrote "Looking at this audited financial
+            # statement... However, I need budget categories to..." instead
+            # of JSON, causing JSON parse fail). The first sentence + final
+            # rule explicitly forbid any non-JSON tokens.
+            extraction_prompt = f"""You return ONLY a single JSON object. No prose, no questions, no explanations, no markdown — JSON is the entire response.
+
 You are analyzing an audited financial statement for {building_name}.
 
 Find the Schedule of Expenses and Schedule of Revenue pages, AND any
@@ -721,18 +727,57 @@ RULES:
 - source_lines amounts must sum to the parent item's amounts
 - Be precise with numbers. Include all line items found.
 - Revenue total and expense total must equal the audited totals in the PDF.
-"""
+- The Schedule of Revenue is REQUIRED — even if it's a single line like
+  "Maintenance charges," include it as one item in revenue.items.
+- The Schedule of Expenses is REQUIRED — extract every line item you see,
+  not just the totals. If you can only find totals + footnotes, look harder
+  for the line-by-line schedule (usually pages 8-15). Do NOT return empty
+  expenses.categories with only total_expenses populated.
+- If, after a thorough search, the PDF genuinely has no line-item detail,
+  respond with a JSON object that has "_no_lines_found": true plus the totals.
+  Do NOT respond with prose explaining this — respond with the JSON.
 
-            # max_tokens=16384: full audit extraction with source_lines for 30+
-            # line items easily exceeds 4096 (the prior cap). Hitting the cap
-            # produces truncated JSON → json.loads fails AND ("Expecting value:
-            # line 1 column 1") if the response is somehow empty. 16384 is the
-            # safe ceiling for current Claude models.
-            # One retry on empty/truncated response — transient API issues happen.
+YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end with a close brace. No other characters anywhere."""
+
+            # FA dir 2026-05-22: rewrite the retry loop to cover three failure
+            # modes seen on the readiness audit:
+            #   (1) Empty text response (model hiccup)
+            #   (2) Prose response — "Looking at this audited statement..." —
+            #       JSON parse fails, see entity 847
+            #   (3) JSON parses but items[]/categories{} are empty even though
+            #       the PDF has line-level schedules — entities 500, 810
+            # Up to 3 attempts; each retry appends an escalating reminder.
+            # max_tokens=16384: enough headroom for 30+ line items + source_lines.
+            extracted = None
             last_err = None
-            response_text = ""
             stop_reason = None
-            for attempt in range(2):
+            for attempt in range(3):
+                # Build the prompt — on retries, prepend a corrective directive.
+                if attempt == 0:
+                    prompt = extraction_prompt
+                elif attempt == 1:
+                    # Most common retry case: empty items or prose. Lead with
+                    # what failed so Claude's tendency to "explain" is redirected.
+                    prompt = (
+                        "RETRY — your previous response failed validation. Reasons it may have failed:\n"
+                        "  - You returned prose / questions instead of JSON\n"
+                        "  - You returned empty revenue.items or empty expenses.categories\n"
+                        "  - You returned only the schedule totals and skipped line items\n"
+                        "Read the PDF more carefully, find the line-item Schedule of Expenses\n"
+                        "(usually 1-2 pages of itemized expenses with two columns of $ amounts).\n"
+                        "Respond ONLY with the JSON object specified below. No text outside the JSON.\n\n"
+                        + extraction_prompt
+                    )
+                else:
+                    # Last-ditch retry: be as terse + directive as possible.
+                    prompt = (
+                        "LAST ATTEMPT. Return a JSON object. Begin with { end with }. Nothing else.\n"
+                        "Required keys: building_name, fiscal_years, revenue.items, expenses.categories.\n"
+                        "Each item: {description, amounts:[year0,year1], source_lines:[{auditor_desc, amounts}]}.\n"
+                        "If line items truly aren't in the PDF: set \"_no_lines_found\": true and return the totals.\n\n"
+                        + extraction_prompt
+                    )
+
                 message = client.messages.create(
                     model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
                     max_tokens=16384,
@@ -750,59 +795,94 @@ RULES:
                                 },
                                 {
                                     "type": "text",
-                                    "text": extraction_prompt
+                                    "text": prompt
                                 }
                             ]
                         }
                     ]
                 )
                 stop_reason = getattr(message, "stop_reason", None)
-                # Pull the first text block. content can be a list of TextBlock /
-                # ToolUseBlock / ThinkingBlock; only TextBlock has .text.
                 response_text = ""
                 for block in (message.content or []):
                     t = getattr(block, "text", None)
                     if isinstance(t, str) and t.strip():
                         response_text = t.strip()
                         break
-                if response_text:
-                    break  # got a non-empty response, exit retry loop
-                last_err = f"empty Claude response (attempt {attempt+1}, stop_reason={stop_reason})"
-                logger.warning(f"extract_from_pdf: {last_err}")
 
-            if not response_text:
-                # Two attempts in, still empty. Give a real error message.
+                # Empty text — retry
+                if not response_text:
+                    last_err = f"empty Claude response (attempt {attempt+1}, stop_reason={stop_reason})"
+                    logger.warning(f"extract_from_pdf: {last_err}")
+                    continue
+
+                # Strip markdown fences
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.startswith("```"):
+                    response_text = response_text[3:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+                response_text = response_text.strip()
+
+                # Prose detection — response doesn't start with { (JSON object).
+                # Bail to retry rather than wasting a json.loads.
+                if not response_text.lstrip().startswith("{"):
+                    last_err = (
+                        f"Claude returned prose, not JSON (attempt {attempt+1}). "
+                        f"First 200 chars: {response_text[:200]!r}"
+                    )
+                    logger.warning(f"extract_from_pdf: {last_err}")
+                    continue
+
+                # Parse — bad JSON → retry (unless this is the last attempt)
+                try:
+                    candidate = json.loads(response_text)
+                except json.JSONDecodeError as jde:
+                    last_err = f"JSON parse failed (attempt {attempt+1}): {jde}"
+                    logger.warning(f"extract_from_pdf: {last_err}")
+                    if attempt < 2:
+                        continue
+                    # On final attempt, re-raise the way the old code did.
+                    hint = " (response was truncated — JSON cut off mid-generation)" if stop_reason == "max_tokens" else ""
+                    head = response_text[:200].replace("\n", " ")
+                    tail = response_text[-200:].replace("\n", " ")
+                    raise RuntimeError(
+                        f"Claude returned non-JSON response{hint}. "
+                        f"JSON error: {jde}. First 200 chars: {head!r} ... last 200 chars: {tail!r}"
+                    ) from jde
+
+                # Empty-items detection — JSON valid but the items arrays are
+                # empty AND Claude didn't explicitly flag _no_lines_found.
+                # This is the 500 + 810 failure mode.
+                rev_items = ((candidate.get("revenue") or {}).get("items") or [])
+                exp_cats_raw = (candidate.get("expenses") or {}).get("categories")
+                exp_items_count = 0
+                if isinstance(exp_cats_raw, dict):
+                    for v in exp_cats_raw.values():
+                        if isinstance(v, list):
+                            exp_items_count += len(v)
+                        elif isinstance(v, dict):
+                            exp_items_count += 1
+                elif isinstance(exp_cats_raw, list):
+                    for c in exp_cats_raw:
+                        exp_items_count += len(c.get("items") or [])
+                no_lines_flag = bool(candidate.get("_no_lines_found"))
+                if not no_lines_flag and len(rev_items) == 0 and exp_items_count == 0:
+                    last_err = f"empty extraction — 0 rev + 0 exp items (attempt {attempt+1})"
+                    logger.warning(f"extract_from_pdf: {last_err}")
+                    if attempt < 2:
+                        continue
+                    # Final attempt — accept the empty result and let downstream
+                    # show a clean "no line items extracted" message.
+
+                extracted = candidate
+                break
+
+            if extracted is None:
                 raise RuntimeError(
-                    f"Claude returned no text content for this PDF "
-                    f"(stop_reason={stop_reason}). The PDF was {len(pdf_data)//1024} KB base64. "
-                    f"Try splitting the PDF or check the model name."
+                    f"Claude extraction failed after 3 attempts. Last error: {last_err}. "
+                    f"PDF was {len(pdf_data)//1024} KB base64."
                 )
-
-            # Strip markdown code fences if Claude wrapped the JSON (despite the
-            # "ONLY valid JSON" instruction — it sometimes still does).
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            response_text = response_text.strip()
-
-            try:
-                extracted = json.loads(response_text)
-            except json.JSONDecodeError as jde:
-                # Truncated JSON usually has a specific column number. If
-                # stop_reason was "max_tokens", we know it was truncation.
-                hint = ""
-                if stop_reason == "max_tokens":
-                    hint = " (response was truncated — JSON cut off mid-generation)"
-                head = response_text[:200].replace("\n", " ")
-                tail = response_text[-200:].replace("\n", " ")
-                raise RuntimeError(
-                    f"Claude returned non-JSON response{hint}. "
-                    f"JSON error: {jde}. "
-                    f"First 200 chars: {head!r} ... last 200 chars: {tail!r}"
-                ) from jde
 
             return extracted
 
