@@ -1616,19 +1616,57 @@ function renderSharepointSources() {
     { key: "ap_aging",             label: "AP Aging" },
     { key: "maint_proof",          label: "Maintenance Proof" }
   ];
+  // FA dir 2026-05-22 (A2): honest 3-state per source. The previous logic
+  // collapsed "file found in SP" and "ingested into budget" into one green
+  // ✓ — which is why the dashboard could show ✗YSL even though wizard
+  // step 2 looked fully checked. New states:
+  //   ingested   = file detected AND already in _wizardSelections → green
+  //   ingesting  = auto-ingest fired this session, awaiting server → blue dot
+  //   ready      = file detected, not yet ingested → amber (will auto-fire)
+  //   missing    = no file in SP folder → existing "not in folder" copy
+  function _stateFor(slotKey, hasFile) {
+    if (_wizardSelections && _wizardSelections[slotKey]) return 'ingested';
+    if (!hasFile) return 'missing';
+    const ent = selectedEntity;
+    if (ent && sessionStorage.getItem('cb_auto_' + ent + '_' + slotKey) === 'fired') {
+      return 'ingesting';
+    }
+    return 'ready';
+  }
+  function _ingestedAtFor(slotKey) {
+    try {
+      const sel = (_wizardSelections || {})[slotKey];
+      if (sel && sel.selected_at) {
+        const d = new Date(sel.selected_at);
+        return (d.getMonth()+1) + '/' + d.getDate();
+      }
+    } catch (e) {}
+    return '';
+  }
   let html = "";
   slots.forEach(function (slot) {
     const files = (_spSources.by_source_type[slot.key] || []);
     const hasAny = files.length > 0;
-    const headerColor = hasAny ? "#15803d" : "#b45309";
-    const headerIcon = hasAny ? "✓" : "↑";
-    const headerNote = hasAny ? "found in SharePoint" : "not in folder — use upload below";
+    const state = _stateFor(slot.key, hasAny);
+    // Header pill: state-aware label + color
+    let headerColor = "#b45309", headerIcon = "↑", headerNote = "not in folder — use upload below";
+    if (state === 'ingested') {
+      headerColor = "#15803d"; headerIcon = "✓";
+      const dt = _ingestedAtFor(slot.key);
+      headerNote = dt ? ("ingested " + dt) : "ingested";
+    } else if (state === 'ingesting') {
+      headerColor = "#1d4ed8"; headerIcon = "⟳";
+      headerNote = "auto-ingesting…";
+    } else if (state === 'ready') {
+      headerColor = "#92400e"; headerIcon = "📥";
+      headerNote = "ready — will auto-ingest";
+    }
     html += "<div style=\"border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px;\">";
     html += "<div style=\"display:flex; align-items:center; gap:10px; margin-bottom:" + (hasAny ? "8px" : "0") + ";\">";
     html += "<span style=\"color:" + headerColor + "; font-weight:700;\">" + headerIcon + "</span>";
     html += "<span style=\"font-weight:600;\">" + slot.label + "</span>";
     html += "<span style=\"flex:1\"></span>";
-    html += "<span style=\"font-size:12px; color:" + headerColor + ";\">" + headerNote + "</span>";
+    html += "<span style=\"font-size:12px; color:" + headerColor + "; font-weight:600;\">" + headerNote + "</span>";
     html += "</div>";
     if (hasAny) {
       files.forEach(function (f) {
@@ -1638,7 +1676,18 @@ function renderSharepointSources() {
         if (f.web_url) {
           html += "<a href=\"" + f.web_url + "\" target=\"_blank\" rel=\"noopener\" style=\"font-size:12px; color:var(--blue); text-decoration:none;\">Open in SP ↗</a>";
         }
-        html += "<button type=\"button\" data-action=\"select-yardi\" data-source-type=\"" + escapeHtmlAttr(slot.key) + "\" data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\" data-filename=\"" + escapeHtmlAttr(f.name) + "\" style=\"font-size:12px; padding:5px 10px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;\">Select for build</button>";
+        // Action button copy varies by state:
+        //   ingested  → "⟳ Re-ingest"  (manual override)
+        //   ingesting → disabled "Working…"
+        //   ready     → "Ingest now" (manual fallback if auto-ingest can't fire)
+        let btnLabel = "Ingest now", btnDisabled = false, btnStyle = "border:1px solid var(--blue); color:var(--blue);";
+        if (state === 'ingested') { btnLabel = "⟳ Re-ingest"; btnStyle = "border:1px solid var(--gray-300); color:var(--gray-700);"; }
+        else if (state === 'ingesting') { btnLabel = "Working…"; btnDisabled = true; btnStyle = "border:1px solid var(--gray-300); color:var(--gray-500); opacity:0.6;"; }
+        html += "<button type=\"button\" data-action=\"select-yardi\"" + (btnDisabled ? " disabled" : "") +
+                " data-source-type=\"" + escapeHtmlAttr(slot.key) + "\"" +
+                " data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\"" +
+                " data-filename=\"" + escapeHtmlAttr(f.name) + "\"" +
+                " style=\"font-size:12px; padding:5px 10px; background:white; border-radius:4px; cursor:" + (btnDisabled ? "not-allowed" : "pointer") + "; font-weight:600; " + btnStyle + "\">" + btnLabel + "</button>";
         html += "</div>";
       });
     }
@@ -1660,6 +1709,33 @@ function renderSharepointSources() {
         btn.getAttribute('data-filename')
       );
     });
+  });
+  // Kick off auto-ingest AFTER rendering — small delay so the FA actually
+  // sees the "📥 Ready" state for a beat before it flips to "⟳ Auto-ingesting".
+  try { setTimeout(_maybeAutoIngestSources, 350); } catch (e) {}
+}
+
+// FA dir 2026-05-22 (A2): auto-ingest controller. For each Yardi source
+// slot, if (a) we have exactly ONE matching SP file (ambiguous matches get
+// skipped — FA must pick manually), (b) the FA hasn't already ingested it
+// (no entry in _wizardSelections), and (c) we haven't already attempted
+// this session (sessionStorage guard), kick off /use-sp-source silently.
+// Failures don't auto-retry — the "Ingest now" button stays available so
+// the FA can manually trigger if auto-ingest hits a parse error.
+function _maybeAutoIngestSources() {
+  if (!_spSources || !_spSources.by_source_type) return;
+  const ent = selectedEntity;
+  if (!ent) return;
+  ['ysl', 'expense_distribution', 'ap_aging', 'maint_proof'].forEach(function (srcType) {
+    if (_wizardSelections && _wizardSelections[srcType]) return;
+    const files = _spSources.by_source_type[srcType] || [];
+    if (files.length !== 1) return;
+    const key = 'cb_auto_' + ent + '_' + srcType;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, 'fired');
+    const f = files[0];
+    // Silent ingest: same endpoint, no alert() popups on success.
+    useSharepointFile(srcType, f.item_id, f.name, true);
   });
 }
 
@@ -1846,12 +1922,16 @@ function escapeHtmlAttr(s) {
   return String(s || "").replace(/'/g, "&apos;").replace(/"/g, "&quot;");
 }
 
-function useSharepointFile(sourceType, itemId, filename) {
+function useSharepointFile(sourceType, itemId, filename, auto) {
+  // `auto`: when true, suppress alert() popups for success and failure \u2014
+  // used by _maybeAutoIngestSources() so the FA doesn't get hit with
+  // confirm() prompts every time wizard step 2 loads. Errors still surface
+  // in the console + via the button reverting to "Ingest now".
   const ent = selectedEntity;
   if (!ent) return;
   // Find the clicked button and disable it with a working indicator.
   const btn = document.querySelector('button[data-action="select-yardi"][data-item-id="' + itemId.replace(/"/g, '\\\"') + '"]');
-  let originalText = "Select for build";
+  let originalText = "Ingest now";
   if (btn) {
     originalText = btn.textContent;
     btn.disabled = true;
@@ -1880,7 +1960,7 @@ function useSharepointFile(sourceType, itemId, filename) {
       if (data.ok) {
         if (data.selections) { _wizardSelections = data.selections; }
         loadFoundationStatus();
-        if (data.parse_result) {
+        if (data.parse_result && !auto) {
           const pr = data.parse_result;
           let msg;
           if (pr.source_type === "audit_2025") {
@@ -1893,24 +1973,42 @@ function useSharepointFile(sourceType, itemId, filename) {
             alert(msg);
           }
         }
+        // For auto-ingests, console-log success quietly. Re-render the
+        // sources panel so the row flips from "auto-ingesting" \u2192 "ingested".
+        if (auto && data.parse_result) {
+          try { console.info("[A2] Auto-ingested " + sourceType + ": ", data.parse_result); } catch (e) {}
+        }
         loadSharepointSources();
       } else {
         const err = data.parse_error || data.error || ("HTTP " + resp.status);
-        alert("Click failed: " + err);
+        if (!auto) {
+          alert("Click failed: " + err);
+        } else {
+          // Auto-ingest failed \u2014 log + leave the session marker so we don't
+          // retry in a loop. FA can click "Ingest now" manually to retry.
+          try { console.warn("[A2] Auto-ingest failed for " + sourceType + ": " + err); } catch (e) {}
+        }
         if (btn) {
           btn.disabled = false;
           btn.textContent = originalText;
           btn.style.opacity = "1";
         }
+        // Re-render so the row flips back to "Ready" state with manual button.
+        try { renderSharepointSources(); } catch (e) {}
       }
     })
     .catch(function (err) {
-      alert("Request failed: " + err);
+      if (!auto) {
+        alert("Request failed: " + err);
+      } else {
+        try { console.warn("[A2] Auto-ingest network failure for " + sourceType + ": " + err); } catch (e) {}
+      }
       if (btn) {
         btn.disabled = false;
         btn.textContent = originalText;
         btn.style.opacity = "1";
       }
+      try { renderSharepointSources(); } catch (e) {}
     });
 }
 
