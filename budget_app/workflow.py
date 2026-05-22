@@ -2057,6 +2057,29 @@ def create_workflow_blueprint(db):
         except Exception:
             db.session.rollback()
 
+        # 5) FA dir 2026-05-22: latest audit upload per entity for the new
+        # "Au" tile on the FA dashboard. Returns id (for click-through to the
+        # review page), status (drives green/amber/red), and timestamp.
+        # DISTINCT ON keeps the most-recently-touched upload per entity.
+        audit_info = {}
+        try:
+            rows = db.session.execute(db.text("""
+                SELECT DISTINCT ON (entity_code)
+                  entity_code, id, status, confirmed_at, created_at
+                FROM audit_uploads
+                ORDER BY entity_code,
+                  COALESCE(confirmed_at, created_at) DESC NULLS LAST
+            """)).fetchall()
+            for r in rows:
+                ts = r[3] or r[4]
+                audit_info[r[0]] = {
+                    "id": r[1],
+                    "status": r[2] or "uploaded",
+                    "ts": ts.isoformat() if ts else None,
+                }
+        except Exception:
+            db.session.rollback()
+
         result = []
         for b in budgets:
             d = b.to_dict()
@@ -2068,7 +2091,10 @@ def create_workflow_blueprint(db):
                 "ysl": ysl_ts.get(ec),
                 "expense_dist": expense_ts.get(ec),
                 "open_ap": open_ap_ts.get(ec),
+                "audit": (audit_info.get(ec) or {}).get("ts"),
             }
+            # Latest audit info for the Au tile renderer on the dashboard.
+            d["audit"] = audit_info.get(ec) or None
             result.append(d)
         return jsonify(result)
 
@@ -11584,14 +11610,16 @@ DASHBOARD_TEMPLATE = r"""
       <!-- FA dir 2026-05-22: legend for the Data Status mini-tiles. -->
       <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
         <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Data Status tiles</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">B</span></span> 2026 Budget summary</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">E</span></span> Expense Distribution</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">B</span></span> 2026 Budget</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">E</span></span> Expense Dist.</span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">Y</span></span> YSL (Yardi GL)</span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">A</span></span> AP Aging</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">Au</span></span> Audited Financials</span>
         <span style="color:var(--gray-300); margin:0 2px;">·</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:18px; height:14px;">✓</span> ingested</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:18px; height:14px;">✓</span> ingested / confirmed</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="width:18px; height:14px;">!</span> in progress</span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:18px; height:14px;">✗</span> missing</span>
-        <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard ↗</span>
+        <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
       </div>
       <div id="buildingsTableWrap">
         <table id="budgets-table">
@@ -11819,30 +11847,58 @@ function renderBudgets(budgets) {
     }
 
     // FA dir 2026-05-22 (B2): mini-tile data status. Each source = one
-    // color-coded square (B/E/Y/A) with tooltip on hover showing the date,
-    // and click → jumps to the wizard at Step 2 for that source. Replaces
-    // the previous `✗Bud — ✗Exp — ✓YSL 5/21 ✗AP —` text cell which was
-    // hard to scan across 147 rows and didn't link to a fix path.
+    // color-coded square (B/E/Y/A/Au) with tooltip on hover showing the date,
+    // and click → jumps to the wizard at Step 2 for that source, or audit
+    // review page for Au. Replaces the previous text cell.
     const ts = b.timestamps || {};
     function fmtDt(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
     const dataItems = [
-      { letter: 'B', label: 'Budget',  ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget' },
-      { letter: 'E', label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution' },
-      { letter: 'Y', label: 'YSL',     ok: !!ts.ysl,             dt: ts.ysl,            focus: 'ysl' },
-      { letter: 'A', label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging' },
+      { letter: 'B',  label: 'Budget',   ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget' },
+      { letter: 'E',  label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution' },
+      { letter: 'Y',  label: 'YSL',      ok: !!ts.ysl,            dt: ts.ysl,            focus: 'ysl' },
+      { letter: 'A',  label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging' },
     ];
-    const dataHtml = '<div class="ds-tiles">' +
-      dataItems.map(function (i) {
-        const cls = i.ok ? 'ds-tile ok' : 'ds-tile miss';
-        const dt = fmtDt(i.dt);
-        const tipBody = i.ok ? (i.label + ' — ingested ' + (dt || '?')) : (i.label + ' — not ingested · click to open wizard');
-        const wizUrl = '/wizard/' + b.entity_code + '?step=2&focus=' + i.focus;
-        return '<a href="' + wizUrl + '" class="' + cls + '" title="' + tipBody.replace(/"/g, '&quot;') + '" data-focus="' + i.focus + '">' +
-                 '<span class="t-letter">' + i.letter + '</span>' +
-                 (i.ok && dt ? '<span class="t-dt">' + dt + '</span>' : '') +
-               '</a>';
-      }).join('') +
-      '</div>';
+    const tiles = dataItems.map(function (i) {
+      const cls = i.ok ? 'ds-tile ok' : 'ds-tile miss';
+      const dt = fmtDt(i.dt);
+      const tipBody = i.ok ? (i.label + ' — ingested ' + (dt || '?')) : (i.label + ' — not ingested · click to open wizard');
+      const wizUrl = '/wizard/' + b.entity_code + '?step=2&focus=' + i.focus;
+      return '<a href="' + wizUrl + '" class="' + cls + '" title="' + tipBody.replace(/"/g, '&quot;') + '" data-focus="' + i.focus + '">' +
+               '<span class="t-letter">' + i.letter + '</span>' +
+               (i.ok && dt ? '<span class="t-dt">' + dt + '</span>' : '') +
+             '</a>';
+    });
+    // FA dir 2026-05-22: Au tile = audited financial status. Three-state:
+    //   green  ('ok')    = audit status 'confirmed' — FA signed off on mapping
+    //   amber  ('ready') = audit status 'extracted' or 'mapped' — Claude got
+    //                      the data but FA still has work to do
+    //   red    ('miss')  = no audit_uploads row for this entity yet
+    // Click target depends on state — if we have an upload id, go to the
+    // review page; otherwise jump to the wizard's audit slot.
+    const au = b.audit || null;
+    let auCls = 'ds-tile miss';
+    let auTip = 'Audit — not uploaded · click to open wizard';
+    let auHref = '/wizard/' + b.entity_code + '?step=2&focus=audit_2025';
+    let auDt = '';
+    if (au) {
+      const dt = fmtDt(ts.audit);
+      auDt = dt;
+      if (au.status === 'confirmed') {
+        auCls = 'ds-tile ok';
+        auTip = 'Audit confirmed ' + (dt || '');
+      } else {
+        auCls = 'ds-tile ready';
+        auTip = 'Audit ' + au.status + ' — FA still mapping · click to review';
+      }
+      if (au.id) auHref = '/audited-financials/review/' + au.id;
+    }
+    tiles.push(
+      '<a href="' + auHref + '" class="' + auCls + '" title="' + auTip.replace(/"/g, '&quot;') + '" data-focus="audit">' +
+        '<span class="t-letter">Au</span>' +
+        (auDt && au && au.status === 'confirmed' ? '<span class="t-dt">' + auDt + '</span>' : '') +
+      '</a>'
+    );
+    const dataHtml = '<div class="ds-tiles">' + tiles.join('') + '</div>';
 
     // SLA: days in current status (using updated_at as proxy)
     // For Setup entities (no work yet), show 0d in gray — the row\'s updated_at
