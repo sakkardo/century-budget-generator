@@ -1962,46 +1962,75 @@ async function uploadAll() {
             return s.includes('non-operating');
         }).slice().sort();
         const bldgSet = new Set(buildingLabels);
-        // "Other portfolio" = everything in the portfolio universe minus
-        // this building's own labels AND minus the Standard Century tier
-        // (which we'll render as its own group above).
-        const otherCentury = centuryCategories.filter(c => !bldgSet.has(c) && !standardCenturySet.has(c)).sort();
 
-        // FA dir 2026-05-21: split otherCentury by section so the dropdown
-        // always shows a clear Income / Expenses / Non-Operating breakdown,
-        // even when this building has no labels of its own (e.g. 106 / 5 W 14
-        // foundation_no_prior_budget). Without this, "Show all Century cats"
-        // produced one flat group of 70+ options with no visual hierarchy.
         function _sectionOfCenturyCat(c) {
             const s = (CENTURY_TO_SUMMARY[c] || '').toLowerCase();
             if (s.includes('non-operating')) return 'non-op';
             if (s.includes('income')) return 'income';
             return 'expense';  // default + explicit expense rows
         }
-        const otherIncome = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'income');
-        const otherExpense = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'expense');
-        const otherNonOp = otherCentury.filter(c => _sectionOfCenturyCat(c) === 'non-op');
-
-        // Standard Century tier — partition by section using its own
-        // pre-computed sections dict (passed from Python).
         function _sectionOfStdCat(c) {
             const s = (standardCenturySections[c] || '').toLowerCase();
             if (s.includes('non-operating')) return 'non-op';
             if (s.includes('income')) return 'income';
             return 'expense';
         }
+
+        // Standard Century tier — full curated CENTURY_CATEGORIES list,
+        // partitioned by section.
         const stdIncome = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'income');
         const stdExpense = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'expense');
         const stdNonOp = standardCenturyLabels.filter(c => _sectionOfStdCat(c) === 'non-op');
+        const stdIncomeSet = new Set(stdIncome);
+        const stdExpenseSet = new Set(stdExpense);
+        const stdNonOpSet = new Set(stdNonOp);
+
+        // FA dir 2026-05-22: two visible sections were dropped per FA review
+        // (their items aren't really "standard"):
+        //   • "Expenses (this building)" — fold those labels into
+        //     "Other portfolio — Expenses" (long-tail, behind the toggle).
+        //   • "Standard Century — Non-Operating" — fold into
+        //     "Other portfolio — Non-Operating" so non-op items stay
+        //     reachable via search or the expand button.
+        // "Other portfolio" base = portfolio universe minus standard (which
+        // already covers the common case) minus any building Income/Non-Op
+        // labels we ARE still rendering (avoid double-counting).
+        const bldgIncomeSet = new Set(buildingLabels.filter(c => {
+            const s = (buildingLabelSections[c] || '').toLowerCase();
+            return s.includes('income') && !s.includes('non-operating');
+        }));
+        const bldgNonOpSet = new Set(buildingLabels.filter(c => {
+            const s = (buildingLabelSections[c] || '').toLowerCase();
+            return s.includes('non-operating');
+        }));
+        const _otherBase = centuryCategories.filter(c =>
+            !stdIncomeSet.has(c) && !stdExpenseSet.has(c) && !stdNonOpSet.has(c) &&
+            !bldgIncomeSet.has(c) && !bldgNonOpSet.has(c)
+        );
+        const _baseIncome = _otherBase.filter(c => _sectionOfCenturyCat(c) === 'income');
+        const _baseExpense = _otherBase.filter(c => _sectionOfCenturyCat(c) === 'expense');
+        const _baseNonOp = _otherBase.filter(c => _sectionOfCenturyCat(c) === 'non-op');
+        // Building's own expense labels move into Other-Expenses (no longer
+        // rendered as a top-level "Expenses (this building)" group). Standard
+        // non-op canonicals move into Other-NonOp.
+        const _bldgExpenseExtras = bldgExpense.filter(c =>
+            !stdExpenseSet.has(c) && !_baseExpense.includes(c)
+        );
+        const otherIncome = _baseIncome.sort();
+        const otherExpense = [..._baseExpense, ..._bldgExpenseExtras].sort();
+        const otherNonOp = [..._baseNonOp, ...stdNonOp].sort();
 
         // Scope toggle declared up-front so buildSelectOptions can read it.
         // toggleCategoryScope() further down flips this and rebuilds dropdowns.
-        // Auto-on ONLY when a suggestion lands in the long-tail portfolio
-        // (outside both building labels AND Standard Century). With the
-        // Standard tier always visible, most common suggestions are already
-        // reachable without needing showAll.
+        // Auto-on when a suggestion lands OUTSIDE the default-visible tiers
+        // (i.e. in Other-portfolio). visibleDefaultSet captures everything
+        // we render without the long-tail toggle being on.
+        const _visibleDefaultSet = new Set([
+            ...bldgIncome, ...bldgNonOp,
+            ...stdIncome, ...stdExpense,
+        ]);
         let _showAllScope = Object.values(suggestedCategories).some(s =>
-            s && !buildingLabelSet.has(s) && !standardCenturySet.has(s)
+            s && !_visibleDefaultSet.has(s)
         );
 
         function _renderOptgroup(label, items, currentMapping) {
@@ -2015,21 +2044,24 @@ async function uploadAll() {
         }
 
         function buildSelectOptions(currentMapping) {
-            // FA dir 2026-05-21: always include EVERY optgroup in the
-            // underlying <select> regardless of _showAllScope. The
-            // combobox's renderList controls what's visible in the popup —
-            // and we want the search to reach the full 280-item universe,
-            // not just the ~30 that happen to be in the default-visible
-            // tiers. The <select> must contain an <option> for every value
-            // we might assign to sel.value, otherwise the assignment silently
-            // fails when the FA picks a long-tail item via search.
+            // FA dir 2026-05-22: rendered sections (in order):
+            //   • Income (this building)        — building-specific income labels
+            //   • Non-Operating (this building) — building-specific non-op labels
+            //   • Standard Century — Income     — curated canonical income list
+            //   • Standard Century — Expenses   — curated canonical expense list
+            //   • Other portfolio — Income/Expenses/Non-Op (long-tail, hidden by default)
+            //
+            // Dropped per FA:
+            //   • Expenses (this building)      — folded into Other-Expenses
+            //   • Standard Century — Non-Op     — folded into Other-NonOp
+            //
+            // The <select> still has EVERY option as an <option>, so search
+            // and sel.value assignment continue to reach all 280 categories.
             let opts = '<option value="">— Select category —</option>';
             opts += _renderOptgroup('Income (this building)', bldgIncome, currentMapping);
-            opts += _renderOptgroup('Expenses (this building)', bldgExpense, currentMapping);
             opts += _renderOptgroup('Non-Operating (this building)', bldgNonOp, currentMapping);
             opts += _renderOptgroup('Standard Century — Income', stdIncome, currentMapping);
             opts += _renderOptgroup('Standard Century — Expenses', stdExpense, currentMapping);
-            opts += _renderOptgroup('Standard Century — Non-Operating', stdNonOp, currentMapping);
             opts += _renderOptgroup('Other portfolio — Income', otherIncome, currentMapping);
             opts += _renderOptgroup('Other portfolio — Expenses', otherExpense, currentMapping);
             opts += _renderOptgroup('Other portfolio — Non-Operating', otherNonOp, currentMapping);
@@ -3403,13 +3435,16 @@ async function uploadAll() {
         # FA dir 2026-05-21: standard Century tier — the curated canonical
         # list. Always reachable in the picker even when a building's own
         # summary rows are sparse (e.g. 5 West 14th / entity 106 only has
-        # "Water & Sewer" in budget_summary_rows). Without this tier the FA
-        # would have to dig through 250+ long-tail portfolio entries to find
-        # "Maintenance" or "Payroll".
-        # Standard set = CENTURY_CATEGORIES minus what's already in the
-        # building's own labels (no need to show duplicates).
+        # "Water & Sewer" in budget_summary_rows).
+        # FA dir 2026-05-22: do NOT subtract building labels from the
+        # standard set. Previously we deduped to avoid "Insurance" appearing
+        # twice (once in "Expenses (this building)" + once in Standard), but
+        # now that the "Expenses (this building)" tier is being dropped, the
+        # only place canonical labels can render is the Standard tier. So
+        # keep the full CENTURY_CATEGORIES list in Standard regardless of
+        # what the building has of its own.
         building_set = set(building_labels)
-        standard_century_labels = [c for c in sorted(CENTURY_CATEGORIES) if c not in building_set]
+        standard_century_labels = sorted(CENTURY_CATEGORIES)
         standard_century_sections = {
             c: _classify_label(c, None) for c in standard_century_labels
         }
