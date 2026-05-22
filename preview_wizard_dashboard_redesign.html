@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard + Dashboard Redesign Preview — 2026-05-22</title>
+<style>
+  :root {
+    --bg: #f4f1eb;
+    --card: #ffffff;
+    --text: #1a1714;
+    --muted: #6b6358;
+    --line: #d5cfc5;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --amber: #f59e0b;
+    --amber-light: #fff3cd;
+    --red: #b91c1c;
+    --red-light: #fde8e8;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    padding: 32px 24px 96px;
+  }
+  header.hero {
+    max-width: 1180px; margin: 0 auto 32px;
+    background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%);
+    color: #fff;
+    border-radius: 16px;
+    padding: 32px 36px;
+  }
+  header.hero h1 { font-size: 26px; font-weight: 700; }
+  header.hero p { font-size: 14px; opacity: 0.85; margin-top: 8px; max-width: 720px; }
+  .container { max-width: 1180px; margin: 0 auto; }
+  section.block {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 28px 32px;
+    margin-bottom: 24px;
+  }
+  section.block h2 {
+    font-size: 20px; font-weight: 700; color: var(--blue);
+    margin-bottom: 6px;
+  }
+  section.block .sub {
+    font-size: 13px; color: var(--muted); margin-bottom: 22px;
+  }
+  .variant-grid {
+    display: grid; gap: 20px;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 1000px) {
+    .variant-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+    .variant-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  }
+  .variant {
+    background: var(--gray-50);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 18px 22px;
+  }
+  .variant.current { background: #fef9c3; border-color: #fde047; }
+  .variant.pick   { background: #ecfdf5; border-color: #6ee7b7; }
+  .variant h3 {
+    font-size: 13px; font-weight: 700; color: var(--gray-700);
+    text-transform: uppercase; letter-spacing: 0.6px;
+    margin-bottom: 4px;
+  }
+  .variant .tag {
+    display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 8px; margin-left: 8px; vertical-align: middle;
+    background: var(--gray-200); color: var(--gray-700);
+  }
+  .variant .tag.current { background: #fde047; color: #713f12; }
+  .variant .tag.pick { background: var(--green); color: #fff; }
+  .variant p.note { font-size: 12px; color: var(--muted); margin: 6px 0 14px; }
+
+  /* ─────────────── Wizard source-card mock ─────────────── */
+  .src-card {
+    background: #fff; border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;
+  }
+  .src-head {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 600; font-size: 14px;
+  }
+  .src-head .right {
+    margin-left: auto; font-size: 11px; color: var(--muted);
+  }
+  .src-state {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; padding: 2px 9px; border-radius: 12px;
+    font-weight: 600;
+  }
+  .src-state.ok { background: var(--green-light); color: #065f46; }
+  .src-state.ready { background: var(--amber-light); color: #92400e; }
+  .src-state.idle { background: var(--gray-200); color: var(--gray-700); }
+  .src-state.running { background: #dbeafe; color: #1e40af; }
+  .src-state.error { background: var(--red-light); color: #9b1c1c; }
+  .src-state.dot::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; opacity: 0.7;
+  }
+  .src-body {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--muted);
+    margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--gray-200);
+  }
+  .src-body .file { color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+  .src-body .size { color: var(--muted); }
+  .src-body .actions { margin-left: auto; display: flex; gap: 6px; }
+  .btn {
+    font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    border: 1px solid var(--gray-300); background: #fff;
+    cursor: pointer; color: var(--text);
+  }
+  .btn-primary { background: var(--amber); color: #fff; border-color: var(--amber); }
+  .btn-link    { background: none; border: none; color: var(--blue);
+                 text-decoration: underline; padding: 4px 4px; }
+  .btn-ghost   { background: none; color: var(--muted); }
+
+  /* ─────────────── Dashboard row mock ─────────────── */
+  .dash-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    background: #fff; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .dash-table th, .dash-table td {
+    padding: 10px 12px; text-align: left;
+    border-bottom: 1px solid var(--gray-200); vertical-align: middle;
+  }
+  .dash-table th {
+    background: var(--gray-100); color: var(--gray-500);
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .dash-table tr:last-child td { border-bottom: none; }
+  /* Current cramped data-status cell */
+  .ds-cramped {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px; white-space: nowrap;
+  }
+  .ds-cramped .x { color: var(--red); }
+  .ds-cramped .v { color: var(--green); }
+  /* Variant B1: progress bar + summary */
+  .ds-bar {
+    display: flex; align-items: center; gap: 10px;
+    min-width: 180px;
+  }
+  .ds-bar .track {
+    flex: 1; height: 6px; background: var(--gray-200); border-radius: 3px; position: relative;
+  }
+  .ds-bar .fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--green); border-radius: 3px;
+  }
+  .ds-bar .fill.partial { background: var(--amber); }
+  .ds-bar .label {
+    font-size: 11px; color: var(--gray-700); white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Variant B2: 4 stacked tiles */
+  .ds-tiles { display: flex; gap: 4px; }
+  .ds-tile {
+    width: 28px; height: 24px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: var(--gray-700);
+    background: var(--gray-200); cursor: pointer;
+    border: 1px solid transparent;
+    position: relative;
+  }
+  .ds-tile.ok   { background: var(--green-light); color: #065f46; border-color: #6ee7b7; }
+  .ds-tile.miss { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+  .ds-tile.ready { background: var(--amber-light); color: #92400e; border-color: #fcd34d; }
+  .ds-tile .when {
+    position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; color: var(--muted); font-weight: 500;
+    white-space: nowrap;
+  }
+  /* Variant B3: status pill + count */
+  .ds-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; padding: 4px 10px;
+    border-radius: 12px;
+  }
+  .ds-pill.ready    { background: var(--green-light); color: #065f46; }
+  .ds-pill.partial  { background: var(--amber-light); color: #92400e; }
+  .ds-pill.missing  { background: var(--red-light);   color: #9b1c1c; }
+  .ds-pill.empty    { background: var(--gray-200);    color: var(--gray-700); }
+  .ds-detail {
+    font-size: 11px; color: var(--muted);
+    margin-left: 8px; font-family: ui-monospace, Menlo, monospace;
+  }
+
+  /* Footnote */
+  .pick-summary {
+    background: #ecfdf5; border: 1px solid #6ee7b7;
+    border-radius: 10px; padding: 18px 22px;
+    margin-top: 8px;
+  }
+  .pick-summary h3 { font-size: 14px; font-weight: 700; color: #065f46; }
+  .pick-summary p { font-size: 13px; color: #047857; margin-top: 4px; }
+
+  .legend-row {
+    display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px;
+    font-size: 12px; color: var(--gray-700);
+  }
+  .legend-row span { display: inline-flex; align-items: center; gap: 4px; }
+
+  pre.code-snippet {
+    background: #1f1b16; color: #e8e0d4;
+    padding: 12px 16px; border-radius: 6px;
+    font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Wizard + FA Dashboard — Status Redesign Preview</h1>
+  <p>
+    The wizard's green ✓ means "<b>file detected in SharePoint</b>" — not "<b>ingested into budget</b>".
+    The dashboard correctly reflects ingest state, but the wizard misleads the FA into thinking work is done
+    when only the file has been located. Below: two layers to fix, each with variants. Pick a combo.
+  </p>
+  <p style="margin-top:10px; font-size:12px; opacity:0.7;">
+    Sample data: entity 710 (157 East 72nd Condominium) — YSL ingested 5/21, Expense Distribution + AP Aging
+    + Maintenance Proof located in SharePoint but not yet ingested.
+  </p>
+</header>
+
+<div class="container">
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- LAYER 1: Wizard Step 2 — Yardi Sources card                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>Layer 1 · Wizard Step 2 — Yardi source cards</h2>
+    <p class="sub">
+      Current single-state ✓ collapses "detected" and "ingested" into one signal. Three options below.
+    </p>
+
+    <div class="variant-grid cols-3">
+
+      <!-- CURRENT ─────────────────────────── -->
+      <div class="variant current">
+        <h3>Current <span class="tag current">in prod</span></h3>
+        <p class="note">Green ✓ = "found in SP." FA reads it as "done." Must click <b>Select for build</b> to actually ingest.</p>
+        <div class="src-card">
+          <div class="src-head">
+            <span style="color: var(--green); font-size:16px;">✓</span> YSL
+            <span class="right">found in SharePoint</span>
+          </div>
+          <div class="src-body">
+            <span class="file">YSL_Annual_Budget_(60612)_710_Cash.xlsx</span>
+            <span class="size">75 KB</span>
+            <span class="actions">
+              <button class="btn-link">Open in SP ↗</button>
+              <button class="btn btn-primary">Select for build</button>
+            </span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span style="color: var(--green); font-size:16px;">✓</span> Expense Distribution
+            <span class="right">found in SharePoint</span>
+          </div>
+          <div class="src-body">
+            <span class="file">ExpenseDistribution05_21_2026.xlsx</span>
+            <span class="size">25 KB</span>
+            <span class="actions">
+              <button class="btn-link">Open in SP ↗</button>
+              <button class="btn btn-primary">Select for build</button>
+            </span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span style="color: var(--green); font-size:16px;">✓</span> AP Aging
+            <span class="right">found in SharePoint</span>
+          </div>
+        </div>
+        <div class="src-card" style="margin-bottom:0;">
+          <div class="src-head">
+            <span style="color: var(--green); font-size:16px;">✓</span> Maintenance Proof
+            <span class="right">found in SharePoint</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- VARIANT A1 ──────────────────────── -->
+      <div class="variant">
+        <h3>Variant A1 · Honest 3-state <span class="tag">manual confirm</span></h3>
+        <p class="note">
+          File detected = amber "Ready." Click ingest = green "Ingested" with date + line count.
+          FA always confirms — same step count as today, just truthful labels.
+        </p>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state ok">✓ Ingested</span> YSL
+            <span class="right">5/21 · 1,254 GL lines</span>
+          </div>
+          <div class="src-body">
+            <span class="file">YSL_Annual_Budget_(60612)_710_Cash.xlsx</span>
+            <span class="size">75 KB</span>
+            <span class="actions">
+              <button class="btn-link">Open in SP ↗</button>
+              <button class="btn btn-ghost">⟳ Re-ingest</button>
+            </span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state ready">📥 Ready</span> Expense Distribution
+            <span class="right">file dated 5/21</span>
+          </div>
+          <div class="src-body">
+            <span class="file">ExpenseDistribution05_21_2026.xlsx</span>
+            <span class="size">25 KB</span>
+            <span class="actions">
+              <button class="btn-link">Open in SP ↗</button>
+              <button class="btn btn-primary">Ingest now</button>
+            </span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state ready">📥 Ready</span> AP Aging
+            <span class="right">file dated 5/21</span>
+          </div>
+        </div>
+        <div class="src-card" style="margin-bottom:0;">
+          <div class="src-head">
+            <span class="src-state ready">📥 Ready</span> Maintenance Proof
+            <span class="right">file dated 5/21</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- VARIANT A2 ──────────────────────── -->
+      <div class="variant pick">
+        <h3>Variant A2 · Auto-ingest on detect <span class="tag pick">recommended</span></h3>
+        <p class="note">
+          When SP file is fresh + new, kick off ingest immediately. FA never has to click — wizard
+          just shows progress, then green ✓. Re-ingest still available if file changes.
+        </p>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state ok">✓ Ingested</span> YSL
+            <span class="right">5/21 · 1,254 GL lines (auto)</span>
+          </div>
+          <div class="src-body">
+            <span class="file">YSL_Annual_Budget_(60612)_710_Cash.xlsx</span>
+            <span class="size">75 KB</span>
+            <span class="actions">
+              <button class="btn-link">Open in SP ↗</button>
+              <button class="btn btn-ghost">⟳ Re-ingest</button>
+            </span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state running dot">Ingesting…</span> Expense Distribution
+            <span class="right">started 12s ago</span>
+          </div>
+          <div class="src-body">
+            <span class="file">ExpenseDistribution05_21_2026.xlsx</span>
+            <span class="size">25 KB</span>
+          </div>
+        </div>
+        <div class="src-card">
+          <div class="src-head">
+            <span class="src-state ok">✓ Ingested</span> AP Aging
+            <span class="right">5/22 · 87 invoices (auto)</span>
+          </div>
+        </div>
+        <div class="src-card" style="margin-bottom:0;">
+          <div class="src-head">
+            <span class="src-state ok">✓ Ingested</span> Maintenance Proof
+            <span class="right">5/22 · 64 units (auto)</span>
+          </div>
+        </div>
+        <p style="font-size:11px; color:var(--muted); margin-top:10px;">
+          ↳ <b>Why I'd pick this:</b> the most common case (file is fresh, matches the entity, FA wants
+          it ingested) becomes zero clicks. The exception (file is wrong / FA wants to skip) still has
+          a Re-ingest / Skip control. Mirrors how the audit picker now auto-fills.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- LAYER 2: FA Dashboard — Data Status column                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>Layer 2 · FA Dashboard — Data Status column</h2>
+    <p class="sub">
+      Cramming four sources into one cell makes the column hard to scan across 147 rows. Three options.
+    </p>
+
+    <!-- CURRENT ROW ─────────────────────── -->
+    <div class="variant current" style="margin-bottom:24px;">
+      <h3>Current <span class="tag current">in prod</span></h3>
+      <p class="note">Four source flags packed into one monospace cell. Hard to scan, no time context.</p>
+      <table class="dash-table">
+        <thead>
+          <tr><th>Building</th><th>Entity</th><th>PM</th><th>Data Status</th><th>PM Review</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>157 East 72nd St. Condominium</td>
+            <td>710</td><td>Michael Donuk</td>
+            <td><span class="ds-cramped"><span class="x">✗Bud —</span> <span class="x">✗Exp —</span> <span class="v">✓YSL 5/21</span> <span class="x">✗AP —</span></span></td>
+            <td>Not Started</td><td>Setup</td>
+          </tr>
+          <tr>
+            <td>221 East 36th Owners Corp.</td>
+            <td>212</td><td>Sarah Allen</td>
+            <td><span class="ds-cramped"><span class="v">✓Bud 5/14</span> <span class="v">✓Exp 5/14</span> <span class="v">✓YSL 5/14</span> <span class="v">✓AP 5/14</span></span></td>
+            <td>Submitted</td><td>FA Review</td>
+          </tr>
+          <tr>
+            <td>5 West 14th Owners Corp.</td>
+            <td>106</td><td>Sarah Allen</td>
+            <td><span class="ds-cramped"><span class="x">✗Bud —</span> <span class="x">✗Exp —</span> <span class="x">✗YSL —</span> <span class="x">✗AP —</span></span></td>
+            <td>Not Started</td><td>Setup</td>
+          </tr>
+          <tr>
+            <td>200 East 83rd St. Condominium</td>
+            <td>874</td><td>Joel Rivera</td>
+            <td><span class="ds-cramped"><span class="v">✓Bud 5/19</span> <span class="x">✗Exp —</span> <span class="v">✓YSL 5/19</span> <span class="v">✓AP 5/19</span></span></td>
+            <td>Not Started</td><td>Setup</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="variant-grid cols-3">
+
+      <!-- VARIANT B1 ──────────────────────── -->
+      <div class="variant">
+        <h3>Variant B1 · Progress bar + count</h3>
+        <p class="note">
+          Bar shows X-of-4 ingested. Hover/click for per-source detail. Scannable across 147 rows —
+          you instantly see who's at 0/4, 3/4, 4/4.
+        </p>
+        <table class="dash-table">
+          <thead><tr><th>Building</th><th>Ent</th><th>Data</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>157 East 72nd St.</td><td>710</td>
+              <td>
+                <div class="ds-bar">
+                  <div class="track"><div class="fill partial" style="width:25%"></div></div>
+                  <span class="label">1 / 4</span>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>221 East 36th</td><td>212</td>
+              <td>
+                <div class="ds-bar">
+                  <div class="track"><div class="fill" style="width:100%"></div></div>
+                  <span class="label">4 / 4</span>
+                </div>
+              </td>
+              <td>FA Review</td>
+            </tr>
+            <tr>
+              <td>5 West 14th</td><td>106</td>
+              <td>
+                <div class="ds-bar">
+                  <div class="track"><div class="fill" style="width:0%"></div></div>
+                  <span class="label">0 / 4</span>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>200 East 83rd</td><td>874</td>
+              <td>
+                <div class="ds-bar">
+                  <div class="track"><div class="fill partial" style="width:75%"></div></div>
+                  <span class="label">3 / 4</span>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- VARIANT B2 ──────────────────────── -->
+      <div class="variant pick">
+        <h3>Variant B2 · 4 mini-tiles <span class="tag pick">recommended</span></h3>
+        <p class="note">
+          Each source = one tile, color-coded. See exactly which source is missing without hovering.
+          Click a tile → jumps to wizard at that source. Compact: 130px column.
+        </p>
+        <table class="dash-table">
+          <thead><tr><th>Building</th><th>Ent</th><th>Sources (Bud · Exp · YSL · AP)</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>157 East 72nd St.</td><td>710</td>
+              <td>
+                <div class="ds-tiles">
+                  <div class="ds-tile miss" title="2026 budget — not started">B</div>
+                  <div class="ds-tile miss" title="Expense Dist — not ingested">E</div>
+                  <div class="ds-tile ok"   title="YSL ingested 5/21">Y</div>
+                  <div class="ds-tile miss" title="AP Aging — not ingested">A</div>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>221 East 36th</td><td>212</td>
+              <td>
+                <div class="ds-tiles">
+                  <div class="ds-tile ok" title="Budget 5/14">B</div>
+                  <div class="ds-tile ok" title="ExpDist 5/14">E</div>
+                  <div class="ds-tile ok" title="YSL 5/14">Y</div>
+                  <div class="ds-tile ok" title="AP 5/14">A</div>
+                </div>
+              </td>
+              <td>FA Review</td>
+            </tr>
+            <tr>
+              <td>5 West 14th</td><td>106</td>
+              <td>
+                <div class="ds-tiles">
+                  <div class="ds-tile miss">B</div>
+                  <div class="ds-tile miss">E</div>
+                  <div class="ds-tile miss">Y</div>
+                  <div class="ds-tile miss">A</div>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>200 East 83rd</td><td>874</td>
+              <td>
+                <div class="ds-tiles">
+                  <div class="ds-tile ok"    title="Budget 5/19">B</div>
+                  <div class="ds-tile ready" title="ExpDist — detected, not ingested">E</div>
+                  <div class="ds-tile ok"    title="YSL 5/19">Y</div>
+                  <div class="ds-tile ok"    title="AP 5/19">A</div>
+                </div>
+              </td>
+              <td>Setup</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="legend-row">
+          <span><span class="ds-tile ok" style="width:18px;height:14px;font-size:8px;">✓</span> ingested</span>
+          <span><span class="ds-tile ready" style="width:18px;height:14px;font-size:8px;">!</span> detected, not ingested</span>
+          <span><span class="ds-tile miss" style="width:18px;height:14px;font-size:8px;">✗</span> missing</span>
+        </div>
+        <p style="font-size:11px; color:var(--muted); margin-top:10px;">
+          ↳ <b>Why I'd pick this:</b> three-state (vs current two-state) surfaces "detected but not ingested"
+          — the exact gap that bit you on 710. Clicking a tile takes the FA straight to that source in the
+          wizard, instead of "open wizard → find the right card → click Select for build."
+        </p>
+      </div>
+
+      <!-- VARIANT B3 ──────────────────────── -->
+      <div class="variant">
+        <h3>Variant B3 · Single status pill</h3>
+        <p class="note">
+          One word per row: "Ready" (4/4), "Partial" (1-3), "Empty" (0). Most compact. Detail goes
+          in a hover panel or row-expand.
+        </p>
+        <table class="dash-table">
+          <thead><tr><th>Building</th><th>Ent</th><th>Data</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>157 East 72nd St.</td><td>710</td>
+              <td>
+                <span class="ds-pill partial">Partial</span>
+                <span class="ds-detail">YSL only</span>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>221 East 36th</td><td>212</td>
+              <td>
+                <span class="ds-pill ready">Ready</span>
+                <span class="ds-detail">all 4</span>
+              </td>
+              <td>FA Review</td>
+            </tr>
+            <tr>
+              <td>5 West 14th</td><td>106</td>
+              <td>
+                <span class="ds-pill empty">Not started</span>
+              </td>
+              <td>Setup</td>
+            </tr>
+            <tr>
+              <td>200 East 83rd</td><td>874</td>
+              <td>
+                <span class="ds-pill partial">Partial</span>
+                <span class="ds-detail">missing Exp</span>
+              </td>
+              <td>Setup</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- LAYER 3: Nav clarity                                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>Layer 3 · Nav clarity (smaller fix)</h2>
+    <p class="sub">
+      Wizard URL <code>/wizard/710</code> renders step 2 (Foundation), but the page <code>&lt;h1&gt;</code>
+      still says "Select Entity" (step 1). Also no breadcrumb back to dashboard.
+    </p>
+    <div class="variant-grid cols-2">
+      <div class="variant current">
+        <h3>Current</h3>
+        <pre class="code-snippet">&lt;h1&gt;Select Entity&lt;/h1&gt;     ← always says this
+&lt;div&gt;STEP 2 OF 5&lt;/div&gt;     ← step number visible in body
+&lt;h2&gt;Foundation&lt;/h2&gt;       ← actual step name buried</pre>
+        <p class="note">
+          Browser tab + back button context = "Select Entity" forever.
+          On refresh you can't tell which step you were on without scanning.
+        </p>
+      </div>
+      <div class="variant pick">
+        <h3>Proposed <span class="tag pick">recommended</span></h3>
+        <pre class="code-snippet">&lt;h1&gt;Foundation &mdash; 157 East 72nd (710)&lt;/h1&gt;
+&lt;div class="crumb"&gt;
+  &lt;a href="/dashboard"&gt;← FA Dashboard&lt;/a&gt;
+  · Step 2 of 5
+&lt;/div&gt;</pre>
+        <p class="note">
+          Tab title reflects current step + entity. One-click breadcrumb to dashboard. Refresh restores
+          the right header. Step number stays visible.
+        </p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Pick combo                                                               -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>Your call</h2>
+    <p class="sub">
+      Pick one option per layer. Reply with letters (e.g. "A2 + B2 + L3-Proposed") and I'll ship.
+    </p>
+
+    <div class="pick-summary">
+      <h3>Default recommendation</h3>
+      <p>
+        <b>A2 + B2 + L3-Proposed</b> — auto-ingest in wizard, mini-tiles on dashboard, fix the H1 +
+        breadcrumb. Net effect: the dashboard becomes the source of truth, the wizard catches up
+        automatically, and the FA can navigate between them without losing context.
+      </p>
+    </div>
+
+    <div style="font-size:12px; color:var(--muted); margin-top:20px;">
+      Want a different combination? Common alternates:
+      <ul style="margin: 6px 0 0 16px;">
+        <li><b>A1 + B2</b> — keep the manual "Ingest now" button (in case FA wants to review the file first), tiles on dashboard</li>
+        <li><b>A2 + B1</b> — auto-ingest, progress bar on dashboard (simpler than tiles, less actionable)</li>
+        <li><b>Just A2</b> — fix the wizard signal only, leave dashboard alone for now</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>
