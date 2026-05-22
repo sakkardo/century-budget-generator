@@ -1539,6 +1539,9 @@ function selectEntity(code, name) {
   try { loadSharepointSources(); } catch (e) {}
   try { loadFoundationStatus(); } catch (e) {}
   try { loadWizardSelections(); } catch (e) {}
+  // L3: refresh title + breadcrumb immediately so deep-links land on the
+  // right chrome before any async loads return.
+  try { _updateWizardChrome(typeof currentStep === 'number' ? currentStep : 2); } catch (e) {}
 }
 
 // Render upload checklist
@@ -2222,6 +2225,60 @@ function renderPreviewTable() {
 }
 
 // Show step
+// FA dir 2026-05-22 (L3 nav clarity): keep the browser tab title + step
+// header in sync with the current step and entity, and surface a one-click
+// "← FA Dashboard" breadcrumb so the FA can jump back without using the
+// browser back button (which on the wizard sometimes lands them mid-step).
+function _updateWizardChrome(stepNum) {
+  const stepNames = {
+    1: 'Select Entity',
+    2: 'Foundation',
+    3: 'Set Assumptions',
+    4: 'Preview & Generate',
+    5: 'Budget Complete',
+  };
+  const stepName = stepNames[stepNum] || '';
+  const railEnt = document.getElementById('railEntityName');
+  const rawName = railEnt ? (railEnt.textContent || '').trim() : '';
+  const entName = (rawName && rawName !== 'No Entity Selected' && rawName !== '—') ? rawName : '';
+  const entCode = (typeof selectedEntity === 'string' && selectedEntity) ? selectedEntity : '';
+  // Document <title> — shows up in the browser tab + back-history. The old
+  // static "Budget Wizard - Century Management" gave the FA no way to tell
+  // which entity or step a tab/history entry corresponded to.
+  if (entName && stepName) {
+    document.title = 'Step ' + stepNum + ': ' + stepName + ' — ' + entName + ' (' + entCode + ') · Century Budget';
+  } else if (stepName) {
+    document.title = 'Step ' + stepNum + ': ' + stepName + ' · Century Budget';
+  } else {
+    document.title = 'Budget Wizard - Century Management';
+  }
+  // Breadcrumb: insert once per step-header (idempotent). Sits above the
+  // step badge so it's the first thing the eye lands on.
+  document.querySelectorAll('.step-content .step-header').forEach(function (hdr) {
+    if (hdr.querySelector('.wiz-crumb')) return;
+    const crumb = document.createElement('div');
+    crumb.className = 'wiz-crumb';
+    crumb.style.cssText = 'font-size:12px; color:var(--gray-500); margin-bottom:8px;';
+    crumb.innerHTML =
+      '<a href="/dashboard" style="color:var(--blue); text-decoration:none; font-weight:600;">← FA Dashboard</a>' +
+      '<span style="color:var(--gray-300); margin:0 8px;">·</span>' +
+      '<a href="/" style="color:var(--blue); text-decoration:none;">Home</a>';
+    hdr.insertBefore(crumb, hdr.firstChild);
+  });
+  // Append entity context onto the visible step's h1. Idempotent — strip
+  // any prior " — ..." suffix before re-applying, so step transitions
+  // don't double-stack names.
+  const activeH1 = document.querySelector('.step-content.active .step-title');
+  if (activeH1) {
+    const base = stepNames[stepNum] || activeH1.textContent.split('—')[0].trim();
+    if (entName && stepNum >= 2) {
+      activeH1.textContent = base + ' — ' + entName + ' (' + entCode + ')';
+    } else {
+      activeH1.textContent = base;
+    }
+  }
+}
+
 function showStep(stepNum) {
   if (stepNum > highestStep && stepNum !== currentStep + 1) {
     alert('You must complete previous steps first');
@@ -2261,6 +2318,9 @@ function showStep(stepNum) {
 
   // Update action buttons
   renderActionButtons();
+
+  // Sync browser title + step-header chrome with current step + entity.
+  try { _updateWizardChrome(stepNum); } catch (e) {}
 }
 
 // Complete step and advance
