@@ -383,6 +383,27 @@ def _run_idempotent_migrations():
         "ON building_scan_findings (entity_code, scan_id DESC)",
         "CREATE INDEX IF NOT EXISTS ix_building_scan_findings_scan "
         "ON building_scan_findings (scan_id)",
+        # FA dir 2026-05-22 (Phase 2 SP cache): cache SharePoint file-presence
+        # state per entity per source-type so the FA Dashboard can show an
+        # amber "file in SP, not ingested" tile without hammering Graph API
+        # (1-3s per entity × 147 ≈ 5 min for a live scan). Updated by the
+        # /api/admin/sp-inventory/scan endpoint + a periodic cron.
+        """
+        CREATE TABLE IF NOT EXISTS sp_inventory (
+            id SERIAL PRIMARY KEY,
+            entity_code VARCHAR(50) NOT NULL,
+            source_type VARCHAR(40) NOT NULL,
+            found BOOLEAN NOT NULL DEFAULT FALSE,
+            file_name VARCHAR(500),
+            file_size INTEGER,
+            item_id VARCHAR(255),
+            web_url TEXT,
+            file_modified TIMESTAMP,
+            last_scanned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_sp_inventory_entity_source UNIQUE (entity_code, source_type)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_sp_inventory_entity ON sp_inventory (entity_code)",
     ]
     with app.app_context():
         for stmt in statements:
@@ -10334,6 +10355,113 @@ def wizard_sharepoint_sources(entity_code):
         return jsonify(_sharepoint_list_entity_sources(entity_code, force_refresh=force))
     except Exception as e:
         logger.error(f"wizard_sharepoint_sources({entity_code}) failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# FA dir 2026-05-22 (Phase 2): portfolio-wide SP inventory scan. Walks every
+# Budget entity, fetches per-entity SP file state via the existing
+# _sharepoint_list_entity_sources helper, upserts the result into the
+# sp_inventory table. Long-running (~5 min for 147 entities) but synchronous
+# so a manual "Scan SharePoint" button on the dashboard can trigger it +
+# show the result count.
+_SP_INVENTORY_SOURCE_TYPES = ("ysl", "expense_distribution", "ap_aging",
+                              "maint_proof", "approved_2026", "audit_2025")
+
+
+@app.route("/api/admin/sp-inventory/scan", methods=["POST"])
+def admin_sp_inventory_scan():
+    """Iterate every entity in `budgets`, scan its SP folder via Graph API,
+    upsert each (entity, source_type) → found/not found into sp_inventory.
+
+    Body (optional): { "entities": ["106","710",...] } — restrict to a subset
+    for testing. Default: scan all 147.
+
+    Returns a summary: { total, ok, errors, entities_scanned, scanned_at }.
+    """
+    from datetime import datetime as _dt
+    Budget = workflow_models["Budget"]
+    body = request.get_json(silent=True) or {}
+    only = body.get("entities") or None
+    only_set = set(str(x) for x in only) if only else None
+
+    q = Budget.query
+    if only_set:
+        q = q.filter(Budget.entity_code.in_(only_set))
+    entities = [b.entity_code for b in q.all()]
+    if not entities:
+        return jsonify({"error": "no entities to scan"}), 400
+
+    ok = 0
+    errors = []
+    started_at = _dt.utcnow()
+    for ec in entities:
+        try:
+            sp = _sharepoint_list_entity_sources(ec, force_refresh=True)
+            by_type = sp.get("by_source_type") or {}
+            for st in _SP_INVENTORY_SOURCE_TYPES:
+                files = by_type.get(st) or []
+                found = bool(files)
+                # Pick the most-recently-modified file when multiple matches
+                # (FA might have multiple revisions staged). last_modified is
+                # an ISO-string; sort lexicographically works for ISO.
+                primary = None
+                if files:
+                    primary = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)[0]
+                fn = (primary or {}).get("name") or None
+                size = (primary or {}).get("size") or None
+                iid = (primary or {}).get("item_id") or (primary or {}).get("id") or None
+                wurl = (primary or {}).get("web_url") or None
+                fmod = (primary or {}).get("last_modified") or None
+                # Upsert via ON CONFLICT (postgres-only — safe on Railway).
+                db.session.execute(db.text("""
+                    INSERT INTO sp_inventory
+                      (entity_code, source_type, found, file_name, file_size,
+                       item_id, web_url, file_modified, last_scanned_at)
+                    VALUES (:ec, :st, :found, :fn, :sz, :iid, :wurl,
+                            CAST(:fmod AS TIMESTAMP), CURRENT_TIMESTAMP)
+                    ON CONFLICT (entity_code, source_type) DO UPDATE SET
+                      found = EXCLUDED.found,
+                      file_name = EXCLUDED.file_name,
+                      file_size = EXCLUDED.file_size,
+                      item_id = EXCLUDED.item_id,
+                      web_url = EXCLUDED.web_url,
+                      file_modified = EXCLUDED.file_modified,
+                      last_scanned_at = CURRENT_TIMESTAMP
+                """), {
+                    "ec": ec, "st": st, "found": found, "fn": fn,
+                    "sz": size, "iid": iid, "wurl": wurl, "fmod": fmod,
+                })
+            db.session.commit()
+            ok += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append({"entity_code": ec, "error": str(e)[:200]})
+            logger.warning(f"sp_inventory scan failed for {ec}: {e}")
+
+    return jsonify({
+        "total": len(entities),
+        "ok": ok,
+        "errors": errors,
+        "entities_scanned": entities,
+        "scanned_at": started_at.isoformat(),
+    })
+
+
+@app.route("/api/admin/sp-inventory/status", methods=["GET"])
+def admin_sp_inventory_status():
+    """Lightweight status endpoint — how stale is the cache?"""
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MIN(last_scanned_at), MAX(last_scanned_at), COUNT(DISTINCT entity_code) "
+            "FROM sp_inventory"
+        )).fetchone()
+        return jsonify({
+            "oldest_scan": row[0].isoformat() if row and row[0] else None,
+            "newest_scan": row[1].isoformat() if row and row[1] else None,
+            "entities_in_cache": int(row[2]) if row and row[2] else 0,
+        })
+    except Exception as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
 

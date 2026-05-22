@@ -2080,6 +2080,21 @@ def create_workflow_blueprint(db):
         except Exception:
             db.session.rollback()
 
+        # 6) FA dir 2026-05-22 (Phase 2): SP inventory cache — populated by
+        # /api/admin/sp-inventory/scan. Lets the dashboard show an "amber"
+        # tile state when the SP file exists but hasn't been ingested yet
+        # (vs red, which used to look identical regardless of SP state).
+        # Returns {entity_code: {source_type: True/False}} for tile lookup.
+        sp_inventory = {}
+        try:
+            rows = db.session.execute(db.text(
+                "SELECT entity_code, source_type, found FROM sp_inventory"
+            )).fetchall()
+            for r in rows:
+                sp_inventory.setdefault(r[0], {})[r[1]] = bool(r[2])
+        except Exception:
+            db.session.rollback()
+
         result = []
         for b in budgets:
             d = b.to_dict()
@@ -2095,6 +2110,11 @@ def create_workflow_blueprint(db):
             }
             # Latest audit info for the Au tile renderer on the dashboard.
             d["audit"] = audit_info.get(ec) or None
+            # SP inventory snapshot — drives amber state on dashboard tiles.
+            # Keys map to source_type in sp_inventory (ysl, expense_distribution,
+            # ap_aging, maint_proof, approved_2026, audit_2025). Renderer
+            # checks: ingested → green; else if sp[…] → amber; else red.
+            d["sp_inventory"] = sp_inventory.get(ec) or {}
             result.append(d)
         return jsonify(result)
 
@@ -11621,6 +11641,15 @@ DASHBOARD_TEMPLATE = r"""
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:18px; height:14px;">✗</span> missing</span>
         <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
       </div>
+      <!-- FA dir 2026-05-22 (Phase 2): SharePoint inventory refresh. Amber
+           tiles come from this cache — without a scan, every non-ingested
+           tile shows red (no way to know if a file is staged in SP). -->
+      <div id="spInventoryBar" style="display:flex; align-items:center; gap:12px; font-size:12px; padding:6px 12px; margin-bottom:12px; background:#fff; border:1px dashed var(--gray-300); border-radius:8px;">
+        <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">SharePoint scan</span>
+        <span id="spInventoryStatus" style="color:var(--gray-700);">Loading…</span>
+        <span style="flex:1"></span>
+        <button id="spScanBtn" onclick="scanSharePoint()" style="font-size:12px; padding:5px 12px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;">⟳ Scan SharePoint now</button>
+      </div>
       <div id="buildingsTableWrap">
         <table id="budgets-table">
           <thead>
@@ -11736,6 +11765,56 @@ function sortBuildings(col) {
   filterBudgetTable();
 }
 
+// FA dir 2026-05-22 (Phase 2): SharePoint inventory controls.
+// On dashboard load, fetch the cache freshness; on button click, kick off
+// the synchronous scan (5+ minutes for 147 entities) and re-render the
+// dashboard so amber tiles light up where SP files were detected.
+function loadSpInventoryStatus() {
+  fetch('/api/admin/sp-inventory/status')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const el = document.getElementById('spInventoryStatus');
+      if (!el) return;
+      if (!d || !d.newest_scan) {
+        el.innerHTML = '<span style="color:#92400e; font-weight:600;">Never scanned</span> — amber tiles inactive until first scan';
+        return;
+      }
+      const newest = new Date(d.newest_scan);
+      const minsAgo = Math.floor((Date.now() - newest.getTime()) / 60000);
+      const tag = minsAgo < 60 ? (minsAgo + 'm ago')
+                : minsAgo < 1440 ? (Math.floor(minsAgo/60) + 'h ago')
+                : (Math.floor(minsAgo/1440) + 'd ago');
+      const color = minsAgo > 1440 ? '#b91c1c' : (minsAgo > 60 ? '#92400e' : '#065f46');
+      el.innerHTML = '<span style="color:' + color + '; font-weight:600;">Last scan: ' + tag + '</span> · ' + d.entities_in_cache + ' entities cached';
+    })
+    .catch(() => {});
+}
+
+function scanSharePoint() {
+  if (!confirm('Scan SharePoint folders for all 147 buildings? This takes ~5 minutes — do not close the tab.')) return;
+  const btn = document.getElementById('spScanBtn');
+  const status = document.getElementById('spInventoryStatus');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; btn.style.opacity = '0.6'; }
+  if (status) status.innerHTML = '<span style="color:#1d4ed8; font-weight:600;">⟳ Scanning all entities — ~5 min…</span>';
+  fetch('/api/admin/sp-inventory/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        showToast('Scan failed: ' + d.error, 'error');
+      } else {
+        showToast('Scan complete: ' + d.ok + '/' + d.total + ' entities (' + (d.errors||[]).length + ' errors)', 'success');
+      }
+      loadSpInventoryStatus();
+      loadBudgets();  // re-render dashboard so amber tiles update
+    })
+    .catch(err => {
+      showToast('Scan failed: ' + err, 'error');
+    })
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ Scan SharePoint now'; btn.style.opacity = '1'; }
+    });
+}
+
 function updateSortArrows() {
   document.querySelectorAll('#budgets-table th[data-sort]').forEach(th => {
     const arrow = th.querySelector('.sort-arrow');
@@ -11846,22 +11925,36 @@ function renderBudgets(budgets) {
         `</div></div>`;
     }
 
-    // FA dir 2026-05-22 (B2): mini-tile data status. Each source = one
-    // color-coded square (B/E/Y/A/Au) with tooltip on hover showing the date,
-    // and click → jumps to the wizard at Step 2 for that source, or audit
-    // review page for Au. Replaces the previous text cell.
+    // FA dir 2026-05-22 (B2 + Phase 2): mini-tile data status, 3-state.
+    //   green ('ok')    = ingested into our DB tables (real data exists)
+    //   amber ('ready') = file exists in SharePoint but not yet ingested —
+    //                     FA hasn't clicked the source through the wizard
+    //   red ('miss')    = no SP file + no ingest (true gap)
+    // The amber state requires sp_inventory to be populated — see the
+    // "Scan SharePoint" admin button which kicks off the portfolio scan.
     const ts = b.timestamps || {};
+    const sp = b.sp_inventory || {};
     function fmtDt(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
     const dataItems = [
-      { letter: 'B',  label: 'Budget',   ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget' },
-      { letter: 'E',  label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution' },
-      { letter: 'Y',  label: 'YSL',      ok: !!ts.ysl,            dt: ts.ysl,            focus: 'ysl' },
-      { letter: 'A',  label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging' },
+      { letter: 'B',  label: 'Budget',   ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget',                spKey: 'approved_2026' },
+      { letter: 'E',  label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution',  spKey: 'expense_distribution' },
+      { letter: 'Y',  label: 'YSL',      ok: !!ts.ysl,            dt: ts.ysl,            focus: 'ysl',                   spKey: 'ysl' },
+      { letter: 'A',  label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging',              spKey: 'ap_aging' },
     ];
     const tiles = dataItems.map(function (i) {
-      const cls = i.ok ? 'ds-tile ok' : 'ds-tile miss';
+      const inSP = !!sp[i.spKey];
+      let cls = 'ds-tile miss';
+      let tipBody;
+      if (i.ok) {
+        cls = 'ds-tile ok';
+        tipBody = i.label + ' — ingested ' + (fmtDt(i.dt) || '?');
+      } else if (inSP) {
+        cls = 'ds-tile ready';
+        tipBody = i.label + ' — file in SharePoint, not ingested · click to ingest in wizard';
+      } else {
+        tipBody = i.label + ' — no file in SharePoint · click to open wizard';
+      }
       const dt = fmtDt(i.dt);
-      const tipBody = i.ok ? (i.label + ' — ingested ' + (dt || '?')) : (i.label + ' — not ingested · click to open wizard');
       const wizUrl = '/wizard/' + b.entity_code + '?step=2&focus=' + i.focus;
       return '<a href="' + wizUrl + '" class="' + cls + '" title="' + tipBody.replace(/"/g, '&quot;') + '" data-focus="' + i.focus + '">' +
                '<span class="t-letter">' + i.letter + '</span>' +
@@ -11876,8 +11969,9 @@ function renderBudgets(budgets) {
     // Click target depends on state — if we have an upload id, go to the
     // review page; otherwise jump to the wizard's audit slot.
     const au = b.audit || null;
+    const audInSP = !!sp.audit_2025;
     let auCls = 'ds-tile miss';
-    let auTip = 'Audit — not uploaded · click to open wizard';
+    let auTip = 'Audit — no file uploaded · click to open wizard';
     let auHref = '/wizard/' + b.entity_code + '?step=2&focus=audit_2025';
     let auDt = '';
     if (au) {
@@ -11891,6 +11985,11 @@ function renderBudgets(budgets) {
         auTip = 'Audit ' + au.status + ' — FA still mapping · click to review';
       }
       if (au.id) auHref = '/audited-financials/review/' + au.id;
+    } else if (audInSP) {
+      // Audit PDF detected in SP but no audit_uploads row yet — FA needs to
+      // trigger Claude extraction via the wizard's audit_2025 source.
+      auCls = 'ds-tile ready';
+      auTip = 'Audit PDF in SharePoint, not yet extracted · click to extract';
     }
     tiles.push(
       '<a href="' + auHref + '" class="' + auCls + '" title="' + auTip.replace(/"/g, '&quot;') + '" data-focus="audit">' +
@@ -12012,6 +12111,7 @@ async function deleteBudget(budgetId, name, version) {
     if (chevron) chevron.style.transform = 'rotate(-90deg)';
   }
   await loadBudgets();
+  try { loadSpInventoryStatus(); } catch (e) {}
 })();
 </script>
 </body>
