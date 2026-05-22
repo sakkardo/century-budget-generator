@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Parser dry-run diff — 2026-05-22</title>
+<style>
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, Arial, sans-serif;
+    background:#f4f1eb; color:#1a1714; margin:0; padding:24px;
+  }
+  h1 { font-size:22px; margin-bottom:8px; }
+  .sub { font-size:13px; color:#6b6358; margin-bottom:20px; max-width:780px; }
+  .grid { display:grid; gap:16px; grid-template-columns:1fr; max-width:1500px; margin:auto; }
+  @media (min-width:1100px) { .grid { grid-template-columns:1fr 1fr 1fr; } }
+  .card {
+    background:#fff; border-radius:12px; overflow:hidden;
+    box-shadow:0 1px 3px rgba(0,0,0,0.05); border:1px solid #d5cfc5;
+  }
+  .card-header { padding:10px 14px; color:#fff; }
+  .card-status { font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; opacity:0.85; }
+  .card-ec { font-size:18px; font-weight:700; }
+  .card-filename { font-size:10px; opacity:0.8; font-family:ui-monospace,monospace; margin-top:2px; }
+  .card-body { padding:14px; }
+  .metric-row { display:flex; gap:14px; margin-bottom:10px; flex-wrap:wrap; }
+  .metric { background:#f4f1eb; padding:6px 10px; border-radius:6px; min-width:120px; }
+  .metric label { display:block; font-size:9px; text-transform:uppercase; color:#6b6358; letter-spacing:0.05em; font-weight:700; }
+  .metric value { display:block; font-size:14px; font-weight:600; color:#1a1714; }
+  .errbox { background:#fee2e2; border:1px solid #fca5a5; color:#7f1d1d; padding:8px; border-radius:6px; font-size:11px; margin:8px 0; font-family:ui-monospace,monospace; }
+  .sheets { margin:10px 0 6px; font-size:11px; }
+  .sheets summary { cursor:pointer; color:#5a4a3f; }
+  .sheets-list { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+  .chip { background:#ede9e1; padding:2px 8px; border-radius:10px; font-size:10px; font-family:ui-monospace,monospace; }
+  .cols-detected { font-size:11px; color:#4a4039; margin:6px 0 10px; }
+  .cols-detected code { background:#ede9e1; padding:2px 6px; border-radius:3px; font-size:10px; }
+  h4 { font-size:12px; text-transform:uppercase; color:#6b6358; letter-spacing:0.05em; margin:12px 0 6px; }
+  .rawtable { width:100%; border-collapse:collapse; font-size:10px; font-family:ui-monospace,monospace; }
+  .rawtable td { border:1px solid #e5e0d5; padding:2px 4px; vertical-align:top; max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rownum { background:#f4f1eb; color:#8a7e72; font-weight:700; width:24px; text-align:right; }
+  .rawcell { background:#fff; }
+  .rawcell:empty { background:#fafafa; }
+</style>
+</head>
+<body>
+<h1>Excel parser dry-run — what each file looks like to the parser</h1>
+<p class="sub">
+Three buildings' approved_2026 Excel files run through <code>parse_yrlycomp</code>
+without writing to the DB. <b>148</b> is the known-good baseline (47 summary
+rows). <b>710</b> and <b>847</b> silently produce 0 / 2 rows even though their
+files open fine — those are the targets to fix. Compare the sheet list, the
+detected header row, the year-column classification, and the raw first 20 rows.
+</p>
+<div class="grid">
+
+<div class="card">
+  <div class="card-header" style="background:#16a34a;">
+    <div class="card-status">✓ WORKING</div>
+    <div class="card-ec">Entity 148</div>
+    <div class="card-filename">148 - 130 East 18th Street 2026 Budget -Approved.xlsx</div>
+  </div>
+  <div class="card-body">
+    <div class="metric-row">
+      <div class="metric"><label>Sheets in workbook</label><value>26</value></div>
+      <div class="metric"><label>yrlycomp tab</label><value>yrlycomp</value></div>
+      <div class="metric"><label>Header row detected</label><value>—</value></div>
+    </div>
+    <div class="metric-row">
+      <div class="metric"><label>parse_yrlycomp → rows</label><value>39</value></div>
+      <div class="metric"><label>extract_importable → rows</label><value style="color:#16a34a;font-weight:700;">39</value></div>
+      <div class="metric"><label>col1 warning</label><value>—</value></div>
+    </div>
+    
+    
+    <details class="sheets">
+      <summary>All sheet names (26)</summary>
+      <div class="sheets-list"><span class="chip">VLookup Data</span><span class="chip">yardi_data (2)</span><span class="chip">COV</span><span class="chip">contents</span><span class="chip"> bud</span><span class="chip">yrlycomp</span><span class="chip">Income</span><span class="chip">Comm Rent & Escalations</span><span class="chip">EXP-Pie</span><span class="chip">pyrl</span><span class="chip">Payroll</span><span class="chip">Gas</span><span class="chip">Electric</span><span class="chip">elect</span><span class="chip">Gas Cooking</span><span class="chip">Steam</span><span class="chip">Repairs & Supplies</span><span class="chip">Gen & Admin</span><span class="chip">Mortgage Info and Amort(NO PDF)</span><span class="chip"> Insurance-Sched(No PDF)</span><span class="chip">Water</span><span class="chip">wtrswr</span><span class="chip">Water Usage</span><span class="chip">RE Taxes</span><span class="chip">CAP</span><span class="chip">maint proof</span></div>
+    </details>
+    <div class="cols-detected">Year columns detected: <code>col?=2013/audited_actual, col?=2022/audited_actual, col?=2023/audited_actual, col?=2024/audited_actual, col?=2025/partial_actual, col?=2025/estimate, col?=2025/forecast, col?=2025/budget</code></div>
+    <h4>First 20 rows × 8 cols of yrlycomp tab</h4>
+    <table class='rawtable'><tr><td class="rownum">1</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">130 East 18th Owners Corp</td><td class="rawcell"></td></tr><tr><td class="rownum">2</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Yearly Comparison</td><td class="rawcell"></td></tr><tr><td class="rownum">3</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">For Year Ending 12/31/2026</td><td class="rawcell"></td></tr><tr><td class="rownum">4</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">5</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">6</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">7</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">2013</td><td class="rawcell">2022</td><td class="rawcell">2023</td><td class="rawcell">2024</td><td class="rawcell">2025</td><td class="rawcell">2025</td></tr><tr><td class="rownum">8</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Actual *</td><td class="rawcell">Actual *</td><td class="rawcell">Actual *</td><td class="rawcell">Actual*</td><td class="rawcell">9 Mo. Actual</td><td class="rawcell">3 Mo. Est**</td></tr><tr><td class="rownum">9</td><td class="rawcell">Income</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">10</td><td class="rawcell">Maintenance</td><td class="rawcell"></td><td class="rawcell">3703495</td><td class="rawcell">4353969</td><td class="rawcell">4563556</td><td class="rawcell">4654828</td><td class="rawcell">3541029.9299999997</td><td class="rawcell">1253430.480975356</td></tr><tr><td class="rownum">11</td><td class="rawcell">Commercial Rent</td><td class="rawcell"></td><td class="rawcell">288245</td><td class="rawcell">399265</td><td class="rawcell">411338</td><td class="rawcell">416697</td><td class="rawcell">316237.56</td><td class="rawcell">112589.75999999995</td></tr><tr><td class="rownum">12</td><td class="rawcell">Commercial Rent Escalations</td><td class="rawcell">(A)</td><td class="rawcell">0</td><td class="rawcell">11010</td><td class="rawcell">14085</td><td class="rawcell">15885</td><td class="rawcell">8799.8</td><td class="rawcell">9176.961704739002</td></tr><tr><td class="rownum">13</td><td class="rawcell">Tax Benefit Credits (Abatement</td><td class="rawcell"></td><td class="rawcell">-356739</td><td class="rawcell">-411022</td><td class="rawcell">-422892</td><td class="rawcell">-436666</td><td class="rawcell">-430688.21</td><td class="rawcell">0</td></tr><tr><td class="rownum">14</td><td class="rawcell">Assessment-Operating</td><td class="rawcell"></td><td class="rawcell">314736</td><td class="rawcell">390001</td><td class="rawcell">420921</td><td class="rawcell">444175</td><td class="rawcell">447139.28</td><td class="rawcell">4131.1364799999865</td></tr><tr><td class="rownum">15</td><td class="rawcell">Cable TV</td><td class="rawcell"></td><td class="rawcell">66482</td><td class="rawcell">103068</td><td class="rawcell">90594</td><td class="rawcell">89082</td><td class="rawcell">65967</td><td class="rawcell">22653</td></tr><tr><td class="rownum">16</td><td class="rawcell">Bicycle Storage</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell"></td><td class="rawcell">2375</td><td class="rawcell">625</td></tr><tr><td class="rownum">17</td><td class="rawcell">Laundry</td><td class="rawcell"></td><td class="rawcell">34800</td><td class="rawcell">36000</td><td class="rawcell">36100</td><td class="rawcell">37200</td><td class="rawcell">27900</td><td class="rawcell">9300</td></tr><tr><td class="rownum">18</td><td class="rawcell">Other Income</td><td class="rawcell"></td><td class="rawcell">67924</td><td class="rawcell">138285</td><td class="rawcell">251532</td><td class="rawcell">252582</td><td class="rawcell">234405.37</td><td class="rawcell">58349.08555555559</td></tr><tr><td class="rownum">19</td><td class="rawcell">Prior Year Surplus</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td></tr><tr><td class="rownum">20</td><td class="rawcell">   Total Income</td><td class="rawcell"></td><td class="rawcell">4118943</td><td class="rawcell">5020576</td><td class="rawcell">5365234</td><td class="rawcell">5473783</td><td class="rawcell">4213165.7299999995</td><td class="rawcell">1470255.4247156505</td></tr></table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header" style="background:#b91c1c;">
+    <div class="card-status">✗ SILENT FAIL</div>
+    <div class="card-ec">Entity 710</div>
+    <div class="card-filename">710 - 157 E 72nd Street 2026 Operating Budget - Approved.xls</div>
+  </div>
+  <div class="card-body">
+    <div class="metric-row">
+      <div class="metric"><label>Sheets in workbook</label><value>25</value></div>
+      <div class="metric"><label>yrlycomp tab</label><value>yrlycomp</value></div>
+      <div class="metric"><label>Header row detected</label><value>—</value></div>
+    </div>
+    <div class="metric-row">
+      <div class="metric"><label>parse_yrlycomp → rows</label><value>0</value></div>
+      <div class="metric"><label>extract_importable → rows</label><value style="color:#b91c1c;font-weight:700;">0</value></div>
+      <div class="metric"><label>col1 warning</label><value>—</value></div>
+    </div>
+    
+    
+    <details class="sheets">
+      <summary>All sheet names (25)</summary>
+      <div class="sheets-list"><span class="chip">VLookup Data</span><span class="chip">Yardi Import</span><span class="chip">COV</span><span class="chip">contents</span><span class="chip"> bud</span><span class="chip">yrlycomp</span><span class="chip">Income</span><span class="chip">Comm Rent & Escalations</span><span class="chip">EXP-Pie</span><span class="chip">Payroll</span><span class="chip">Electric</span><span class="chip">Electric (2)</span><span class="chip">Gas Cooking</span><span class="chip">Gas-Heating</span><span class="chip">Repairs & Supplies</span><span class="chip">Gen & Admin</span><span class="chip"> Insurance-Sched(No PDF)</span><span class="chip">Water</span><span class="chip">CAP</span><span class="chip">pyrl</span><span class="chip">Gas</span><span class="chip">elect</span><span class="chip">maint proof</span><span class="chip">Fuel-remove</span><span class="chip">wtrswr</span></div>
+    </details>
+    <div class="cols-detected">Year columns detected: <code>col?=2014/audited_actual, col?=2015/audited_actual, col?=2016/audited_actual, col?=2017/audited_actual, col?=2018/audited_actual, col?=2019/audited_actual, col?=2020/audited_actual, col?=2021/audited_actual</code></div>
+    <h4>First 20 rows × 8 cols of yrlycomp tab</h4>
+    <table class='rawtable'><tr><td class="rownum">1</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">2</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">3</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">4</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">5</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">6</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">7</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">8</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">2013-14</td><td class="rawcell">2014-15</td><td class="rawcell">2015-16</td><td class="rawcell">2016-17</td></tr><tr><td class="rownum">9</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Actual *</td><td class="rawcell">Actual *</td><td class="rawcell">Actual*</td><td class="rawcell">Actual*</td></tr><tr><td class="rownum">10</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Income</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">11</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Common Charges</td><td class="rawcell"></td><td class="rawcell">1316978</td><td class="rawcell">1410095</td><td class="rawcell">1415713</td><td class="rawcell">1415713</td></tr><tr><td class="rownum">12</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Commerical Rent</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell">0</td></tr><tr><td class="rownum">13</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Special Assessment</td><td class="rawcell">(A)</td><td class="rawcell">150001</td><td class="rawcell">150001</td><td class="rawcell">150001</td><td class="rawcell">375003</td></tr><tr><td class="rownum">14</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Storage</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell"></td><td class="rawcell">0</td></tr><tr><td class="rownum">15</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Bicycle</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell"></td><td class="rawcell">0</td></tr><tr><td class="rownum">16</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Storage</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td></tr><tr><td class="rownum">17</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Laundry</td><td class="rawcell"></td><td class="rawcell">10320</td><td class="rawcell">10320</td><td class="rawcell">10320</td><td class="rawcell">10320</td></tr><tr><td class="rownum">18</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Air Conditioner</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell"></td><td class="rawcell">0</td></tr><tr><td class="rownum">19</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Other Income</td><td class="rawcell"></td><td class="rawcell">21452</td><td class="rawcell">7550</td><td class="rawcell">8530</td><td class="rawcell">7082</td></tr><tr><td class="rownum">20</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">   Total Income</td><td class="rawcell"></td><td class="rawcell">1498751</td><td class="rawcell">1577966</td><td class="rawcell">1584564</td><td class="rawcell">1808118</td></tr></table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header" style="background:#b45309;">
+    <div class="card-status">⚠ PARTIAL</div>
+    <div class="card-ec">Entity 847</div>
+    <div class="card-filename">847 Orion Condominium 2026 Operating Budget - Approved.xlsx</div>
+  </div>
+  <div class="card-body">
+    <div class="metric-row">
+      <div class="metric"><label>Sheets in workbook</label><value>30</value></div>
+      <div class="metric"><label>yrlycomp tab</label><value>yrlycomp</value></div>
+      <div class="metric"><label>Header row detected</label><value>—</value></div>
+    </div>
+    <div class="metric-row">
+      <div class="metric"><label>parse_yrlycomp → rows</label><value>2</value></div>
+      <div class="metric"><label>extract_importable → rows</label><value style="color:#b45309;font-weight:700;">2</value></div>
+      <div class="metric"><label>col1 warning</label><value>—</value></div>
+    </div>
+    
+    
+    <details class="sheets">
+      <summary>All sheet names (30)</summary>
+      <div class="sheets-list"><span class="chip">VLookup Data</span><span class="chip">Yardi Import</span><span class="chip">COV</span><span class="chip">contents</span><span class="chip"> bud</span><span class="chip">yrlycomp</span><span class="chip">Income</span><span class="chip">CAM Allocation</span><span class="chip">EXP-Pie</span><span class="chip">Payroll Taxes, Benefits, Totals</span><span class="chip">Elec 10007</span><span class="chip">Elec 60005</span><span class="chip">Elec 61011</span><span class="chip">Elec 15018</span><span class="chip">Gas-60005</span><span class="chip">Heat-01007</span><span class="chip">Heat-20014</span><span class="chip">Heat-10007</span><span class="chip">Repairs & Supplies</span><span class="chip">Gen & Admin</span><span class="chip">Water</span><span class="chip">RE Taxes</span><span class="chip">pyrl</span><span class="chip">Gas</span><span class="chip">elect</span><span class="chip"> Insurance-Sched(No PDF)</span><span class="chip">wtrswr</span><span class="chip">CAP</span><span class="chip">maint proof</span><span class="chip">Sheet1</span></div>
+    </details>
+    <div class="cols-detected">Year columns detected: <code>col?=2013/audited_actual, col?=2014/audited_actual, col?=2015/audited_actual, col?=2016/audited_actual, col?=2017/audited_actual, col?=2019/audited_actual, col?=2020/audited_actual, col?=2021/audited_actual</code></div>
+    <h4>First 20 rows × 8 cols of yrlycomp tab</h4>
+    <table class='rawtable'><tr><td class="rownum">1</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">2</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">3</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">4</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">5</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">6</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">7</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">2013</td><td class="rawcell">2014</td><td class="rawcell">2015</td><td class="rawcell">2016</td></tr><tr><td class="rownum">8</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Actual *</td><td class="rawcell">Actual *</td><td class="rawcell">Actual*</td><td class="rawcell">Actual*</td></tr><tr><td class="rownum">9</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Income</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">10</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Common Charges</td><td class="rawcell"></td><td class="rawcell">513510</td><td class="rawcell">733581</td><td class="rawcell">817944</td><td class="rawcell">817944</td></tr><tr><td class="rownum">11</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Commercial Common Charges</td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">5500</td><td class="rawcell"></td><td class="rawcell">105</td></tr><tr><td class="rownum">12</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Laundry  </td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">13</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Bicycle Charge</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">14</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Other Income</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">15</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">   Total Income</td><td class="rawcell"></td><td class="rawcell">513510</td><td class="rawcell">739081</td><td class="rawcell">817944</td><td class="rawcell">818049</td></tr><tr><td class="rownum">16</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">17</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Expenses</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell"></td></tr><tr><td class="rownum">18</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Payroll </td><td class="rawcell"></td><td class="rawcell">193444</td><td class="rawcell">496595</td><td class="rawcell">466713</td><td class="rawcell">458544</td></tr><tr><td class="rownum">19</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Electric </td><td class="rawcell"></td><td class="rawcell">49511</td><td class="rawcell">73232</td><td class="rawcell">60488</td><td class="rawcell">55536</td></tr><tr><td class="rownum">20</td><td class="rawcell"></td><td class="rawcell"></td><td class="rawcell">Gas </td><td class="rawcell"></td><td class="rawcell">0</td><td class="rawcell">0</td><td class="rawcell">Incl w/Elec</td><td class="rawcell">Incl w/Elec</td></tr></table>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
