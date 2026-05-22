@@ -231,14 +231,55 @@ def parse_yrlycomp(filepath, target_year=2024):
 
     data_start = sub_header_row + 1
 
-    # Auto-detect label column: check where "Income" appears in the first data row
-    label_col = 2  # default Column B
-    for r in range(data_start, min(data_start + 5, sheet.max_row + 1)):
-        for c in (1, 2):
+    # FA dir 2026-05-22: Auto-detect label column — old logic only scanned
+    # columns 1-2 looking for the literal word "Income". When the building's
+    # Excel template puts labels in column C or D (entities 710, 847 — both
+    # GREEN-tier with all files present, both silently produced 0 rows),
+    # the parser found nothing and silently exited.
+    #
+    # New strategy (two-stage):
+    #   1) Scan columns 1-5 for any common section/total label
+    #      ("Income", "Revenue", "Expenses", "Total Revenue", "Maintenance",
+    #      "Total Surplus"). First hit wins.
+    #   2) If no keyword match, pick the column (1-5, excluding year columns
+    #      detected by parse_column_headers) with the most text-string values
+    #      in the first ~15 data rows — the label column is wherever the
+    #      labels actually are.
+    year_cols_set = set(columns.keys())
+    KNOWN_LABELS = {
+        "income", "revenue", "total income", "total revenue", "expenses",
+        "operating expenses", "total expenses", "total operating expenses",
+        "maintenance", "total surplus", "total surplus <deficit>",
+    }
+    label_col = None
+    scan_end = min(data_start + 20, sheet.max_row + 1)
+    # Stage 1 — keyword match
+    for c in (1, 2, 3, 4, 5):
+        if c in year_cols_set:
+            continue
+        for r in range(data_start, scan_end):
             val = sheet.cell(row=r, column=c).value
-            if val and isinstance(val, str) and val.strip().lower() == 'income':
+            if val and isinstance(val, str) and val.strip().lower() in KNOWN_LABELS:
                 label_col = c
                 break
+        if label_col is not None:
+            break
+    # Stage 2 — fallback: column with most string content
+    if label_col is None:
+        best_count = 0
+        for c in (1, 2, 3, 4, 5):
+            if c in year_cols_set:
+                continue
+            count = 0
+            for r in range(data_start, scan_end):
+                val = sheet.cell(row=r, column=c).value
+                if val and isinstance(val, str) and val.strip():
+                    count += 1
+            if count > best_count:
+                best_count = count
+                label_col = c
+        if label_col is None:
+            label_col = 2  # absolute fallback
 
     # Footnote marker is the column after labels
     marker_col = label_col + 1
