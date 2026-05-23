@@ -234,9 +234,27 @@ def _parse_xlsx(file_path):
                     current_payee_code = None
                     current_payee_name = None
                     continue
+                # FA dir 2026-05-22: detect FLAT format (Yardi 2026+ AP export).
+                # In the new layout, every invoice row has its own payee_code
+                # AND its own account/amount columns — no separate "payee
+                # section header" rows. If this row also carries invoice data,
+                # set current_payee for it AND fall through to extract the
+                # invoice below. Old hierarchical format: row only sets the
+                # section payee and continues.
+                _acct = cell("account")
+                _cur = cell("current_owed")
+                _030 = cell("0-30 owed")
+                _3160 = cell("31-60 owed")
+                _6190 = cell("61-90 owed")
+                _o90 = cell("over 90 owed")
+                _fut = cell("future invoice")
+                has_invoice_data = any(v is not None for v in (_acct, _cur, _030, _3160, _6190, _o90, _fut))
                 current_payee_code = pc
                 current_payee_name = str(payee_name or "").strip()
-                continue
+                if not has_invoice_data:
+                    # Hierarchical section header — go to next row
+                    continue
+                # Flat format — fall through to invoice extraction below
 
             # Check for Total rows that might be in a different column
             a_val = str(ws.cell(row=row_num, column=1).value or "").strip().lower()

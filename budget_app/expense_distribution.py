@@ -81,9 +81,44 @@ def parse_expense_distribution(file_path):
     current_gl = None
     current_gl_name = None
 
+    # FA dir 2026-05-22: support BOTH the old hierarchical Yardi layout AND
+    # the new flat layout. Yardi's 2026+ Expense Distribution exports are
+    # one row per invoice with the GL code in col A on every row (no
+    # separate GL section headers, no Total rows). Older exports had a
+    # GL header row → detail rows → Total row hierarchy.
+    # We detect flat by checking if col C (payee code) is populated on
+    # the same row that has a GL code in col A.
+    def _extract_invoice(row, gl_code, gl_name):
+        """Pull invoice fields from a row given its GL code + name."""
+        amount = row[11].value  # Column L
+        if amount is None:
+            return None
+        invoice_date = row[8].value
+        period = row[9].value
+        check_date = row[14].value
+        return {
+            "gl_code": gl_code,
+            "gl_name": gl_name,
+            "payee_code": str(row[2].value or "").strip(),
+            "payee_name": str(row[3].value or "").strip(),
+            "payable_control": str(row[4].value or "").strip(),
+            "batch": str(row[5].value or "").strip(),
+            "property_code": str(row[6].value or "").strip(),
+            "invoice_num": str(row[7].value or "").strip(),
+            "invoice_date": invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date or ""),
+            "period": period.isoformat() if hasattr(period, 'isoformat') else str(period or ""),
+            "payment_method": str(row[10].value or "").strip(),
+            "amount": float(amount),
+            "check_control": str(row[12].value or "").strip(),
+            "check_num": str(row[13].value or "").strip(),
+            "check_date": check_date.isoformat() if hasattr(check_date, 'isoformat') else str(check_date or ""),
+            "notes": str(row[15].value or "").strip(),
+        }
+
     for row in ws.iter_rows(min_row=5, max_row=ws.max_row, values_only=False):
         a_val = row[0].value  # Column A
         b_val = row[1].value  # Column B
+        c_val = row[2].value  # Column C — payee code (key to flat-vs-hierarchical detection)
 
         if a_val and isinstance(a_val, str):
             a_val = a_val.strip()
@@ -94,40 +129,31 @@ def parse_expense_distribution(file_path):
                 current_gl_name = None
                 continue
 
-            # GL code header row (format: XXXX-XXXX)
+            # GL code in col A. Could be:
+            #   FLAT: row also has payee in col C → this row IS the invoice
+            #   HIERARCHICAL: col C empty → this row is a GL section header
             if re.match(r'^\d{4}-\d{4}$', a_val):
+                payee_raw = str(c_val or "").strip()
+                # Treat as flat invoice when col C has a real payee code
+                # ("*" is Yardi's "redacted/not applicable" marker — still
+                # constitutes a real invoice row in flat format)
+                if payee_raw:
+                    inv = _extract_invoice(row, a_val, str(b_val or "").strip())
+                    if inv is not None:
+                        invoices.append(inv)
+                    # Don't track current_gl in flat mode — each row is
+                    # self-contained.
+                    continue
+                # Hierarchical GL header (col C empty)
                 current_gl = a_val
                 current_gl_name = str(b_val or "").strip()
                 continue
 
-        # Invoice detail row: col A is empty, col C (payee code) has a value
+        # Hierarchical: invoice detail row — col A empty, col C has payee code.
         if current_gl and row[2].value is not None:
-            amount = row[11].value  # Column L
-            if amount is None:
-                continue
-
-            invoice_date = row[8].value  # Column I
-            period = row[9].value       # Column J
-            check_date = row[14].value  # Column O
-
-            invoices.append({
-                "gl_code": current_gl,
-                "gl_name": current_gl_name,
-                "payee_code": str(row[2].value or "").strip(),
-                "payee_name": str(row[3].value or "").strip(),
-                "payable_control": str(row[4].value or "").strip(),
-                "batch": str(row[5].value or "").strip(),
-                "property_code": str(row[6].value or "").strip(),
-                "invoice_num": str(row[7].value or "").strip(),
-                "invoice_date": invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date or ""),
-                "period": period.isoformat() if hasattr(period, 'isoformat') else str(period or ""),
-                "payment_method": str(row[10].value or "").strip(),
-                "amount": float(amount),
-                "check_control": str(row[12].value or "").strip(),
-                "check_num": str(row[13].value or "").strip(),
-                "check_date": check_date.isoformat() if hasattr(check_date, 'isoformat') else str(check_date or ""),
-                "notes": str(row[15].value or "").strip(),
-            })
+            inv = _extract_invoice(row, current_gl, current_gl_name)
+            if inv is not None:
+                invoices.append(inv)
 
     wb.close()
     return (entity_code, period_from, period_to, invoices)
