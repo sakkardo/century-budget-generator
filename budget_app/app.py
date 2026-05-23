@@ -9537,6 +9537,62 @@ def admin_parser_dryrun(entity_code):
             pass
 
 
+# FA dir 2026-05-22: dryrun for non-budget source files (expense_distribution,
+# ap_aging, ysl). Downloads the file from SP, dumps first 15 rows × 16 cols
+# of the active sheet. Used to diagnose silent 0-invoice parse failures on
+# the 5/21-dated files.
+@app.route("/api/admin/source-dryrun/<entity_code>/<source_type>", methods=["GET"])
+def admin_source_dryrun(entity_code, source_type):
+    """Download + raw-dump first 15 rows × 16 cols of an SP source file."""
+    import tempfile, os as _os
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code, force_refresh=False)
+    except Exception as e:
+        return jsonify({"error": f"SP scan failed: {e}"}), 500
+    files = (sp.get("by_source_type") or {}).get(source_type) or []
+    if not files:
+        return jsonify({"error": f"no {source_type} file in SharePoint"}), 404
+    primary = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)[0]
+    try:
+        filename, file_bytes = _sharepoint_download_item(primary.get("item_id") or primary.get("id"))
+    except Exception as e:
+        return jsonify({"error": f"download failed: {e}"}), 500
+
+    import openpyxl
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        wb = openpyxl.load_workbook(tmp_path, data_only=True, read_only=False)
+        sheets = list(wb.sheetnames)
+        ws = wb.active
+        raw = []
+        for r in range(1, 16):
+            row_cells = []
+            for c in range(1, 17):
+                v = ws.cell(row=r, column=c).value
+                if v is None:
+                    row_cells.append("")
+                elif isinstance(v, (int, float)):
+                    row_cells.append(str(v))
+                else:
+                    row_cells.append(str(v)[:50])
+            raw.append(row_cells)
+        wb.close()
+        return jsonify({
+            "entity_code": entity_code,
+            "source_type": source_type,
+            "filename": filename,
+            "active_sheet": ws.title if ws else None,
+            "all_sheets": sheets,
+            "raw_first_15x16": raw,
+            "file_modified": primary.get("last_modified"),
+        })
+    finally:
+        try: _os.unlink(tmp_path)
+        except Exception: pass
+
+
 # FA dir 2026-05-22: build_failures helpers — log per-source parse failures
 # to a persistent table so the FA dashboard can surface silent-fail entities.
 # The outer transaction during build-budget is about to roll back when this

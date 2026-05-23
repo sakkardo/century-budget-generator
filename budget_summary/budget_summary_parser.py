@@ -83,9 +83,13 @@ def parse_column_headers(sheet):
                 return v
         except (TypeError, ValueError):
             pass
-        # Fiscal-year string 'YYYY-YY' or 'YYYY-YYYY'
+        # Fiscal-year string 'YYYY-YY', 'YYYY-YYYY', 'YYYY/YY', 'YYYY/YYYY'.
+        # FA dir 2026-05-22: entity 358 (35 Prospect Park West) uses slash
+        # separator ('2021/2022', '2024/2025', etc.) — original regex only
+        # accepted hyphens, so all 8 year headers failed → "Could not parse
+        # column headers." Widen to accept either separator.
         import re as _re_local
-        m = _re_local.match(r'^(\d{4})\s*-\s*(\d{2,4})$', s)
+        m = _re_local.match(r'^(\d{4})\s*[-/]\s*(\d{2,4})$', s)
         if m:
             first = int(m.group(1))
             second_raw = m.group(2)
