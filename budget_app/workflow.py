@@ -15411,10 +15411,44 @@ function renderDetail(data) {
     };
     tabsDiv.appendChild(histTab);
 
-    // Render Summary first
-    renderSheet('Summary', null, summaryTab);
+    // FA dir 2026-05-24: read initial ?tab=X from URL so deep-links (or
+    // back-nav from within the building) land on the right tab.
+    let _initTab = 'Summary';
+    try { _initTab = new URLSearchParams(window.location.search).get('tab') || 'Summary'; } catch (e) {}
+    if (_initTab === 'Summary') {
+      // skipPush so the initial render doesn't pollute history.
+      renderSheet('Summary', null, summaryTab, { skipPush: true });
+    } else {
+      const targetTab = tabsDiv.querySelector('.sheet-tab[data-sheet="' + _initTab.replace(/"/g, '\\"') + '"]');
+      if (targetTab) {
+        // Trigger the tab's normal click flow but suppress the pushState
+        // since the URL already has ?tab set.
+        if (_initTab === '__commercial__') {
+          targetTab.click();
+        } else {
+          renderSheet(_initTab, sheets[_initTab] || null, targetTab, { skipPush: true });
+        }
+      } else {
+        renderSheet('Summary', null, summaryTab, { skipPush: true });
+      }
+    }
   }
 }
+
+// FA dir 2026-05-24: restore tab on browser back/forward. Finds the matching
+// .sheet-tab and calls renderSheet through it (skipPush so we don't re-push).
+window.addEventListener('popstate', function () {
+  try {
+    const tab = new URLSearchParams(window.location.search).get('tab') || 'Summary';
+    const tabEl = document.querySelector('.sheet-tab[data-sheet="' + tab.replace(/"/g, '\\"') + '"]');
+    if (!tabEl) return;
+    if (tab === 'Summary') {
+      renderSheet('Summary', null, tabEl, { skipPush: true });
+    } else if (typeof sheets === 'object' && sheets[tab]) {
+      renderSheet(tab, sheets[tab], tabEl, { skipPush: true });
+    }
+  } catch (e) {}
+});
 
 // ── Checklist Action Helpers ──
 async function generatePresentationLink() {
@@ -19076,7 +19110,8 @@ function faGetFormulaTooltip(l, field) {
   return '';
 }
 
-function renderSheet(sheetName, sheetLines, tabEl) {
+function renderSheet(sheetName, sheetLines, tabEl, opts) {
+  opts = opts || {};
   // Flush any pending Building Info save before switching sheets
   if (typeof _biSaveTimer !== 'undefined' && _biSaveTimer) {
     clearTimeout(_biSaveTimer); _biSaveTimer = null;
@@ -19087,6 +19122,21 @@ function renderSheet(sheetName, sheetLines, tabEl) {
   // FA dir 2026-05-19: track active sheet so the per-tab Undo bar knows
   // which sheet's changes to load.
   window._activeFaSheet = sheetName;
+  // FA dir 2026-05-24: push the tab name to URL so browser-back returns to
+  // the previous tab instead of exiting the building to /dashboard. opts.skipPush
+  // is set on the initial Summary render + popstate-driven re-renders to avoid
+  // history pollution. Summary is the default — clear ?tab when on it.
+  if (!opts.skipPush) {
+    try {
+      const url = new URL(window.location.href);
+      const current = url.searchParams.get('tab') || 'Summary';
+      if (current !== sheetName) {
+        if (sheetName === 'Summary') url.searchParams.delete('tab');
+        else url.searchParams.set('tab', sheetName);
+        window.history.pushState({ tab: sheetName }, '', url.toString());
+      }
+    } catch (e) {}
+  }
 
   const contentDiv = document.getElementById('sheetContent');
 
