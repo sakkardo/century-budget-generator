@@ -2844,6 +2844,14 @@ def _ensure_monday_fresh(stale_minutes=MONDAY_STALE_MINUTES, force=False):
 
 # ─── Monday.com sync routes ──────────────────────────────────────────────
 
+@app.route("/api/sync-status", methods=["GET"])
+def sync_status():
+    """Read-only Monday.com sync status. FA dir 2026-05-24 — used by PM
+    portal's "Synced N min ago" indicator. Returns {last_synced_at, error,
+    stale_minutes}; never touches the network or DB."""
+    return jsonify(_get_monday_status())
+
+
 @app.route("/api/sync-monday-fetch", methods=["GET"])
 def sync_monday_fetch():
     """Fetch buildings + PM/FA assignments from Monday.com (read-only)."""
