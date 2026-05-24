@@ -3237,7 +3237,15 @@ def create_workflow_blueprint(db):
         """Render the Budget Wizard gate page."""
         import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
-        from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
+        # FA dir 2026-05-23: explicit package-qualified import. Bare
+        # `from app import X` was ambiguous because budget_summary/app.py
+        # exists and could shadow budget_app/app.py once budget_summary
+        # got added to sys.path by a build-budget run.
+        try:
+            from budget_app.app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
+        except ImportError:
+            # Fallback for legacy import path (running budget_app/ directly)
+            from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
 
         # Bug #4: support querystring form ?entity=<code> in addition to
         # /wizard/<entity_code>. FAs commonly bookmark or paste links with

@@ -7107,7 +7107,7 @@ def _load_canonical_label_sets():
     from pathlib import Path as _P
     bs_path = str(_P(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in _sys.path:
-        _sys.path.insert(0, bs_path)
+        _sys.path.append(bs_path)
     try:
         from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
     except ImportError:
@@ -7145,7 +7145,7 @@ def _scan_one_building(ec, canonical_keys, alias_keys, label_aliases):
     from pathlib import Path as _P
     bs_path = str(_P(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in _sys.path:
-        _sys.path.insert(0, bs_path)
+        _sys.path.append(bs_path)
     try:
         from budget_summary_parser import parse_yrlycomp
     except ImportError:
@@ -9567,7 +9567,7 @@ def admin_parser_dryrun(entity_code):
     # Run the parser
     bs_path = str(_Path(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in _sys.path:
-        _sys.path.insert(0, bs_path)
+        _sys.path.append(bs_path)
 
     import openpyxl
     from budget_summary_parser import parse_yrlycomp, find_yrlycomp_tab
@@ -10134,7 +10134,7 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
     # Add budget_summary parsers to path
     bs_path = str(Path(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in sys.path:
-        sys.path.insert(0, bs_path)
+        sys.path.append(bs_path)
     from budget_summary_parser import parse_yrlycomp
     from batch_import import extract_importable_data, enrich_with_gl_map
 
@@ -10291,7 +10291,7 @@ def _populate_building_info_from_income(entity_code, xlsx_path):
     from pathlib import Path as _Path
     bs_path = str(_Path(__file__).resolve().parent.parent / "budget_summary")
     if bs_path not in _sys.path:
-        _sys.path.insert(0, bs_path)
+        _sys.path.append(bs_path)
     from budget_summary_parser import parse_income_history
     result = parse_income_history(xlsx_path)
     if "error" in result or not result.get("history"):
