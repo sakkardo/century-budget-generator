@@ -3015,6 +3015,7 @@ HOME_TEMPLATE = r"""
   <a href="/" class="brand">CENTURY MANAGEMENT <span>Budget System</span></a>
   <div class="nav-links">
     <a href="/" class="active">Home</a>
+    <a href="/wizard">Wizard</a>
     <a href="/dashboard">FA Dashboard</a>
     <a href="/pm">PM Portal</a>
     <a href="/audited-financials">Audited Financials</a>
@@ -3046,9 +3047,9 @@ HOME_TEMPLATE = r"""
   <!-- Quick Links -->
   <div class="section-label">Quick Links</div>
   <div class="quick-grid">
-    <a href="/generate" class="quick-card">
-      <div class="quick-icon blue">&#x1F4CA;</div>
-      <div><h4>Budget Generator</h4><p>Download Yardi reports and generate budgets for entities</p></div>
+    <a href="/wizard" class="quick-card">
+      <div class="quick-icon blue">&#x1F9ED;</div>
+      <div><h4>Wizard</h4><p>Readiness tiers across all buildings. See what to build next.</p></div>
     </a>
     <a href="/dashboard" class="quick-card">
       <div class="quick-icon green">&#x1F4C8;</div>
@@ -3066,9 +3067,9 @@ HOME_TEMPLATE = r"""
       <div class="quick-icon slate">&#x1F4CB;</div>
       <div><h4>Audited Financials</h4><p>Extract and review prior-year financial data</p></div>
     </a>
-    <a href="/files" class="quick-card">
-      <div class="quick-icon rose">&#x1F4C1;</div>
-      <div><h4>File Repository</h4><p>Upload and manage budget documents</p></div>
+    <a href="/generate" class="quick-card">
+      <div class="quick-icon rose">&#x1F4CA;</div>
+      <div><h4>Yardi Generator</h4><p>Generate Yardi import scripts (YSL, AP Aging, Maint Proof)</p></div>
     </a>
   </div>
 
@@ -3080,11 +3081,11 @@ HOME_TEMPLATE = r"""
 <script>
 var phases = {
   fa: [
-    { num: 1, title: 'Setup', desc: 'Load Yardi data into the system for each building.',
-      items: ['Generate and run the Yardi script (YSL + AP Aging + Maint Proof)', 'Upload Expense Distribution manually for each entity', 'Verify all 4 data sources show a checkmark on the FA Dashboard', 'Set portfolio-wide assumptions (tax rates, escalations)'],
-      link: { label: 'Go to Generator', href: '/generate' } },
+    { num: 1, title: 'Setup', desc: 'Get every building from raw files to "ready to build".',
+      items: ['Open the Wizard — readiness tiers show you what every building needs next', 'SharePoint inventory auto-detects YSL, AP Aging, Maint Proof, Expense Distribution, Approved 2026', 'Upload missing files (most often the prior-year audit PDF) to SharePoint', 'Confirm the audit in the review screen — map categories, accept suggested rows', 'Hit "Build all ready" on the wizard to push every ready building through in one shot'],
+      link: { label: 'Go to Wizard', href: '/wizard' } },
     { num: 2, title: 'Review', desc: 'Edit budgets, review PM submissions, and check variances.',
-      items: ['Review each building on the FA Dashboard across all tabs', 'Monitor PM submissions and send back for edits if needed', 'Adjust line items, formulas, and overrides as needed', 'Verify variance and percent-change columns for accuracy'],
+      items: ['Filter the FA Dashboard by readiness chip (Ready · In progress · Needs audit · Built)', 'Click into each building and review every tab — Summary, R&M, Payroll, RE Tax, etc.', 'Click any cell to edit in the formula bar — overrides save automatically, right-click reverts', 'Monitor PM submissions and send back for edits if needed', 'Verify variance and percent-change columns for accuracy'],
       link: { label: 'Go to FA Dashboard', href: '/dashboard' } },
     { num: 3, title: 'Finalize', desc: 'Approve budgets and prepare for board presentation.',
       items: ['Run final review across all buildings', 'Approve each entity to lock edits', 'Open Board Presentation for each building', 'Export or print for board meeting materials'],
