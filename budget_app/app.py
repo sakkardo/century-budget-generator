@@ -9781,6 +9781,107 @@ def admin_build_failures_resolve(fid):
         return jsonify({"error": str(e)}), 500
 
 
+# FA dir 2026-05-23: bulk-build — runs the auto-walk pattern over every
+# READY_TO_BUILD entity. The wizard's "Build all X" hero button calls this.
+# Per-entity flow: stage each source via /use-sp-source (parse-on-click
+# writes data), then call /build-budget to atomically commit. Returns
+# per-entity ok/error so the FA can see which flowed and which need fixing.
+@app.route("/api/admin/build-all-ready", methods=["POST"])
+def admin_build_all_ready():
+    """Walk every READY_TO_BUILD entity and drive it through the full build."""
+    from datetime import datetime as _dt
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    only = body.get("entities") or None
+    only_set = set(str(x) for x in only) if only else None
+
+    # Re-use the classifier from /api/budgets via test_client to avoid
+    # duplicating the tier-determination logic.
+    try:
+        with app.test_client() as client:
+            resp = client.get("/api/budgets")
+            if resp.status_code != 200:
+                return jsonify({"error": f"could not fetch /api/budgets (got {resp.status_code})"}), 500
+            rows = resp.get_json() or []
+    except Exception as e:
+        return jsonify({"error": f"internal fetch failed: {e}"}), 500
+
+    targets = []
+    for r in rows:
+        ec = str(r.get("entity_code") or "")
+        if not ec:
+            continue
+        if only_set and ec not in only_set:
+            continue
+        if (r.get("readiness") or {}).get("tier") == "READY_TO_BUILD":
+            targets.append(ec)
+    if not targets:
+        return jsonify({
+            "results": [], "total": 0, "ok_count": 0, "fail_count": 0,
+            "note": "no entities currently in READY_TO_BUILD tier",
+        })
+
+    results = []
+    for ec in targets:
+        entry = {"entity_code": ec, "ok": False, "error": None, "steps": []}
+        try:
+            sp = _sharepoint_list_entity_sources(ec, force_refresh=False)
+            by_type = sp.get("by_source_type") or {}
+            for st in ("approved_2026", "ysl", "expense_distribution", "ap_aging", "maint_proof"):
+                files = by_type.get(st) or []
+                if not files:
+                    continue
+                primary = sorted(files, key=lambda f: f.get("last_modified") or "", reverse=True)[0]
+                with app.test_client() as client:
+                    r = client.post(f"/api/wizard/{ec}/use-sp-source", json={
+                        "source_type": st,
+                        "item_id": primary.get("item_id") or primary.get("id"),
+                        "filename": primary.get("name", ""),
+                        "web_url": primary.get("web_url", ""),
+                    })
+                    js = r.get_json() or {}
+                    pr = js.get("parse_result") or {}
+                    err = js.get("parse_error") or (js.get("error") if r.status_code >= 400 else None)
+                    entry["steps"].append({
+                        "source_type": st,
+                        "ok": not err,
+                        "rows": pr.get("rows_imported") or pr.get("invoices") or 0,
+                        "error": str(err)[:200] if err else None,
+                    })
+            budget = Budget.query.filter_by(entity_code=ec, year=_BY).first()
+            if budget and budget.wizard_completed_at:
+                entry["ok"] = True
+                entry["note"] = "already built (skipped build-budget call)"
+            else:
+                with app.test_client() as client:
+                    r = client.post(f"/api/wizard/{ec}/build-budget", json={})
+                    js = r.get_json() or {}
+                    entry["ok"] = bool(js.get("ok"))
+                    entry["build_summary"] = {
+                        "summary_rows_written": js.get("summary_rows_written", 0),
+                        "lines_written": js.get("lines_written", 0),
+                    }
+                    if not js.get("ok"):
+                        entry["error"] = (js.get("fatal_error")
+                                          or (js.get("errors") and str(js["errors"][0])[:300])
+                                          or f"HTTP {r.status_code}")
+        except Exception as e:
+            logger.exception(f"build-all-ready failed for {ec}")
+            entry["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+        results.append(entry)
+
+    ok_count = sum(1 for r in results if r.get("ok"))
+    return jsonify({
+        "results": results,
+        "total": len(targets),
+        "ok_count": ok_count,
+        "fail_count": len(targets) - ok_count,
+        "completed_at": _dt.utcnow().isoformat(),
+    })
+
+
 @app.route("/api/wizard/<entity_code>/build-budget", methods=["POST"])
 def wizard_build_budget(entity_code):
     """All-or-nothing build trigger.

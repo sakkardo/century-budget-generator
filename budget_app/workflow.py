@@ -2115,6 +2115,73 @@ def create_workflow_blueprint(db):
             # ap_aging, maint_proof, approved_2026, audit_2025). Renderer
             # checks: ingested → green; else if sp[…] → amber; else red.
             d["sp_inventory"] = sp_inventory.get(ec) or {}
+            # FA dir 2026-05-23: per-entity readiness tier — single source of
+            # truth that both the FA Dashboard and the Wizard's Select Entity
+            # page render from. Tiers stack ordered most-ready → least-ready,
+            # so a desc sort by tier_order surfaces the FA's actionable queue.
+            au_status = (audit_info.get(ec) or {}).get("status") if audit_info.get(ec) else None
+            au_id = (audit_info.get(ec) or {}).get("id") if audit_info.get(ec) else None
+            sp_e = sp_inventory.get(ec) or {}
+            has_bud = bool(summary_ts.get(ec))
+            has_exp = ec in expense_entities
+            has_ysl = bool(ysl_ts.get(ec))
+            has_ap  = bool(open_ap_ts.get(ec))
+            audit_confirmed = (au_status == "confirmed")
+            audit_extracted = (au_status in ("extracted", "mapped"))
+            built = bool(b.wizard_completed_at)
+            # Tier classification — checked in order, first match wins
+            if built:
+                tier = "BUILT"
+                tier_order = 0
+                next_action = "review_built"
+                next_url = f"/dashboard/{ec}"
+                tier_label = "Already built"
+            elif audit_confirmed and has_bud and has_exp and has_ysl and has_ap:
+                tier = "READY_TO_BUILD"
+                tier_order = 5
+                next_action = "build"
+                next_url = f"/wizard/{ec}?step=2"
+                tier_label = "Ready to build"
+            elif audit_extracted:
+                # Audit extracted but FA hasn't confirmed mapping yet
+                tier = "IN_PROGRESS"
+                tier_order = 4
+                next_action = "audit_review"
+                next_url = f"/audited-financials/review/{au_id}" if au_id else f"/wizard/{ec}?step=2"
+                tier_label = "Audit review needed"
+            elif audit_confirmed:
+                # Audit confirmed but some Yardi sources missing
+                tier = "IN_PROGRESS"
+                tier_order = 3
+                next_action = "build"
+                next_url = f"/wizard/{ec}?step=2"
+                tier_label = "Audit done, sources pending"
+            elif sp_e.get("audit_2025") and not au_status:
+                tier = "NEEDS_AUDIT_EXTRACT"
+                tier_order = 2
+                next_action = "audit_review"
+                next_url = f"/wizard/{ec}?step=2&focus=audit_2025"
+                tier_label = "Audit PDF ready to extract"
+            elif (sp_e.get("approved_2026") or sp_e.get("ysl") or
+                  sp_e.get("expense_distribution") or sp_e.get("ap_aging")):
+                tier = "NEEDS_AUDIT"
+                tier_order = 1
+                next_action = "wait"
+                next_url = f"/wizard/{ec}?step=2"
+                tier_label = "Waiting for audit PDF"
+            else:
+                tier = "NEEDS_FILES"
+                tier_order = 0
+                next_action = "wait"
+                next_url = f"/wizard/{ec}?step=2"
+                tier_label = "Waiting for files"
+            d["readiness"] = {
+                "tier": tier,
+                "tier_order": tier_order,
+                "tier_label": tier_label,
+                "next_action": next_action,
+                "next_url": next_url,
+            }
             result.append(d)
         return jsonify(result)
 
@@ -11656,6 +11723,15 @@ DASHBOARD_TEMPLATE = r"""
         <input type="text" id="budgetSearch" placeholder="Search buildings..." oninput="filterBudgetTable()"
           style="padding:8px 14px; border:1px solid var(--gray-200); border-radius:8px; font-size:14px; width:260px; outline:none;">
       </div>
+      <!-- FA dir 2026-05-23: hero callout — surfaces actionable queue
+           ("X ready to build now") at the top of the dashboard. Same as
+           the wizard so both pages tell the FA the same story. -->
+      <div id="readinessHero" style="display:none; margin-bottom:12px;"></div>
+      <!-- Readiness-tier filter chips — clicking applies a filter on the table -->
+      <div id="readinessChips" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:2px;">FILTER BY READINESS</span>
+        <!-- Populated by renderReadinessChips() in JS -->
+      </div>
       <!-- FA dir 2026-05-22: legend for the Data Status mini-tiles. -->
       <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
         <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Data Status tiles</span>
@@ -11734,7 +11810,11 @@ function showToast(msg, type='info') {
 
 const _pmByEntity = {};
 let _budgetsCache = [];
-let _sortState = { column: 'entity_code', direction: 'asc' };
+// FA dir 2026-05-23: default sort = readiness desc so the most-actionable
+// rows surface at the top, matching the wizard.
+let _sortState = { column: 'readiness', direction: 'desc' };
+// FA dir 2026-05-23: per-tier filter ("all" / "READY_TO_BUILD" / etc).
+let _readinessFilter = 'all';
 const _pmStatusMap = {
   'draft': 'Not Sent',
   'pm_pending': 'Sent to PM',
@@ -11776,6 +11856,12 @@ function _getSortValue(b, col) {
     const doneStatuses = ['approved','ar_pending','ar_complete'];
     if (doneStatuses.includes(b.status) || !b.updated_at) return -1;
     return Math.floor((Date.now() - new Date(b.updated_at).getTime()) / 86400000);
+  }
+  if (col === 'readiness') {
+    // Server-supplied tier_order — higher = more actionable, so default
+    // desc sort surfaces READY_TO_BUILD at the top.
+    return (b.readiness && typeof b.readiness.tier_order === 'number')
+      ? b.readiness.tier_order : 0;
   }
   return '';
 }
@@ -11901,14 +11987,141 @@ function renderStatusSummary(budgets) {
   });
 }
 
+// FA dir 2026-05-23: hero callout + readiness chips for the dashboard.
+// Same affordances as the wizard so the FA can use either page.
+function renderReadinessHero(budgets) {
+  const hero = document.getElementById('readinessHero');
+  if (!hero) return;
+  let ready = 0, inProg = 0;
+  budgets.forEach(b => {
+    const t = (b.readiness && b.readiness.tier) || '';
+    if (t === 'READY_TO_BUILD') ready += 1;
+    else if (t === 'IN_PROGRESS') inProg += 1;
+  });
+  if (ready > 0) {
+    hero.style.display = 'block';
+    hero.innerHTML =
+      '<div style="background:linear-gradient(90deg,#ecfdf5 0%,#f0fdf4 100%); border:1px solid #6ee7b7; border-radius:10px; padding:14px 18px; display:flex; align-items:center; gap:14px;">' +
+        '<span style="font-size:22px;">🚀</span>' +
+        '<div style="flex:1;">' +
+          '<strong style="color:#065f46; font-size:14px;">' + ready + ' building' + (ready === 1 ? '' : 's') + ' ready to build right now</strong>' +
+          '<div style="color:#047857; font-size:11px; margin-top:2px;">' +
+            'All files staged, audit confirmed.' +
+            (inProg > 0 ? ' ' + inProg + ' more in progress (audit review needed).' : '') +
+          '</div>' +
+        '</div>' +
+        '<button onclick="buildAllReady()" style="background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; cursor:pointer;">Build all ' + ready + ' →</button>' +
+      '</div>';
+  } else if (inProg > 0) {
+    hero.style.display = 'block';
+    hero.innerHTML =
+      '<div style="background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:12px;">' +
+        '<span style="font-size:18px;">⏳</span>' +
+        '<div style="flex:1;">' +
+          '<strong style="color:#92400e; font-size:13px;">' + inProg + ' building' + (inProg === 1 ? '' : 's') + ' in progress</strong>' +
+          '<div style="color:#92400e; font-size:11px; margin-top:1px;">Audit review or remaining source ingestion needed. Click "In progress" to focus.</div>' +
+        '</div>' +
+      '</div>';
+  } else {
+    hero.style.display = 'none';
+    hero.innerHTML = '';
+  }
+}
+
+function renderReadinessChips(budgets) {
+  const row = document.getElementById('readinessChips');
+  if (!row) return;
+  const counts = {
+    'all': budgets.length,
+    'READY_TO_BUILD': 0,
+    'IN_PROGRESS': 0,
+    'NEEDS_AUDIT_EXTRACT': 0,
+    'NEEDS_AUDIT': 0,
+    'NEEDS_FILES': 0,
+    'BUILT': 0,
+  };
+  budgets.forEach(b => {
+    const t = (b.readiness && b.readiness.tier) || 'NEEDS_FILES';
+    if (counts[t] !== undefined) counts[t] += 1;
+  });
+  const headerLabel = row.querySelector('span');
+  row.innerHTML = '';
+  if (headerLabel) row.appendChild(headerLabel);
+  function makeChip(label, count, key, color) {
+    const isActive = _readinessFilter === key;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = label + ' <span style="opacity:0.7; font-weight:500;">' + count + '</span>';
+    const bg = color || '#5a4a3f';
+    btn.style.cssText =
+      'font-size:12px; font-weight:' + (isActive ? '700' : '600') +
+      '; padding:6px 12px; border-radius:14px; cursor:pointer; border:1px solid ' +
+      (isActive ? bg : 'var(--gray-200)') +
+      '; background:' + (isActive ? bg : 'white') +
+      '; color:' + (isActive ? 'white' : 'var(--gray-700)') + ';';
+    btn.onclick = function () { setReadinessFilter(key); };
+    return btn;
+  }
+  row.appendChild(makeChip('All', counts.all, 'all'));
+  row.appendChild(makeChip('Ready to build', counts.READY_TO_BUILD, 'READY_TO_BUILD', '#16a34a'));
+  row.appendChild(makeChip('In progress',    counts.IN_PROGRESS,    'IN_PROGRESS',    '#d97706'));
+  row.appendChild(makeChip('Audit ready to extract', counts.NEEDS_AUDIT_EXTRACT, 'NEEDS_AUDIT_EXTRACT', '#0369a1'));
+  row.appendChild(makeChip('Waiting for audit', counts.NEEDS_AUDIT, 'NEEDS_AUDIT'));
+  row.appendChild(makeChip('Waiting for files', counts.NEEDS_FILES, 'NEEDS_FILES'));
+  row.appendChild(makeChip('Built', counts.BUILT, 'BUILT', '#065f46'));
+}
+
+function setReadinessFilter(tier) {
+  _readinessFilter = tier;
+  renderBudgets(_budgetsCache);
+}
+
+function buildAllReady() {
+  let readyCount = 0;
+  (_budgetsCache || []).forEach(function (b) {
+    if (b.readiness && b.readiness.tier === 'READY_TO_BUILD') readyCount += 1;
+  });
+  if (readyCount === 0) {
+    alert('No buildings are currently ready to build.');
+    return;
+  }
+  if (!confirm('Build all ' + readyCount + ' ready building' + (readyCount === 1 ? '' : 's') + ' now?\n\nEach takes ~30-60 seconds. The page will stay open while it runs.')) return;
+  const hero = document.getElementById('readinessHero');
+  if (hero) hero.innerHTML = '<div style="background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:14px 18px; font-size:13px; color:#92400e;">⏳ Building ' + readyCount + ' budgets… this may take a few minutes. Do not close the tab.</div>';
+  fetch('/api/admin/build-all-ready', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' })
+    .then(r => r.json())
+    .then(data => {
+      const ok = (data.results || []).filter(r => r.ok).length;
+      const fail = (data.results || []).filter(r => !r.ok).length;
+      showToast('Built ' + ok + ' of ' + readyCount + (fail > 0 ? ' (' + fail + ' failed — see table)' : ''), fail > 0 ? 'error' : 'success');
+      loadBudgets();
+    })
+    .catch(err => {
+      showToast('Bulk build failed: ' + err, 'error');
+      loadBudgets();
+    });
+}
+
 function renderBudgets(budgets) {
   const tbody = document.querySelector('#budgets-table tbody');
   tbody.innerHTML = '';
 
+  // FA dir 2026-05-23: render hero + readiness chips up-top.
+  // Counts come from the full unfiltered budget list — chips reflect what's
+  // reachable in the whole portfolio, not the filtered view.
+  renderReadinessHero(budgets);
+  renderReadinessChips(budgets);
+
+  // Apply readiness-tier filter (set by the chip click)
+  let filtered = budgets;
+  if (_readinessFilter && _readinessFilter !== 'all') {
+    filtered = filtered.filter(b => (b.readiness && b.readiness.tier) === _readinessFilter);
+  }
+
   // Sort by current sort state
   const col = _sortState.column;
   const dir = _sortState.direction === 'asc' ? 1 : -1;
-  budgets.sort((a, b) => {
+  filtered.sort((a, b) => {
     const va = _getSortValue(a, col);
     const vb = _getSortValue(b, col);
     if (va < vb) return -1 * dir;
@@ -11916,7 +12129,7 @@ function renderBudgets(budgets) {
     return 0;
   });
 
-  budgets.forEach(b => {
+  filtered.forEach(b => {
     const tr = document.createElement('tr');
     // Display lifecycle stage if present (new vocabulary), fall back to legacy status label.
     // Pill color still keyed off status so existing CSS classes apply unchanged.

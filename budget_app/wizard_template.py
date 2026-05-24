@@ -980,8 +980,12 @@ header {
         Each entity has its own budget timeline. Select one to get started.
       </div>
       <!-- Lifecycle stage filter chips -->
+      <!-- FA dir 2026-05-23: hero callout + readiness-tier filter chips.
+           Surfaces the FA's actionable queue at first glance instead of
+           making them scan 147 rows. -->
+      <div id="readinessHero" style="display:none; margin-bottom:14px;"></div>
       <div class="stage-filter-row" id="stageFilterRow" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
-        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:6px;">FILTER BY STAGE</span>
+        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:6px;">FILTER BY READINESS</span>
         <!-- Populated by JavaScript -->
       </div>
       <div class="entity-search-bar">
@@ -991,21 +995,21 @@ header {
       <div class="entity-table-wrap" style="background:white; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.04); margin-bottom:32px;">
         <table class="entity-table" id="entityTable" style="width:100%; border-collapse:collapse; table-layout:fixed;">
           <colgroup>
-            <col style="width:38%"/>
-            <col style="width:8%"/>
+            <col style="width:28%"/>
+            <col style="width:7%"/>
+            <col style="width:13%"/>
             <col style="width:18%"/>
-            <col style="width:14%"/>
-            <col style="width:14%"/>
-            <col style="width:8%"/>
+            <col style="width:18%"/>
+            <col style="width:16%"/>
           </colgroup>
           <thead>
             <tr style="background:var(--gray-50); border-bottom:1px solid var(--gray-200);">
               <th data-col="building_name" onclick="setEntitySort(\'building_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
-              <th data-col="entity_code" onclick="setEntitySort(\'entity_code\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:1;">&#9650;</span></th>
+              <th data-col="entity_code" onclick="setEntitySort(\'entity_code\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:0.3;">&#9650;</span></th>
               <th data-col="fa_name" onclick="setEntitySort(\'fa_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">FA <span class="sort-arrow" data-arrow="fa_name" style="opacity:0.3;">&#9650;</span></th>
-              <th data-col="lifecycle_stage" onclick="setEntitySort(\'lifecycle_stage\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Stage <span class="sort-arrow" data-arrow="lifecycle_stage" style="opacity:0.3;">&#9650;</span></th>
-              <th data-col="updated_at" onclick="setEntitySort(\'updated_at\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Last activity <span class="sort-arrow" data-arrow="updated_at" style="opacity:0.3;">&#9650;</span></th>
-              <th style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700);"></th>
+              <th style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;">Data status <span style="font-weight:500; color:var(--gray-500); font-size:9px;">(B · E · Y · A · Au)</span></th>
+              <th data-col="readiness" onclick="setEntitySort(\'readiness\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Status <span class="sort-arrow" data-arrow="readiness" style="opacity:1;">&#9660;</span></th>
+              <th style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;">Next step</th>
             </tr>
           </thead>
           <tbody id="entityTableBody">
@@ -1286,9 +1290,68 @@ function filterByFA() {
 }
 
 // Render entity grid
-let _entitySortState = { column: "entity_code", direction: "asc" };
+// FA dir 2026-05-23: default sort = readiness desc so the most-actionable
+// buildings surface at the top of the table. FA lands → sees "Ready to
+// build" rows at the top → clicks "Build now" without scanning 147 rows.
+let _entitySortState = { column: "readiness", direction: "desc" };
 let _stageFilter = "all";
 let _faNameByEntity = {};
+// Enriched per-entity data fetched from /api/budgets — has readiness tier,
+// timestamps, sp_inventory, audit status, etc. Keyed by entity_code.
+let _enrichedByEntity = {};
+
+// Fetch /api/budgets and merge into _enrichedByEntity, then re-render the
+// grid. Called once at page load. The template's `budgets` array stays as
+// the source of building names/codes; the API call adds the readiness +
+// data-status fields used to drive tiles, chips, and the hero callout.
+function loadEnrichedBudgets() {
+  return fetch("/api/budgets")
+    .then(function (r) { return r.ok ? r.json() : []; })
+    .then(function (rows) {
+      const map = {};
+      (rows || []).forEach(function (r) {
+        if (r && r.entity_code) map[String(r.entity_code)] = r;
+      });
+      _enrichedByEntity = map;
+      try { renderEntityGrid(); } catch (e) {}
+    })
+    .catch(function () { _enrichedByEntity = {}; });
+}
+
+// Build the 5 mini-tiles (B / E / Y / A / Au) for an entity row, matching
+// the dashboard's color scheme. Returns an HTML string.
+function _renderEntityTiles(entityCode) {
+  const e = _enrichedByEntity[String(entityCode)];
+  if (!e) {
+    return "<span style=\"color:var(--gray-300); font-size:11px;\">…</span>";
+  }
+  const ts = e.timestamps || {};
+  const sp = e.sp_inventory || {};
+  const au = e.audit || null;
+  function _tile(letter, ingested, inSP, dt) {
+    let cls = "miss";
+    if (ingested) cls = "ok";
+    else if (inSP) cls = "ready";
+    const dtTxt = (ingested && dt)
+      ? (new Date(dt).getMonth()+1) + "/" + (new Date(dt).getDate())
+      : "";
+    const bg = cls === "ok" ? "#def7ec" : (cls === "ready" ? "#fef3c7" : "#fef2f2");
+    const fg = cls === "ok" ? "#065f46" : (cls === "ready" ? "#92400e" : "#991b1b");
+    const bd = cls === "ok" ? "#a7f3d0" : (cls === "ready" ? "#fcd34d" : "#fecaca");
+    return "<span style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:24px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
+         + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + letter + "</span>"
+         + (dtTxt ? "<span style=\"font-size:7px; opacity:0.75; margin-top:1px; font-variant-numeric:tabular-nums;\">" + dtTxt + "</span>" : "")
+         + "</span>";
+  }
+  const auOk = !!(au && au.status === "confirmed");
+  return "<span style=\"display:inline-flex; gap:3px;\">"
+       + _tile("B",  !!ts.budget_summary, !!sp.approved_2026,         ts.budget_summary)
+       + _tile("E",  !!e.has_expenses,    !!sp.expense_distribution,   ts.expense_dist)
+       + _tile("Y",  !!ts.ysl,            !!sp.ysl,                    ts.ysl)
+       + _tile("A",  !!ts.open_ap,        !!sp.ap_aging,               ts.open_ap)
+       + _tile("Au", auOk,                !!sp.audit_2025,             ts.audit)
+       + "</span>";
+}
 
 function _rebuildFaNameLookup() {
   _faNameByEntity = {};
@@ -1328,6 +1391,14 @@ function _entitySortValue(b, col) {
     return idx < 0 ? 99 : idx;
   }
   if (col === "updated_at") return new Date(b.updated_at || 0).getTime();
+  if (col === "readiness") {
+    // Higher tier_order = more actionable. Use API-supplied tier_order
+    // when present (server-side classifier); fallback to 0 for entities
+    // missing from /api/budgets (e.g. brand-new rows).
+    const e = _enrichedByEntity[String(b.entity_code)];
+    return (e && e.readiness && typeof e.readiness.tier_order === "number")
+      ? e.readiness.tier_order : 0;
+  }
   return 0;
 }
 
@@ -1377,9 +1448,15 @@ function renderEntityGrid() {
     filtered = filtered.filter(function (b) { return assigned.has(b.entity_code); });
   }
 
-  // 2. Filter by stage chip
+  // 2. Filter by readiness tier chip (FA dir 2026-05-23). Old logic
+  //    filtered on lifecycle_stage which was always "Setup" — useless.
+  //    New tiers come from the server-side readiness classifier.
   if (_stageFilter && _stageFilter !== "all") {
-    filtered = filtered.filter(function (b) { return (b.lifecycle_stage || "Setup") === _stageFilter; });
+    filtered = filtered.filter(function (b) {
+      const e = _enrichedByEntity[String(b.entity_code)];
+      const tier = (e && e.readiness && e.readiness.tier) || "NEEDS_FILES";
+      return tier === _stageFilter;
+    });
   }
 
   // 3. Filter by search
@@ -1418,10 +1495,11 @@ function renderEntityGrid() {
     }
   });
 
-  // 6. Render stage filter chips with live counts (based on FA + search filters, NOT stage filter)
+  // 6. FA dir 2026-05-23: render readiness-tier chips + hero callout.
+  //    Chips reflect ACTUAL state (server-classified) instead of the old
+  //    "Setup × 147" non-info. Hero surfaces the actionable queue.
   const stageRow = document.getElementById("stageFilterRow");
   if (stageRow) {
-    // Compute counts on the FA-filtered set (so chips reflect what is reachable)
     let chipBase = budgets;
     if (selectedFA) {
       const assigned = new Set(
@@ -1430,34 +1508,70 @@ function renderEntityGrid() {
       );
       chipBase = chipBase.filter(function (b) { return assigned.has(b.entity_code); });
     }
-    const stages = ["Setup","Sources Collected","Assumptions Confirmed","Budget Built (draft)","PM Review","Approved"];
+    // Count by readiness tier across the chipBase
+    const tiers = ["BUILT","READY_TO_BUILD","IN_PROGRESS","NEEDS_AUDIT_EXTRACT","NEEDS_AUDIT","NEEDS_FILES"];
     const counts = { "all": chipBase.length };
-    stages.forEach(function (s) { counts[s] = 0; });
-    chipBase.forEach(function (b) { const s = b.lifecycle_stage || "Setup"; if (counts[s] !== undefined) counts[s] += 1; });
+    tiers.forEach(function (t) { counts[t] = 0; });
+    chipBase.forEach(function (b) {
+      const e = _enrichedByEntity[String(b.entity_code)];
+      const t = (e && e.readiness && e.readiness.tier) || "NEEDS_FILES";
+      if (counts[t] !== undefined) counts[t] += 1;
+    });
 
-    // Keep the leading label, replace any prior chips.
     const headerLabel = stageRow.querySelector("span");
     stageRow.innerHTML = "";
     if (headerLabel) stageRow.appendChild(headerLabel);
 
-    function makeChip(label, count, key) {
+    function makeChip(label, count, key, color) {
       const isActive = _stageFilter === key;
       const chip = document.createElement("button");
       chip.type = "button";
-      chip.textContent = label + " " + count;
+      chip.innerHTML = label + " <span style=\"opacity:0.7; font-weight:500;\">" + count + "</span>";
+      const activeBg = color || "#5a4a3f";
       chip.style.cssText =
         "font-size:12px; font-weight:" + (isActive ? "700" : "600") +
         "; padding:6px 12px; border-radius:14px; cursor:pointer; border:1px solid " +
-        (isActive ? "var(--brown, #5a4a3f)" : "var(--gray-200)") +
-        "; background:" + (isActive ? "var(--brown, #5a4a3f)" : "white") +
+        (isActive ? activeBg : "var(--gray-200)") +
+        "; background:" + (isActive ? activeBg : "white") +
         "; color:" + (isActive ? "white" : "var(--gray-700)") + ";";
       chip.onclick = function () { setStageFilter(key); };
       return chip;
     }
     stageRow.appendChild(makeChip("All", counts.all, "all"));
-    stages.forEach(function (s) {
-      stageRow.appendChild(makeChip(s, counts[s], s));
-    });
+    stageRow.appendChild(makeChip("Ready to build", counts.READY_TO_BUILD, "READY_TO_BUILD", "#16a34a"));
+    stageRow.appendChild(makeChip("In progress",    counts.IN_PROGRESS,    "IN_PROGRESS",    "#d97706"));
+    stageRow.appendChild(makeChip("Audit ready to extract", counts.NEEDS_AUDIT_EXTRACT, "NEEDS_AUDIT_EXTRACT", "#0369a1"));
+    stageRow.appendChild(makeChip("Waiting for audit", counts.NEEDS_AUDIT, "NEEDS_AUDIT"));
+    stageRow.appendChild(makeChip("Waiting for files", counts.NEEDS_FILES, "NEEDS_FILES"));
+    stageRow.appendChild(makeChip("Built", counts.BUILT, "BUILT", "#065f46"));
+
+    // Hero callout — only when there's something actionable.
+    const hero = document.getElementById("readinessHero");
+    if (hero) {
+      const ready = counts.READY_TO_BUILD || 0;
+      const inProg = counts.IN_PROGRESS || 0;
+      if (ready > 0) {
+        hero.style.display = "block";
+        hero.innerHTML =
+          "<div style=\"background:linear-gradient(90deg,#ecfdf5 0%,#f0fdf4 100%); border:1px solid #6ee7b7; border-radius:10px; padding:14px 18px; display:flex; align-items:center; gap:14px;\">"
+        + "<span style=\"font-size:22px;\">🚀</span>"
+        + "<div style=\"flex:1;\"><strong style=\"color:#065f46; font-size:14px;\">" + ready + " building" + (ready === 1 ? "" : "s") + " ready to build right now</strong>"
+        + "<div style=\"color:#047857; font-size:11px; margin-top:2px;\">All files staged, audit confirmed. " + (inProg > 0 ? (inProg + " more in progress (audit review needed)." ) : "") + "</div></div>"
+        + "<button onclick=\"buildAllReady()\" style=\"background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; cursor:pointer;\">Build all " + ready + " →</button>"
+        + "</div>";
+      } else if (inProg > 0) {
+        hero.style.display = "block";
+        hero.innerHTML =
+          "<div style=\"background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:12px;\">"
+        + "<span style=\"font-size:18px;\">⏳</span>"
+        + "<div style=\"flex:1;\"><strong style=\"color:#92400e; font-size:13px;\">" + inProg + " building" + (inProg === 1 ? "" : "s") + " in progress</strong>"
+        + "<div style=\"color:#92400e; font-size:11px; margin-top:1px;\">Audit review or remaining source ingestion needed. Click \"In progress\" to focus.</div></div>"
+        + "</div>";
+      } else {
+        hero.style.display = "none";
+        hero.innerHTML = "";
+      }
+    }
   }
 
   // 7. Update header count caption
@@ -1495,18 +1609,22 @@ function renderEntityGrid() {
   filtered.forEach(function (b, idx) {
     const tr = document.createElement("tr");
     const isSelected = (selectedEntity === b.entity_code);
-    tr.style.cssText = "cursor:pointer; transition:background 0.1s; border-bottom:1px solid var(--gray-100);" +
+    tr.style.cssText = "transition:background 0.1s; border-bottom:1px solid var(--gray-100);" +
                        (idx % 2 === 1 ? " background:#fbfaf6;" : "") +
                        (isSelected ? " background:#f5efe7;" : "");
-    tr.onmouseenter = function () { if (!isSelected) tr.style.background = "#f4f1eb"; };
-    tr.onmouseleave = function () {
-      tr.style.background = isSelected ? "#f5efe7" : (idx % 2 === 1 ? "#fbfaf6" : "");
-    };
-    tr.onclick = function () { selectEntity(b.entity_code, b.building_name || b.entity_code); };
 
-    const stage = b.lifecycle_stage || "Setup";
-    const stageBg = _stageColor(stage);
     const faName = _faNameByEntity[b.entity_code] || "—";
+    const enriched = _enrichedByEntity[String(b.entity_code)] || {};
+    const readiness = enriched.readiness || {tier: "NEEDS_FILES", tier_label: "Setup", next_action: "wait", next_url: "/wizard/" + b.entity_code};
+
+    // Building name — clickable to select entity in wizard (legacy behavior)
+    const nameTd = document.createElement("td");
+    nameTd.style.cssText = "padding:10px 14px; font-size:13px; color:var(--gray-900); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; cursor:pointer;";
+    nameTd.textContent = b.building_name || b.entity_code;
+    nameTd.onclick = function () { selectEntity(b.entity_code, b.building_name || b.entity_code); };
+    nameTd.onmouseenter = function () { tr.style.background = "#f4f1eb"; };
+    nameTd.onmouseleave = function () { tr.style.background = isSelected ? "#f5efe7" : (idx % 2 === 1 ? "#fbfaf6" : ""); };
+    tr.appendChild(nameTd);
 
     const cell = function (text, css) {
       const td = document.createElement("td");
@@ -1514,25 +1632,90 @@ function renderEntityGrid() {
       td.textContent = text;
       return td;
     };
+    tr.appendChild(cell(b.entity_code, " font-family:ui-monospace,monospace; color:var(--gray-700);"));
+    tr.appendChild(cell(faName, " color:var(--gray-700); font-size:12px;"));
 
-    tr.appendChild(cell(b.building_name || b.entity_code, " font-weight:600;"));
-    tr.appendChild(cell(b.entity_code, " font-family:ui-monospace,SFMono-Regular,monospace; color:var(--gray-700);"));
-    tr.appendChild(cell(faName, " color:var(--gray-700);"));
+    // Data-status tiles (B / E / Y / A / Au) — mirrors dashboard
+    const tilesTd = document.createElement("td");
+    tilesTd.style.cssText = "padding:10px 14px;";
+    tilesTd.innerHTML = _renderEntityTiles(b.entity_code);
+    tr.appendChild(tilesTd);
 
-    const stageTd = document.createElement("td");
-    stageTd.style.cssText = "padding:10px 14px;";
-    stageTd.innerHTML = "<span style=\"display:inline-block; padding:3px 10px; border-radius:11px; font-size:11px; font-weight:600; background:" + stageBg + "; color:var(--gray-700);\">" + stage + "</span>";
-    tr.appendChild(stageTd);
+    // Readiness status pill
+    const statusTd = document.createElement("td");
+    statusTd.style.cssText = "padding:10px 14px;";
+    const tier = readiness.tier;
+    const tierBg = (tier === "READY_TO_BUILD") ? "#def7ec"
+                  : (tier === "BUILT") ? "#f0fdf4"
+                  : (tier === "IN_PROGRESS") ? "#fef3c7"
+                  : (tier === "NEEDS_AUDIT_EXTRACT") ? "#dbeafe"
+                  : (tier === "NEEDS_AUDIT") ? "#fde68a"
+                  : "var(--gray-100)";
+    const tierFg = (tier === "READY_TO_BUILD") ? "#065f46"
+                  : (tier === "BUILT") ? "#065f46"
+                  : (tier === "IN_PROGRESS") ? "#92400e"
+                  : (tier === "NEEDS_AUDIT_EXTRACT") ? "#1e40af"
+                  : (tier === "NEEDS_AUDIT") ? "#78350f"
+                  : "var(--gray-700)";
+    statusTd.innerHTML = "<span style=\"display:inline-block; padding:3px 10px; border-radius:11px; font-size:11px; font-weight:600; background:" + tierBg + "; color:" + tierFg + ";\">" + (readiness.tier_label || "Setup") + "</span>";
+    tr.appendChild(statusTd);
 
-    tr.appendChild(cell(_formatRelativeTime(b.updated_at), " color:var(--gray-500); font-size:12px;"));
-
-    const arrowTd = document.createElement("td");
-    arrowTd.style.cssText = "padding:10px 14px; text-align:right; color:var(--gray-300); font-size:14px;";
-    arrowTd.textContent = "→";
-    tr.appendChild(arrowTd);
+    // Next-step action button — routes the FA to the right place
+    const actTd = document.createElement("td");
+    actTd.style.cssText = "padding:10px 14px; text-align:right;";
+    const act = readiness.next_action;
+    let btnLabel, btnBg, btnFg, btnBd, btnDisabled = false;
+    if (act === "build") {
+      btnLabel = "Build now →"; btnBg = "#16a34a"; btnFg = "#fff"; btnBd = "#16a34a";
+    } else if (act === "audit_review") {
+      btnLabel = "Audit review →"; btnBg = "#fff"; btnFg = "#d97706"; btnBd = "#d97706";
+    } else if (act === "review_built") {
+      btnLabel = "View built"; btnBg = "#fff"; btnFg = "var(--blue)"; btnBd = "var(--gray-300)";
+    } else {
+      btnLabel = "Waiting for files"; btnBg = "#fff"; btnFg = "var(--gray-500)"; btnBd = "var(--gray-300)"; btnDisabled = true;
+    }
+    const a = document.createElement("a");
+    a.href = readiness.next_url || ("/wizard/" + b.entity_code);
+    a.textContent = btnLabel;
+    a.style.cssText = "display:inline-block; font-size:11px; font-weight:600; padding:5px 12px; border-radius:5px; border:1px solid " + btnBd + "; background:" + btnBg + "; color:" + btnFg + "; text-decoration:none; cursor:" + (btnDisabled ? "not-allowed" : "pointer") + "; opacity:" + (btnDisabled ? "0.6" : "1") + ";";
+    if (btnDisabled) a.onclick = function (e) { e.preventDefault(); };
+    actTd.appendChild(a);
+    tr.appendChild(actTd);
 
     tbody.appendChild(tr);
   });
+}
+
+// FA dir 2026-05-23: bulk-build action — hits the admin endpoint that
+// auto-walks every READY_TO_BUILD entity. Confirmation gate first; the
+// server returns a per-entity summary which we surface in an alert.
+function buildAllReady() {
+  // Count up the targets from enriched data
+  let readyCount = 0;
+  Object.values(_enrichedByEntity).forEach(function (e) {
+    if (e && e.readiness && e.readiness.tier === "READY_TO_BUILD") readyCount += 1;
+  });
+  if (readyCount === 0) {
+    alert("No buildings are currently ready to build.");
+    return;
+  }
+  if (!confirm("Build all " + readyCount + " ready building" + (readyCount === 1 ? "" : "s") + " now?\\n\\nEach takes ~30-60 seconds. The page will stay open while it runs.")) return;
+  const hero = document.getElementById("readinessHero");
+  if (hero) hero.innerHTML = "<div style=\"background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:14px 18px; font-size:13px; color:#92400e;\">⏳ Building " + readyCount + " budgets… this may take a few minutes. Do not close the tab.</div>";
+  fetch("/api/admin/build-all-ready", { method: "POST", headers: {"Content-Type": "application/json"}, body: "{}" })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      const ok = (data.results || []).filter(function (r) { return r.ok; }).length;
+      const fail = (data.results || []).filter(function (r) { return !r.ok; }).length;
+      alert("Built " + ok + " of " + readyCount + " buildings."
+          + (fail > 0 ? "\\n" + fail + " failed — see dashboard for details." : ""));
+      // Refresh the enriched data to reflect new BUILT state
+      loadEnrichedBudgets();
+    })
+    .catch(function (err) {
+      alert("Bulk build failed: " + err);
+      loadEnrichedBudgets();
+    });
 }
 
 // Select entity
@@ -2796,6 +2979,11 @@ function confirmAdminBypass() {
 document.addEventListener('DOMContentLoaded', () => {
   initializeData();
   renderEntityGrid();
+  // FA dir 2026-05-23: hydrate the enriched per-entity data (readiness +
+  // tiles) from /api/budgets. The grid renders once with placeholder
+  // tiles, then re-renders when enriched data lands a fraction of a
+  // second later. Non-blocking.
+  try { loadEnrichedBudgets(); } catch (e) {}
   updateRail();
   renderActionButtons();
   // Auto-select if /wizard/<entity_code> or ?entity=<code> URL form was used.
