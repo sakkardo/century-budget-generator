@@ -1738,8 +1738,27 @@ def create_workflow_blueprint(db):
 
     @bp.route("/pm", methods=["GET"])
     def pm_portal():
-        """PM Portal - select building and edit R&M lines."""
+        """PM Portal - select building and edit R&M lines.
+
+        FA dir 2026-05-24: lazy-sync Monday.com on page load so the PM
+        dropdown reflects the current Active Buildings (non-Lemle) group
+        and current pm8-column values. _ensure_monday_fresh is safe — it
+        never raises, falls back to cached data if Monday is unreachable,
+        and skips the network call entirely if the cache is <10 min old.
+        """
         import json as json_mod
+
+        # Lazy Monday sync (no-op if cache is fresh). Best-effort.
+        try:
+            try:
+                from budget_app.app import _ensure_monday_fresh
+            except ImportError:
+                from app import _ensure_monday_fresh
+            _ensure_monday_fresh()
+        except Exception:
+            # Never block portal load on a sync hiccup — pruning + stale data
+            # is still a safer fallback than a 500.
+            pass
 
         # Ensure at least one PM user exists for demo
         pm_users = User.query.filter_by(role="pm").all()
@@ -27562,7 +27581,16 @@ PM_PORTAL_TEMPLATE = r"""
 </header>
 <div class="container">
   <div class="form-group">
-    <label>Select Your Name</label>
+    <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <span>Select Your Name</span>
+      <!-- FA dir 2026-05-24: Monday sync status. Reads /api/sync-status on load,
+           shows "Synced N min ago"; Refresh button forces a /api/sync-monday-now. -->
+      <span id="pm-sync-status" style="font-size:11px;font-weight:500;color:#8b7b6b;display:inline-flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;">
+        <span id="pm-sync-text">Checking Monday sync…</span>
+        <button type="button" id="pm-sync-refresh" onclick="pmRefreshMondaySync()" title="Pull the latest Active Buildings (non-Lemle) list from Monday.com"
+          style="padding:3px 10px;font-size:11px;font-weight:600;background:white;color:#4a3f35;border:1px solid #ddd5cc;border-radius:6px;cursor:pointer;">↻ Refresh</button>
+      </span>
+    </label>
     <select id="pm-select">
       <option value="">-- Choose your name --</option>
     </select>
@@ -27617,8 +27645,65 @@ async function loadInitialData() {
     allBudgets = await budgetsRes.json();
 
     populatePMSelect();
+    pmLoadSyncStatus();
   } catch (err) {
     console.error('Failed to load data:', err);
+  }
+}
+
+// FA dir 2026-05-24: PM portal Monday-sync indicator. Reads /api/sync-status,
+// shows "Synced N min ago" or last error. Refresh button forces a fresh pull.
+async function pmLoadSyncStatus() {
+  const txt = document.getElementById('pm-sync-text');
+  if (!txt) return;
+  try {
+    const res = await fetch('/api/sync-status');
+    const data = await res.json();
+    if (data.error) {
+      txt.textContent = '⚠ Last sync failed';
+      txt.style.color = '#b91c1c';
+      txt.title = data.error;
+      return;
+    }
+    if (!data.last_synced_at) {
+      txt.textContent = 'Never synced';
+      txt.style.color = '#92400e';
+      return;
+    }
+    const synced = new Date(data.last_synced_at);
+    const mins = Math.max(0, Math.round((Date.now() - synced.getTime()) / 60000));
+    let label;
+    if (mins < 1) label = 'Synced just now';
+    else if (mins < 60) label = 'Synced ' + mins + ' min ago';
+    else if (mins < 1440) label = 'Synced ' + Math.round(mins / 60) + 'h ago';
+    else label = 'Synced ' + Math.round(mins / 1440) + 'd ago';
+    txt.textContent = '✓ ' + label + ' from Monday';
+    txt.style.color = '#15803d';
+    txt.title = 'Active Buildings (non-Lemle) group · last fetched ' + synced.toLocaleString();
+  } catch (e) {
+    txt.textContent = '? sync status unavailable';
+    txt.style.color = '#8b7b6b';
+  }
+}
+
+async function pmRefreshMondaySync() {
+  const btn = document.getElementById('pm-sync-refresh');
+  const txt = document.getElementById('pm-sync-text');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Syncing…'; btn.style.opacity = '0.7'; }
+  if (txt) { txt.textContent = 'Pulling from Monday.com…'; txt.style.color = '#4a3f35'; }
+  try {
+    const res = await fetch('/api/sync-monday-now', {method: 'POST'});
+    const data = await res.json();
+    if (data.error) {
+      if (txt) { txt.textContent = '⚠ Sync failed: ' + data.error; txt.style.color = '#b91c1c'; }
+    } else {
+      // Reload the local caches so the dropdown reflects the fresh Monday data.
+      await loadInitialData();
+    }
+  } catch (e) {
+    if (txt) { txt.textContent = '⚠ Sync error: ' + e.message; txt.style.color = '#b91c1c'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; btn.style.opacity = '1'; }
   }
 }
 
@@ -27626,13 +27711,41 @@ function populatePMSelect() {
   const select = document.getElementById('pm-select');
   select.innerHTML = '<option value="">-- Choose your name --</option>';
 
-  const pmUsers = allUsers.filter(u => u.role === 'pm');
+  // FA dir 2026-05-24: only PMs in Monday's Active Buildings (non-Lemle) group
+  // make it here, because _ensure_monday_fresh prunes BuildingAssignment rows
+  // for inactive entities. But a PM can still exist as a User row with zero
+  // current assignments (e.g., they moved on, or the building was archived).
+  // Filter the dropdown to PMs with ≥1 active assignment whose budget is also
+  // active (not archived_inactive). Sort alphabetically for usability.
+  const activeBudgetCodes = new Set(
+    allBudgets
+      .filter(b => b.status !== 'archived_inactive')
+      .map(b => b.entity_code)
+  );
+  const pmsWithActiveAssignment = new Set(
+    allAssignments
+      .filter(a => a.role === 'pm' && activeBudgetCodes.has(a.entity_code))
+      .map(a => a.user_id)
+  );
+  const pmUsers = allUsers
+    .filter(u => u.role === 'pm' && pmsWithActiveAssignment.has(u.id))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   pmUsers.forEach(user => {
     const opt = document.createElement('option');
     opt.value = user.id;
     opt.textContent = user.name;
     select.appendChild(opt);
   });
+
+  // Surface an empty-state if Monday says nobody's active — helps the FA notice
+  // a botched sync vs. assuming the dropdown is just slow.
+  if (pmUsers.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no PMs found — check Monday sync)';
+    opt.disabled = true;
+    select.appendChild(opt);
+  }
 }
 
 function getBuildingName(entityCode) {
@@ -27650,21 +27763,39 @@ function renderBuildings(userId) {
   const summary = document.getElementById('pm-summary');
   const userAssignments = allAssignments.filter(a => a.user_id === userId && a.role === 'pm');
 
-  // If PM has assignments, show those buildings; otherwise show all budgets (demo mode)
-  let buildingList = [];
-  if (userAssignments.length > 0) {
-    buildingList = userAssignments.map(a => {
+  // FA dir 2026-05-24: only show the PM's currently-assigned, NON-archived
+  // buildings. Removed the prior "demo fallback" that exposed all 147 budgets
+  // when a PM had zero assignments — that misled selectors into thinking they
+  // managed the whole portfolio. archived_inactive = pruned from Monday's
+  // Active Buildings (non-Lemle) group.
+  let buildingList = userAssignments
+    .map(a => {
       const budget = allBudgets.find(b => b.entity_code === a.entity_code);
       return { entity_code: a.entity_code, budget };
-    });
-  } else {
-    buildingList = allBudgets.map(b => ({ entity_code: b.entity_code, budget: b }));
-  }
+    })
+    .filter(item => item.budget && item.budget.status !== 'archived_inactive');
 
   if (buildingList.length === 0) {
+    // Empty state — different message depending on whether the PM has any
+    // assignments at all (vs. all of them are archived).
     grid.style.display = 'none';
     summary.style.display = 'none';
+    let emptyEl = document.getElementById('pm-empty-state');
+    if (!emptyEl) {
+      emptyEl = document.createElement('div');
+      emptyEl.id = 'pm-empty-state';
+      emptyEl.style.cssText = 'padding:32px 24px;text-align:center;color:#8b7b6b;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;margin-top:16px;font-size:14px;';
+      const parent = grid.parentElement;
+      if (parent) parent.appendChild(emptyEl);
+    }
+    emptyEl.style.display = 'block';
+    emptyEl.innerHTML = userAssignments.length === 0
+      ? 'No buildings assigned to this PM on Monday\'s Active Buildings (non-Lemle) list. If this looks wrong, ask your FA to refresh the Monday sync.'
+      : 'All assigned buildings are archived. Ask your FA to check Monday assignments.';
     return;
+  } else {
+    const emptyEl = document.getElementById('pm-empty-state');
+    if (emptyEl) emptyEl.style.display = 'none';
   }
 
   // Classify each building
