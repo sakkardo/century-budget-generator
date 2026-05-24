@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wizard + Dashboard Process Optimization — 2026-05-23</title>
+<style>
+  :root {
+    --bg: #f4f1eb;
+    --card: #ffffff;
+    --text: #1a1714;
+    --muted: #6b6358;
+    --line: #d5cfc5;
+    --green: #057a55;
+    --green-light: #def7ec;
+    --amber: #f59e0b;
+    --amber-light: #fff3cd;
+    --red: #b91c1c;
+    --red-light: #fee2e2;
+    --blue: #5a4a3f;
+    --blue-light: #f5efe7;
+    --gray-50: #f4f1eb;
+    --gray-100: #ede9e1;
+    --gray-200: #e5e0d5;
+    --gray-300: #d5cfc5;
+    --gray-500: #8a7e72;
+    --gray-700: #4a4039;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    padding: 24px 16px 80px;
+  }
+  header.hero {
+    max-width: 1320px; margin: 0 auto 24px;
+    background: linear-gradient(135deg, #2c2825 0%, #3d322a 100%);
+    color: #fff; border-radius: 14px; padding: 28px 32px;
+  }
+  header.hero h1 { font-size: 24px; font-weight: 700; }
+  header.hero p { font-size: 13px; opacity: 0.85; margin-top: 8px; max-width: 920px; }
+  .container { max-width: 1320px; margin: 0 auto; }
+
+  section.block {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 24px 28px;
+    margin-bottom: 20px;
+  }
+  section.block h2 {
+    font-size: 18px; font-weight: 700; color: var(--blue);
+    margin-bottom: 4px;
+  }
+  section.block .sub { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+
+  .label { font-size: 10px; font-weight: 700; color: var(--gray-500);
+           text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+
+  .mock-tabs {
+    display: grid; gap: 16px; grid-template-columns: 1fr;
+  }
+  @media (min-width: 1100px) {
+    .mock-tabs.cols-2 { grid-template-columns: 1fr 1fr; }
+  }
+  .mock-card {
+    background: var(--gray-50); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px;
+  }
+  .mock-card.current { border-color: #d4d4d4; background: #f5f5f5; }
+  .mock-card.proposed { border-color: #6ee7b7; background: #f0fdf4; }
+  .mock-card h3 { font-size: 12px; font-weight: 700; text-transform: uppercase;
+                  letter-spacing: 0.06em; color: var(--gray-700); margin-bottom: 4px; }
+  .mock-card .tag {
+    display: inline-block; font-size: 10px; padding: 1px 8px;
+    border-radius: 8px; margin-left: 6px; font-weight: 700;
+  }
+  .mock-card.current .tag { background: #d4d4d4; color: #404040; }
+  .mock-card.proposed .tag { background: #16a34a; color: #fff; }
+  .mock-card .note { font-size: 11px; color: var(--muted); margin: 4px 0 12px; }
+
+  /* ─────────────── Mini-tile (matches dashboard) ─────────────── */
+  .ds-tiles { display: inline-flex; gap: 3px; align-items: center; }
+  .ds-tile {
+    display: inline-flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-width: 24px; height: 22px; padding: 1px 3px;
+    border-radius: 4px; border: 1px solid transparent;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    line-height: 1;
+  }
+  .ds-tile .t-letter { font-size: 9px; font-weight: 700; letter-spacing: 0.3px; }
+  .ds-tile .t-dt { font-size: 7px; margin-top: 1px; opacity: 0.75;
+                    font-variant-numeric: tabular-nums; }
+  .ds-tile.ok    { background: #def7ec; color: #065f46; border-color: #a7f3d0; }
+  .ds-tile.miss  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+  .ds-tile.ready { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+
+  /* ─────────────── Mock table ─────────────── */
+  .mock-table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+    background: #fff; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .mock-table th, .mock-table td {
+    padding: 8px 10px; text-align: left;
+    border-bottom: 1px solid var(--gray-200); vertical-align: middle;
+  }
+  .mock-table th {
+    background: var(--gray-100); color: var(--gray-500);
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px;
+    font-weight: 700;
+  }
+  .mock-table tr:last-child td { border-bottom: none; }
+  .pill {
+    display: inline-block; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; font-weight: 600;
+  }
+  .pill.gray   { background: var(--gray-200); color: var(--gray-700); }
+  .pill.green  { background: var(--green-light); color: #065f46; }
+  .pill.amber  { background: var(--amber-light); color: #92400e; }
+  .pill.red    { background: var(--red-light); color: #7f1d1d; }
+
+  .btn-act {
+    font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    border: 1px solid; cursor: pointer; font-weight: 600;
+    font-family: inherit;
+  }
+  .btn-act.go    { background: var(--green); color: #fff; border-color: var(--green); }
+  .btn-act.cont  { background: #fff; color: var(--amber); border-color: var(--amber); }
+  .btn-act.wait  { background: #fff; color: var(--gray-500); border-color: var(--gray-300);
+                   cursor: not-allowed; opacity: 0.7; }
+  .btn-act.done  { background: #fff; color: var(--blue); border-color: var(--gray-300); }
+
+  /* Filter chips */
+  .chip-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip {
+    font-size: 11px; padding: 4px 10px; border-radius: 14px;
+    border: 1px solid var(--gray-300); background: #fff;
+    cursor: pointer; font-weight: 600; color: var(--gray-700);
+  }
+  .chip.active   { background: #2c2825; color: #fff; border-color: #2c2825; }
+  .chip .num     { display: inline-block; margin-left: 4px;
+                   font-size: 10px; opacity: 0.7; font-weight: 500; }
+
+  /* Hero callout */
+  .hero-call {
+    background: linear-gradient(90deg, #ecfdf5 0%, #f0fdf4 100%);
+    border: 1px solid #6ee7b7; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .hero-call .icon { font-size: 24px; }
+  .hero-call .text { flex: 1; }
+  .hero-call .text strong { color: #065f46; font-size: 14px; }
+  .hero-call .text .sub2 { color: #047857; font-size: 11px; margin-top: 2px; }
+  .hero-call .btn-bulk {
+    background: var(--green); color: #fff; border: none;
+    padding: 8px 16px; border-radius: 6px;
+    font-weight: 700; font-size: 13px; cursor: pointer;
+  }
+
+  /* Stage diagram */
+  .stages { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+  .stages .stg {
+    font-size: 10px; padding: 3px 6px; border-radius: 4px;
+    border: 1px solid var(--gray-300); background: #fff; color: var(--gray-500);
+  }
+  .stages .stg.done   { background: var(--green-light); color: #065f46; border-color: #a7f3d0; }
+  .stages .stg.active { background: #2c2825; color: #fff; border-color: #2c2825; font-weight: 700; }
+  .stages .arrow      { color: var(--gray-300); font-size: 9px; }
+
+  pre.code {
+    background: #1f1b16; color: #e8e0d4;
+    padding: 12px 16px; border-radius: 6px;
+    font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    overflow-x: auto; line-height: 1.5;
+  }
+  .impact-grid {
+    display: grid; gap: 12px; grid-template-columns: repeat(3, 1fr);
+    margin-top: 12px;
+  }
+  .impact-card {
+    background: #f0fdf4; border: 1px solid #6ee7b7;
+    padding: 14px; border-radius: 8px;
+  }
+  .impact-card h4 { font-size: 11px; color: #047857; text-transform: uppercase;
+                    letter-spacing: 0.06em; font-weight: 700; margin-bottom: 4px; }
+  .impact-card .val { font-size: 22px; font-weight: 800; color: #065f46; }
+  .impact-card .desc { font-size: 11px; color: #047857; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Wizard + FA Dashboard — Process Optimization Preview</h1>
+  <p>
+    The Wizard's "Select Entity" page currently shows 147 buildings as a flat list with no signal
+    of which to work on. Every Stage chip reads "Setup" so filtering does nothing. The Dashboard
+    has the right per-source tiles but no "Ready to build NOW" affordance. <b>Goal:</b> in 5 seconds
+    after landing on either page, the FA knows exactly which buildings are workable right now
+    and clicks a single button to build them.
+  </p>
+  <p style="margin-top:10px; font-size:11px; opacity:0.7;">
+    Preview only — no production code changed. Approve a combo and I'll ship.
+  </p>
+</header>
+
+<div class="container">
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- THE PROBLEM                                                       -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>1. The current FA workflow has 5 waste sources</h2>
+    <p class="sub">Mapping the existing Wizard + Dashboard process surfaces five distinct friction points.</p>
+
+    <table class="mock-table">
+      <thead><tr>
+        <th>#</th><th>Waste type</th><th>Where it shows up</th><th>Cost per pass</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>1</td><td><b>Waiting / Decision Cost</b></td>
+            <td>FA scans 147 alphabetical rows trying to figure out which to work on</td>
+            <td>~30 sec cognitive load × 147 = ~75 min</td></tr>
+        <tr><td>2</td><td><b>Rework</b></td>
+            <td>FA opens a building, finds it has no files staged, backs out</td>
+            <td>~25% of clicks wasted</td></tr>
+        <tr><td>3</td><td><b>Handoffs</b></td>
+            <td>FA must mentally bridge Wizard ↔ Dashboard ↔ SharePoint</td>
+            <td>Context-switch cost per building</td></tr>
+        <tr><td>4</td><td><b>Over-processing</b></td>
+            <td>Stage filter chips read "Setup 147 / Sources Collected 0 / Built 0" — useless</td>
+            <td>FA learns to ignore the filter; affordance is dead</td></tr>
+        <tr><td>5</td><td><b>Manual work</b></td>
+            <td>No bulk-build for clearly-ready buildings — process each one in the wizard</td>
+            <td>10x slower than necessary for green-tier entities</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- WIZARD SELECT ENTITY — BEFORE/AFTER                              -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>2. Wizard "Select Entity" — before vs proposed</h2>
+    <p class="sub">Same data, ordered by readiness. Each row now answers: "what should I do here?"</p>
+
+    <div class="mock-tabs cols-2">
+
+      <!-- CURRENT -->
+      <div class="mock-card current">
+        <h3>Current <span class="tag">today</span></h3>
+        <p class="note">Flat list, all 147 in "Setup," no per-building signal.</p>
+
+        <div class="chip-row">
+          <span class="chip active">All <span class="num">147</span></span>
+          <span class="chip">Setup <span class="num">147</span></span>
+          <span class="chip">Sources Collected <span class="num">0</span></span>
+          <span class="chip">Built (draft) <span class="num">0</span></span>
+          <span class="chip">PM Review <span class="num">0</span></span>
+        </div>
+
+        <table class="mock-table">
+          <thead><tr>
+            <th>Building</th><th>Ent</th><th>FA</th><th>Stage</th><th>Activity</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>93 Worth Condominium</td><td>93</td><td>—</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>5 West 14th Owners</td><td>106</td><td>Kristy P.</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>Baybridge at Bayside</td><td>122</td><td>—</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>Beverly House Co.</td><td>123</td><td>Kristy P.</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>Morgan House Condo</td><td>138</td><td>Saranda A.</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>29-45 Tenants Corp.</td><td>140</td><td>Tamari A.</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+            <tr><td>130 E. 18 Owners</td><td>148</td><td>Kristy P.</td>
+                <td><span class="pill gray">Setup</span></td><td>—</td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:12px;">
+          ❌ Every row looks identical. FA must click into each to find out it has no files.
+        </p>
+      </div>
+
+      <!-- PROPOSED -->
+      <div class="mock-card proposed">
+        <h3>Proposed <span class="tag">v1</span></h3>
+        <p class="note">Tiles, smart filters, action button per row. Sort by readiness desc by default.</p>
+
+        <div class="hero-call">
+          <span class="icon">🚀</span>
+          <div class="text">
+            <strong>5 buildings are ready to build right now</strong>
+            <div class="sub2">All files staged, audit confirmed. Estimated total time: 12 min.</div>
+          </div>
+          <button class="btn-bulk">Build all 5 →</button>
+        </div>
+
+        <div class="chip-row">
+          <span class="chip">All <span class="num">147</span></span>
+          <span class="chip active" style="background:#16a34a;border-color:#16a34a;">Ready to build <span class="num">5</span></span>
+          <span class="chip">In progress <span class="num">12</span></span>
+          <span class="chip">Needs audit <span class="num">19</span></span>
+          <span class="chip">Needs files <span class="num">103</span></span>
+          <span class="chip">Already built <span class="num">8</span></span>
+        </div>
+
+        <table class="mock-table">
+          <thead><tr>
+            <th>Building</th><th>Ent</th><th>Data status (B · E · Y · A · Au)</th><th>Next step</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>The Orion — 350 W 42nd</td><td>847</td>
+                <td><div class="ds-tiles">
+                  <div class="ds-tile ok"><span class="t-letter">B</span><span class="t-dt">5/22</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">E</span><span class="t-dt">5/22</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Y</span><span class="t-dt">5/22</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">A</span><span class="t-dt">5/22</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Au</span><span class="t-dt">5/22</span></div>
+                </div></td>
+                <td><button class="btn-act go">Build now →</button></td></tr>
+            <tr><td>157 East 72nd Condo</td><td>710</td>
+                <td><div class="ds-tiles">
+                  <div class="ds-tile ok"><span class="t-letter">B</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">E</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Y</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">A</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Au</span></div>
+                </div></td>
+                <td><button class="btn-act go">Build now →</button></td></tr>
+            <tr><td>130 E. 18 Owners</td><td>148</td>
+                <td><div class="ds-tiles">
+                  <div class="ds-tile ok"><span class="t-letter">B</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">E</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Y</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">A</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Au</span></div>
+                </div></td>
+                <td><button class="btn-act done">Already built · Review</button></td></tr>
+            <tr><td>Booth Street Owners</td><td>410</td>
+                <td><div class="ds-tiles">
+                  <div class="ds-tile ok"><span class="t-letter">B</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">E</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">Y</span></div>
+                  <div class="ds-tile ok"><span class="t-letter">A</span></div>
+                  <div class="ds-tile ready"><span class="t-letter">Au</span></div>
+                </div></td>
+                <td><button class="btn-act cont">Continue · Audit review</button></td></tr>
+            <tr><td>93 Worth Condo</td><td>93</td>
+                <td><div class="ds-tiles">
+                  <div class="ds-tile ok"><span class="t-letter">B</span></div>
+                  <div class="ds-tile miss"><span class="t-letter">E</span></div>
+                  <div class="ds-tile miss"><span class="t-letter">Y</span></div>
+                  <div class="ds-tile miss"><span class="t-letter">A</span></div>
+                  <div class="ds-tile miss"><span class="t-letter">Au</span></div>
+                </div></td>
+                <td><button class="btn-act wait">Waiting for files</button></td></tr>
+          </tbody>
+        </table>
+
+        <p class="note" style="margin-top:12px;">
+          ✓ Each row's status is obvious at a glance. Action button tells the FA exactly what to do.<br>
+          ✓ Filter chips actually map to states the FA cares about (not all 147 "Setup").<br>
+          ✓ Hero callout = one-click batch action for the easy cases.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- DASHBOARD — proposed additions                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>3. FA Dashboard — minimal additions, keep what works</h2>
+    <p class="sub">
+      Dashboard already has the right tile system. Three small adds align it with the new wizard.
+    </p>
+
+    <div class="mock-tabs cols-2">
+      <div class="mock-card current">
+        <h3>Today <span class="tag">in prod</span></h3>
+        <p class="note">Top of the All Buildings table — useful but no "what to do next" affordance.</p>
+        <ul style="font-size:12px; color:var(--gray-700); padding-left:18px; line-height:1.9;">
+          <li>6 status cards: Draft, Pending PM, PM in progress, FA Review, Approved, Returned</li>
+          <li>Search bar</li>
+          <li>"Scan SharePoint now" button</li>
+          <li>Building table with B/E/Y/A/Au tiles + status pill</li>
+        </ul>
+      </div>
+
+      <div class="mock-card proposed">
+        <h3>Proposed adds <span class="tag">v1</span></h3>
+        <p class="note">Three callouts above the existing tile grid — no destructive changes.</p>
+
+        <div class="hero-call">
+          <span class="icon">🚀</span>
+          <div class="text">
+            <strong>5 buildings ready to build · 12 in progress · 103 awaiting files</strong>
+            <div class="sub2">Click "Ready to build" filter to focus, or batch-build everything ready.</div>
+          </div>
+          <button class="btn-bulk">Build all 5 →</button>
+        </div>
+
+        <div class="chip-row" style="margin-top:0;">
+          <span class="chip">Show all</span>
+          <span class="chip active" style="background:#16a34a;border-color:#16a34a;">Ready to build <span class="num">5</span></span>
+          <span class="chip">In progress <span class="num">12</span></span>
+          <span class="chip">Needs files <span class="num">103</span></span>
+          <span class="chip">Built <span class="num">8</span></span>
+        </div>
+
+        <div style="font-size:12px; color:var(--gray-700); margin-top:8px;">
+          + Sort header: <b>Readiness</b> (highest tile-count first, default)
+        </div>
+
+        <p class="note" style="margin-top:14px;">
+          ✓ Same affordances as the new wizard. FA can use whichever page they prefer.<br>
+          ✓ No tiles, columns, or buttons removed — purely additive.
+        </p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- WHAT'S SHARED — backend model                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>4. One backend computes "readiness tier" for both pages</h2>
+    <p class="sub">
+      One server-side function categorizes each entity. Wizard + Dashboard both render from it,
+      so they can't disagree.
+    </p>
+
+    <pre class="code">// Per-entity readiness tier — server-side computation
+//   READY_TO_BUILD = audit confirmed + all 4 Yardi sources ingested,
+//                    no wizard_completed_at yet
+//   IN_PROGRESS    = some sources ingested but not all,
+//                    or audit extracted but not confirmed
+//   NEEDS_AUDIT    = files in SP for B/E/Y/A but no audit_2025 PDF
+//                    or audit not yet extracted
+//   NEEDS_FILES    = some of B/E/Y/A/Au files missing in SP
+//   BUILT          = wizard_completed_at IS NOT NULL
+//
+//   next_action ∈ { "build", "audit_review", "wait", "review_built" }
+//   next_step_url = /wizard/&lt;ec&gt;?step=N  with smart step selection</pre>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- IMPACT                                                            -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>5. Estimated impact per portfolio pass</h2>
+    <div class="impact-grid">
+      <div class="impact-card">
+        <h4>Decision time</h4>
+        <div class="val">75min → 12min</div>
+        <div class="desc">63 min saved per pass (no more scanning 147 rows)</div>
+      </div>
+      <div class="impact-card">
+        <h4>Wrong-click rate</h4>
+        <div class="val">25% → 5%</div>
+        <div class="desc">Action button surfaces the right next step</div>
+      </div>
+      <div class="impact-card">
+        <h4>Bulk-build time</h4>
+        <div class="val">~10× faster</div>
+        <div class="desc">"Build all 5" replaces 5 separate wizard runs</div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- IMPLEMENTATION                                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block">
+    <h2>6. Implementation plan — 4 ordered steps</h2>
+    <ol style="font-size:13px; color:var(--gray-700); padding-left:22px; line-height:1.9;">
+      <li>
+        <b>Backend readiness endpoint</b> — extend <code>/api/budgets</code> to include
+        <code>readiness_tier</code> + <code>next_action</code> + <code>next_step_url</code>
+        per entity. Computed from existing data (no new tables). <span style="color:var(--muted);">~30 min</span>
+      </li>
+      <li>
+        <b>Wizard Select Entity rewrite</b> — replace the Stage column with the tile bar,
+        rewrite filter chips to match readiness tiers, add hero callout + bulk-build button.
+        <span style="color:var(--muted);">~1 hour</span>
+      </li>
+      <li>
+        <b>Dashboard additions</b> — add the same hero callout + tier filter chips above the
+        existing table. Existing columns, tiles, and Scan button untouched.
+        <span style="color:var(--muted);">~30 min</span>
+      </li>
+      <li>
+        <b>Bulk-build admin endpoint</b> — <code>POST /api/admin/build-all-ready</code> runs
+        the auto-walk pattern (the same one I demoed manually) across every READY_TO_BUILD
+        entity, streams progress, reports completed/failed.
+        <span style="color:var(--muted);">~45 min</span>
+      </li>
+    </ol>
+    <p class="sub" style="margin-top:14px; font-size:12px;">
+      <b>Total:</b> ~2.5-3 hours. None of the existing wizard steps, dashboard tiles, or
+      backend routes change behavior. All additions are layered on top of existing data.
+      Worst-case rollback: revert one or two files, system returns to current state.
+    </p>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- PICK                                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="block" style="background:#ecfdf5; border-color:#6ee7b7;">
+    <h2 style="color:#065f46;">Your call</h2>
+    <p style="font-size:13px; color:#047857; margin-bottom:14px;">
+      Three sensible scopes — pick one and I'll ship.
+    </p>
+    <ul style="font-size:13px; color:#065f46; padding-left:22px; line-height:1.9;">
+      <li><b>A) Full optimization</b> — all 4 steps above (~2.5-3 hr). Recommended.</li>
+      <li><b>B) Wizard-only</b> — Steps 1+2 (~1.5 hr). Dashboard unchanged, wizard rebuilt.</li>
+      <li><b>C) Hero callouts only</b> — backend endpoint + the "X ready to build" banner on both pages, no other changes (~1 hr). Quick win, defer the rewrite.</li>
+    </ul>
+    <p style="margin-top:14px; font-size:12px; color:#047857;">
+      My pick: <b>A</b>. The waste sources stack on each other — fixing just one (banner) still
+      leaves the FA scanning 147 rows. The full rewrite costs an extra hour and gets the FA
+      from "where do I start?" to "click build" in under 5 seconds.
+    </p>
+  </section>
+
+</div>
+
+</body>
+</html>
