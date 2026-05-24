@@ -21323,6 +21323,11 @@ async function renderBudgetSummary(contentDiv) {
     '<button onclick="sumTabUndoLast()" title="Restore the most recent change on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u21a9 Undo last</button>' +
     '<button onclick="sumTabShowHistory()" title="See the last 50 changes on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u23f1 History</button>' +
     '</div>' +
+    // FA dir 2026-05-24: second-row formula breakdown \u2014 long expressions like
+    // "= Income (47,900) \u2212 Expenses (35,200) = 12,700" need full-width space
+    // and would otherwise squeeze the input or wrap awkwardly. Populated by
+    // sumCellFocus on cell click; cleared by sumResetBar on blur.
+    '<div id="sumFBBreakdown" style="display:none;margin:0 8px 0;padding:6px 20px;background:#f8fafc;border:1px solid var(--gray-200);border-top:none;border-radius:0 0 8px 8px;font-family:monospace;font-size:12px;color:var(--gray-700);min-height:24px;line-height:24px;overflow-x:auto;white-space:nowrap;"></div>' +
     '<div id="sumDrillPanel" style="display:none;margin:0 8px 8px;background:white;border:1px solid #bbf7d0;border-left:4px solid #16a34a;border-radius:8px;padding:14px 18px;font-size:13px;position:sticky;top:100px;z-index:29;box-shadow:0 4px 12px rgba(0,0,0,0.08);max-height:60vh;overflow-y:auto;"></div>' +
     '<table id="sumTable" style="border-collapse:separate;border-spacing:0;font-size:13px;width:100%;">' +
     '<thead style="position:sticky;top:94px;z-index:20;"><tr>' +
@@ -21917,8 +21922,93 @@ function sumCellFocus(el) {
   const lineage = (window._sumLineage || {})[el.dataset.label];
   const inspBtn = document.getElementById('sumFBInspect');
   if (inspBtn) inspBtn.style.display = (isFx && lineage) ? '' : 'none';
+  // FA dir 2026-05-24: surface the cell's underlying formula in the breakdown
+  // row below the formula bar. The input itself stays editable (with the raw
+  // value or saved formula), but the FA can now SEE what the cell is summing
+  // when they click into it — same insight the old sumSubtotalClick provided
+  // for subtotals, plus GL-aggregation breakdown for data-row c3/c4/c5.
+  const bdEl = document.getElementById('sumFBBreakdown');
+  if (bdEl) {
+    let breakdown = '';
+    const isSubtotal = el.dataset.subtotal === '1';
+    const isOverridden = (el.dataset.overridden === '1');
+    if (isSubtotal && !isOverridden) {
+      breakdown = sumBuildSubtotalBreakdown(el);
+    } else if (isFx && !isOverridden) {
+      // Data-row c2-c5: GL aggregation / audit lineage breakdown.
+      breakdown = sumBuildFormulaText(el.dataset.label, el.dataset.col, lineage, el.dataset.raw);
+    } else if (isOverridden) {
+      // Override active — show the computed value the override is hiding.
+      const computed = el.dataset.computed;
+      if (computed && computed !== '') {
+        breakdown = 'Override active. Computed value: ' + Number(computed).toLocaleString('en-US') + ' (right-click cell to revert)';
+      }
+    }
+    if (breakdown) {
+      bdEl.textContent = breakdown;
+      bdEl.style.display = 'block';
+    } else {
+      bdEl.textContent = '';
+      bdEl.style.display = 'none';
+    }
+  }
   // Don't strip formatting on read-only cells (no editing happens there)
   if (!isReadOnly) el.value = el.dataset.raw || '';
+}
+
+// FA dir 2026-05-24: compute the "this subtotal is X + Y + Z" breakdown text
+// for a subtotal cell — used by sumCellFocus to populate the formula preview
+// when the FA clicks a subtotal so they SEE what's rolling up. Mirrors the
+// formula text the old sumSubtotalClick built (pre-refactor).
+function sumBuildSubtotalBreakdown(el) {
+  const col = el.dataset.col;
+  const tr = el.closest('tr');
+  if (!tr) return '';
+  const tbody = document.getElementById('sumBody');
+  if (!tbody) return '';
+  const fmt = (n) => {
+    if (n === null || n === undefined || isNaN(n)) return '0';
+    const r = Math.round(Number(n));
+    return r < 0 ? '(' + Math.abs(r).toLocaleString('en-US') + ')' : r.toLocaleString('en-US');
+  };
+  if (col === 'c8') {
+    return '= (Col 7 − Col 5) / |Col 5| × 100';
+  }
+  if (tr.dataset.sums) {
+    // Section subtotal: list all non-zero data-row values that roll up.
+    const secKey = tr.dataset.sums;
+    const vals = [];
+    tbody.querySelectorAll('tr[data-type="d"][data-sec="' + secKey + '"]').forEach(dr => {
+      const inp = dr.querySelector('input[data-col="' + col + '"]');
+      if (inp) {
+        const v = parseFloat(inp.dataset.raw);
+        if (!isNaN(v) && Math.round(v) !== 0) vals.push(Math.round(v));
+      }
+    });
+    if (!vals.length) return '= 0';
+    const total = vals.reduce((a, b) => a + b, 0);
+    if (vals.length <= 10) return '= ' + vals.map(fmt).join(' + ') + ' = ' + fmt(total);
+    return '= sum of ' + vals.length + ' lines = ' + fmt(total);
+  }
+  if (tr.dataset.calc === 'income-expenses') {
+    // Net Operating = Income − Expenses (read live from the subtotal inputs).
+    const incInp = tbody.querySelector('tr[data-sums="income"] input[data-col="' + col + '"]');
+    const expInp = tbody.querySelector('tr[data-sums="expenses"] input[data-col="' + col + '"]');
+    const incV = incInp ? parseFloat(incInp.dataset.raw) || 0 : 0;
+    const expV = expInp ? parseFloat(expInp.dataset.raw) || 0 : 0;
+    return '= Income (' + fmt(incV) + ') − Expenses (' + fmt(expV) + ') = ' + fmt(incV - expV);
+  }
+  if (tr.dataset.calc === 'grand') {
+    // Total Surplus = Net Op + Non-Op Income − Non-Op Expenses.
+    const netInp = tbody.querySelector('tr[data-calc="income-expenses"] input[data-col="' + col + '"]');
+    const noiInp = tbody.querySelector('tr[data-sums="noi"] input[data-col="' + col + '"]');
+    const noeInp = tbody.querySelector('tr[data-sums="noe"] input[data-col="' + col + '"]');
+    const netV = netInp ? parseFloat(netInp.dataset.raw) || 0 : 0;
+    const noiV = noiInp ? parseFloat(noiInp.dataset.raw) || 0 : 0;
+    const noeV = noeInp ? parseFloat(noeInp.dataset.raw) || 0 : 0;
+    return '= Net Op (' + fmt(netV) + ') + Non-Op Income (' + fmt(noiV) + ') − Non-Op Expenses (' + fmt(noeV) + ') = ' + fmt(netV + noiV - noeV);
+  }
+  return '';
 }
 
 // FA directive 2026-05-17: delegated click handler for the c2 Inspector
@@ -22853,6 +22943,9 @@ function sumResetBar() {
   if (lbl) lbl.textContent = 'Click a cell\u2026';
   const prev = document.getElementById('sumFBPreview');
   if (prev) prev.textContent = '';
+  // FA dir 2026-05-24: also clear the formula breakdown row.
+  const bdEl = document.getElementById('sumFBBreakdown');
+  if (bdEl) { bdEl.textContent = ''; bdEl.style.display = 'none'; }
   ['sumFBAccept','sumFBCancel','sumFBClear','sumFBInspect'].forEach(id => { const b = document.getElementById(id); if(b) b.style.display='none'; });
   _sumActiveCell = null;
 }
