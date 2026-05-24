@@ -1378,8 +1378,36 @@ function setEntitySort(col) {
 
 function setStageFilter(stage) {
   _stageFilter = stage;
+  // FA dir 2026-05-24: push the filter into the URL so browser back from a
+  // building detail page restores the filter the FA had set. Without this,
+  // clicking a building then hitting back resets to "all" — and the FA has
+  // to re-filter on every dive-in. Replace if same stage to avoid history
+  // pollution when the FA clicks the active chip.
+  try {
+    const url = new URL(window.location.href);
+    if (stage === "all") {
+      url.searchParams.delete("tier");
+    } else {
+      url.searchParams.set("tier", stage);
+    }
+    const currentTier = new URL(window.location.href).searchParams.get("tier") || "all";
+    if (currentTier === stage) {
+      window.history.replaceState({ tier: stage }, "", url.toString());
+    } else {
+      window.history.pushState({ tier: stage }, "", url.toString());
+    }
+  } catch (e) {}
   renderEntityGrid();
 }
+
+// FA dir 2026-05-24: restore filter from URL on back/forward navigation.
+window.addEventListener("popstate", function () {
+  try {
+    const tier = new URL(window.location.href).searchParams.get("tier") || "all";
+    _stageFilter = tier;
+    renderEntityGrid();
+  } catch (e) {}
+});
 
 function _entitySortValue(b, col) {
   if (col === "entity_code") return parseInt(b.entity_code, 10) || 0;
@@ -2978,6 +3006,13 @@ function confirmAdminBypass() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   initializeData();
+  // FA dir 2026-05-24: restore readiness-tier filter from URL on initial
+  // load so /wizard?tier=audit_extract_ready (the deep-link form back-nav
+  // produces) shows the filtered grid, not the default "all" view.
+  try {
+    const initialTier = new URLSearchParams(window.location.search).get("tier");
+    if (initialTier) _stageFilter = initialTier;
+  } catch (e) {}
   renderEntityGrid();
   // FA dir 2026-05-23: hydrate the enriched per-entity data (readiness +
   // tiles) from /api/budgets. The grid renders once with placeholder

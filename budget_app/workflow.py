@@ -11833,7 +11833,13 @@ let _budgetsCache = [];
 // rows surface at the top, matching the wizard.
 let _sortState = { column: 'readiness', direction: 'desc' };
 // FA dir 2026-05-23: per-tier filter ("all" / "READY_TO_BUILD" / etc).
-let _readinessFilter = 'all';
+// FA dir 2026-05-24: seed from URL so /dashboard?tier=ready_to_build (the
+// back-nav deep link) shows the filtered grid on first paint.
+let _readinessFilter = (function () {
+  try {
+    return new URLSearchParams(window.location.search).get('tier') || 'all';
+  } catch (e) { return 'all'; }
+})();
 const _pmStatusMap = {
   'draft': 'Not Sent',
   'pm_pending': 'Sent to PM',
@@ -12092,8 +12098,36 @@ function renderReadinessChips(budgets) {
 
 function setReadinessFilter(tier) {
   _readinessFilter = tier;
+  // FA dir 2026-05-24: push filter to URL so back-nav from /dashboard/<entity>
+  // restores it. Without this, click chip → click building → back → all 147
+  // rows show again. Use replaceState when clicking the active chip (no
+  // history entry needed) and pushState on real filter changes.
+  try {
+    const url = new URL(window.location.href);
+    if (tier === 'all') {
+      url.searchParams.delete('tier');
+    } else {
+      url.searchParams.set('tier', tier);
+    }
+    const currentTier = new URL(window.location.href).searchParams.get('tier') || 'all';
+    if (currentTier === tier) {
+      window.history.replaceState({ tier: tier }, '', url.toString());
+    } else {
+      window.history.pushState({ tier: tier }, '', url.toString());
+    }
+  } catch (e) {}
   renderBudgets(_budgetsCache);
 }
+
+// FA dir 2026-05-24: popstate listener restores filter when FA hits browser
+// back. Reads from URL since pushState writes there on every chip click.
+window.addEventListener('popstate', function () {
+  try {
+    const tier = new URL(window.location.href).searchParams.get('tier') || 'all';
+    _readinessFilter = tier;
+    if (_budgetsCache) renderBudgets(_budgetsCache);
+  } catch (e) {}
+});
 
 function buildAllReady() {
   let readyCount = 0;
@@ -31970,11 +32004,32 @@ function renderSheet(sheetName) {
   content.innerHTML = html;
 }
 
-function switchTab(name, el) {
+// FA dir 2026-05-24: tab switches now push history so browser-back
+// returns to the previous tab instead of exiting the building entirely.
+// Before this, hitting back from Payroll dumped you on /dashboard and
+// lost your place mid-edit. URL form: /dashboard/<entity>?tab=Payroll.
+function switchTab(name, el, opts) {
+  opts = opts || {};
   document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
-  el.classList.add('active');
+  if (el) el.classList.add('active');
   if (name === 'Summary') renderSummary();
   else renderSheet(name);
+  if (!opts.skipPush) {
+    try {
+      const url = new URL(window.location.href);
+      if (name === 'Summary') url.searchParams.delete('tab');
+      else url.searchParams.set('tab', name);
+      window.history.pushState({ tab: name }, '', url.toString());
+    } catch (e) {}
+  }
+}
+
+// Activate the tab button matching `name` (used on popstate + initial load).
+function _activateTabByName(name) {
+  const buttons = document.querySelectorAll('#tabNav button');
+  let target = null;
+  buttons.forEach(b => { if (b.textContent === name) target = b; });
+  if (target) switchTab(name, target, { skipPush: true });
 }
 
 // Build tabs
@@ -31992,7 +32047,24 @@ SHEET_ORDER.forEach(s => {
   nav.appendChild(btn);
 });
 
-renderSummary();
+// FA dir 2026-05-24: read initial ?tab=X from URL so deep-links land on the
+// right tab. popstate listener restores tab on browser back/forward.
+(function _initTabFromUrl() {
+  let initialTab = 'Summary';
+  try { initialTab = new URLSearchParams(window.location.search).get('tab') || 'Summary'; } catch (e) {}
+  if (initialTab === 'Summary') {
+    renderSummary();
+  } else {
+    _activateTabByName(initialTab);
+  }
+})();
+
+window.addEventListener('popstate', function () {
+  try {
+    const tab = new URLSearchParams(window.location.search).get('tab') || 'Summary';
+    _activateTabByName(tab);
+  } catch (e) {}
+});
 </script>
 </body>
 </html>
