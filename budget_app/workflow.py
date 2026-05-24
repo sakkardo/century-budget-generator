@@ -3214,6 +3214,27 @@ def create_workflow_blueprint(db):
     @bp.route("/wizard/<entity_code>", methods=["GET"])
     def wizard_page(entity_code=None):
         """Render the Budget Wizard gate page."""
+        # FA dir 2026-05-23: defensive diagnostic — if anything in the
+        # render fails, surface the real error instead of the generic
+        # "Something went wrong" page. Remove once /wizard is stable.
+        try:
+            return _wizard_page_impl(entity_code)
+        except Exception as _wiz_exc:
+            import traceback as _tb
+            tb_text = _tb.format_exc()
+            print(f"[wizard_page] EXCEPTION: {_wiz_exc}\n{tb_text}", flush=True)
+            from flask import make_response
+            html = (
+                "<h1>Wizard render error (diagnostic)</h1>"
+                f"<p><b>{type(_wiz_exc).__name__}:</b> {str(_wiz_exc)[:500]}</p>"
+                f"<pre style='background:#f4f1eb;padding:12px;overflow:auto;font-size:11px;'>{tb_text[:4000]}</pre>"
+            )
+            resp = make_response(html, 500)
+            resp.headers["Content-Type"] = "text/html; charset=utf-8"
+            return resp
+
+    def _wizard_page_impl(entity_code=None):
+        """Render the Budget Wizard gate page."""
         import json as json_mod
         from wizard_template import WIZARD_TEMPLATE
         from app import load_portfolio_defaults, load_building_assumptions, _get_monday_status
