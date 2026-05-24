@@ -6870,7 +6870,16 @@ def _wizard_record_selection(entity_code, source_label_default=None):
 
 @app.route("/api/wizard/<entity_code>/selections", methods=["GET"])
 def wizard_get_selections(entity_code):
-    """Return the current FA selections for this entity."""
+    """Return the current FA selections + actual ingest state for this entity.
+
+    FA dir 2026-05-23: the wizard previously used wizard_selections_json
+    alone to decide if a source was "ingested." But selections only track
+    what the FA CLICKED — if the parse later failed silently (entity 710,
+    pre-parser-fixes), wizard would show ✓ while dashboard correctly
+    showed ✗ (no data in ingest tables). This endpoint now also returns
+    ingest_state — the same source of truth the dashboard reads — so the
+    wizard can render the honest state.
+    """
     Budget = workflow_models["Budget"]
     from workflow import BUDGET_YEAR as _BY
     budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
@@ -6880,7 +6889,101 @@ def wizard_get_selections(entity_code):
         sels = json.loads(budget.wizard_selections_json or "{}")
     except Exception:
         sels = {}
-    return jsonify({"entity_code": entity_code, "selections": sels})
+
+    # Mirror the dashboard's per-source ingest checks (workflow.py list_budgets)
+    ingest_state = {
+        "approved_2026": {"ingested": False, "at": None, "rows": 0},
+        "ysl":           {"ingested": False, "at": None},
+        "expense_distribution": {"ingested": False, "at": None, "invoices": 0},
+        "ap_aging":      {"ingested": False, "at": None, "invoices": 0},
+        "maint_proof":   {"ingested": False, "at": None},
+        "audit_2025":    {"ingested": False, "at": None, "status": None, "upload_id": None},
+    }
+    # Budget summary (col1/col6 rows) — approved_2026 ingest result
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MIN(imported_at), COUNT(*) FROM budget_summary_rows "
+            "WHERE entity_code = :ec AND row_type = 'data'"
+        ), {"ec": entity_code}).fetchone()
+        if row and row[1] and int(row[1]) > 0:
+            ingest_state["approved_2026"]["ingested"] = True
+            ingest_state["approved_2026"]["rows"] = int(row[1])
+            ingest_state["approved_2026"]["at"] = row[0].isoformat() if row[0] else None
+    except Exception:
+        db.session.rollback()
+    # YSL — budget_lines presence (joined through budgets)
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MIN(bl.updated_at), COUNT(*) FROM budget_lines bl "
+            "JOIN budgets b ON b.id = bl.budget_id "
+            "WHERE b.entity_code = :ec"
+        ), {"ec": entity_code}).fetchone()
+        if row and row[1] and int(row[1]) > 0:
+            ingest_state["ysl"]["ingested"] = True
+            ingest_state["ysl"]["at"] = row[0].isoformat() if row[0] else None
+    except Exception:
+        db.session.rollback()
+    # Expense Distribution
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MAX(er.uploaded_at), COALESCE(SUM(inv_counts.cnt), 0) "
+            "FROM expense_reports er "
+            "LEFT JOIN (SELECT report_id, COUNT(*) AS cnt FROM expense_invoices GROUP BY report_id) inv_counts "
+            "  ON inv_counts.report_id = er.id "
+            "WHERE er.entity_code = :ec"
+        ), {"ec": entity_code}).fetchone()
+        if row and row[0]:
+            ingest_state["expense_distribution"]["ingested"] = True
+            ingest_state["expense_distribution"]["at"] = row[0].isoformat()
+            ingest_state["expense_distribution"]["invoices"] = int(row[1] or 0)
+    except Exception:
+        db.session.rollback()
+    # AP Aging
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MAX(opr.uploaded_at), COALESCE(SUM(inv_counts.cnt), 0) "
+            "FROM open_ap_reports opr "
+            "LEFT JOIN (SELECT report_id, COUNT(*) AS cnt FROM open_ap_invoices GROUP BY report_id) inv_counts "
+            "  ON inv_counts.report_id = opr.id "
+            "WHERE opr.entity_code = :ec"
+        ), {"ec": entity_code}).fetchone()
+        if row and row[0]:
+            ingest_state["ap_aging"]["ingested"] = True
+            ingest_state["ap_aging"]["at"] = row[0].isoformat()
+            ingest_state["ap_aging"]["invoices"] = int(row[1] or 0)
+    except Exception:
+        db.session.rollback()
+    # Maint Proof
+    try:
+        row = db.session.execute(db.text(
+            "SELECT MAX(uploaded_at) FROM maint_proof_reports WHERE entity_code = :ec"
+        ), {"ec": entity_code}).fetchone()
+        if row and row[0]:
+            ingest_state["maint_proof"]["ingested"] = True
+            ingest_state["maint_proof"]["at"] = row[0].isoformat()
+    except Exception:
+        db.session.rollback()
+    # Audit (most-recent upload, with status)
+    try:
+        row = db.session.execute(db.text(
+            "SELECT id, status, confirmed_at, created_at FROM audit_uploads "
+            "WHERE entity_code = :ec "
+            "ORDER BY COALESCE(confirmed_at, created_at) DESC NULLS LAST LIMIT 1"
+        ), {"ec": entity_code}).fetchone()
+        if row:
+            ingest_state["audit_2025"]["upload_id"] = row[0]
+            ingest_state["audit_2025"]["status"] = row[1]
+            ts = row[2] or row[3]
+            ingest_state["audit_2025"]["at"] = ts.isoformat() if ts else None
+            ingest_state["audit_2025"]["ingested"] = (row[1] == "confirmed")
+    except Exception:
+        db.session.rollback()
+
+    return jsonify({
+        "entity_code": entity_code,
+        "selections": sels,
+        "ingest_state": ingest_state,
+    })
 
 
 @app.route("/api/wizard/<entity_code>/selections", methods=["DELETE"])

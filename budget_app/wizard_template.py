@@ -1551,8 +1551,13 @@ function selectEntity(code, name) {
 }
 
 // Render upload checklist
-// FA file selections (staged but not yet built) for current entity
+// FA file selections (staged but not yet built) for current entity.
+// _wizardSelections = what the FA clicked (Budget.wizard_selections_json).
+// _ingestState = actual DB-table presence (same source of truth the FA
+// Dashboard uses). The wizard renders state from _ingestState so the two
+// pages can't disagree. See /api/wizard/<ec>/selections endpoint.
 let _wizardSelections = {};
+let _ingestState = {};
 
 function loadWizardSelections() {
   const ent = selectedEntity;
@@ -1561,10 +1566,11 @@ function loadWizardSelections() {
     .then(function (r) { return r.json(); })
     .then(function (data) {
       _wizardSelections = data.selections || {};
+      _ingestState = data.ingest_state || {};
       // Re-render any panels that show selection state
       try { renderSharepointSources(); } catch (e) {}
     })
-    .catch(function () { _wizardSelections = {}; });
+    .catch(function () { _wizardSelections = {}; _ingestState = {}; });
 }
 
 // (Removed: 2026 approved budget panel — now rendered via shared FROM SHAREPOINT panel)
@@ -1630,8 +1636,17 @@ function renderSharepointSources() {
   //   ingesting  = auto-ingest fired this session, awaiting server → blue dot
   //   ready      = file detected, not yet ingested → amber (will auto-fire)
   //   missing    = no file in SP folder → existing "not in folder" copy
+  // FA dir 2026-05-23: state determination now reads the SAME truth as the
+  // FA dashboard — the actual ingest tables, via _ingestState. Previously
+  // we trusted _wizardSelections alone (what the FA clicked) which could
+  // diverge from real DB state when a parse silently failed. Now:
+  //   ingested = data actually in DB tables (matches dashboard green)
+  //   ingesting = auto-ingest fired this session, awaiting server
+  //   ready = file in SP, not yet in DB → will auto-ingest
+  //   missing = no file in SP
   function _stateFor(slotKey, hasFile) {
-    if (_wizardSelections && _wizardSelections[slotKey]) return 'ingested';
+    const ing = _ingestState && _ingestState[slotKey];
+    if (ing && ing.ingested) return 'ingested';
     if (!hasFile) return 'missing';
     const ent = selectedEntity;
     if (ent && sessionStorage.getItem('cb_auto_' + ent + '_' + slotKey) === 'fired') {
@@ -1640,12 +1655,30 @@ function renderSharepointSources() {
     return 'ready';
   }
   function _ingestedAtFor(slotKey) {
+    // Prefer the real ingest-table timestamp; fall back to selection time.
     try {
+      const ing = _ingestState && _ingestState[slotKey];
+      if (ing && ing.at) {
+        const d = new Date(ing.at);
+        return (d.getMonth()+1) + '/' + d.getDate();
+      }
       const sel = (_wizardSelections || {})[slotKey];
       if (sel && sel.selected_at) {
         const d = new Date(sel.selected_at);
         return (d.getMonth()+1) + '/' + d.getDate();
       }
+    } catch (e) {}
+    return '';
+  }
+  function _ingestDetailFor(slotKey) {
+    // Optional info shown alongside the state pill — line/invoice counts
+    // give the FA visual reassurance that data actually flowed.
+    try {
+      const ing = _ingestState && _ingestState[slotKey];
+      if (!ing || !ing.ingested) return '';
+      if (slotKey === 'expense_distribution' && ing.invoices) return ing.invoices + ' invoices';
+      if (slotKey === 'ap_aging' && ing.invoices) return ing.invoices + ' invoices';
+      if (slotKey === 'approved_2026' && ing.rows) return ing.rows + ' rows';
     } catch (e) {}
     return '';
   }
@@ -1659,7 +1692,12 @@ function renderSharepointSources() {
     if (state === 'ingested') {
       headerColor = "#15803d"; headerIcon = "✓";
       const dt = _ingestedAtFor(slot.key);
-      headerNote = dt ? ("ingested " + dt) : "ingested";
+      const detail = _ingestDetailFor(slot.key);
+      // "ingested 5/22 · 67 invoices" — gives FA a visual receipt that
+      // real data flowed, not just that a click was recorded.
+      let parts = ["ingested"];
+      if (dt) parts.push(dt);
+      headerNote = parts.join(" ") + (detail ? (" · " + detail) : "");
     } else if (state === 'ingesting') {
       headerColor = "#1d4ed8"; headerIcon = "⟳";
       headerNote = "auto-ingesting…";
