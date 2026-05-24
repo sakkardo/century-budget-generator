@@ -21432,6 +21432,49 @@ async function renderBudgetSummary(contentDiv) {
       'onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)" ' +
       'style="'+inputStyle+'">' + ovrBadge + c2InspectBadge + '</td>';
   }
+  // FA dir 2026-05-24: subtotal rows become editable like data rows. Each
+  // c1–c7 subtotal cell renders as an <input> that joins the existing
+  // sumCellFocus / sumCellBlur / sumAcceptFormula / sumCellRevert pipeline.
+  // The input's value is filled by sumRecalcTotals when there's no override;
+  // when overridden, the saved override value shows + amber OVR badge appears.
+  // Reuses col*_override fields on BudgetSummaryRow (no migration needed).
+  function makeSubtotalInput(label, col, overrideInfo, isGrand, savedFormula) {
+    const isOverridden = !!(overrideInfo && overrideInfo.is_overridden);
+    // Backend serializes the saved value as .override (col1_override … col6_override).
+    // For synthetic c7 (col7_proposed_budget acting as override), the caller
+    // builds an object using the same .override key. value is read here.
+    const ovrVal = isOverridden && overrideInfo.override != null ? Math.round(overrideInfo.override) : '';
+    const raw = ovrVal !== '' ? ovrVal : '';
+    const disp = raw !== '' ? raw.toLocaleString('en-US') : '';
+    const computedVal = (overrideInfo && overrideInfo.computed != null) ? Math.round(overrideInfo.computed) : '';
+    const ovrAttr = ' data-overridden="' + (isOverridden ? '1' : '0') + '" data-computed="' + computedVal + '"';
+    const formulaAttr = (savedFormula && typeof savedFormula === 'string' && savedFormula.length)
+      ? ' data-formula="' + savedFormula.replace(/"/g, '&quot;') + '"'
+      : '';
+    // Subtotal styling: green-fill for sectional + Net Operating, dark blue
+    // for Grand Total. Amber tint when overridden (mirrors data-row OVR look).
+    let cellBg, textColor, stripe;
+    if (isGrand) {
+      cellBg = '#1e3a5f';
+      textColor = isOverridden ? '#fbbf24' : '#86efac';
+      stripe = isOverridden ? 'box-shadow:inset 3px 0 0 #fbbf24;' : '';
+    } else {
+      cellBg = isOverridden ? '#fef3c7' : '#f0fdf4';
+      textColor = isOverridden ? '#92400e' : '#16a34a';
+      stripe = isOverridden ? 'box-shadow:inset 3px 0 0 #d97706;' : '';
+    }
+    const inputStyle = 'width:100px;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:13px;font-weight:700;text-align:right;color:' + textColor + ';background:' + cellBg + ';font-variant-numeric:tabular-nums;font-family:inherit;cursor:text;' + stripe;
+    const cellTitle = isOverridden
+      ? 'Override active. Computed total was ' + (computedVal !== '' ? computedVal.toLocaleString('en-US') : '—') + '. Right-click to revert.'
+      : 'Click to override the computed subtotal';
+    const ovrBadge = isOverridden ? '<span class="sum-ovr-badge" style="position:absolute;top:2px;right:4px;font-size:8px;font-weight:700;color:#92400e;background:#fde68a;padding:1px 3px;border-radius:3px;letter-spacing:0.3px;pointer-events:none;">OVR</span>' : '';
+    return '<td class="number" data-sum-col="' + col + '" style="text-align:right;padding:4px 6px;font-variant-numeric:tabular-nums;position:relative;background:' + cellBg + ';">' +
+      '<input type="text" value="' + disp + '" placeholder="—" data-label="' + label.replace(/"/g, '&quot;') + '" data-col="' + col + '" data-raw="' + raw + '" data-subtotal="1"' + ovrAttr + formulaAttr +
+      ' title="' + cellTitle.replace(/"/g, '&quot;') + '"' +
+      ' oncontextmenu="return sumCellRevert(event, this)"' +
+      ' onfocus="sumCellFocus(this)" onblur="sumCellBlur(this)" onkeydown="sumCellKey(event,this)"' +
+      ' style="' + inputStyle + '">' + ovrBadge + '</td>';
+  }
   const _fxBadge = '<span class="sum-fx" style="display:inline-block;background:#4ade80;color:#fff;font-size:8px;font-weight:700;padding:1px 3px;border-radius:3px;margin-left:4px;vertical-align:middle;">fx</span>';
   function sumTd(col) {
     return '<td class="number" data-sum-col="'+col+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span>'+_fxBadge+'</td>';
@@ -21504,16 +21547,36 @@ async function renderBudgetSummary(contentDiv) {
       const addRowBtn = (!isNet && !isGrand && r._sk)
         ? ' <button onclick="event.stopPropagation();sumShowInsert(\''+r._sk+'\',\''+r.label.replace(/'/g,"\\'")+'\')" style="margin-left:10px;padding:3px 10px;border:1px dashed var(--gray-400);border-radius:6px;font-size:11px;font-weight:600;color:var(--gray-700);background:white;cursor:pointer;vertical-align:middle;">+ Add Row</button>'
         : '';
-      html += '<tr '+calcAttr+' data-sec="'+r._sk+'" style="'+bgStyle+'">' +
+      // FA dir 2026-05-24: subtotal rows are now editable like data rows.
+      // Pass display_order via data-order so sumCellBlur / sumAcceptFormula can
+      // find the row, and data-type="s" lets recalc filter subtotal rows
+      // (vs "d" = data rows). Each cell renders as an <input> so it joins the
+      // same focus/blur/accept/revert pipeline as data cells. Overrides hit
+      // the existing col*_override fields on BudgetSummaryRow (no migration).
+      html += '<tr '+calcAttr+' data-sec="'+r._sk+'" data-type="s" data-order="'+r.display_order+'" data-label="'+r.label.replace(/"/g,'&quot;')+'" style="'+bgStyle+'">' +
         '<td style="padding:8px 10px;font-weight:700;position:sticky;left:0;z-index:15;'+tdFrozen+'min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+addRowBtn+'</td>' +
         '<td style="'+(isGrand?'background:#1e3a5f;':'')+'"></td>';
+      COLS.forEach(c => {
+        // overrides dict from /api/summary is keyed "col1"…"col6" (no col7).
+        // c7 on a subtotal stores into col7_proposed_budget — synthesize an
+        // override-shaped object so makeSubtotalInput can render the OVR badge
+        // when col7_proposed_budget is non-null.
+        const colKey = 'col' + c.substring(1);
+        let ovr = (r.overrides && r.overrides[colKey]) || null;
+        if (c === 'c7') {
+          const c7v = (typeof r.col7 === 'number') ? r.col7 : null;
+          ovr = (c7v !== null && c7v !== undefined)
+            ? {is_overridden: true, override: c7v, computed: null}
+            : {is_overridden: false, override: null, computed: null};
+        }
+        const fmla = (r.formulas && r.formulas[colKey]) || null;
+        html += makeSubtotalInput(r.label, c, ovr, isGrand, fmla);
+      });
       // Option F: green fill for computed cells (subtotal + net), light-green text on dark blue for grand total. No fx badge.
       const computedCellStyle = isGrand
         ? 'background:#1e3a5f;color:#86efac;'
         : 'background:#f0fdf4;color:#16a34a;';
-      COLS.forEach(c => {
-        html += '<td data-sum-col="'+c+'" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+computedCellStyle+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span></td>';
-      });
+      // c8 (% Variance) stays view-only \u2014 user directive 2026-05-24 (Skip Col 8).
       html += '<td data-sum-col="c8" style="text-align:right;padding:8px 10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;'+computedCellStyle+'" onclick="sumSubtotalClick(this)"><span class="sub-val">\u2014</span></td>';
       html += '<td style="'+(isGrand?'background:#1e3a5f;':'')+'padding:4px 6px;">'+(isGrand?'':'<input type="text" placeholder="Add note\u2026" style="width:100%;padding:5px 8px;border:1px solid var(--gray-200);border-radius:4px;font-size:12px;background:white;font-family:inherit;">')+'</td>';
       html += '</tr>';
@@ -21581,15 +21644,35 @@ function sumRecalcTotals() {
   }
   const inc = sumSec('income'), exp = sumSec('expenses'), noi = sumSec('noi'), noe = sumSec('noe');
 
+  // FA dir 2026-05-24: subtotal c1\u2013c7 cells are now <input>s (editable).
+  // writeSum writes computed totals to input.value/dataset.raw UNLESS the
+  // input has data-overridden="1" \u2014 overrides win. c8 stays a <span> view-only.
   function writeSum(sel, totals) {
     const tr = tbody.querySelector(sel);
     if (!tr) return;
     COLS.forEach(c => {
       const td = tr.querySelector('[data-sum-col="'+c+'"]');
-      if (td) {
+      if (!td) return;
+      const inp = td.querySelector('input[data-col="'+c+'"]');
+      const v = totals[c];
+      const isEmpty = (!v && v !== 0);
+      const isZero = Math.round(v||0) === 0;
+      if (inp) {
+        // Override active \u2192 don't overwrite the user's value.
+        if (inp.dataset.overridden === '1') return;
+        if (isEmpty || isZero) {
+          inp.dataset.raw = '';
+          inp.value = '';
+        } else {
+          inp.dataset.raw = v;
+          inp.value = Math.round(v).toLocaleString('en-US');
+        }
+        // Refresh data-computed so right-click revert tooltip shows the latest.
+        inp.dataset.computed = isEmpty ? '' : Math.round(v);
+      } else {
+        // Fallback for any subtotal that wasn't converted (defensive).
         const sv = td.querySelector('.sub-val');
-        const v = totals[c];
-        const txt = (!v && v !== 0) ? '\u2014' : (Math.round(v) === 0 ? '\u2014' : (v < 0 ? '(' + Math.abs(Math.round(v)).toLocaleString('en-US') + ')' : Math.round(v).toLocaleString('en-US')));
+        const txt = (isEmpty || isZero) ? '\u2014' : (v < 0 ? '(' + Math.abs(Math.round(v)).toLocaleString('en-US') + ')' : Math.round(v).toLocaleString('en-US'));
         if (sv) sv.textContent = txt; else td.textContent = txt;
       }
     });
@@ -21606,17 +21689,42 @@ function sumRecalcTotals() {
     }
   }
 
+  // FA dir 2026-05-24: for cascading totals (Net Operating, Grand), read the
+  // EFFECTIVE value of each section subtotal \u2014 override wins over computed.
+  // Without this, FA can override Income c5 = $500K but Net Operating still
+  // shows the sum-of-data-rows value, creating a visible inconsistency.
+  function effectiveSubtotals(sel, computed) {
+    const tr = tbody.querySelector(sel);
+    if (!tr) return computed;
+    const out = {}; COLS.forEach(c => out[c] = computed[c]);
+    COLS.forEach(c => {
+      const inp = tr.querySelector('input[data-col="'+c+'"]');
+      if (inp && inp.dataset.overridden === '1') {
+        const v = parseFloat(inp.dataset.raw);
+        if (!isNaN(v)) out[c] = v;
+      }
+    });
+    return out;
+  }
+
   writeSum('tr[data-sums="income"]', inc);
   writeSum('tr[data-sums="expenses"]', exp);
   writeSum('tr[data-sums="noi"]', noi);
   writeSum('tr[data-sums="noe"]', noe);
 
-  // Net Operating = Income - Expenses
-  const net = {}; COLS.forEach(c => net[c] = inc[c] - exp[c]);
+  const incEff = effectiveSubtotals('tr[data-sums="income"]', inc);
+  const expEff = effectiveSubtotals('tr[data-sums="expenses"]', exp);
+  const noiEff = effectiveSubtotals('tr[data-sums="noi"]', noi);
+  const noeEff = effectiveSubtotals('tr[data-sums="noe"]', noe);
+
+  // Net Operating = Income - Expenses (uses effective sectional subtotals)
+  const net = {}; COLS.forEach(c => net[c] = incEff[c] - expEff[c]);
   writeSum('tr[data-calc="income-expenses"]', net);
 
-  // Grand = Net + NOI - NOE
-  const grand = {}; COLS.forEach(c => grand[c] = net[c] + noi[c] - noe[c]);
+  // Grand = Net + NOI - NOE (uses effective Net + effective NOI/NOE).
+  // Net Op may itself be overridden \u2014 read it through effectiveSubtotals too.
+  const netEff = effectiveSubtotals('tr[data-calc="income-expenses"]', net);
+  const grand = {}; COLS.forEach(c => grand[c] = netEff[c] + noiEff[c] - noeEff[c]);
   writeSum('tr[data-calc="grand"]', grand);
 }
 
@@ -22273,18 +22381,28 @@ function sumCellBlur(el) {
   // FA dir 2026-05-17: track whether the user's input was a formula so we
   // can persist the formula string alongside the result. typedFormula is
   // set to the raw "=..." string when applicable, else null.
+  // FA dir 2026-05-24: skip the bg/border tweaks on subtotal cells — the
+  // save-callback (below) handles their styling, and the data-row colors
+  // would briefly flash through the green-fill/dark-blue subtotal look.
+  const isSubtotalCell = el.dataset.subtotal === '1';
   let typedFormula = null;
   if (el.value && !el.value.startsWith('=')) {
     const num = parseFloat(el.value.replace(/,/g, ''));
-    if (!isNaN(num)) { el.dataset.raw = num; el.value = num.toLocaleString('en-US', {maximumFractionDigits:0}); el.style.background = el.dataset.col === 'c7' ? '#fffbeb' : '#fbfaf4'; }
+    if (!isNaN(num)) {
+      el.dataset.raw = num;
+      el.value = num.toLocaleString('en-US', {maximumFractionDigits:0});
+      if (!isSubtotalCell) el.style.background = el.dataset.col === 'c7' ? '#fffbeb' : '#fbfaf4';
+    }
   } else if (el.value.startsWith('=')) {
     typedFormula = el.value.trim();
     try {
       const clean = typedFormula.slice(1).replace(/,/g, '');
       const r = Function('"use strict"; return (' + clean + ')')();
       el.dataset.raw = r;
-      el.style.background = '#f0fdf4';
-      el.style.borderColor = '#bbf7d0';
+      if (!isSubtotalCell) {
+        el.style.background = '#f0fdf4';
+        el.style.borderColor = '#bbf7d0';
+      }
     } catch(e) { typedFormula = null; }
   } else { el.dataset.raw = ''; }
   sumRecalcTotals();
@@ -22338,7 +22456,13 @@ function sumCellBlur(el) {
   }).then(r => r.json()).then(data => {
     // Reflect override state visually after save (no full reload).
     // 2026-05-17: c1/c2/c6 also get the OVR badge treatment.
-    if (col === 'c1' || col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5' || col === 'c6') {
+    // 2026-05-24: subtotal c7 also OVR-badges (col7_proposed_budget acts as
+    // an override of the computed sum on subtotal rows). data-subtotal="1"
+    // is stamped by makeSubtotalInput.
+    const isSubtotal = el.dataset.subtotal === '1';
+    const ovrEligible = (col === 'c1' || col === 'c2' || col === 'c3' || col === 'c4' || col === 'c5' || col === 'c6') ||
+                        (isSubtotal && col === 'c7');
+    if (ovrEligible) {
       const isNowOverridden = (rawNum !== null && !isNaN(rawNum));
       el.dataset.overridden = isNowOverridden ? '1' : '0';
       // Toggle stripe + amber tint
@@ -22358,10 +22482,20 @@ function sumCellBlur(el) {
         }
         el.title = 'Override active. Right-click to revert.';
       } else {
-        el.style.background = '#f9f9f7';
-        el.style.boxShadow = 'inset 3px 0 0 #16a34a';
-        el.style.color = '#15803d';
-        el.style.fontWeight = '600';
+        // FA dir 2026-05-24: subtotal cells get their green-fill/dark-blue
+        // styling back when override is cleared, not the data-row green-stripe.
+        if (isSubtotal) {
+          const isGrandRow = !!el.closest('tr[data-calc="grand"]');
+          el.style.background = isGrandRow ? '#1e3a5f' : '#f0fdf4';
+          el.style.color = isGrandRow ? '#86efac' : '#16a34a';
+          el.style.boxShadow = '';
+          el.style.fontWeight = '700';
+        } else {
+          el.style.background = '#f9f9f7';
+          el.style.boxShadow = 'inset 3px 0 0 #16a34a';
+          el.style.color = '#15803d';
+          el.style.fontWeight = '600';
+        }
         const td = el.parentElement;
         if (td) { const badge = td.querySelector('.sum-ovr-badge'); if (badge) badge.remove(); }
         el.title = 'Click to override the computed value';
@@ -22384,12 +22518,17 @@ function sumCellRevert(event, el) {
   if (!order) return false;
   if (!confirm('Revert ' + (el.dataset.label || '') + ' ' + col.toUpperCase() + ' to computed value (' + (computed || '—') + ')?')) return false;
   const edit = { display_order: parseInt(order) };
+  const isSubtotal = el.dataset.subtotal === '1';
   if (col === 'c1') edit.col1_override = null;
   else if (col === 'c2') edit.col2_override = null;
   else if (col === 'c3') edit.col3_override = null;
   else if (col === 'c4') edit.col4_override = null;
   else if (col === 'c5') edit.col5_override = null;
   else if (col === 'c6') edit.col6_override = null;
+  // FA dir 2026-05-24: subtotal c7 revert clears col7_proposed_budget so the
+  // subtotal goes back to computed (sum of data-row col7s). Data-row c7
+  // revert is still blocked — c7 IS the value on data rows.
+  else if (col === 'c7' && isSubtotal) edit.col7 = null;
   else return false;
   // FA dir 2026-05-17: clear any saved formula too — reverting wipes both
   // the override value and the formula expression. The cell falls back to
@@ -22404,10 +22543,20 @@ function sumCellRevert(event, el) {
     el.dataset.raw = computed || '';
     el.value = (computed && computed !== '' && computed !== '0')
       ? Number(computed).toLocaleString('en-US') : '';
-    el.style.background = '#f9f9f7';
-    el.style.boxShadow = 'inset 3px 0 0 #16a34a';
-    el.style.color = '#15803d';
-    el.style.fontWeight = '600';
+    // FA dir 2026-05-24: subtotal cells revert to green-fill/dark-blue, not
+    // the data-row green-stripe look.
+    if (isSubtotal) {
+      const isGrandRow = !!el.closest('tr[data-calc="grand"]');
+      el.style.background = isGrandRow ? '#1e3a5f' : '#f0fdf4';
+      el.style.color = isGrandRow ? '#86efac' : '#16a34a';
+      el.style.boxShadow = '';
+      el.style.fontWeight = '700';
+    } else {
+      el.style.background = '#f9f9f7';
+      el.style.boxShadow = 'inset 3px 0 0 #16a34a';
+      el.style.color = '#15803d';
+      el.style.fontWeight = '600';
+    }
     const td = el.parentElement;
     if (td) { const badge = td.querySelector('.sum-ovr-badge'); if (badge) badge.remove(); }
     el.title = 'Click to override the computed value';
@@ -22581,7 +22730,12 @@ function sumAcceptFormula() {
       parsed = r;
       _sumActiveCell.dataset.raw = r;
       _sumActiveCell.value = Math.round(r).toLocaleString('en-US');
-      _sumActiveCell.style.background = '#f0fdf4'; _sumActiveCell.style.borderColor = '#bbf7d0';
+      // FA dir 2026-05-24: skip the green-tint flash on subtotal cells — the
+      // save callback below sets the correct subtotal styling.
+      if (_sumActiveCell.dataset.subtotal !== '1') {
+        _sumActiveCell.style.background = '#f0fdf4';
+        _sumActiveCell.style.borderColor = '#bbf7d0';
+      }
       const prev = document.getElementById('sumFBPreview');
       if (prev) prev.textContent = '= ' + Math.round(r).toLocaleString('en-US');
     } catch(e) {
@@ -22642,7 +22796,10 @@ function sumAcceptFormula() {
         return;
       }
       // Flip OVR styling on the cell for cols 1-6 (col7 is just an input, no OVR concept).
-      if (col !== 'c7') {
+      // FA dir 2026-05-24: subtotal c7 ALSO gets OVR badging (col7_proposed_budget
+      // acts as an override of the computed sum on subtotal rows).
+      const isSubtotalCell = cell.dataset.subtotal === '1';
+      if (col !== 'c7' || isSubtotalCell) {
         const isNowOverridden = (rawNum !== null && !isNaN(rawNum));
         cell.dataset.overridden = isNowOverridden ? '1' : '0';
         if (isNowOverridden) {
@@ -22659,6 +22816,16 @@ function sumAcceptFormula() {
             td.appendChild(badge);
           }
           cell.title = 'Override active. Right-click to revert.';
+        } else if (isSubtotalCell) {
+          // Subtotal cell with cleared override → restore green-fill/dark-blue look.
+          const isGrandRow = !!cell.closest('tr[data-calc="grand"]');
+          cell.style.background = isGrandRow ? '#1e3a5f' : '#f0fdf4';
+          cell.style.color = isGrandRow ? '#86efac' : '#16a34a';
+          cell.style.boxShadow = '';
+          cell.style.fontWeight = '700';
+          const td = cell.parentElement;
+          if (td) { const badge = td.querySelector('.sum-ovr-badge'); if (badge) badge.remove(); }
+          cell.title = 'Click to override the computed subtotal';
         }
       }
       if (typeof showToast === 'function') showToast('Saved', 'success');
