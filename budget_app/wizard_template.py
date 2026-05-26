@@ -962,53 +962,78 @@ header {
       <!-- Monday.com sync error banner (hidden unless sync failed) -->
       <div id="mondaySyncBanner" style="display:none; padding:10px 14px; margin-bottom:12px; background:#fffbe6; border:1px solid #ffe58f; border-radius:6px; color:#874d00; font-size:13px;"></div>
 
-      <!-- FA Selector -->
-      <div class="fa-selector-wrapper" id="faSelectorWrapper" style="display:none;">
-        <div class="fa-selector-label">Financial Analyst</div>
-        <div class="fa-selector-row" style="display:flex; align-items:center; gap:12px;">
-          <select id="faSelector" class="fa-select" onchange="filterByFA()" style="flex:1; max-width:none;">
-            <option value="">All Entities</option>
-          </select>
-          <span class="fa-entity-count" id="faEntityCount"></span>
-          <span style="flex:1"></span>
-          <span class="monday-sync-status" id="mondaySyncStatus" style="font-size:12px; color:#666;">Last synced: —</span>
-          <button type="button" id="mondayRefreshBtn" onclick="refreshFromMonday()" style="font-size:12px; padding:5px 12px; border:1px solid #ddd; background:#fff; border-radius:4px; cursor:pointer;" title="Force a fresh pull from Monday.com Building Master List">↻ Refresh from Monday</button>
+      <!-- FA dir 2026-05-24 redesign: compact top bar replaces the old
+           "FINANCIAL ANALYST" label + "All Entities" dropdown + verbose
+           helper banner. Title shows live portfolio summary; sync status
+           sits inline on the right. The FA filter is moved into the
+           filter band below (chips + FA + search on one row). -->
+      <div class="wizard-toptitle" style="display:flex; align-items:center; gap:14px; margin-bottom:14px;">
+        <div style="flex:1;">
+          <div style="font-size:14px; font-weight:700; color:var(--gray-900);">
+            <span>Wizard</span>
+            <span id="portfolioSummary" style="font-size:12px; font-weight:500; color:var(--gray-600); margin-left:8px;"></span>
+          </div>
         </div>
+        <span class="monday-sync-status" id="mondaySyncStatus" style="font-size:11px; color:#15803d; font-weight:600;">Checking sync…</span>
+        <button type="button" id="mondayRefreshBtn" onclick="refreshFromMonday()" style="font-size:11px; padding:5px 11px; border:1px solid var(--gray-300); background:#fff; border-radius:6px; cursor:pointer; font-weight:600;" title="Force a fresh pull from Monday.com Building Master List">↻ Refresh</button>
       </div>
 
-      <div class="prompt-banner" id="entityPrompt">
-        Each entity has its own budget timeline. Select one to get started.
-      </div>
       <!-- Lifecycle stage filter chips -->
       <!-- FA dir 2026-05-23: hero callout + readiness-tier filter chips.
            Surfaces the FA's actionable queue at first glance instead of
            making them scan 147 rows. -->
       <div id="readinessHero" style="display:none; margin-bottom:14px;"></div>
-      <div class="stage-filter-row" id="stageFilterRow" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
-        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:6px;">FILTER BY READINESS</span>
-        <!-- Populated by JavaScript -->
+
+      <!-- One filter band: readiness chips + FA filter + search. FA dir
+           2026-05-24: collapsed from 3 separate rows to 1 to recover
+           vertical space and put the table closer to the fold. -->
+      <div class="wizard-filter-band" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:white; border:1px solid var(--gray-200); border-radius:10px; padding:8px 12px; margin-bottom:10px;">
+        <div class="stage-filter-row" id="stageFilterRow" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+          <!-- Populated by JavaScript -->
+        </div>
+        <span style="width:1px; height:22px; background:var(--gray-200);"></span>
+        <span style="font-size:11px; color:var(--gray-700); display:inline-flex; align-items:center; gap:6px;">
+          FA:
+          <select id="faSelector" onchange="filterByFA()" style="padding:5px 8px; border:1px solid var(--gray-300); border-radius:6px; background:white; font-size:11px; font-family:inherit; color:var(--gray-900);">
+            <option value="">Any</option>
+          </select>
+        </span>
+        <span style="width:1px; height:22px; background:var(--gray-200);"></span>
+        <div class="entity-search-bar" style="flex:1; min-width:160px; background:var(--gray-50); border:1px solid transparent; border-radius:7px; padding:6px 10px; display:flex; align-items:center; gap:6px;">
+          <svg class="search-icon" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="opacity:0.5;"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
+          <input type="text" id="entitySearch" class="entity-search-input" placeholder="Search name or entity code" oninput="renderEntityGrid()" style="flex:1; border:none; outline:none; font-size:11px; font-family:inherit; background:transparent; color:var(--gray-900);">
+        </div>
       </div>
-      <div class="entity-search-bar">
-        <svg class="search-icon" viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
-        <input type="text" id="entitySearch" class="entity-search-input" placeholder="Search by name or entity code..." oninput="renderEntityGrid()">
+
+      <!-- Source legend strip: decodes the B / E / Y / A / Au letters
+           used in the Data-status / Missing column. Cheap to render,
+           saves new FAs from having to guess. FA dir 2026-05-24. -->
+      <div class="wizard-legend" style="margin-bottom:12px; padding:7px 14px; background:#faf7f4; border:1px solid var(--gray-200); border-radius:8px; font-size:10px; color:var(--gray-600); display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+        <span style="font-size:9px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.7px;">Source legend</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">B</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">2026 Approved Budget</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">E</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">Expense Distribution</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">Y</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">YSL (Yardi)</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">A</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">AP Aging</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">Au</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">2025 Audit PDF</span></span>
       </div>
+
       <div class="entity-table-wrap" style="background:white; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.04); margin-bottom:32px;">
         <table class="entity-table" id="entityTable" style="width:100%; border-collapse:collapse; table-layout:fixed;">
           <colgroup>
-            <col style="width:28%"/>
-            <col style="width:7%"/>
-            <col style="width:13%"/>
+            <col style="width:30%"/>
+            <col style="width:6%"/>
+            <col style="width:14%"/>
+            <col style="width:22%"/>
+            <col style="width:10%"/>
             <col style="width:18%"/>
-            <col style="width:18%"/>
-            <col style="width:16%"/>
           </colgroup>
           <thead>
             <tr style="background:var(--gray-50); border-bottom:1px solid var(--gray-200);">
               <th data-col="building_name" onclick="setEntitySort(\'building_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
               <th data-col="entity_code" onclick="setEntitySort(\'entity_code\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:0.3;">&#9650;</span></th>
               <th data-col="fa_name" onclick="setEntitySort(\'fa_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">FA <span class="sort-arrow" data-arrow="fa_name" style="opacity:0.3;">&#9650;</span></th>
-              <th style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;">Data status <span style="font-weight:500; color:var(--gray-500); font-size:9px;">(B · E · Y · A · Au)</span></th>
-              <th data-col="readiness" onclick="setEntitySort(\'readiness\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Status <span class="sort-arrow" data-arrow="readiness" style="opacity:1;">&#9660;</span></th>
+              <th style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;" title="2026 Approved Budget / Expense Distribution / YSL / AP Aging / 2025 Audit — see legend above">Data status</th>
+              <th data-col="age" onclick="setEntitySort(\'age\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;" title="Days since last activity on this building">Waiting <span class="sort-arrow" data-arrow="age" style="opacity:0.3;">&#9650;</span></th>
               <th style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;">Next step</th>
             </tr>
           </thead>
@@ -1191,17 +1216,22 @@ function initializeData() {
     console.error('Error parsing template data:', e);
     budgets = [];
   }
-  // Initialize FA selector if we have FA users
+  // Initialize FA selector (now inline in the filter band — FA dir 2026-05-24).
+  // The old #faSelectorWrapper was removed; only the inline <select> remains.
   if (faUsers.length > 0) {
-    const wrapper = document.getElementById('faSelectorWrapper');
-    wrapper.style.display = 'block';
     const sel = document.getElementById('faSelector');
-    faUsers.forEach(u => {
-      const opt = document.createElement('option');
-      opt.value = u.id;
-      opt.textContent = u.name;
-      sel.appendChild(opt);
-    });
+    if (sel) {
+      // Sort PMs/FAs alphabetically for usability across 40+ analysts.
+      const sorted = faUsers.slice().sort(function (a, b) {
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      sorted.forEach(function (u) {
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = u.name;
+        sel.appendChild(opt);
+      });
+    }
   }
   renderMondaySyncStatus();
   maybeAutoSyncMonday();
@@ -1320,6 +1350,13 @@ function loadEnrichedBudgets() {
 
 // Build the 5 mini-tiles (B / E / Y / A / Au) for an entity row, matching
 // the dashboard's color scheme. Returns an HTML string.
+//
+// FA dir 2026-05-24: when the building is in a fully-blocked tier (every
+// source missing), render a compact "Missing: B · E · Y · A · Au" text
+// label instead of 5 tiny red boxes — faster to scan and clearer about
+// what the FA needs to chase down. Tiles still render when there's a
+// mix (some sources in, others missing) since the visual variation is
+// the point of having tiles.
 function _renderEntityTiles(entityCode) {
   const e = _enrichedByEntity[String(entityCode)];
   if (!e) {
@@ -1328,29 +1365,118 @@ function _renderEntityTiles(entityCode) {
   const ts = e.timestamps || {};
   const sp = e.sp_inventory || {};
   const au = e.audit || null;
-  function _tile(letter, ingested, inSP, dt) {
+  // Build per-source state once so we can decide tile-vs-text + compose either.
+  const auOk = !!(au && au.status === "confirmed");
+  const sources = [
+    {letter:"B",  ok:!!ts.budget_summary, inSP:!!sp.approved_2026,        dt:ts.budget_summary},
+    {letter:"E",  ok:!!e.has_expenses,    inSP:!!sp.expense_distribution, dt:ts.expense_dist},
+    {letter:"Y",  ok:!!ts.ysl,            inSP:!!sp.ysl,                  dt:ts.ysl},
+    {letter:"A",  ok:!!ts.open_ap,        inSP:!!sp.ap_aging,             dt:ts.open_ap},
+    {letter:"Au", ok:auOk,                inSP:!!sp.audit_2025,           dt:ts.audit},
+  ];
+  const missing = sources.filter(function (s) { return !s.ok && !s.inSP; });
+  const allMissing = missing.length === sources.length;
+  if (allMissing) {
+    // Compact Missing label for fully-blocked rows (NEEDS_FILES tier).
+    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#fef2f2; color:#991b1b; font-size:10px; font-weight:700; letter-spacing:0.4px;\">Missing: B · E · Y · A · Au</span>";
+  }
+  if (missing.length >= 3 && missing.length < sources.length) {
+    // Mostly blocked — also use the text form to keep scan-speed up.
+    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#fef2f2; color:#991b1b; font-size:10px; font-weight:700; letter-spacing:0.4px;\">Missing: " + missing.map(function (s) { return s.letter; }).join(" · ") + "</span>";
+  }
+  // Mixed (some in, some out, or all in) — show tiles so the FA can see
+  // exactly which source is which state.
+  function _tile(s) {
     let cls = "miss";
-    if (ingested) cls = "ok";
-    else if (inSP) cls = "ready";
-    const dtTxt = (ingested && dt)
-      ? (new Date(dt).getMonth()+1) + "/" + (new Date(dt).getDate())
+    if (s.ok) cls = "ok";
+    else if (s.inSP) cls = "ready";
+    const dtTxt = (s.ok && s.dt)
+      ? (new Date(s.dt).getMonth()+1) + "/" + (new Date(s.dt).getDate())
       : "";
     const bg = cls === "ok" ? "#def7ec" : (cls === "ready" ? "#fef3c7" : "#fef2f2");
     const fg = cls === "ok" ? "#065f46" : (cls === "ready" ? "#92400e" : "#991b1b");
     const bd = cls === "ok" ? "#a7f3d0" : (cls === "ready" ? "#fcd34d" : "#fecaca");
     return "<span style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:24px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
-         + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + letter + "</span>"
+         + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + s.letter + "</span>"
          + (dtTxt ? "<span style=\"font-size:7px; opacity:0.75; margin-top:1px; font-variant-numeric:tabular-nums;\">" + dtTxt + "</span>" : "")
          + "</span>";
   }
-  const auOk = !!(au && au.status === "confirmed");
-  return "<span style=\"display:inline-flex; gap:3px;\">"
-       + _tile("B",  !!ts.budget_summary, !!sp.approved_2026,         ts.budget_summary)
-       + _tile("E",  !!e.has_expenses,    !!sp.expense_distribution,   ts.expense_dist)
-       + _tile("Y",  !!ts.ysl,            !!sp.ysl,                    ts.ysl)
-       + _tile("A",  !!ts.open_ap,        !!sp.ap_aging,               ts.open_ap)
-       + _tile("Au", auOk,                !!sp.audit_2025,             ts.audit)
-       + "</span>";
+  return "<span style=\"display:inline-flex; gap:3px;\">" + sources.map(_tile).join("") + "</span>";
+}
+
+// FA dir 2026-05-24: compute the freshest activity timestamp across all
+// ingest sources + audit + budget update. Used by the new "Waiting" column
+// and the oldest-first sort within blocked tiers. Returns a Date or null.
+function _entityLastActivity(b) {
+  const e = _enrichedByEntity[String(b.entity_code)];
+  const candidates = [];
+  if (e) {
+    const ts = e.timestamps || {};
+    ["budget_summary", "expense_dist", "ysl", "open_ap", "audit"].forEach(function (k) {
+      if (ts[k]) candidates.push(ts[k]);
+    });
+    if (e.updated_at) candidates.push(e.updated_at);
+  }
+  if (b.updated_at) candidates.push(b.updated_at);
+  if (!candidates.length) return null;
+  // Pick the most recent — that's "last touched".
+  let max = null;
+  candidates.forEach(function (iso) {
+    const dt = new Date(iso);
+    if (isNaN(dt.getTime())) return;
+    if (!max || dt > max) max = dt;
+  });
+  return max;
+}
+
+// Render the days-since-last-activity for the Waiting column. Color shifts
+// to amber >14, red >21 so rotten rows surface.
+function _renderWaitingCell(b) {
+  const last = _entityLastActivity(b);
+  if (!last) {
+    return "<span style=\"color:var(--gray-400); font-size:11px;\">—</span>";
+  }
+  const days = Math.floor((Date.now() - last.getTime()) / 86400000);
+  let color = "var(--gray-600)";
+  let weight = "500";
+  if (days >= 21) { color = "#dc2626"; weight = "700"; }
+  else if (days >= 14) { color = "#a16207"; weight = "600"; }
+  const lbl = days === 0 ? "today" : (days === 1 ? "1 day" : days + " days");
+  return "<span title=\"Last activity " + last.toLocaleDateString() + "\" style=\"color:" + color + "; font-weight:" + weight + "; font-size:11px; font-variant-numeric:tabular-nums;\">" + lbl + "</span>";
+}
+
+// FA dir 2026-05-24: build the contextual Next-step action button. Never
+// shows a greyed-out "Waiting for files" tautology — always offers a real
+// move (build, confirm audit, email FA, open SP folder, view built).
+function _renderNextStep(b, faName) {
+  const e = _enrichedByEntity[String(b.entity_code)] || {};
+  const readiness = e.readiness || {tier: "NEEDS_FILES", next_action: "wait", next_url: "/wizard/" + b.entity_code};
+  const act = readiness.next_action;
+  // Build the href + visual treatment based on what the FA can actually do.
+  let label, bg, fg, bd, href;
+  href = readiness.next_url || ("/wizard/" + b.entity_code);
+  if (act === "build") {
+    label = "Build now →"; bg = "#16a34a"; fg = "#fff"; bd = "#16a34a";
+  } else if (act === "audit_review") {
+    label = "Confirm audit →"; bg = "#fffbeb"; fg = "#92400e"; bd = "#fcd34d";
+  } else if (act === "review_built") {
+    label = "View built"; bg = "#fff"; fg = "var(--blue)"; bd = "var(--gray-300)";
+  } else {
+    // "wait" tier — give the FA an actual move depending on what's missing.
+    const tier = readiness.tier;
+    if (tier === "NEEDS_AUDIT") {
+      label = "Upload audit →"; bg = "#fef2f2"; fg = "#991b1b"; bd = "#fecaca";
+      href = "/wizard/" + b.entity_code + "?step=2&focus=audit_2025";
+    } else if (tier === "NEEDS_FILES" && faName && faName !== "—") {
+      // Email the responsible FA / PM. mailto: opens their mail client.
+      label = "Chase " + faName.split(" ")[0] + " →"; bg = "#fef2f2"; fg = "#991b1b"; bd = "#fecaca";
+      href = "mailto:?subject=" + encodeURIComponent("Budget files needed for " + (b.building_name || b.entity_code))
+           + "&body=" + encodeURIComponent("Hi " + faName.split(" ")[0] + ",\n\nCan you upload the missing source files for " + (b.building_name || b.entity_code) + " (entity " + b.entity_code + ") to SharePoint? It's currently blocking the 2027 budget build.\n\nThanks!");
+    } else {
+      label = "Open in wizard →"; bg = "#fff"; fg = "var(--gray-700)"; bd = "var(--gray-300)";
+    }
+  }
+  return "<a href=\"" + href + "\" style=\"display:inline-block; font-size:11px; font-weight:700; padding:5px 11px; border-radius:6px; border:1px solid " + bd + "; background:" + bg + "; color:" + fg + "; text-decoration:none; letter-spacing:0.2px;\">" + label + "</a>";
 }
 
 function _rebuildFaNameLookup() {
@@ -1426,6 +1552,13 @@ function _entitySortValue(b, col) {
     const e = _enrichedByEntity[String(b.entity_code)];
     return (e && e.readiness && typeof e.readiness.tier_order === "number")
       ? e.readiness.tier_order : 0;
+  }
+  if (col === "age") {
+    // FA dir 2026-05-24: sort by days-since-last-activity. Default direction
+    // is desc → oldest-rotten-rows surface first. Returns days as a number.
+    const last = _entityLastActivity(b);
+    if (!last) return -1;  // unknown — push to the bottom on desc sort
+    return Math.floor((Date.now() - last.getTime()) / 86400000);
   }
   return 0;
 }
@@ -1573,33 +1706,82 @@ function renderEntityGrid() {
     stageRow.appendChild(makeChip("Waiting for files", counts.NEEDS_FILES, "NEEDS_FILES"));
     stageRow.appendChild(makeChip("Built", counts.BUILT, "BUILT", "#065f46"));
 
-    // Hero callout — only when there's something actionable.
+    // Hero callout — FA dir 2026-05-24: state-aware. Pushes toward the
+    // binding constraint, not just the loudest count.
+    //   N ready                  → "Build all N →" CTA (most actionable)
+    //   0 ready + M extract/inprog → push toward audit queue
+    //   0 ready + 0 audit + K need-files → push toward chasing PMs
+    //   all built / nothing actionable → no hero
     const hero = document.getElementById("readinessHero");
     if (hero) {
       const ready = counts.READY_TO_BUILD || 0;
-      const inProg = counts.IN_PROGRESS || 0;
+      const inProg = (counts.IN_PROGRESS || 0) + (counts.NEEDS_AUDIT_EXTRACT || 0);
+      const needFiles = counts.NEEDS_FILES || 0;
+      const needAudit = counts.NEEDS_AUDIT || 0;
       if (ready > 0) {
         hero.style.display = "block";
         hero.innerHTML =
           "<div style=\"background:linear-gradient(90deg,#ecfdf5 0%,#f0fdf4 100%); border:1px solid #6ee7b7; border-radius:10px; padding:14px 18px; display:flex; align-items:center; gap:14px;\">"
         + "<span style=\"font-size:22px;\">🚀</span>"
         + "<div style=\"flex:1;\"><strong style=\"color:#065f46; font-size:14px;\">" + ready + " building" + (ready === 1 ? "" : "s") + " ready to build right now</strong>"
-        + "<div style=\"color:#047857; font-size:11px; margin-top:2px;\">All files staged, audit confirmed. " + (inProg > 0 ? (inProg + " more in progress (audit review needed)." ) : "") + "</div></div>"
+        + "<div style=\"color:#047857; font-size:11px; margin-top:2px;\">All files staged, audit confirmed. " + (inProg > 0 ? (inProg + " more in progress." ) : "") + "</div></div>"
         + "<button onclick=\"buildAllReady()\" style=\"background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; cursor:pointer;\">Build all " + ready + " →</button>"
         + "</div>";
       } else if (inProg > 0) {
+        // 0 ready, but audit review can unlock builds today — push there.
         hero.style.display = "block";
         hero.innerHTML =
-          "<div style=\"background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:12px;\">"
+          "<div style=\"background:#fff7ed; border:1px solid #fdba74; border-left:5px solid #ea580c; border-radius:0 10px 10px 0; padding:14px 18px; display:flex; align-items:center; gap:14px;\">"
+        + "<span style=\"font-size:22px;\">🔓</span>"
+        + "<div style=\"flex:1;\"><strong style=\"color:#9a3412; font-size:14px;\">Closest to ready: " + inProg + " building" + (inProg === 1 ? "" : "s") + " in audit review</strong>"
+        + "<div style=\"color:#7c2d12; font-size:11px; margin-top:2px;\">Confirm those and " + inProg + " unlock for build today. Most leverage right now.</div></div>"
+        + "<button onclick=\"setStageFilter('IN_PROGRESS')\" style=\"background:#ea580c; color:#fff; border:none; padding:8px 16px; border-radius:7px; font-weight:700; font-size:12px; cursor:pointer;\">Open audit queue →</button>"
+        + "</div>";
+      } else if (needAudit > 0) {
+        // Stuck waiting for auditor delivery — surface the count + filter cta.
+        hero.style.display = "block";
+        hero.innerHTML =
+          "<div style=\"background:#fef2f2; border:1px solid #fecaca; border-left:5px solid #dc2626; border-radius:0 10px 10px 0; padding:12px 16px; display:flex; align-items:center; gap:12px;\">"
         + "<span style=\"font-size:18px;\">⏳</span>"
-        + "<div style=\"flex:1;\"><strong style=\"color:#92400e; font-size:13px;\">" + inProg + " building" + (inProg === 1 ? "" : "s") + " in progress</strong>"
-        + "<div style=\"color:#92400e; font-size:11px; margin-top:1px;\">Audit review or remaining source ingestion needed. Click \"In progress\" to focus.</div></div>"
+        + "<div style=\"flex:1;\"><strong style=\"color:#991b1b; font-size:13px;\">" + needAudit + " building" + (needAudit === 1 ? "" : "s") + " waiting on audit PDF</strong>"
+        + "<div style=\"color:#991b1b; font-size:11px; margin-top:1px;\">Vendor-blocked. Sort by Waiting to find the most rotten and chase auditors.</div></div>"
+        + "<button onclick=\"setStageFilter('NEEDS_AUDIT')\" style=\"background:#fff; color:#991b1b; border:1px solid #dc2626; padding:6px 12px; border-radius:6px; font-weight:700; font-size:12px; cursor:pointer;\">Show audit queue →</button>"
+        + "</div>";
+      } else if (needFiles > 0) {
+        // Last-resort: only file-collection blockers remain.
+        hero.style.display = "block";
+        hero.innerHTML =
+          "<div style=\"background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:12px;\">"
+        + "<span style=\"font-size:18px;\">📂</span>"
+        + "<div style=\"flex:1;\"><strong style=\"color:#991b1b; font-size:13px;\">" + needFiles + " building" + (needFiles === 1 ? "" : "s") + " missing source files</strong>"
+        + "<div style=\"color:#991b1b; font-size:11px; margin-top:1px;\">Chase PMs to upload to SharePoint. Click \"Needs files\" to see the list.</div></div>"
         + "</div>";
       } else {
         hero.style.display = "none";
         hero.innerHTML = "";
       }
     }
+  }
+
+  // FA dir 2026-05-24 #9: portfolio summary in title — live counts inline.
+  const summaryEl = document.getElementById("portfolioSummary");
+  if (summaryEl) {
+    const total = budgets.length;
+    const built = (function () {
+      let n = 0;
+      Object.values(_enrichedByEntity).forEach(function (e) {
+        if (e && e.readiness && e.readiness.tier === "BUILT") n += 1;
+      });
+      return n;
+    })();
+    const ready = (function () {
+      let n = 0;
+      Object.values(_enrichedByEntity).forEach(function (e) {
+        if (e && e.readiness && e.readiness.tier === "READY_TO_BUILD") n += 1;
+      });
+      return n;
+    })();
+    summaryEl.textContent = "· " + total + " buildings · " + built + " built · " + ready + " ready";
   }
 
   // 7. Update header count caption
@@ -1661,53 +1843,50 @@ function renderEntityGrid() {
       return td;
     };
     tr.appendChild(cell(b.entity_code, " font-family:ui-monospace,monospace; color:var(--gray-700);"));
-    tr.appendChild(cell(faName, " color:var(--gray-700); font-size:12px;"));
+    // FA cell — name clickable to filter the table by that FA.
+    const faTd = document.createElement("td");
+    faTd.style.cssText = "padding:10px 14px; font-size:12px; color:var(--gray-700);";
+    if (faName !== "—") {
+      const faLink = document.createElement("a");
+      faLink.textContent = faName;
+      faLink.href = "#";
+      faLink.style.cssText = "color:var(--blue, #2563eb); text-decoration:none; font-weight:600; cursor:pointer;";
+      faLink.title = "Filter to " + faName + "'s buildings";
+      faLink.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        // Find the user id from the rebuilt lookup and apply.
+        const matchUser = (faUsers || []).find(function (u) { return u.name === faName; });
+        if (matchUser) {
+          const sel = document.getElementById("faSelector");
+          if (sel) { sel.value = String(matchUser.id); }
+          selectedFA = String(matchUser.id);
+          renderEntityGrid();
+        }
+      };
+      faTd.appendChild(faLink);
+    } else {
+      faTd.textContent = "—";
+    }
+    tr.appendChild(faTd);
 
-    // Data-status tiles (B / E / Y / A / Au) — mirrors dashboard
+    // Data-status tiles (B / E / Y / A / Au) — mirrors dashboard.
+    // Switches automatically to "Missing: X · Y · Z" text for blocked tiers.
     const tilesTd = document.createElement("td");
     tilesTd.style.cssText = "padding:10px 14px;";
     tilesTd.innerHTML = _renderEntityTiles(b.entity_code);
     tr.appendChild(tilesTd);
 
-    // Readiness status pill
-    const statusTd = document.createElement("td");
-    statusTd.style.cssText = "padding:10px 14px;";
-    const tier = readiness.tier;
-    const tierBg = (tier === "READY_TO_BUILD") ? "#def7ec"
-                  : (tier === "BUILT") ? "#f0fdf4"
-                  : (tier === "IN_PROGRESS") ? "#fef3c7"
-                  : (tier === "NEEDS_AUDIT_EXTRACT") ? "#dbeafe"
-                  : (tier === "NEEDS_AUDIT") ? "#fde68a"
-                  : "var(--gray-100)";
-    const tierFg = (tier === "READY_TO_BUILD") ? "#065f46"
-                  : (tier === "BUILT") ? "#065f46"
-                  : (tier === "IN_PROGRESS") ? "#92400e"
-                  : (tier === "NEEDS_AUDIT_EXTRACT") ? "#1e40af"
-                  : (tier === "NEEDS_AUDIT") ? "#78350f"
-                  : "var(--gray-700)";
-    statusTd.innerHTML = "<span style=\"display:inline-block; padding:3px 10px; border-radius:11px; font-size:11px; font-weight:600; background:" + tierBg + "; color:" + tierFg + ";\">" + (readiness.tier_label || "Setup") + "</span>";
-    tr.appendChild(statusTd);
+    // Waiting column — days since last activity. Red text >21 days.
+    const waitTd = document.createElement("td");
+    waitTd.style.cssText = "padding:10px 14px;";
+    waitTd.innerHTML = _renderWaitingCell(b);
+    tr.appendChild(waitTd);
 
-    // Next-step action button — routes the FA to the right place
+    // Contextual Next-step action — never greyed-out tautology.
     const actTd = document.createElement("td");
     actTd.style.cssText = "padding:10px 14px; text-align:right;";
-    const act = readiness.next_action;
-    let btnLabel, btnBg, btnFg, btnBd, btnDisabled = false;
-    if (act === "build") {
-      btnLabel = "Build now →"; btnBg = "#16a34a"; btnFg = "#fff"; btnBd = "#16a34a";
-    } else if (act === "audit_review") {
-      btnLabel = "Audit review →"; btnBg = "#fff"; btnFg = "#d97706"; btnBd = "#d97706";
-    } else if (act === "review_built") {
-      btnLabel = "View built"; btnBg = "#fff"; btnFg = "var(--blue)"; btnBd = "var(--gray-300)";
-    } else {
-      btnLabel = "Waiting for files"; btnBg = "#fff"; btnFg = "var(--gray-500)"; btnBd = "var(--gray-300)"; btnDisabled = true;
-    }
-    const a = document.createElement("a");
-    a.href = readiness.next_url || ("/wizard/" + b.entity_code);
-    a.textContent = btnLabel;
-    a.style.cssText = "display:inline-block; font-size:11px; font-weight:600; padding:5px 12px; border-radius:5px; border:1px solid " + btnBd + "; background:" + btnBg + "; color:" + btnFg + "; text-decoration:none; cursor:" + (btnDisabled ? "not-allowed" : "pointer") + "; opacity:" + (btnDisabled ? "0.6" : "1") + ";";
-    if (btnDisabled) a.onclick = function (e) { e.preventDefault(); };
-    actTd.appendChild(a);
+    actTd.innerHTML = _renderNextStep(b, faName);
     tr.appendChild(actTd);
 
     tbody.appendChild(tr);
