@@ -1612,10 +1612,16 @@ function renderEntityGrid() {
   // 2. Filter by readiness tier chip (FA dir 2026-05-23). Old logic
   //    filtered on lifecycle_stage which was always "Setup" — useless.
   //    New tiers come from the server-side readiness classifier.
+  //    FA dir 2026-05-24: special composite "AUDIT_REVIEW" filter unions
+  //    IN_PROGRESS + NEEDS_AUDIT_EXTRACT (both are "audit waiting for FA")
+  //    so the hero CTA matches its promise of 14 buildings, not just 11.
   if (_stageFilter && _stageFilter !== "all") {
     filtered = filtered.filter(function (b) {
       const e = _enrichedByEntity[String(b.entity_code)];
       const tier = (e && e.readiness && e.readiness.tier) || "NEEDS_FILES";
+      if (_stageFilter === "AUDIT_REVIEW") {
+        return tier === "IN_PROGRESS" || tier === "NEEDS_AUDIT_EXTRACT";
+      }
       return tier === _stageFilter;
     });
   }
@@ -1679,12 +1685,19 @@ function renderEntityGrid() {
       if (counts[t] !== undefined) counts[t] += 1;
     });
 
-    const headerLabel = stageRow.querySelector("span");
+    // FA dir 2026-05-24: cleared the explicit "FILTER BY READINESS" header
+    // label in the new compact layout, so just blow away the row contents
+    // before re-rendering chips. Previous code preserved any child <span>,
+    // which after the first render grabbed a chip's count span as a leftover
+    // (showed "147" floating to the left of the All chip).
     stageRow.innerHTML = "";
-    if (headerLabel) stageRow.appendChild(headerLabel);
 
     function makeChip(label, count, key, color) {
-      const isActive = _stageFilter === key;
+      // FA dir 2026-05-24: when composite AUDIT_REVIEW filter is on, both
+      // IN_PROGRESS and NEEDS_AUDIT_EXTRACT chips show as active.
+      const isComposite = _stageFilter === "AUDIT_REVIEW";
+      const isActive = (_stageFilter === key) ||
+        (isComposite && (key === "IN_PROGRESS" || key === "NEEDS_AUDIT_EXTRACT"));
       const chip = document.createElement("button");
       chip.type = "button";
       chip.innerHTML = label + " <span style=\"opacity:0.7; font-weight:500;\">" + count + "</span>";
@@ -1735,7 +1748,7 @@ function renderEntityGrid() {
         + "<span style=\"font-size:22px;\">🔓</span>"
         + "<div style=\"flex:1;\"><strong style=\"color:#9a3412; font-size:14px;\">Closest to ready: " + inProg + " building" + (inProg === 1 ? "" : "s") + " in audit review</strong>"
         + "<div style=\"color:#7c2d12; font-size:11px; margin-top:2px;\">Confirm those and " + inProg + " unlock for build today. Most leverage right now.</div></div>"
-        + "<button onclick=\"setStageFilter('IN_PROGRESS')\" style=\"background:#ea580c; color:#fff; border:none; padding:8px 16px; border-radius:7px; font-weight:700; font-size:12px; cursor:pointer;\">Open audit queue →</button>"
+        + "<button onclick=\"setStageFilter('AUDIT_REVIEW')\" style=\"background:#ea580c; color:#fff; border:none; padding:8px 16px; border-radius:7px; font-weight:700; font-size:12px; cursor:pointer;\">Open audit queue →</button>"
         + "</div>";
       } else if (needAudit > 0) {
         // Stuck waiting for auditor delivery — surface the count + filter cta.
