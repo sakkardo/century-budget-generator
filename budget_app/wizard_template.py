@@ -1028,13 +1028,21 @@ header {
             <col style="width:18%"/>
           </colgroup>
           <thead>
+            <!-- FA dir 2026-05-24: switched onclick args from \\'col\\' to
+                 &quot;col&quot; — raw-string r"""...""" ships backslashes
+                 literally, which made `setEntitySort(\\'building_name\\')` a
+                 JS syntax error and broke every sort caret. HTML entity
+                 &quot; decodes to " in the attribute, so JS sees a clean
+                 string. Also: ALL columns are now sortable. Data status and
+                 Next step both sort on readiness tier_order (since both
+                 visually map to "how far along is this row"). -->
             <tr style="background:var(--gray-50); border-bottom:1px solid var(--gray-200);">
-              <th data-col="building_name" onclick="setEntitySort(\'building_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
-              <th data-col="entity_code" onclick="setEntitySort(\'entity_code\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:0.3;">&#9650;</span></th>
-              <th data-col="fa_name" onclick="setEntitySort(\'fa_name\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">FA <span class="sort-arrow" data-arrow="fa_name" style="opacity:0.3;">&#9650;</span></th>
-              <th style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;" title="2026 Approved Budget / Expense Distribution / YSL / AP Aging / 2025 Audit — see legend above">Data status</th>
-              <th data-col="age" onclick="setEntitySort(\'age\')" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;" title="Days since last activity on this building">Waiting <span class="sort-arrow" data-arrow="age" style="opacity:0.3;">&#9650;</span></th>
-              <th style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em;">Next step</th>
+              <th data-col="building_name" onclick="setEntitySort(&quot;building_name&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="entity_code" onclick="setEntitySort(&quot;entity_code&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="fa_name" onclick="setEntitySort(&quot;fa_name&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">FA <span class="sort-arrow" data-arrow="fa_name" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="data_status" onclick="setEntitySort(&quot;data_status&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;" title="Sorts by how many sources are ingested. Letters: 2026 Approved Budget / Expense Distribution / YSL / AP Aging / 2025 Audit — see legend above">Data status <span class="sort-arrow" data-arrow="data_status" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="age" onclick="setEntitySort(&quot;age&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;" title="Days since last activity on this building">Waiting <span class="sort-arrow" data-arrow="age" style="opacity:0.3;">&#9650;</span></th>
+              <th data-col="readiness" onclick="setEntitySort(&quot;readiness&quot;)" style="padding:10px 14px; text-align:right; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;" title="Sort by how actionable each row is right now">Next step <span class="sort-arrow" data-arrow="readiness" style="opacity:1;">&#9660;</span></th>
             </tr>
           </thead>
           <tbody id="entityTableBody">
@@ -1559,6 +1567,31 @@ function _entitySortValue(b, col) {
     const last = _entityLastActivity(b);
     if (!last) return -1;  // unknown — push to the bottom on desc sort
     return Math.floor((Date.now() - last.getTime()) / 86400000);
+  }
+  if (col === "data_status") {
+    // FA dir 2026-05-24: sort by # of ingested sources (0-5). More sources
+    // = farther along. Tiebreak by SharePoint-detected (staged but not yet
+    // ingested) so partial progress beats nothing.
+    const e = _enrichedByEntity[String(b.entity_code)];
+    if (!e) return 0;
+    const ts = e.timestamps || {};
+    const sp = e.sp_inventory || {};
+    const au = e.audit || null;
+    const auOk = !!(au && au.status === "confirmed");
+    let ingested = 0;
+    if (ts.budget_summary) ingested += 1;
+    if (e.has_expenses) ingested += 1;
+    if (ts.ysl) ingested += 1;
+    if (ts.open_ap) ingested += 1;
+    if (auOk) ingested += 1;
+    let staged = 0;
+    if (sp.approved_2026) staged += 1;
+    if (sp.expense_distribution) staged += 1;
+    if (sp.ysl) staged += 1;
+    if (sp.ap_aging) staged += 1;
+    if (sp.audit_2025) staged += 1;
+    // Multiply ingested by 10 so it dominates the tiebreaker.
+    return ingested * 10 + staged;
   }
   return 0;
 }
