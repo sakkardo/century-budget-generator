@@ -1028,14 +1028,14 @@ header {
             <col style="width:18%"/>
           </colgroup>
           <thead>
-            <!-- FA dir 2026-05-24: switched onclick args from \\'col\\' to
-                 &quot;col&quot; — raw-string r"""...""" ships backslashes
-                 literally, which made `setEntitySort(\\'building_name\\')` a
-                 JS syntax error and broke every sort caret. HTML entity
-                 &quot; decodes to " in the attribute, so JS sees a clean
-                 string. Also: ALL columns are now sortable. Data status and
-                 Next step both sort on readiness tier_order (since both
-                 visually map to "how far along is this row"). -->
+            <!-- FA dir 2026-05-24: switched onclick args from backslash-
+                 quoted to &quot;col&quot;. This file is a raw-string Python
+                 template (r prefix), so the prior `setEntitySort(\\x27col\\x27)`
+                 pattern shipped literal backslashes and was a JS syntax
+                 error in the attribute. HTML entity &quot; decodes to " in
+                 the attribute, so JS sees a clean string. Also: every column
+                 is now sortable. Data status sorts by # of ingested sources;
+                 Next step sorts by readiness tier_order. -->
             <tr style="background:var(--gray-50); border-bottom:1px solid var(--gray-200);">
               <th data-col="building_name" onclick="setEntitySort(&quot;building_name&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Building <span class="sort-arrow" data-arrow="building_name" style="opacity:0.3;">&#9650;</span></th>
               <th data-col="entity_code" onclick="setEntitySort(&quot;entity_code&quot;)" style="padding:10px 14px; text-align:left; font-size:11px; font-weight:700; color:var(--gray-700); letter-spacing:0.04em; cursor:pointer; user-select:none;">Entity <span class="sort-arrow" data-arrow="entity_code" style="opacity:0.3;">&#9650;</span></th>
