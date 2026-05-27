@@ -1424,8 +1424,14 @@ function scanSharePointFromWizard() {
         loadEnrichedBudgets();
         loadSPScanStatus();
         loadRecentSPUploads();
+        // FA dir 2026-05-24: response shape is {total, ok, errors[], ...}.
+        // Earlier draft read `data.scanned` / `data.found_total` which don't
+        // exist, so the toast said "0 entities" even after a clean scan.
+        const okN = (typeof data.ok === 'number') ? data.ok : 0;
+        const totN = (typeof data.total === 'number') ? data.total : 0;
+        const errN = (data.errors || []).length;
         if (typeof showToast === 'function') {
-          showToast('SharePoint scan complete: ' + (data.scanned || 0) + ' entities', 'success');
+          showToast('SharePoint scan complete: ' + okN + '/' + totN + ' entities scanned' + (errN ? (' · ' + errN + ' errors') : ''), 'success');
         }
       }
     })
