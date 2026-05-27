@@ -10956,6 +10956,45 @@ def admin_sp_inventory_status():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/sp-inventory/recent", methods=["GET"])
+def admin_sp_inventory_recent():
+    """FA dir 2026-05-24: list recently-arrived files in SharePoint, sorted
+    newest first. Used by the wizard's "Recently arrived" panel so the FA
+    can verify a batch upload landed without clicking into each building.
+
+    Query params:
+      hours: window size (default 72). Anything older is excluded.
+      limit: cap rows returned (default 25).
+    """
+    try:
+        hours = int(request.args.get("hours", 72))
+        limit = int(request.args.get("limit", 25))
+        hours = max(1, min(hours, 24 * 14))  # clamp to [1h, 14d]
+        limit = max(1, min(limit, 200))
+        rows = db.session.execute(db.text(
+            "SELECT entity_code, source_type, file_name, file_modified, web_url "
+            "FROM sp_inventory "
+            "WHERE found = TRUE "
+            "  AND file_modified IS NOT NULL "
+            "  AND file_modified > (CURRENT_TIMESTAMP - (:hours * INTERVAL '1 hour')) "
+            "ORDER BY file_modified DESC "
+            "LIMIT :limit"
+        ), {"hours": hours, "limit": limit}).fetchall()
+        uploads = []
+        for r in rows:
+            uploads.append({
+                "entity_code": r[0],
+                "source_type": r[1],
+                "file_name": r[2] or "",
+                "modified": r[3].isoformat() if r[3] else None,
+                "web_url": r[4] or "",
+            })
+        return jsonify({"uploads": uploads, "hours": hours, "count": len(uploads)})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/wizard/<entity_code>/upload-to-sp", methods=["POST"])
 def wizard_upload_to_sp(entity_code):
     """Manual-upload escape hatch: FA drops a file from their computer; we

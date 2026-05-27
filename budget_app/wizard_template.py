@@ -975,7 +975,24 @@ header {
           </div>
         </div>
         <span class="monday-sync-status" id="mondaySyncStatus" style="font-size:11px; color:#15803d; font-weight:600;">Checking sync…</span>
-        <button type="button" id="mondayRefreshBtn" onclick="refreshFromMonday()" style="font-size:11px; padding:5px 11px; border:1px solid var(--gray-300); background:#fff; border-radius:6px; cursor:pointer; font-weight:600;" title="Force a fresh pull from Monday.com Building Master List">↻ Refresh</button>
+        <button type="button" id="mondayRefreshBtn" onclick="refreshFromMonday()" style="font-size:11px; padding:5px 11px; border:1px solid var(--gray-300); background:#fff; border-radius:6px; cursor:pointer; font-weight:600;" title="Force a fresh pull from Monday.com Building Master List">↻ Monday</button>
+        <span class="sp-scan-status" id="spScanStatus" style="font-size:11px; color:var(--gray-600); font-weight:600;">SP: checking…</span>
+        <button type="button" id="spScanBtn" onclick="scanSharePointFromWizard()" style="font-size:11px; padding:5px 11px; border:1px solid var(--gray-300); background:#fff; border-radius:6px; cursor:pointer; font-weight:600;" title="Re-list every entity's Supporting Documents folder in SharePoint. ~5 min for 147 buildings. Updates the B/E/Y/A/Au tiles.">↻ SharePoint</button>
+      </div>
+
+      <!-- FA dir 2026-05-24: "Recently arrived in SP" panel — surfaces the
+           latest file uploads across the portfolio. Lets the FA confirm a
+           batch upload landed without clicking into individual buildings.
+           Populated by loadRecentSPUploads() from /api/admin/sp-inventory/recent. -->
+      <div id="spRecentPanel" style="margin-bottom:14px; display:none; background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a; border-radius:0 10px 10px 0; padding:10px 14px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <div style="font-size:12px; color:#15803d; font-weight:700;">
+            <span id="spRecentHeader">Recently arrived in SharePoint</span>
+            <button type="button" onclick="toggleSPRecentPanel()" style="margin-left:8px; font-size:10px; padding:1px 8px; border:1px solid #bbf7d0; background:white; color:#15803d; border-radius:4px; cursor:pointer; font-weight:600;">Hide</button>
+          </div>
+          <span style="font-size:10px; color:#15803d;">last 72 hours</span>
+        </div>
+        <div id="spRecentBody" style="font-size:11px; color:#15803d; margin-top:6px;"></div>
       </div>
 
       <!-- Lifecycle stage filter chips -->
@@ -1327,6 +1344,150 @@ function filterByFA() {
   renderEntityGrid();
 }
 
+// FA dir 2026-05-24: SP inventory plumbing on the wizard Select Entity page.
+// The dashboard has had a "Scan SharePoint" button for a while, but the
+// wizard didn't — so after uploading files an FA had no way to see them
+// reflected on the Select-Entity grid without bouncing to the dashboard.
+// These three functions mirror the dashboard's pattern: status indicator,
+// manual-trigger button, and a "Recently arrived" panel.
+
+let _spStatus = null;  // {newest_scan, oldest_scan, entities_in_cache}
+
+function loadSPScanStatus() {
+  fetch('/api/admin/sp-inventory/status')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      _spStatus = d;
+      renderSPScanStatus();
+    })
+    .catch(function () { /* silent — status indicator falls through to 'unknown' */ });
+}
+
+function renderSPScanStatus() {
+  const el = document.getElementById('spScanStatus');
+  if (!el) return;
+  if (!_spStatus || !_spStatus.newest_scan) {
+    el.textContent = 'SP: never scanned';
+    el.style.color = '#a16207';
+    return;
+  }
+  const iso = _spStatus.newest_scan;
+  const dt = new Date(iso.endsWith('Z') ? iso : (iso + 'Z'));
+  const mins = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 60000));
+  let label;
+  if (mins < 1) label = 'just now';
+  else if (mins < 60) label = mins + ' min ago';
+  else if (mins < 1440) label = Math.round(mins/60) + 'h ago';
+  else label = Math.round(mins/1440) + 'd ago';
+  el.textContent = 'SP scanned ' + label;
+  el.title = 'Last full SharePoint inventory scan: ' + dt.toLocaleString();
+  // Amber when stale > 30 min so the FA notices.
+  el.style.color = mins > 30 ? '#a16207' : '#15803d';
+}
+
+// Lazy refresh: if the cache is stale (>30 min), kick off a scan in the
+// background. Doesn't block page load — just keeps the cache warm so the
+// FA's next visit sees fresh tiles. The Monday-sync lazy-refresh pattern.
+function maybeAutoScanSharePoint() {
+  if (!_spStatus || !_spStatus.newest_scan) {
+    // No cache at all → do a fire-and-forget scan in the background.
+    fetch('/api/admin/sp-inventory/scan', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} })
+      .then(function () { loadSPScanStatus(); loadEnrichedBudgets(); })
+      .catch(function () { /* silent */ });
+    return;
+  }
+  const iso = _spStatus.newest_scan;
+  const dt = new Date(iso.endsWith('Z') ? iso : (iso + 'Z'));
+  const minsAgo = (Date.now() - dt.getTime()) / 60000;
+  if (minsAgo < 30) return;  // Still fresh enough.
+  // Stale → background scan. Don't await: FA sees stale tiles for 1 pass,
+  // next refresh shows fresh ones.
+  fetch('/api/admin/sp-inventory/scan', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} })
+    .then(function () { loadSPScanStatus(); loadEnrichedBudgets(); loadRecentSPUploads(); })
+    .catch(function () { /* silent */ });
+}
+
+function scanSharePointFromWizard() {
+  if (!confirm('Scan SharePoint folders for all 147 buildings? Takes ~5 min — do not close the tab. The grid will refresh when finished.')) return;
+  const btn = document.getElementById('spScanBtn');
+  const el = document.getElementById('spScanStatus');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Scanning…'; btn.style.opacity = '0.7'; }
+  if (el) { el.textContent = 'Scanning SharePoint…'; el.style.color = '#a16207'; }
+  fetch('/api/admin/sp-inventory/scan', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) {
+        alert('Scan failed: ' + data.error);
+      } else {
+        // Reload enriched data + sync status + recent uploads so the FA
+        // sees the new tiles + dates immediately without a hard refresh.
+        loadEnrichedBudgets();
+        loadSPScanStatus();
+        loadRecentSPUploads();
+        if (typeof showToast === 'function') {
+          showToast('SharePoint scan complete: ' + (data.scanned || 0) + ' entities', 'success');
+        }
+      }
+    })
+    .catch(function (err) {
+      alert('Scan error: ' + err);
+    })
+    .finally(function () {
+      if (btn) { btn.disabled = false; btn.textContent = '↻ SharePoint'; btn.style.opacity = '1'; }
+    });
+}
+
+// "Recently arrived in SP" — show the last 72 hours of file uploads across
+// the portfolio so the FA can verify "did the batch I just uploaded land?"
+// without clicking into each building.
+function loadRecentSPUploads() {
+  fetch('/api/admin/sp-inventory/recent?hours=72&limit=15')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d) return;
+      renderRecentSPUploads(d.uploads || []);
+    })
+    .catch(function () { /* silent */ });
+}
+
+function renderRecentSPUploads(uploads) {
+  const panel = document.getElementById('spRecentPanel');
+  const header = document.getElementById('spRecentHeader');
+  const body = document.getElementById('spRecentBody');
+  if (!panel || !body) return;
+  // If hidden by user preference (sessionStorage), respect that.
+  if (sessionStorage.getItem('spRecentPanelHidden') === '1') { panel.style.display = 'none'; return; }
+  if (!uploads.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  if (header) header.textContent = 'Recently arrived in SharePoint · ' + uploads.length + ' file' + (uploads.length === 1 ? '' : 's');
+  const sourceLabels = {
+    approved_2026: 'B', expense_distribution: 'E', ysl: 'Y',
+    ap_aging: 'A', audit_2025: 'Au', maint_proof: 'M',
+  };
+  body.innerHTML = uploads.slice(0, 15).map(function (u) {
+    const dt = u.modified ? new Date(u.modified) : null;
+    const dtTxt = dt ? (dt.getMonth()+1) + '/' + dt.getDate() + ' ' + dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    const tag = sourceLabels[u.source_type] || u.source_type;
+    const fname = (u.file_name || '').replace(/</g, '&lt;');
+    return '<div style="display:flex; align-items:center; gap:8px; padding:3px 0; font-size:11px;">'
+         + '<span style="display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:16px; padding:0 5px; background:#16a34a; color:white; border-radius:3px; font-size:9px; font-weight:700;">' + tag + '</span>'
+         + '<span style="font-weight:700; color:#15803d;">' + u.entity_code + '</span>'
+         + '<span style="color:#15803d; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + fname + '</span>'
+         + '<span style="color:#15803d; font-variant-numeric:tabular-nums; opacity:0.8;">' + dtTxt + '</span>'
+         + '</div>';
+  }).join('');
+}
+
+function toggleSPRecentPanel() {
+  const panel = document.getElementById('spRecentPanel');
+  if (!panel) return;
+  panel.style.display = 'none';
+  sessionStorage.setItem('spRecentPanelHidden', '1');
+}
+
 // Render entity grid
 // FA dir 2026-05-23: default sort = readiness desc so the most-actionable
 // buildings surface at the top of the table. FA lands → sees "Ready to
@@ -1372,15 +1533,21 @@ function _renderEntityTiles(entityCode) {
   }
   const ts = e.timestamps || {};
   const sp = e.sp_inventory || {};
+  const meta = e.sp_meta || {};  // FA dir 2026-05-24: SP arrival timestamps
   const au = e.audit || null;
   // Build per-source state once so we can decide tile-vs-text + compose either.
+  // spDt = when the file was last modified in SP (read from sp_meta); used to
+  // show "arrived M/D" on amber tiles so the FA can confirm uploads landed.
   const auOk = !!(au && au.status === "confirmed");
+  function _spDate(key) {
+    return (meta[key] && meta[key].modified) ? meta[key].modified : null;
+  }
   const sources = [
-    {letter:"B",  ok:!!ts.budget_summary, inSP:!!sp.approved_2026,        dt:ts.budget_summary},
-    {letter:"E",  ok:!!e.has_expenses,    inSP:!!sp.expense_distribution, dt:ts.expense_dist},
-    {letter:"Y",  ok:!!ts.ysl,            inSP:!!sp.ysl,                  dt:ts.ysl},
-    {letter:"A",  ok:!!ts.open_ap,        inSP:!!sp.ap_aging,             dt:ts.open_ap},
-    {letter:"Au", ok:auOk,                inSP:!!sp.audit_2025,           dt:ts.audit},
+    {letter:"B",  ok:!!ts.budget_summary, inSP:!!sp.approved_2026,        dt:ts.budget_summary, spDt:_spDate("approved_2026")},
+    {letter:"E",  ok:!!e.has_expenses,    inSP:!!sp.expense_distribution, dt:ts.expense_dist,   spDt:_spDate("expense_distribution")},
+    {letter:"Y",  ok:!!ts.ysl,            inSP:!!sp.ysl,                  dt:ts.ysl,            spDt:_spDate("ysl")},
+    {letter:"A",  ok:!!ts.open_ap,        inSP:!!sp.ap_aging,             dt:ts.open_ap,        spDt:_spDate("ap_aging")},
+    {letter:"Au", ok:auOk,                inSP:!!sp.audit_2025,           dt:ts.audit,          spDt:_spDate("audit_2025")},
   ];
   const missing = sources.filter(function (s) { return !s.ok && !s.inSP; });
   const allMissing = missing.length === sources.length;
@@ -1398,13 +1565,28 @@ function _renderEntityTiles(entityCode) {
     let cls = "miss";
     if (s.ok) cls = "ok";
     else if (s.inSP) cls = "ready";
-    const dtTxt = (s.ok && s.dt)
-      ? (new Date(s.dt).getMonth()+1) + "/" + (new Date(s.dt).getDate())
-      : "";
+    // FA dir 2026-05-24: show ingest date for green tiles + SP-arrival date
+    // for amber tiles. Before this, amber tiles were a silent letter with
+    // no way to see "did my upload land".
+    let dtTxt = "";
+    let tooltip = "";
+    if (s.ok && s.dt) {
+      const dt = new Date(s.dt);
+      dtTxt = (dt.getMonth()+1) + "/" + dt.getDate();
+      tooltip = s.letter + " ingested " + dt.toLocaleDateString();
+    } else if (cls === "ready" && s.spDt) {
+      const dt = new Date(s.spDt);
+      dtTxt = (dt.getMonth()+1) + "/" + dt.getDate();
+      tooltip = s.letter + " in SharePoint since " + dt.toLocaleDateString() + " — not yet ingested";
+    } else if (cls === "ready") {
+      tooltip = s.letter + " detected in SharePoint — not yet ingested";
+    } else {
+      tooltip = s.letter + " not in SharePoint";
+    }
     const bg = cls === "ok" ? "#def7ec" : (cls === "ready" ? "#fef3c7" : "#fef2f2");
     const fg = cls === "ok" ? "#065f46" : (cls === "ready" ? "#92400e" : "#991b1b");
     const bd = cls === "ok" ? "#a7f3d0" : (cls === "ready" ? "#fcd34d" : "#fecaca");
-    return "<span style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:24px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
+    return "<span title=\"" + tooltip.replace(/"/g,"&quot;") + "\" style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:24px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
          + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + s.letter + "</span>"
          + (dtTxt ? "<span style=\"font-size:7px; opacity:0.75; margin-top:1px; font-variant-numeric:tabular-nums;\">" + dtTxt + "</span>" : "")
          + "</span>";
@@ -3244,6 +3426,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // tiles, then re-renders when enriched data lands a fraction of a
   // second later. Non-blocking.
   try { loadEnrichedBudgets(); } catch (e) {}
+  // FA dir 2026-05-24: SP inventory status + lazy refresh + recent uploads.
+  // Status renders immediately from cache; lazy refresh kicks off a new
+  // scan if cache is stale (>30 min); recent uploads populates the
+  // "arrived in SP" panel above the chip row.
+  try { loadSPScanStatus(); } catch (e) {}
+  try { loadRecentSPUploads(); } catch (e) {}
+  setTimeout(function () { try { maybeAutoScanSharePoint(); } catch (e) {} }, 1500);
   updateRail();
   renderActionButtons();
   // Auto-select if /wizard/<entity_code> or ?entity=<code> URL form was used.

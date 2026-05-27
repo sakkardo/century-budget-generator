@@ -2105,12 +2105,23 @@ def create_workflow_blueprint(db):
         # (vs red, which used to look identical regardless of SP state).
         # Returns {entity_code: {source_type: True/False}} for tile lookup.
         sp_inventory = {}
+        sp_modified = {}  # parallel: {ec: {source_type: iso-date}} for tile labels
         try:
             rows = db.session.execute(db.text(
-                "SELECT entity_code, source_type, found FROM sp_inventory"
+                "SELECT entity_code, source_type, found, file_modified, file_name "
+                "FROM sp_inventory"
             )).fetchall()
             for r in rows:
-                sp_inventory.setdefault(r[0], {})[r[1]] = bool(r[2])
+                ec_r, st, found, fmod, fname = r[0], r[1], bool(r[2]), r[3], r[4]
+                sp_inventory.setdefault(ec_r, {})[st] = found
+                if found and fmod is not None:
+                    # FA dir 2026-05-24: surface the SP file_modified timestamp
+                    # so amber tiles can show "arrived 5/24" instead of a
+                    # silent letter. Stored as ISO so JS Date() parses cleanly.
+                    iso = fmod.isoformat() if hasattr(fmod, "isoformat") else str(fmod)
+                    sp_modified.setdefault(ec_r, {})[st] = {
+                        "modified": iso, "filename": fname or ""
+                    }
         except Exception:
             db.session.rollback()
 
@@ -2134,6 +2145,9 @@ def create_workflow_blueprint(db):
             # ap_aging, maint_proof, approved_2026, audit_2025). Renderer
             # checks: ingested → green; else if sp[…] → amber; else red.
             d["sp_inventory"] = sp_inventory.get(ec) or {}
+            # FA dir 2026-05-24: parallel dict with file_modified + filename
+            # per detected source so the wizard tiles can show arrival dates.
+            d["sp_meta"] = sp_modified.get(ec) or {}
             # FA dir 2026-05-23: per-entity readiness tier — single source of
             # truth that both the FA Dashboard and the Wizard's Select Entity
             # page render from. Tiers stack ordered most-ready → least-ready,
