@@ -23434,14 +23434,20 @@ function sumOrphanClose() {
   if (o) o.style.display = 'none';
 }
 
-// prefix-vs-prefix overlap helpers — same semantics as the server matcher:
-// token with "-" = exact 8-digit GL; without "-" = 4-digit family (covers all).
+// prefix-vs-prefix overlap helpers — mirror the server matcher
+// (_gl_matches_prefixes): a bare token matches gl_base.startsWith(token); a
+// dashed token matches gl_full.startsWith(token). Overlap = a mutual-prefix
+// test on the right strings, so a short catch-all family like '7' (Capital
+// Expenses) correctly overlaps '7120'. (indexOf(x)===0 is startsWith.)
 function _sumOrphanFam(x){ return String(x).split('-')[0]; }
 function _sumOrphanExact(x){ return String(x).indexOf('-') !== -1; }
 function _sumOrphanOverlap(a, b){
-  if (_sumOrphanFam(a) !== _sumOrphanFam(b)) return false;
-  if (String(a) === String(b)) return true;
-  return (!_sumOrphanExact(a)) || (!_sumOrphanExact(b));
+  a = String(a); b = String(b);
+  var ea = a.indexOf('-') !== -1, eb = b.indexOf('-') !== -1;
+  if (!ea && !eb) return a.indexOf(b) === 0 || b.indexOf(a) === 0; // both bare
+  if (ea && eb)   return a.indexOf(b) === 0 || b.indexOf(a) === 0; // both dashed
+  if (ea && !eb)  return _sumOrphanFam(a).indexOf(b) === 0;        // a dashed
+  return _sumOrphanFam(b).indexOf(a) === 0;                        // b dashed
 }
 
 function sumOrphanRecompute() {

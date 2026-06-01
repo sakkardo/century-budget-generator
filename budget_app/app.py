@@ -12545,24 +12545,42 @@ def admin_append_summary_prefix():
         return tok.split("-", 1)[0] if "-" in tok else tok
 
     def _overlap(a, b):
-        """True iff some GL is covered by BOTH tokens a and b."""
-        ea, eb = _is_exact(a), _is_exact(b)
-        if ea and eb:
-            return a == b
-        if ea and not eb:
-            return _fam(a) == b
-        if eb and not ea:
-            return _fam(b) == a
-        return a == b  # both family bases
+        """True iff some GL code would be matched by BOTH tokens — i.e.
+        appending one where the other already lives double-counts. Mirrors
+        _gl_matches_prefixes exactly: a bare token matches
+        gl_base.startswith(token); a dashed token matches
+        gl_full.startswith(token). So overlap reduces to a mutual-prefix
+        test on the right strings. This correctly catches short catch-all
+        families like '7' (Capital Expenses) covering '7120', which a
+        family-base equality test would miss."""
+        a, b = str(a).strip(), str(b).strip()
+        ea, eb = ("-" in a), ("-" in b)
+        if not ea and not eb:          # both bare: mutual base-prefix
+            return a.startswith(b) or b.startswith(a)
+        if ea and eb:                  # both dashed: mutual full-prefix
+            return a.startswith(b) or b.startswith(a)
+        if ea and not eb:              # a dashed, b bare: a's base under b
+            return _fam(a).startswith(b)
+        return _fam(b).startswith(a)   # b dashed, a bare
 
     def _covered_by_row(tok, row_prefixes):
-        """True iff appending tok adds nothing new (row already covers it)."""
+        """True iff some token already on the row matches every GL `tok`
+        would — so appending tok adds nothing (idempotent no-op). Same
+        startswith semantics as the matcher, asymmetric (t must cover tok)."""
+        tok = str(tok).strip()
+        te = ("-" in tok)
+        tbase = _fam(tok)
         for t in row_prefixes:
-            if _is_exact(t):
-                if t == tok:
+            t = str(t or "").strip()
+            if not t:
+                continue
+            if "-" in t:
+                if te and tok.startswith(t):
                     return True
             else:
-                if _fam(tok) == t:
+                if (not te) and tok.startswith(t):
+                    return True
+                if te and tbase.startswith(t):
                     return True
         return False
 
