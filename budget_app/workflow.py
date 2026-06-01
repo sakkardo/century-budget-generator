@@ -9382,12 +9382,23 @@ def create_workflow_blueprint(db):
                     },
                 }
 
+            # FA dir 2026-06-01: expose the row's GL prefix tokens so the
+            # orphan "Add to existing row" modal can run a live double-count
+            # guard client-side. Additive field; safe parse (never throws).
+            try:
+                _rd_prefixes = _json.loads(row.gl_prefixes_json) if row.gl_prefixes_json else []
+                if not isinstance(_rd_prefixes, list):
+                    _rd_prefixes = []
+            except Exception:
+                _rd_prefixes = []
+
             rd = {
                 "id": row.id,
                 "label": row.label,
                 "row_type": row.row_type,
                 "section": row.section,
                 "display_order": row.display_order,
+                "gl_prefixes": _rd_prefixes,
                 "footnote_marker": row.footnote_marker,
                 "col1": col1, "col2": col2, "col3": col3,
                 "col4": col4, "col5": col5, "col6": col6,
@@ -23407,66 +23418,248 @@ async function sumDeleteRow(btnEl, label) {
   }
 }
 
-// FA directive 2026-05-05: one-click "Add Row" for an orphan GL surfaced in
-// the warnings banner. Pre-fills label = description, prefix = GL 4-digit
-// base, section = inferred from category. Skips the modal entirely.
+// FA directive 2026-06-01: the orphan "+ Add Row" button now ASKS instead of
+// auto-creating a row. Two paths:
+//   1) Create its own row  — preserves the original behavior (new data line,
+//      label = GL description, aggregates the GL's 4-digit family).
+//   2) Add to an existing row — folds this GL into a row the building already
+//      has so its money rolls into that subtotal. Defaults to the EXACT
+//      8-digit GL (safe, can never double-count an orphan) with a 4-digit
+//      family option. A live guard (mirrored server-side) blocks a family
+//      merge that would double-count against another row.
+function sumOrphanClose() {
+  var m = document.getElementById('sumOrphanModal');
+  var o = document.getElementById('sumOrphanOverlay');
+  if (m) m.style.display = 'none';
+  if (o) o.style.display = 'none';
+}
+
+// prefix-vs-prefix overlap helpers — same semantics as the server matcher:
+// token with "-" = exact 8-digit GL; without "-" = 4-digit family (covers all).
+function _sumOrphanFam(x){ return String(x).split('-')[0]; }
+function _sumOrphanExact(x){ return String(x).indexOf('-') !== -1; }
+function _sumOrphanOverlap(a, b){
+  if (_sumOrphanFam(a) !== _sumOrphanFam(b)) return false;
+  if (String(a) === String(b)) return true;
+  return (!_sumOrphanExact(a)) || (!_sumOrphanExact(b));
+}
+
+function sumOrphanRecompute() {
+  var st = window._sumOrphanState; if (!st) return;
+  var confirmBtn = document.getElementById('sumOrphanConfirm');
+  if (st.mode === 'new') { if (confirmBtn) confirmBtn.disabled = false; return; }
+  var sel = document.getElementById('sumOrphanTarget');
+  var row = sel ? sel.value : '';
+  var token = (st.scope === 'family') ? st.base : st.gl;
+  var pv = document.getElementById('sumOrphanPreview');
+  var warn = document.getElementById('sumOrphanWarn');
+  if (!row) {
+    if (pv) pv.innerHTML = 'Pick a row above to see what happens.';
+    if (warn) warn.style.display = 'none';
+    if (confirmBtn) confirmBtn.disabled = true;
+    return;
+  }
+  // Overlap check against every OTHER data row's prefixes.
+  var conflict = null;
+  var rowMap = window._sumRowMap || {};
+  Object.keys(rowMap).forEach(function(lbl){
+    if (lbl === row || conflict) return;
+    var r = rowMap[lbl] || {};
+    if ((r.row_type || 'data') !== 'data') return;
+    var toks = Array.isArray(r.gl_prefixes) ? r.gl_prefixes : [];
+    toks.forEach(function(t){ if (!conflict && _sumOrphanOverlap(token, t)) conflict = lbl; });
+  });
+  if (conflict) {
+    if (warn) {
+      warn.style.display = 'block';
+      warn.innerHTML = '⚠️ <b>' + conflict + '</b> already aggregates GL family ' + _sumOrphanFam(token) + '. Adding it here too would double-count. Switch to <b>Just this GL</b> or pick another row.';
+    }
+    if (pv) pv.innerHTML = '';
+    if (confirmBtn) confirmBtn.disabled = true;
+  } else {
+    if (warn) warn.style.display = 'none';
+    if (pv) pv.innerHTML = 'Adds GL <code>' + token + '</code> to <b>' + row + '</b> — its data now rolls into that row’s subtotal.';
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+function sumOrphanPick(mode) {
+  var st = window._sumOrphanState; if (!st) return;
+  st.mode = mode;
+  var cNew = document.getElementById('sumOrphanChoiceNew');
+  var cEx  = document.getElementById('sumOrphanChoiceExist');
+  if (cNew) { cNew.style.borderColor = (mode==='new')?'var(--blue)':'var(--gray-200)'; cNew.style.background = (mode==='new')?'#f4f7ff':'white'; }
+  if (cEx)  { cEx.style.borderColor  = (mode==='exist')?'var(--blue)':'var(--gray-200)'; cEx.style.background  = (mode==='exist')?'#f4f7ff':'white'; }
+  var rN = document.getElementById('sumOrphanRadioNew');   if (rN) rN.checked = (mode==='new');
+  var rE = document.getElementById('sumOrphanRadioExist'); if (rE) rE.checked = (mode==='exist');
+  var dN = document.getElementById('sumOrphanDetailNew');   if (dN) dN.style.display = (mode==='new')?'block':'none';
+  var dE = document.getElementById('sumOrphanDetailExist'); if (dE) dE.style.display = (mode==='exist')?'block':'none';
+  sumOrphanRecompute();
+}
+
+function sumOrphanScope(scope) {
+  var st = window._sumOrphanState; if (!st) return;
+  st.scope = scope;
+  var oE = document.getElementById('sumOrphanScopeExact');
+  var oF = document.getElementById('sumOrphanScopeFamily');
+  if (oE) { oE.style.borderColor = (scope==='exact')?'var(--blue)':'var(--gray-300)'; oE.style.background = (scope==='exact')?'#f4f7ff':'white'; }
+  if (oF) { oF.style.borderColor = (scope==='family')?'var(--blue)':'var(--gray-300)'; oF.style.background = (scope==='family')?'#f4f7ff':'white'; }
+  var rE = document.getElementById('sumOrphanScopeRadioExact');  if (rE) rE.checked = (scope==='exact');
+  var rF = document.getElementById('sumOrphanScopeRadioFamily'); if (rF) rF.checked = (scope==='family');
+  sumOrphanRecompute();
+}
+
 async function sumAddOrphanRow(glCode) {
-  const orphan = (window._sumOrphans || {})[glCode];
+  var orphan = (window._sumOrphans || {})[glCode];
   if (!orphan) { alert('Could not find GL data for ' + glCode); return; }
-  const label = (orphan.suggested_label || orphan.description || glCode).slice(0, 100);
-  const section = orphan.suggested_section || 'Expenses';
-  const prefix = orphan.suggested_prefix || (glCode.split('-')[0]);
-  if (!confirm('Add summary row "' + label + '" aggregating GL prefix ' + prefix + '?')) return;
+  var label = (orphan.suggested_label || orphan.description || glCode).slice(0, 100);
+  var section = orphan.suggested_section || 'Expenses';
+  var base = orphan.suggested_prefix || (glCode.split('-')[0]);
+  var amt = orphan.current_budget || orphan.ytd || 0;
+  window._sumOrphanState = {gl: glCode, base: base, label: label, section: section, mode: 'exist', scope: 'exact'};
 
-  // Compute after_label so the new row lands BEFORE the section's subtotal.
-  let after_label = null;
-  try {
-    const rows = (window._sumRowMap && Object.values(window._sumRowMap)) || [];
-    const sectionRows = rows
-      .filter(r => r.section === section && r.row_type === 'data' && r.label !== label)
-      .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
-    if (sectionRows.length > 0) after_label = sectionRows[sectionRows.length - 1].label;
-  } catch (e) { /* fall back to end */ }
+  var modal = document.getElementById('sumOrphanModal');
+  var overlay = document.getElementById('sumOrphanOverlay');
+  if (!modal) {
+    overlay = document.createElement('div'); overlay.id = 'sumOrphanOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:99;';
+    overlay.onclick = sumOrphanClose;
+    document.body.appendChild(overlay);
+    modal = document.createElement('div'); modal.id = 'sumOrphanModal';
+    modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:22px;z-index:100;width:520px;max-width:94vw;max-height:88vh;overflow-y:auto;';
+    document.body.appendChild(modal);
+  }
+  overlay.style.display = 'block'; modal.style.display = 'block';
 
+  // Dropdown: every data row on this building (any section), ordered.
+  var rowMap = window._sumRowMap || {};
+  var dataRows = Object.keys(rowMap)
+    .filter(function(l){ return (rowMap[l] || {}).row_type === 'data'; })
+    .map(function(l){ return {label: l, section: (rowMap[l]||{}).section || '', order: (rowMap[l]||{}).display_order || 0}; })
+    .sort(function(a,b){ return a.order - b.order; });
+  var optHtml = '<option value="">— choose a summary row —</option>';
+  dataRows.forEach(function(r){
+    optHtml += '<option value="' + r.label.replace(/"/g,'&quot;') + '">' + r.label + (r.section ? ('  ·  ' + r.section) : '') + '</option>';
+  });
+
+  // Section dropdown for the create-new path (default = suggested section).
+  var SECTIONS = ['Income','Expenses','Non-Operating Income','Non-Operating Expense'];
+  if (SECTIONS.indexOf(section) === -1) SECTIONS.unshift(section);
+  var secHtml = '';
+  SECTIONS.forEach(function(s){ secHtml += '<option value="' + s.replace(/"/g,'&quot;') + '"' + (s===section?' selected':'') + '>' + s + '</option>'; });
+
+  var amtStr = (amt && Math.abs(amt) >= 0.5) ? ('$' + Math.round(Math.abs(amt)).toLocaleString('en-US')) : '—';
+
+  modal.innerHTML =
+    '<div style="font-size:15px;font-weight:700;color:var(--blue-dark);">Add summary row</div>' +
+    '<div style="font-size:12.5px;color:var(--gray-500);margin:3px 0 14px;">GL <b style="font-family:monospace;color:var(--gray-700);">' + glCode + '</b> · “' + label + '” · ' + amtStr + '</div>' +
+
+    '<div id="sumOrphanChoiceNew" onclick="sumOrphanPick(\'new\')" style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid var(--gray-200);border-radius:10px;padding:11px 12px;cursor:pointer;margin-bottom:9px;">' +
+      '<input type="radio" id="sumOrphanRadioNew" name="sumOrphanMode" style="margin-top:2px;">' +
+      '<div><div style="font-weight:600;">Create its own row</div><div style="font-size:12px;color:var(--gray-500);margin-top:1px;">Adds a new line item. (What the button did before.)</div></div>' +
+    '</div>' +
+
+    '<div id="sumOrphanChoiceExist" onclick="sumOrphanPick(\'exist\')" style="display:flex;gap:10px;align-items:flex-start;border:1.5px solid var(--blue);background:#f4f7ff;border-radius:10px;padding:11px 12px;cursor:pointer;margin-bottom:10px;">' +
+      '<input type="radio" id="sumOrphanRadioExist" name="sumOrphanMode" checked style="margin-top:2px;">' +
+      '<div><div style="font-weight:600;">Add to an existing row</div><div style="font-size:12px;color:var(--gray-500);margin-top:1px;">Folds this GL into a row you already have, so it rolls into that subtotal.</div></div>' +
+    '</div>' +
+
+    '<div id="sumOrphanDetailNew" style="display:none;border-top:1px dashed var(--gray-200);padding-top:13px;">' +
+      '<label style="display:block;font-size:11px;font-weight:600;color:var(--gray-500);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;">New row label</label>' +
+      '<input id="sumOrphanNewLabel" type="text" value="' + label.replace(/"/g,'&quot;') + '" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:7px;font-size:13.5px;margin-bottom:11px;">' +
+      '<label style="display:block;font-size:11px;font-weight:600;color:var(--gray-500);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;">Section</label>' +
+      '<select id="sumOrphanNewSection" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:7px;font-size:13.5px;">' + secHtml + '</select>' +
+      '<div style="background:#f3f6ff;border:1px solid #cdddff;border-radius:8px;padding:9px 11px;font-size:12px;color:#234;margin-top:11px;">Creates a new line aggregating the whole <code>' + base + '</code> family.</div>' +
+    '</div>' +
+
+    '<div id="sumOrphanDetailExist" style="border-top:1px dashed var(--gray-200);padding-top:13px;">' +
+      '<label style="display:block;font-size:11px;font-weight:600;color:var(--gray-500);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;">Add into which row?</label>' +
+      '<select id="sumOrphanTarget" onchange="sumOrphanRecompute()" style="width:100%;padding:8px 10px;border:1px solid var(--gray-200);border-radius:7px;font-size:13.5px;margin-bottom:11px;">' + optHtml + '</select>' +
+      '<label style="display:block;font-size:11px;font-weight:600;color:var(--gray-500);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;">How much of the GL to pull in</label>' +
+      '<div style="display:flex;gap:8px;margin-bottom:10px;">' +
+        '<div id="sumOrphanScopeExact" onclick="sumOrphanScope(\'exact\')" style="flex:1;border:1.5px solid var(--blue);background:#f4f7ff;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:12px;">' +
+          '<input type="radio" id="sumOrphanScopeRadioExact" name="sumOrphanScope" checked style="margin-right:4px;"><b>Just this GL</b><br><span style="font-family:monospace;color:var(--gray-600);">' + glCode + '</span> <span style="color:var(--gray-500);">· recommended</span>' +
+        '</div>' +
+        '<div id="sumOrphanScopeFamily" onclick="sumOrphanScope(\'family\')" style="flex:1;border:1.5px solid var(--gray-300);background:white;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:12px;">' +
+          '<input type="radio" id="sumOrphanScopeRadioFamily" name="sumOrphanScope" style="margin-right:4px;"><b>Whole family</b><br><span style="font-family:monospace;color:var(--gray-600);">' + base + '-XXXX</span>' +
+        '</div>' +
+      '</div>' +
+      '<div id="sumOrphanWarn" style="display:none;background:#fdecec;border:1px solid #f3b4b4;color:#b91c1c;border-radius:8px;padding:9px 11px;font-size:12px;margin-bottom:8px;"></div>' +
+      '<div id="sumOrphanPreview" style="background:#f3f6ff;border:1px solid #cdddff;border-radius:8px;padding:9px 11px;font-size:12px;color:#234;">Pick a row above to see what happens.</div>' +
+    '</div>' +
+
+    '<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">' +
+      '<button onclick="sumOrphanClose()" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--gray-200);background:white;">Cancel</button>' +
+      '<button id="sumOrphanConfirm" onclick="sumOrphanConfirm()" style="padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--blue);color:white;">Confirm</button>' +
+    '</div>';
+
+  sumOrphanPick('exist');
+  sumOrphanScope('exact');
+  sumOrphanRecompute();
+}
+
+async function sumOrphanConfirm() {
+  var st = window._sumOrphanState; if (!st) return;
+  var btn = document.getElementById('sumOrphanConfirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   try {
-    const resp = await fetch('/api/admin/add-summary-row', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        entity_code: entityCode,
-        label: label,
-        section: section,
-        after_label: after_label,
-        gl_prefixes: [prefix],
-      })
-    });
-    const data = await resp.json();
-    if (!resp.ok || data.error) {
-      alert('Add Row failed: ' + (data.error || 'unknown'));
-      return;
-    }
-    // FA directive 2026-05-13: if a row with this label already exists,
-    // the orphan still needs its GL prefix added. The /add-summary-row
-    // endpoint preserves existing rows (idempotent) but doesn't append
-    // prefixes. Run resolve-aliases so the canonical map's prefix list
-    // gets re-stamped on the row.
-    const rowAlreadyExisted = (data.noop || '').includes('already exists');
-    if (rowAlreadyExisted) {
+    if (st.mode === 'new') {
+      // ── Create its own row (preserves the original orphan behavior) ──
+      var lblEl = document.getElementById('sumOrphanNewLabel');
+      var secEl = document.getElementById('sumOrphanNewSection');
+      var newLabel = (lblEl && lblEl.value.trim()) || st.label;
+      var newSection = (secEl && secEl.value) || st.section;
+      var after_label = null;
       try {
-        await fetch('/api/admin/resolve-summary-aliases/' + entityCode,
-                    {method: 'POST', headers: {'Content-Type': 'application/json'}});
-      } catch (e) { /* non-fatal */ }
-      showToast('"' + label + '" already exists — refreshed GL mapping for ' + prefix, 'info');
+        var rows = (window._sumRowMap && Object.values(window._sumRowMap)) || [];
+        var sectionRows = rows
+          .filter(function(r){ return r.section === newSection && r.row_type === 'data' && r.label !== newLabel; })
+          .sort(function(a,b){ return (a.display_order||0)-(b.display_order||0); });
+        if (sectionRows.length > 0) after_label = sectionRows[sectionRows.length-1].label;
+      } catch (e) { /* fall back to end */ }
+      var resp = await fetch('/api/admin/add-summary-row', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({entity_code: entityCode, label: newLabel, section: newSection, after_label: after_label, gl_prefixes: [st.base]})
+      });
+      var data = await resp.json();
+      if (!resp.ok || data.error) { alert('Add Row failed: ' + (data.error || 'unknown')); if (btn){btn.disabled=false;btn.textContent='Confirm';} return; }
+      var existed = (data.noop || '').includes('already exists');
+      if (existed) {
+        try { await fetch('/api/admin/resolve-summary-aliases/' + entityCode, {method:'POST', headers:{'Content-Type':'application/json'}}); } catch(e){}
+        showToast('“' + newLabel + '” already exists — refreshed its GL mapping', 'info');
+      } else {
+        showToast('Added new row: ' + newLabel, 'success');
+      }
     } else {
-      showToast('Added: ' + label, 'success');
+      // ── Add to an existing row (append prefix; server re-guards) ──
+      var sel = document.getElementById('sumOrphanTarget');
+      var target = sel ? sel.value : '';
+      if (!target) { alert('Pick a row to add this GL into.'); if (btn){btn.disabled=false;btn.textContent='Confirm';} return; }
+      var token = (st.scope === 'family') ? st.base : st.gl;
+      var resp2 = await fetch('/api/admin/append-summary-prefix', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({entity_code: entityCode, label: target, prefix: token})
+      });
+      var d2 = await resp2.json();
+      if (resp2.status === 409 && d2 && d2.overlap) {
+        var warn = document.getElementById('sumOrphanWarn');
+        if (warn) { warn.style.display = 'block'; warn.innerHTML = '⚠️ ' + (d2.error || 'This would double-count against another row.'); }
+        if (btn){btn.disabled=false;btn.textContent='Confirm';}
+        return;
+      }
+      if (!resp2.ok || d2.error) { alert('Add to row failed: ' + (d2.error || 'unknown')); if (btn){btn.disabled=false;btn.textContent='Confirm';} return; }
+      if (d2.noop) {
+        showToast(token + ' was already on “' + target + '”', 'info');
+      } else {
+        showToast('Added GL ' + token + ' into “' + target + '”', 'success');
+      }
     }
-    // Reload the summary tab — orphan should disappear from warnings on next render.
-    const sheetContent = document.getElementById('sheetContent');
-    if (sheetContent && typeof renderBudgetSummary === 'function') {
-      renderBudgetSummary(sheetContent);
-    }
+    sumOrphanClose();
+    var sheetContent = document.getElementById('sheetContent');
+    if (sheetContent && typeof renderBudgetSummary === 'function') renderBudgetSummary(sheetContent);
   } catch (e) {
-    alert('Add Row failed: ' + (e.message || e));
+    alert('Add Row error: ' + (e.message || e));
+    if (btn){btn.disabled=false;btn.textContent='Confirm';}
   }
 }
 

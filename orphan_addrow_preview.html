@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orphan GL — Add Row UX preview</title>
+<style>
+  :root{
+    --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --bg:#f5f6f8;
+    --blue:#2563eb; --blue-d:#1d4ed8; --amber-bg:#fff8e6; --amber-line:#f0d48a;
+    --green:#15803d; --red:#b91c1c; --red-bg:#fdecec;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:880px;margin:28px auto;padding:0 18px;}
+  h1{font-size:18px;margin:0 0 2px;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px;}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  /* orphan banner */
+  .orphan{background:var(--amber-bg);border:1px solid var(--amber-line);
+    border-radius:10px;padding:14px 16px;margin-bottom:18px;}
+  .orphan h2{font-size:14px;margin:0 0 4px;display:flex;align-items:center;gap:7px;}
+  .orphan p{margin:0 0 12px;color:#7a5c12;font-size:12.5px;}
+  .orow{display:flex;align-items:center;justify-content:space-between;
+    background:#fff;border:1px solid var(--amber-line);border-radius:8px;
+    padding:9px 12px;margin-bottom:8px;}
+  .orow:last-child{margin-bottom:0}
+  .orow .gl{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;}
+  .orow .lbl{font-weight:600;}
+  .orow .amt{font-variant-numeric:tabular-nums;margin-left:auto;margin-right:14px;color:#374151;}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:7px;
+    padding:6px 12px;font-size:13px;cursor:pointer;color:var(--ink);}
+  .btn:hover{background:#f3f4f6}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .btn.primary:hover{background:var(--blue-d)}
+  .btn.primary:disabled{opacity:.45;cursor:not-allowed}
+  .addbtn{background:#fff;border:1px solid var(--blue);color:var(--blue);font-weight:600;}
+  .addbtn:hover{background:#eff4ff}
+  /* modal */
+  .scrim{position:fixed;inset:0;background:rgba(15,18,25,.45);
+    display:none;align-items:flex-start;justify-content:center;padding:60px 16px;z-index:50;}
+  .scrim.show{display:flex;}
+  .modal{width:520px;max-width:100%;background:#fff;border-radius:12px;
+    box-shadow:0 18px 48px rgba(0,0,0,.28);overflow:hidden;}
+  .mhead{padding:16px 18px;border-bottom:1px solid var(--line);}
+  .mhead .t{font-size:15px;font-weight:700;}
+  .mhead .s{color:var(--muted);font-size:12.5px;margin-top:3px;}
+  .mhead .s b{color:#374151}
+  .mbody{padding:16px 18px;}
+  .choice{display:flex;gap:11px;align-items:flex-start;border:1.5px solid var(--line);
+    border-radius:10px;padding:12px 13px;cursor:pointer;margin-bottom:10px;transition:.12s;}
+  .choice:hover{border-color:#c7d2fe;background:#fafbff;}
+  .choice.sel{border-color:var(--blue);background:#f4f7ff;}
+  .choice input{margin-top:2px;}
+  .choice .ct{font-weight:600;}
+  .choice .cd{color:var(--muted);font-size:12.5px;margin-top:2px;}
+  .detail{border-top:1px dashed var(--line);margin-top:4px;padding-top:14px;display:none;}
+  .detail.show{display:block;}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:0 0 4px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.03em;}
+  input.txt,select.txt{width:100%;padding:8px 10px;border:1px solid var(--line);
+    border-radius:7px;font-size:13.5px;margin-bottom:12px;background:#fff;}
+  input.txt:focus,select.txt:focus{outline:none;border-color:var(--blue);}
+  .scope{display:flex;gap:8px;margin-bottom:10px;}
+  .scope .opt{flex:1;border:1.5px solid var(--line);border-radius:8px;padding:9px 10px;
+    cursor:pointer;font-size:12.5px;}
+  .scope .opt.sel{border-color:var(--blue);background:#f4f7ff;}
+  .scope .opt b{display:block;font-variant-numeric:tabular-nums;}
+  .scope .opt span{color:var(--muted);}
+  .recpill{display:inline-block;font-size:10.5px;font-weight:700;color:#fff;
+    background:var(--green);border-radius:99px;padding:1px 7px;margin-left:6px;vertical-align:middle;}
+  .warn{display:none;background:var(--red-bg);border:1px solid #f3b4b4;color:var(--red);
+    border-radius:8px;padding:9px 11px;font-size:12.5px;margin-bottom:6px;}
+  .warn.show{display:block;}
+  .preview{background:#f3f6ff;border:1px solid #cdddff;border-radius:8px;padding:9px 11px;
+    font-size:12.5px;color:#234;margin-top:2px;}
+  .preview code{background:#e2ebff;padding:1px 5px;border-radius:4px;font-variant-numeric:tabular-nums;}
+  .mfoot{padding:13px 18px;border-top:1px solid var(--line);display:flex;
+    justify-content:flex-end;gap:9px;background:#fafbfc;}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    background:#10241a;color:#d7f5e4;padding:11px 16px;border-radius:9px;font-size:13px;
+    box-shadow:0 8px 24px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:.2s;max-width:560px;}
+  .toast.show{opacity:1;}
+  .note{font-size:12px;color:var(--muted);margin-top:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>215 — Armory Owners, Inc. · 2027 Budget Summary</h1>
+  <div class="sub">Mockup of the proposed “+ Add Row” behavior. Click a button below to try it. (No data is written — this is a UX preview.)</div>
+
+  <div class="orphan">
+    <h2>⚠️ 3 GL codes have data but no summary row aggregates them</h2>
+    <p>This money isn’t flowing into any subtotal yet. For each one, decide: give it its own line, or fold it into an existing row.</p>
+
+    <div class="orow">
+      <span class="lbl">Locksmith &amp; Keys</span>
+      <span class="gl">&nbsp;·&nbsp; GL 6315-002</span>
+      <span class="amt">$2,340</span>
+      <button class="btn addbtn" onclick="openModal('6315-002','Locksmith & Keys','6315','2,340')">+ Add Row</button>
+    </div>
+    <div class="orow">
+      <span class="lbl">Exterminating Service</span>
+      <span class="gl">&nbsp;·&nbsp; GL 7120-001</span>
+      <span class="amt">$4,180</span>
+      <button class="btn addbtn" onclick="openModal('7120-001','Exterminating Service','7120','4,180')">+ Add Row</button>
+    </div>
+    <div class="orow">
+      <span class="lbl">Bank Service Charges</span>
+      <span class="gl">&nbsp;·&nbsp; GL 8420-000</span>
+      <span class="amt">$960</span>
+      <button class="btn addbtn" onclick="openModal('8420-000','Bank Service Charges','8420','960')">+ Add Row</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:14px 16px;color:var(--muted);font-size:13px;">
+    (Rest of the summary page — Income / Expenses / subtotals — would render below.)
+  </div>
+
+  <div class="note">Proposed flow: the button no longer auto-creates a row. It asks first.</div>
+</div>
+
+<!-- MODAL -->
+<div class="scrim" id="scrim">
+  <div class="modal">
+    <div class="mhead">
+      <div class="t">Add summary row</div>
+      <div class="s">GL <b id="m_gl">—</b> · “<b id="m_lbl">—</b>” · <b id="m_amt">—</b></div>
+    </div>
+    <div class="mbody">
+
+      <div class="choice" id="ch_new" onclick="pick('new')">
+        <input type="radio" name="mode" id="r_new">
+        <div>
+          <div class="ct">Create its own row</div>
+          <div class="cd">Adds a new line item to the Expenses section. (This is what the button does today.)</div>
+        </div>
+      </div>
+
+      <div class="choice sel" id="ch_exist" onclick="pick('exist')">
+        <input type="radio" name="mode" id="r_exist" checked>
+        <div>
+          <div class="ct">Add to an existing row <span class="recpill">common case</span></div>
+          <div class="cd">Folds this GL into a row you already have, so it rolls into that subtotal.</div>
+        </div>
+      </div>
+
+      <!-- detail: NEW -->
+      <div class="detail" id="d_new">
+        <label class="fld">New row label</label>
+        <input class="txt" id="newLabel" value="Locksmith & Keys">
+        <label class="fld">Section</label>
+        <select class="txt"><option>Expenses</option><option>Income</option><option>Non-Operating Expense</option></select>
+        <div class="preview">Creates <b id="pv_new">“Locksmith &amp; Keys”</b> as a new line, aggregating GL <code id="pv_new_gl">6315</code> (whole family).</div>
+      </div>
+
+      <!-- detail: EXISTING -->
+      <div class="detail show" id="d_exist">
+        <label class="fld">Add into which row?</label>
+        <select class="txt" id="targetRow" onchange="recompute()">
+          <option value="">— choose a summary row —</option>
+          <option>Repairs &amp; Maintenance</option>
+          <option>Building Supplies</option>
+          <option>Cleaning Contract</option>
+          <option data-owns="8420">Administrative Expenses</option>
+          <option>Professional Fees</option>
+        </select>
+
+        <label class="fld">How much of the GL to pull in</label>
+        <div class="scope">
+          <div class="opt sel" id="sc_exact" onclick="scope('exact')">
+            <b id="sc_exact_code">6315-002</b><span>Just this GL</span>
+          </div>
+          <div class="opt" id="sc_family" onclick="scope('family')">
+            <b id="sc_family_code">6315</b><span>Whole family</span>
+          </div>
+        </div>
+
+        <div class="warn" id="ovwarn">⚠️ <b id="ovrow">—</b> already aggregates this GL family. Adding it again would double-count the dollars in two rows.</div>
+
+        <div class="preview" id="pv_exist">Pick a row above to see what happens.</div>
+      </div>
+
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" id="confirmBtn" onclick="confirmIt()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  var cur = {gl:'', lbl:'', base:'', amt:''};
+  var mode = 'exist';
+  var scopeMode = 'exact';
+
+  function openModal(gl, lbl, base, amt){
+    cur = {gl:gl, lbl:lbl, base:base, amt:amt};
+    document.getElementById('m_gl').textContent = gl;
+    document.getElementById('m_lbl').textContent = lbl;
+    document.getElementById('m_amt').textContent = '$'+amt;
+    document.getElementById('newLabel').value = lbl;
+    document.getElementById('pv_new').innerHTML = '“'+lbl+'”';
+    document.getElementById('sc_exact_code').textContent = gl;
+    document.getElementById('sc_family_code').textContent = base;
+    // reset
+    pick('exist'); scope('exact');
+    document.getElementById('targetRow').value = '';
+    recompute();
+    document.getElementById('scrim').classList.add('show');
+  }
+  function closeModal(){ document.getElementById('scrim').classList.remove('show'); }
+
+  function pick(m){
+    mode = m;
+    document.getElementById('ch_new').classList.toggle('sel', m==='new');
+    document.getElementById('ch_exist').classList.toggle('sel', m==='exist');
+    document.getElementById('r_new').checked = (m==='new');
+    document.getElementById('r_exist').checked = (m==='exist');
+    document.getElementById('d_new').classList.toggle('show', m==='new');
+    document.getElementById('d_exist').classList.toggle('show', m==='exist');
+    document.getElementById('pv_new_gl').textContent = cur.base;
+    recompute();
+  }
+  function scope(s){
+    scopeMode = s;
+    document.getElementById('sc_exact').classList.toggle('sel', s==='exact');
+    document.getElementById('sc_family').classList.toggle('sel', s==='family');
+    recompute();
+  }
+  function recompute(){
+    var btn = document.getElementById('confirmBtn');
+    if(mode==='new'){ btn.disabled = false; return; }
+    var sel = document.getElementById('targetRow');
+    var row = sel.value;
+    var owns = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].getAttribute('data-owns') : null;
+    var pv = document.getElementById('pv_exist');
+    var warn = document.getElementById('ovwarn');
+    var code = scopeMode==='exact' ? cur.gl : cur.base;
+    // overlap if chosen row already owns this family and we pull the family (or exact under it)
+    var overlap = row && owns && (owns===cur.base);
+    warn.classList.toggle('show', !!overlap);
+    if(overlap){ document.getElementById('ovrow').textContent = row; }
+    if(!row){
+      pv.innerHTML = 'Pick a row above to see what happens.';
+      btn.disabled = true; return;
+    }
+    pv.innerHTML = 'Adds prefix <code>'+code+'</code> to <b>'+row+'</b> — $'+cur.amt+' now rolls into that row’s subtotal.';
+    btn.disabled = !!overlap;
+  }
+  function confirmIt(){
+    var t = document.getElementById('toast');
+    var msg;
+    if(mode==='new'){
+      msg = '✓ Would create new row “'+document.getElementById('newLabel').value+'” aggregating GL '+cur.base+'.';
+    } else {
+      var row = document.getElementById('targetRow').value;
+      var code = scopeMode==='exact' ? cur.gl : cur.base;
+      msg = '✓ Would add GL '+code+' into “'+row+'” ($'+cur.amt+' rolls into its subtotal).';
+    }
+    closeModal();
+    t.textContent = msg + '  (preview only — nothing saved)';
+    t.classList.add('show');
+    setTimeout(function(){ t.classList.remove('show'); }, 4200);
+  }
+  // close on scrim click
+  document.getElementById('scrim').addEventListener('click', function(e){
+    if(e.target === this) closeModal();
+  });
+</script>
+</body>
+</html>

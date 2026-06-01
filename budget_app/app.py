@@ -12489,6 +12489,156 @@ def admin_add_summary_row():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@app.route("/api/admin/append-summary-prefix", methods=["POST"])
+def admin_append_summary_prefix():
+    """Append a single GL prefix token to an EXISTING summary row.
+
+    FA directive 2026-06-01: powers the orphan-GL modal's "Add to an
+    existing row" path. The FA picks a data row and a scope (the exact
+    8-digit GL, default; or the whole 4-digit family) and we attach that
+    token to the chosen row's gl_prefixes_json so its col3/4/5 figures
+    pick up the orphan's dollars. No @require_admin (same FA-access
+    rationale as add-summary-row); every call is logged to wizard_events.
+
+    This is a SEPARATE endpoint from add-summary-row on purpose: the
+    create-new-row path must stay byte-for-byte unchanged. This one only
+    mutates an existing row's prefix list, never creates rows.
+
+    Body: {
+        "entity_code": "215",
+        "label": "Repairs & Maintenance",  # the target data row's label
+        "prefix": "6315-002",   # exact 8-digit GL (default scope) OR
+                                # "6315" (whole-family scope)
+        "force": false          # optional — bypass the double-count guard
+    }
+
+    Double-count guard: appending `prefix` would double-count if any OTHER
+    data row already covers a GL that `prefix` covers (exact==exact, or an
+    exact GL falling inside a family token, or matching family tokens). On
+    conflict we return HTTP 409 with {ok:false, overlap:true, conflict_label}
+    unless force=True. An exact orphan GL can never trip this (it is by
+    definition unmatched by every row), so the guard only bites the
+    whole-family scope — exactly where sibling GLs could be pulled in.
+
+    Returns {ok, label, gl_prefixes} on success.
+    """
+    import json as _json
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    entity_code = (data.get("entity_code") or "").strip()
+    label = (data.get("label") or "").strip()
+    prefix = (data.get("prefix") or "").strip()
+    force = bool(data.get("force"))
+
+    if not entity_code or not label or not prefix:
+        return jsonify({"error": "entity_code, label and prefix required"}), 400
+
+    # --- prefix-overlap helpers (mirror workflow._gl_matches_prefixes
+    # semantics: a token with "-" is an exact 8-digit GL; a token without
+    # "-" is a 4-digit family base that aggregates the whole family). ---
+    def _is_exact(tok):
+        return "-" in tok
+
+    def _fam(tok):
+        return tok.split("-", 1)[0] if "-" in tok else tok
+
+    def _overlap(a, b):
+        """True iff some GL is covered by BOTH tokens a and b."""
+        ea, eb = _is_exact(a), _is_exact(b)
+        if ea and eb:
+            return a == b
+        if ea and not eb:
+            return _fam(a) == b
+        if eb and not ea:
+            return _fam(b) == a
+        return a == b  # both family bases
+
+    def _covered_by_row(tok, row_prefixes):
+        """True iff appending tok adds nothing new (row already covers it)."""
+        for t in row_prefixes:
+            if _is_exact(t):
+                if t == tok:
+                    return True
+            else:
+                if _fam(tok) == t:
+                    return True
+        return False
+
+    row = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=_BY, label=label
+    ).first()
+    if not row:
+        return jsonify({"error": f"no summary row labeled '{label}' for entity {entity_code}"}), 404
+    if (row.row_type or "data") != "data":
+        return jsonify({"error": f"row '{label}' is a {row.row_type} row, not a data row"}), 400
+
+    try:
+        current = _json.loads(row.gl_prefixes_json) if row.gl_prefixes_json else []
+        if not isinstance(current, list):
+            current = []
+    except Exception:
+        current = []
+    current = [str(p).strip() for p in current if str(p or "").strip()]
+
+    # Already covered? No-op (idempotent), report the current state.
+    if _covered_by_row(prefix, current):
+        return jsonify({
+            "ok": True, "noop": "prefix already covered by row",
+            "label": row.label, "gl_prefixes": current,
+        })
+
+    # Double-count guard: scan every OTHER data row for overlap.
+    if not force:
+        others = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=_BY, row_type="data"
+        ).all()
+        for other in others:
+            if other.id == row.id:
+                continue
+            try:
+                op = _json.loads(other.gl_prefixes_json) if other.gl_prefixes_json else []
+                if not isinstance(op, list):
+                    op = []
+            except Exception:
+                op = []
+            for t in op:
+                t = str(t or "").strip()
+                if t and _overlap(prefix, t):
+                    return jsonify({
+                        "ok": False, "overlap": True,
+                        "conflict_label": other.label,
+                        "error": (f"Adding {prefix} to '{label}' would double-count "
+                                  f"GL dollars already mapped to '{other.label}'."),
+                    }), 409
+
+    try:
+        new_prefixes = current + [prefix]
+        row.gl_prefixes_json = _json.dumps(new_prefixes)
+        db.session.commit()
+        _log_wizard_event(
+            entity_code, step="summary", action="append_prefix", ok=True,
+            payload={"label": row.label, "prefix": prefix,
+                     "gl_prefixes": new_prefixes, "row_id": row.id,
+                     "forced": force},
+        )
+        return jsonify({
+            "ok": True, "label": row.label, "gl_prefixes": new_prefixes,
+        })
+    except Exception as e:
+        db.session.rollback()
+        try:
+            _log_wizard_event(
+                entity_code, step="summary", action="append_prefix", ok=False,
+                error_text=str(e)[:300],
+                payload={"label": label, "prefix": prefix},
+            )
+        except Exception:
+            pass
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @app.route("/api/admin/backfill-period/<entity_code>", methods=["POST"])
 @require_admin
 def admin_backfill_period(entity_code):
