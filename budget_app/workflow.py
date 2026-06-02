@@ -17,6 +17,26 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Canonical GL-prefix logic — single source of truth (budget_app/gl_logic.py).
+# Both this blueprint and app.py import from here so the matcher and the
+# double-count guard can never drift. The browser mirror (_sumOrphanOverlap)
+# is pinned to the same answers by budget_app/gl_test_vectors.json. Dual import
+# mirrors the create_workflow_blueprint pattern (bare name, package fallback).
+try:
+    from gl_logic import (
+        gl_matches_prefixes,
+        gl_prefixes_overlap,
+        gl_token_covered_by,
+        gl_family,
+    )
+except ImportError:  # pragma: no cover - package-mode load
+    from budget_app.gl_logic import (
+        gl_matches_prefixes,
+        gl_prefixes_overlap,
+        gl_token_covered_by,
+        gl_family,
+    )
+
 # R&M GL Code Mapping: gl_code|description|template_row|category
 RM_GL_MAP = {
     "5406-0000": ("Supplies & Hardware", 8, "supplies"),
@@ -8597,33 +8617,13 @@ def create_workflow_blueprint(db):
     # ─── Budget Summary API ──────────────────────────────────────────────
 
     def _gl_matches_prefixes(gl_code, prefixes):
-        """Check if a GL code matches any of the given prefixes.
+        """Closure alias for the canonical matcher (budget_app/gl_logic.py).
 
-        Two matching modes (chosen per prefix):
-          - Bare prefix like "5260": match `gl_base.startswith(prefix)` where
-            gl_base strips the sub-account suffix (4130-0010 -> 4130). Used
-            for whole-account-family categories (Payroll, R&M, etc).
-          - Full GL like "4130-0010": match `gl_code.startswith(prefix)`
-            against the un-stripped GL. Used to disambiguate sub-accounts
-            (Storage 4130-0010 vs Bicycle 4130-0015 vs Laundry 4130-0030).
-
-        Detection: a prefix containing "-" enables exact sub-account mode.
+        Bare token "5260" matches the GL family base (suffix stripped);
+        dashed token "4130-0010" matches the full GL string. Kept as a local
+        name so the existing call sites in this blueprint stay unchanged.
         """
-        if not gl_code or not prefixes:
-            return False
-        gl_str = str(gl_code).strip()
-        gl_base = gl_str.split("-")[0].strip()
-        for prefix in prefixes:
-            p = str(prefix).strip()
-            if "-" in p:
-                # Sub-account exact-prefix mode: keep the suffix on both sides.
-                if gl_str.startswith(p):
-                    return True
-            else:
-                # Whole-account-family mode: strip suffix on the GL side.
-                if gl_base.startswith(p):
-                    return True
-        return False
+        return gl_matches_prefixes(gl_code, prefixes)
 
     def _section_key(section_label):
         """Map section label to internal key for subtotal grouping."""
@@ -23434,11 +23434,14 @@ function sumOrphanClose() {
   if (o) o.style.display = 'none';
 }
 
-// prefix-vs-prefix overlap helpers — mirror the server matcher
-// (_gl_matches_prefixes): a bare token matches gl_base.startsWith(token); a
-// dashed token matches gl_full.startsWith(token). Overlap = a mutual-prefix
-// test on the right strings, so a short catch-all family like '7' (Capital
-// Expenses) correctly overlaps '7120'. (indexOf(x)===0 is startsWith.)
+// prefix-vs-prefix overlap helpers — BROWSER MIRROR of the canonical server
+// logic in budget_app/gl_logic.py. There is no build step transpiling Python
+// to JS, so this is a hand mirror: it MUST return the same answers as the
+// 'overlap' cases in budget_app/gl_test_vectors.json. If you change the rule,
+// change gl_logic.py, the vector file, AND this. A bare token matches
+// gl_base.startsWith(token); a dashed token matches gl_full.startsWith(token).
+// So a short catch-all family like '7' (Capital Expenses) correctly overlaps
+// '7120'. (indexOf(x)===0 is startsWith.)
 function _sumOrphanFam(x){ return String(x).split('-')[0]; }
 function _sumOrphanExact(x){ return String(x).indexOf('-') !== -1; }
 function _sumOrphanOverlap(a, b){

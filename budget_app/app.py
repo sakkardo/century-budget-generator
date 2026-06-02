@@ -12535,54 +12535,13 @@ def admin_append_summary_prefix():
     if not entity_code or not label or not prefix:
         return jsonify({"error": "entity_code, label and prefix required"}), 400
 
-    # --- prefix-overlap helpers (mirror workflow._gl_matches_prefixes
-    # semantics: a token with "-" is an exact 8-digit GL; a token without
-    # "-" is a 4-digit family base that aggregates the whole family). ---
-    def _is_exact(tok):
-        return "-" in tok
-
-    def _fam(tok):
-        return tok.split("-", 1)[0] if "-" in tok else tok
-
-    def _overlap(a, b):
-        """True iff some GL code would be matched by BOTH tokens — i.e.
-        appending one where the other already lives double-counts. Mirrors
-        _gl_matches_prefixes exactly: a bare token matches
-        gl_base.startswith(token); a dashed token matches
-        gl_full.startswith(token). So overlap reduces to a mutual-prefix
-        test on the right strings. This correctly catches short catch-all
-        families like '7' (Capital Expenses) covering '7120', which a
-        family-base equality test would miss."""
-        a, b = str(a).strip(), str(b).strip()
-        ea, eb = ("-" in a), ("-" in b)
-        if not ea and not eb:          # both bare: mutual base-prefix
-            return a.startswith(b) or b.startswith(a)
-        if ea and eb:                  # both dashed: mutual full-prefix
-            return a.startswith(b) or b.startswith(a)
-        if ea and not eb:              # a dashed, b bare: a's base under b
-            return _fam(a).startswith(b)
-        return _fam(b).startswith(a)   # b dashed, a bare
-
-    def _covered_by_row(tok, row_prefixes):
-        """True iff some token already on the row matches every GL `tok`
-        would — so appending tok adds nothing (idempotent no-op). Same
-        startswith semantics as the matcher, asymmetric (t must cover tok)."""
-        tok = str(tok).strip()
-        te = ("-" in tok)
-        tbase = _fam(tok)
-        for t in row_prefixes:
-            t = str(t or "").strip()
-            if not t:
-                continue
-            if "-" in t:
-                if te and tok.startswith(t):
-                    return True
-            else:
-                if (not te) and tok.startswith(t):
-                    return True
-                if te and tbase.startswith(t):
-                    return True
-        return False
+    # --- prefix-overlap helpers: delegate to the canonical server-side GL
+    # logic (budget_app/gl_logic.py — single source of truth, pinned by
+    # budget_app/gl_test_vectors.json). Local names kept so the endpoint body
+    # below is unchanged. Bare token = whole 4-digit family; dashed token =
+    # exact 8-digit GL. ---
+    from gl_logic import gl_prefixes_overlap as _overlap
+    from gl_logic import gl_token_covered_by as _covered_by_row
 
     row = BudgetSummaryRow.query.filter_by(
         entity_code=entity_code, budget_year=_BY, label=label
