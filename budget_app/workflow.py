@@ -10854,36 +10854,57 @@ def create_workflow_blueprint(db):
                         return r
         return None
 
-    def _commercial_compute_escalations(entity_code):
-        """Compute every commercial tenant's BUDGET_YEAR escalation amount.
+    def _commercial_compute_escalations(entity_code, year=None):
+        """Compute every commercial tenant's escalation amount for `year`.
         Returns: [{tenant_id, tenant_name, model, amount, breakdown}].
         breakdown includes the inputs so the UI can show the math.
+
+        FA dir 2026-06-03 (#1): parameterized by year. The escalation math is
+        identical across years (share × max(0, currentYearTax − fixed base));
+        only the "current-year" RE-tax / opex BASIS changes:
+          - year == BUDGET_YEAR (2027, proposed): RE Taxes col7 (proposed),
+            expenses col7. This is the original behavior.
+          - year  < BUDGET_YEAR (2026, BY-1): RE Taxes col6 (2026 Budget),
+            expenses col6. Per FA: the 2026 escalation is driven off the 2026
+            Budget. The tenant's base_year_* and share stay fixed (standard
+            lease escalation — only the current-year figure moves).
         """
+        year = year or BUDGET_YEAR
+        is_budget_year = (year >= BUDGET_YEAR)
         tenants = CommercialTenant.query.filter_by(
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).all()
         if not tenants:
             return []
 
-        # Pull "Real Estate Taxes" row col7 once (used by re_tax model)
+        # Pull "Real Estate Taxes" row once (used by re_tax model). Basis col
+        # depends on the year: col7 (proposed) for BUDGET_YEAR, col6 (2026
+        # Budget) for the prior year.
         re_tax_row = _commercial_find_summary_row(
             entity_code,
             label_candidates=["Real Estate Taxes", "Real Estate Tax"],
             gl_prefix_candidates=["6310", "6311", "6315", "6320"],
         )
-        re_tax_current = (re_tax_row.col7_proposed_budget
-                          or re_tax_row.col6_approved_budget
-                          or 0) if re_tax_row else 0
+        if re_tax_row:
+            re_tax_current = ((re_tax_row.col7_proposed_budget
+                               or re_tax_row.col6_approved_budget or 0)
+                              if is_budget_year
+                              else (re_tax_row.col6_approved_budget or 0))
+        else:
+            re_tax_current = 0
 
-        # Sum all expense-section rows col7 (used by opex model)
+        # Sum all expense-section rows (used by opex model) — same basis col.
         expense_rows = BudgetSummaryRow.query.filter_by(
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).all()
         total_expense = 0
         for r in expense_rows:
             if (r.section or "").lower() in ("expenses",) and r.row_type == "data":
-                total_expense += (r.col7_proposed_budget
-                                  or r.col6_approved_budget or 0)
+                if is_budget_year:
+                    total_expense += (r.col7_proposed_budget
+                                      or r.col6_approved_budget or 0)
+                else:
+                    total_expense += (r.col6_approved_budget or 0)
 
         results = []
         for t in tenants:
@@ -10976,16 +10997,30 @@ def create_workflow_blueprint(db):
         )
         esc_sync = None
         if esc_row:
+            # 2027 (BUDGET_YEAR, proposed) → col7, the original behavior.
             escalations = _commercial_compute_escalations(entity_code)
             esc_total = sum(e["amount"] for e in escalations)
             old_esc = esc_row.col7_proposed_budget
             esc_row.col7_proposed_budget = float(esc_total) if esc_total else None
+            # FA dir 2026-06-03 (#1): 2026 (BY-1) → col5 (2026 Forecast) via
+            # col5_override, so it surfaces on the Summary's 2026 Forecast
+            # column mirroring how the 2027 total flows to col7. Same
+            # methodology (re_tax + opex), driven off the 2026 Budget basis.
+            # Leaves the imported 2026 Budget (col6) untouched for reference.
+            escalations_2026 = _commercial_compute_escalations(entity_code, year=BUDGET_YEAR - 1)
+            esc_total_2026 = sum(e["amount"] for e in escalations_2026)
+            old_esc_2026 = esc_row.col5_override
+            esc_row.col5_override = float(esc_total_2026) if esc_total_2026 else None
             esc_row.updated_at = datetime.utcnow()
             esc_sync = {
                 "row_id": esc_row.id, "label": esc_row.label,
                 "old_col7": old_esc, "new_col7": esc_row.col7_proposed_budget,
                 "total_escalations": esc_total,
                 "per_tenant": escalations,
+                # 2026 mirror (#1)
+                "old_col5": old_esc_2026, "new_col5": esc_row.col5_override,
+                "total_escalations_2026": esc_total_2026,
+                "per_tenant_2026": escalations_2026,
             }
 
         db.session.commit()
