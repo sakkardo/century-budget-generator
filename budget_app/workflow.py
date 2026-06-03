@@ -9363,7 +9363,6 @@ def create_workflow_blueprint(db):
                         col5 = round(agg["forecast"], 2)
 
                         # FA dir 2026-06-03 (#3): the Summary's 2027 Budget
-                        # (deploy re-trigger 2026-06-03b — Railway missed c921013)
                         # (col7) must reflect the proposed budget the PM/FA set
                         # on the income/expense tabs. col7_proposed_budget is
                         # the FA's explicit Summary-level OVERRIDE (typed
@@ -9376,10 +9375,26 @@ def create_workflow_blueprint(db):
                         # col7 ties to what the FA sees on the tabs. Only fall
                         # back to a non-zero aggregate — a true $0/blank stays
                         # blank rather than littering the column with zeros.
+                        #
+                        # EXCEPTION (FA dir #2/#6): the fixed-forecast income
+                        # family (maintenance / common charges / commercial rent
+                        # / operating assessment — bases 4010/4020/4030/4040/4200)
+                        # must NOT take the raw YTD-annualized aggregate. Their
+                        # forecast is pinned to the approved budget just below,
+                        # and the proposed follows suit: = budget for maint/CC/
+                        # rent (#2), = tax formula for operating assessment (#6).
+                        # Skip them here so that pin wins — but only when an
+                        # approved budget (col6) exists to pin to; without col6
+                        # we still fall back to the aggregate so the cell isn't
+                        # left blank (e.g. buildings with no imported budget).
                         if col7 is None:
-                            _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
-                            if abs(_agg_proposed) > 0.005:
-                                col7 = _agg_proposed
+                            _bases = {str(p).split("-")[0].strip()
+                                      for p in (prefixes or [])}
+                            _pin_eligible = bool(_bases & FIXED_FORECAST_GL_BASES) and (col6 is not None)
+                            if not _pin_eligible:
+                                _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
+                                if abs(_agg_proposed) > 0.005:
+                                    col7 = _agg_proposed
 
             # ── Fixed-forecast GL override ─────────────────────────────
             # Maintenance / Common Charges / Commercial Rent rows: pin
@@ -9392,6 +9407,25 @@ def create_workflow_blueprint(db):
                 col5 = round(float(col6), 2)
                 col4 = round(col5 - (col3 or 0), 2)
                 fixed_forecast_applied = True
+                # FA dir 2026-06-03 (#2): Maintenance / Common Charges (and the
+                # contractual commercial-rent income in the same fixed-forecast
+                # family — bases 4010/4020/4030/4040) take their proposed budget
+                # (Col 7) from the approved budget too, mirroring the forecast
+                # pin above. Operating Assessment (4200) is EXCLUDED here: its
+                # proposed is the tax-derived formula (#6), left blank until
+                # built. Re-parse from the row's stored prefixes (not the `agg`
+                # prefixes) so this fires even when no budget lines were loaded.
+                # Only default when the FA hasn't typed an explicit Summary
+                # proposed (col7 override) — an explicit override always wins.
+                if col7 is None:
+                    try:
+                        _ff_prefs = _json.loads(row.gl_prefixes_json) or []
+                    except Exception:
+                        _ff_prefs = []
+                    _ff_bases = {str(p).split("-")[0].strip()
+                                 for p in _ff_prefs if p}
+                    if _ff_bases & {"4010", "4020", "4030", "4040"}:
+                        col7 = round(float(col6), 2)
 
             # ── FA-set overrides (col3/col4/col5) take precedence over computed ──
             # FA directive 2026-05-05: editable green cells. Stash the computed
