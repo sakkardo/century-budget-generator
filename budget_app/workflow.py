@@ -303,11 +303,19 @@ def apply_summary_prefix_override(label, existing_prefixes):
 #
 # Full GLs provided: 4010-0000, 4020-0000, 4020-0005, 4030-0000,
 #                    4040-0000, 4040-0010
+#
+# FA dir 2026-06-02 (task #99): Operating Assessment (GL 4200) joins the set.
+# Operating assessments are fully collectible (billed to all unit owners like
+# maintenance), so forecast must equal the approved budget rather than an
+# annualized-from-YTD figure. Matched by GL prefix 4200 — this deliberately
+# EXCLUDES Capital Assessment and Tax-Abatement Assessment, which are
+# unmapped manual Summary rows (no GL), not GL-4200 operating assessments.
 # Stored as 4-digit bases to match _gl_matches_prefixes behavior.
-FIXED_FORECAST_GL_BASES = {"4010", "4020", "4030", "4040"}
+FIXED_FORECAST_GL_BASES = {"4010", "4020", "4030", "4040", "4200"}
 FIXED_FORECAST_GL_FULL = [
     "4010-0000", "4020-0000", "4020-0005",
     "4030-0000", "4040-0000", "4040-0010",
+    "4200-0000", "4200-0005", "4200-0010",
 ]
 
 
@@ -2539,6 +2547,40 @@ def create_workflow_blueprint(db):
         # in the JS render — within each group, the lines are now sorted.
         for _sn in sheets:
             sheets[_sn].sort(key=lambda d: d.get("gl_code") or "")
+
+        # ── Income forecast pin signal (task #99, FA dir 2026-06-02) ──────────
+        # The Budget Summary pins forecast (Col5) to approved budget (Col6) for
+        # fully-collectible income families (Maintenance 4010, Common Charges
+        # 4020, Commercial CC 4030, Commercial Rent 4040, Operating Assessment
+        # 4200) — but ONLY where that row actually has an approved budget. The
+        # decision varies per row WITHIN a building (e.g. 500: maintenance has
+        # no Col6 so it annualizes, while its operating-assessment row has Col6
+        # so it pins). So we can't let the worksheet guess from current_budget;
+        # we stamp each line with the Summary's own per-row decision so the
+        # Income tab's forecast ties to the Summary instead of annualizing.
+        try:
+            import json as _json
+            _summary_rows = BudgetSummaryRow.query.filter_by(budget_id=budget.id).all()
+            _pinned_prefixes = []
+            for _sr in _summary_rows:
+                if (_sr.row_type == "data"
+                        and _sr.col6_approved_budget is not None
+                        and _row_has_fixed_forecast_gl(_sr.gl_prefixes_json)):
+                    try:
+                        for _p in (_json.loads(_sr.gl_prefixes_json) or []):
+                            _b = str(_p).split("-")[0].strip()
+                            if _b in FIXED_FORECAST_GL_BASES:
+                                _pinned_prefixes.append(_p)
+                    except Exception:
+                        pass
+            if _pinned_prefixes:
+                for _sn in sheets:
+                    for _ld in sheets[_sn]:
+                        _glc = _ld.get("gl_code") or ""
+                        if _glc and gl_matches_prefixes(_glc, _pinned_prefixes):
+                            _ld["income_pinned"] = True
+        except Exception:
+            pass
 
         # Ordered sheet tab names
         sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "RE Taxes", "Capital", "Unmapped"]
@@ -19036,7 +19078,19 @@ const SUMMARY_ROWS = [
 // equals the gross tax budget. User-entered estimate/forecast overrides still win.
 function faIsFixedToBudget(l) {
   const gl = (l && l.gl_code) || '';
-  return gl.indexOf('6315') === 0;
+  if (gl.indexOf('6315') === 0) return true;           // RE Tax (expense) — existing pin
+  return faIsIncomePinned(l);                           // fully-collectible income (task #99)
+}
+
+// Task #99 (FA dir 2026-06-02): the server (/api/dashboard) stamps income lines
+// with income_pinned=true when the Budget Summary pins that row's forecast to
+// approved budget (Maintenance / Common Charges / Commercial / Operating
+// Assessment, and only where an approved budget actually exists). Mirroring the
+// Summary's own per-row decision is what makes the Income tab tie to the Summary
+// instead of annualizing — and it's why buildings with no approved budget on a
+// row (e.g. 500's maintenance) correctly keep annualizing on both tabs.
+function faIsIncomePinned(l) {
+  return !!(l && l.income_pinned);
 }
 
 // One-time annual fees: once YTD is posted, there is no additional billing
@@ -19099,7 +19153,7 @@ function faGetFormulaTooltip(l, field) {
   if (field === 'estimate') {
     if (faIsFixedToBudget(l)) {
       const cb = l.current_budget || 0;
-      return '=' + cb + ' − ' + ytd + '  (current budget − YTD, GL 6315 pinned)';
+      return '=' + cb + ' − ' + ytd + '  (current budget − YTD, ' + (((l.gl_code || '').indexOf('6315') === 0) ? 'GL 6315' : 'fully collectible income') + ' pinned)';
     }
     if (faIsOneTimeFeeBilled(l)) {
       return '= 0  (one-time fee rule, GL ' + (l.gl_code || '') + ' — already billed YTD)';
@@ -19113,7 +19167,7 @@ function faGetFormulaTooltip(l, field) {
   if (field === 'forecast') {
     if (faIsFixedToBudget(l)) {
       const cb = l.current_budget || 0;
-      return '=' + cb + '  (pinned to current budget, GL 6315)';
+      return '=' + cb + '  (pinned to budget — ' + (((l.gl_code || '').indexOf('6315') === 0) ? 'GL 6315 (RE Tax)' : 'fully collectible income') + ')';
     }
     if (faIsOneTimeFeeBilled(l)) {
       return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no additional projection)';
@@ -26594,7 +26648,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onblur="cellBlur(this)">';
     }
     // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
-    function fxCell(id, field, val, formula, isOverride, proposedFormula) {
+    function fxCell(id, field, val, formula, isOverride, proposedFormula, pinned) {
       const hasUserFormula = field === 'proposed_budget' && proposedFormula;
       const overrideAttr = (isOverride || hasUserFormula) ? 'true' : 'false';
       let badge;
@@ -26606,7 +26660,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         badge = '<span class="fa-fx">fx</span>';
       }
       const pfAttr = proposedFormula ? ' data-proposed-formula="' + proposedFormula.replace(/"/g, '&quot;') + '"' : '';
-      return '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
+      // Task #99: tint + explain forecast cells pinned to budget (fully collectible income)
+      const pinBg = pinned ? 'background:#ecfdf5;' : '';
+      const pinTtl = pinned ? ' title="Forecast pinned to approved budget — fully collectible income (ties to the Summary tab)"' : '';
+      return '<td class="num"' + pinTtl + ' style="position:relative; cursor:pointer;' + pinBg + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
         '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
@@ -26633,7 +26690,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       '<td class="num">' + $cell('acc_'+gl, 'accrual_adj', accrual) + '</td>' +
       '<td class="num">' + $cell('unp_'+gl, 'unpaid_bills', unpaid) + '</td>' +
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
-      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined) +
+      fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined, undefined, faIsIncomePinned(l)) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
       fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula) +
@@ -29365,7 +29422,8 @@ function safeEvalFormula(expr) {
 
 function isFixedToBudgetLine(line) {
     const gl = (line && line.gl_code) || '';
-    return gl.indexOf('6315') === 0;
+    if (gl.indexOf('6315') === 0) return true;          // RE Tax (expense) — existing pin
+    return !!(line && line.income_pinned);              // fully-collectible income (task #99)
 }
 
 // One-time annual fees — once YTD is posted the Mar-Dec estimate is zero.
@@ -31775,7 +31833,8 @@ function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
 
 function isFixedToBudgetLine(l) {
   const gl = (l && l.gl_code) || '';
-  return gl.indexOf('6315') === 0;
+  if (gl.indexOf('6315') === 0) return true;          // RE Tax (expense) — existing pin
+  return !!(l && l.income_pinned);                     // fully-collectible income (task #99)
 }
 
 const BP_ONE_TIME_FEE_GLS = new Set(['6722-0000','6762-0000','6763-0000','6764-0000']);
