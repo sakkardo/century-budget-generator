@@ -318,10 +318,6 @@ FIXED_FORECAST_GL_FULL = [
     "4200-0000", "4200-0005", "4200-0010",
 ]
 
-# Deploy-pipeline reconnect test 2026-06-03 — confirms Railway auto-deploys on
-# push after the GitHub source was re-linked. Harmless marker; removed next push.
-_DEPLOY_RECONNECT_TEST = "2026-06-03c"
-
 
 def _row_has_fixed_forecast_gl(gl_prefixes_json):
     """Check if a summary row's stored prefixes intersect the fixed-forecast set."""
@@ -8979,6 +8975,30 @@ def create_workflow_blueprint(db):
             except Exception:
                 pass
 
+        # ── FA dir 2026-06-03 (#6): operating-assessment proposed driver ──
+        # The operating-assessment (GL 4200) row's proposed budget (Col 7) =
+        # first-half RE tax × 2 × pct (default 17.5%, editable per-property on
+        # the RE Tax page → re_taxes_overrides). Co-ops only; condos have no
+        # building-level RE tax. Computed ONCE here (DOF data is cached) and
+        # applied to the 4200 row below when no explicit Summary override.
+        _op_assess_proposed = None
+        try:
+            from dof_taxes import is_coop as _is_coop, compute_re_taxes as _compute_re_taxes
+            if _is_coop(entity_code):
+                _rt_overrides = None
+                if budget and budget.assumptions_json:
+                    try:
+                        _rt_overrides = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
+                    except Exception:
+                        _rt_overrides = None
+                _rt = _compute_re_taxes(entity_code, _rt_overrides or {})
+                _val = _rt.get("operating_assessment_proposed")
+                if _val is not None and abs(float(_val)) > 0.005:
+                    _op_assess_proposed = round(float(_val), 2)
+        except Exception as _e:
+            logger.warning(f"operating-assessment proposed compute failed for {entity_code}: {_e}")
+            _op_assess_proposed = None
+
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         # `warnings` is initialized HERE (was previously initialized later for
         # duplicate-row scan) because the Col 2 logic now emits a warning when
@@ -9387,14 +9407,20 @@ def create_workflow_blueprint(db):
                         # forecast is pinned to the approved budget just below,
                         # and the proposed follows suit: = budget for maint/CC/
                         # rent (#2), = tax formula for operating assessment (#6).
-                        # Skip them here so that pin wins — but only when an
-                        # approved budget (col6) exists to pin to; without col6
-                        # we still fall back to the aggregate so the cell isn't
-                        # left blank (e.g. buildings with no imported budget).
+                        # Skip them here so that pin wins. Operating assessment
+                        # (4200) ALWAYS defers to the tax formula (#6), even with
+                        # no approved budget. Maint/CC/rent (4010-4040) defer to
+                        # the budget pin (#2) only when col6 exists to pin to;
+                        # without col6 we still fall back to the aggregate so the
+                        # cell isn't left blank (e.g. buildings with no budget).
                         if col7 is None:
                             _bases = {str(p).split("-")[0].strip()
                                       for p in (prefixes or [])}
-                            _pin_eligible = bool(_bases & FIXED_FORECAST_GL_BASES) and (col6 is not None)
+                            _pin_eligible = (
+                                bool(_bases & {"4200"})
+                                or (bool(_bases & {"4010", "4020", "4030", "4040"})
+                                    and col6 is not None)
+                            )
                             if not _pin_eligible:
                                 _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
                                 if abs(_agg_proposed) > 0.005:
@@ -9430,6 +9456,22 @@ def create_workflow_blueprint(db):
                                  for p in _ff_prefs if p}
                     if _ff_bases & {"4010", "4020", "4030", "4040"}:
                         col7 = round(float(col6), 2)
+
+            # FA dir 2026-06-03 (#6): operating-assessment (GL 4200) proposed
+            # budget (Col 7) = first-half RE tax × 2 × pct (default 17.5%,
+            # editable per-property on the RE Tax page). Computed once above as
+            # _op_assess_proposed (co-ops only; None when no DOF data or $0).
+            # Applies regardless of approved budget (tax-derived, not budget-
+            # derived) and only when the FA hasn't typed an explicit Summary
+            # proposed override (col7 non-null always wins).
+            if (col7 is None and _op_assess_proposed is not None
+                    and row.row_type == "data" and row.gl_prefixes_json):
+                try:
+                    _oa_prefs = _json.loads(row.gl_prefixes_json) or []
+                except Exception:
+                    _oa_prefs = []
+                if any(str(p).split("-")[0].strip() == "4200" for p in _oa_prefs):
+                    col7 = _op_assess_proposed
 
             # ── FA-set overrides (col3/col4/col5) take precedence over computed ──
             # FA directive 2026-05-05: editable green cells. Stash the computed

@@ -547,6 +547,20 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
 
     net_tax = gross_tax - total_exemptions_budget
 
+    # FA dir 2026-06-03 (#6): Operating Assessment proposed budget =
+    # first-half tax bill × 2 × pct (default 17.5%). The pct is editable
+    # per-property on the RE Tax page and round-trips through
+    # re_taxes_overrides["operating_assessment_pct"]. This value drives the
+    # operating-assessment (GL 4200) proposed on the Budget Summary.
+    op_assess_pct = overrides.get("operating_assessment_pct")
+    if op_assess_pct is None:
+        op_assess_pct = 0.175
+    try:
+        op_assess_pct = float(op_assess_pct)
+    except (TypeError, ValueError):
+        op_assess_pct = 0.175
+    operating_assessment_proposed = first_half_tax * 2 * op_assess_pct
+
     bbl_str = cfg.get("bbl") or dof.get("bbl") or ""
     bbl_parts = _split_bbl(bbl_str) if bbl_str else {}
     return {
@@ -578,6 +592,9 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
         "total_exemptions_current": round(total_exemptions_current, 2),
         "total_exemptions_budget": round(total_exemptions_budget, 2),
         "net_tax": round(net_tax, 2),
+        # FA dir 2026-06-03 (#6): operating-assessment proposed driver
+        "operating_assessment_pct": op_assess_pct,
+        "operating_assessment_proposed": round(operating_assessment_proposed, 2),
     }
 
 
@@ -612,6 +629,9 @@ def _empty_re_taxes(entity_code: str) -> dict:
         "total_exemptions_current": 0,
         "total_exemptions_budget": 0,
         "net_tax": 0,
+        # FA dir 2026-06-03 (#6): operating-assessment proposed driver
+        "operating_assessment_pct": 0.175,
+        "operating_assessment_proposed": 0,
     }
 
 
