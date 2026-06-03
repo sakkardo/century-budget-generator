@@ -25594,7 +25594,7 @@ function prShowAdjustModal(idx) {
   // Header
   html += '<div style="padding:18px 20px;border-bottom:1px solid var(--gray-200);">';
   html += '<div style="font-size:15px;font-weight:700;color:var(--blue-dark);">⚙️ Adjust Benefits — ' + (p.position_name || '(unnamed position)') + '</div>';
-  html += '<div style="font-size:12px;color:var(--gray-500);margin-top:4px;">Position has <b>' + empCount + '</b> employee' + (empCount === 1 ? '' : 's') + '. Use this when only some of them need a different benefit (e.g. one tenured doorman gets double pension). Adjustment math: <i>rate × periods × adjusted_count</i> stacks on top of the building default.</div>';
+  html += '<div style="font-size:12px;color:var(--gray-500);margin-top:4px;">Position has <b>' + empCount + '</b> employee' + (empCount === 1 ? '' : 's') + '. Use this when only some of them need a different benefit (e.g. one tenured doorman gets double pension). Adjustment math: <i>rate × periods × adjusted_count</i> stacks on top of the building default. Use the <b>Quick set</b> buttons to remove a benefit (nets to $0 for the adjusted employees, e.g. someone not getting pension) or add a building default in one click.</div>';
   html += '</div>';
   // Body (scrollable)
   html += '<div style="padding:14px 20px;overflow-y:auto;flex:1;">';
@@ -25615,8 +25615,9 @@ function prShowAdjustModal(idx) {
     '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Adj Periods</th>' +
     '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);">Label</th>' +
     '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);text-align:right;">Δ / yr / employee</th>' +
+    '<th style="padding:6px 8px;border-bottom:1px solid var(--gray-300);">Quick set</th>' +
     '</tr></thead><tbody>';
-  PR_ADJ_BENEFITS.forEach(b => {
+  PR_ADJ_BENEFITS.forEach((b, bIdx) => {
     const def = parseFloat(a[b.defaultKey] || 0) || 0;
     const defAnnual = def * b.periodsPerYear;
     const cur = benefits[b.key] || {};
@@ -25630,6 +25631,16 @@ function prShowAdjustModal(idx) {
     html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);text-align:right;"><input class="pr-adj-periods" data-key="' + b.key + '" type="text" value="' + curPeriods + '" placeholder="' + b.periodLabel + '" oninput="prAdjRecalc()" style="width:60px;padding:4px 6px;border:1px solid var(--gray-300);border-radius:4px;font-size:12px;text-align:right;"></td>';
     html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);"><input class="pr-adj-label" data-key="' + b.key + '" type="text" value="' + curLabel + '" placeholder="(optional)" style="width:100%;padding:4px 6px;border:1px solid var(--gray-300);border-radius:4px;font-size:12px;"></td>';
     html += '<td id="pr-adj-delta-' + b.key + '" style="padding:6px 8px;border-bottom:1px solid var(--gray-100);text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#92400e;">$0.00</td>';
+    // FA dir 2026-06-03 (#4): one-click add/remove of this benefit for the
+    // adjusted employees. "Remove" fills the NEGATIVE building default so the
+    // benefit nets to $0 (e.g. an employee who does not get pension). "+Def"
+    // adds another building default (e.g. double). "Clr" wipes the row. Numeric
+    // index args keep the onclick free of nested string quotes.
+    html += '<td style="padding:4px 6px;border-bottom:1px solid var(--gray-100);white-space:nowrap;">' +
+      '<button type="button" onclick="prAdjRemove(' + bIdx + ')" title="Remove this benefit for the adjusted employees (nets to $0)" style="padding:2px 6px;font-size:10px;cursor:pointer;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:4px;margin-right:3px;">&minus; Remove</button>' +
+      '<button type="button" onclick="prAdjAddDef(' + bIdx + ')" title="Add another building default of this benefit" style="padding:2px 6px;font-size:10px;cursor:pointer;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:4px;margin-right:3px;">&plus; Def</button>' +
+      '<button type="button" onclick="prAdjClear(' + bIdx + ')" title="Clear this benefit row" style="padding:2px 6px;font-size:10px;cursor:pointer;background:#f9fafb;color:#6b7280;border:1px solid #e5e7eb;border-radius:4px;">Clr</button>' +
+      '</td>';
     html += '</tr>';
   });
   html += '</tbody></table>';
@@ -25683,6 +25694,38 @@ function prAdjRecalc() {
     totEl.textContent = (total === 0) ? '$0.00 / yr' : (sign + '$' + Math.abs(total).toFixed(2) + ' / yr');
   }
 }
+
+// FA dir 2026-06-03 (#4): one-click add/remove of a benefit for the adjusted
+// employees, in the ⚙️ gear box. "Remove" fills the negative of the building
+// default (rate × periods cancels the default so the benefit nets to $0 for
+// those employees — e.g. a doorman who does not get pension). "Add" fills the
+// positive default (e.g. double pension). "Clear" wipes the row. Works against
+// the existing benefit_adjustments model — no new fields.
+function _prAdjApplyQuick(bIdx, mode) {
+  const b = PR_ADJ_BENEFITS[bIdx];
+  if (!b) return;
+  const a = (typeof _payrollAssumptions !== 'undefined' && _payrollAssumptions) ? _payrollAssumptions : {};
+  const def = parseFloat(a[b.defaultKey] || 0) || 0;
+  const rateEl = document.querySelector('.pr-adj-rate[data-key="' + b.key + '"]');
+  const periodsEl = document.querySelector('.pr-adj-periods[data-key="' + b.key + '"]');
+  const labelEl = document.querySelector('.pr-adj-label[data-key="' + b.key + '"]');
+  if (mode === 'remove') {
+    if (rateEl) rateEl.value = (-def).toFixed(2);
+    if (periodsEl) periodsEl.value = String(b.periodsPerYear);
+    if (labelEl && !labelEl.value) labelEl.value = 'No ' + b.label;
+  } else if (mode === 'add') {
+    if (rateEl) rateEl.value = def.toFixed(2);
+    if (periodsEl) periodsEl.value = String(b.periodsPerYear);
+  } else {
+    if (rateEl) rateEl.value = '';
+    if (periodsEl) periodsEl.value = '';
+    if (labelEl) labelEl.value = '';
+  }
+  prAdjRecalc();
+}
+function prAdjRemove(bIdx) { _prAdjApplyQuick(bIdx, 'remove'); }
+function prAdjAddDef(bIdx) { _prAdjApplyQuick(bIdx, 'add'); }
+function prAdjClear(bIdx) { _prAdjApplyQuick(bIdx, 'clear'); }
 
 // Save the adjustment back to the position object + persist + recalc payroll.
 function prSaveAdjustment(idx) {
