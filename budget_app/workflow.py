@@ -2560,7 +2560,11 @@ def create_workflow_blueprint(db):
         # Income tab's forecast ties to the Summary instead of annualizing.
         try:
             import json as _json
-            _summary_rows = BudgetSummaryRow.query.filter_by(budget_id=budget.id).all()
+            # budget_summary_rows is keyed by entity_code + budget_year (NOT
+            # budget_id). The dashboard loads budget at year=BUDGET_YEAR, so the
+            # covering summary rows live under the same year — mirror /api/summary.
+            _summary_rows = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR).all()
             _pinned_prefixes = []
             for _sr in _summary_rows:
                 if (_sr.row_type == "data"
