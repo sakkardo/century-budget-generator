@@ -5099,6 +5099,20 @@ def create_workflow_blueprint(db):
         from_line.ytd_actual = old_from_ytd - amount
         to_line.ytd_actual = old_to_ytd + amount
 
+        # FA directive 2026-06-03: a reclass must carry the source line's
+        # accrual adjustment with it. Forecast = ytd + accrual + unpaid +
+        # estimate, so if the actuals move to a new GL but the accrual stays
+        # behind, the source forecast is overstated and the target understated.
+        # Per FA: move the FULL accrual on any reclass (whole-line semantics).
+        # Idempotent against repeat/multi-target reclasses: once the source
+        # accrual is drained to 0, later reclasses move nothing.
+        old_from_accrual = float(from_line.accrual_adj or 0)
+        old_to_accrual = float(to_line.accrual_adj or 0)
+        moved_accrual = old_from_accrual
+        if moved_accrual:
+            from_line.accrual_adj = old_from_accrual - moved_accrual  # → 0.0
+            to_line.accrual_adj = old_to_accrual + moved_accrual
+
         # Audit trail
         _fa_uid = _read_fa_id_from_cookie()
         db.session.add(BudgetRevision(
@@ -5115,6 +5129,21 @@ def create_workflow_blueprint(db):
             notes=f"FA accepted reclass of ${amount:,.0f} from {from_gl}", source="web",
             user_id=_fa_uid,
         ))
+        if moved_accrual:
+            db.session.add(BudgetRevision(
+                budget_id=budget.id, budget_line_id=from_line.id,
+                action="reclass_accept", field_name="accrual_adj",
+                old_value=str(old_from_accrual), new_value=str(from_line.accrual_adj),
+                notes=f"Accrual ${moved_accrual:,.0f} moved with reclass to {to_gl}", source="web",
+                user_id=_fa_uid,
+            ))
+            db.session.add(BudgetRevision(
+                budget_id=budget.id, budget_line_id=to_line.id,
+                action="reclass_accept", field_name="accrual_adj",
+                old_value=str(old_to_accrual), new_value=str(to_line.accrual_adj),
+                notes=f"Accrual ${moved_accrual:,.0f} moved with reclass from {from_gl}", source="web",
+                user_id=_fa_uid,
+            ))
 
         db.session.commit()
 
@@ -9332,6 +9361,24 @@ def create_workflow_blueprint(db):
                         col3 = round(agg["ytd_only"], 2)
                         col4 = round(agg["accrual_unpaid"] + agg["estimate"], 2)
                         col5 = round(agg["forecast"], 2)
+
+                        # FA dir 2026-06-03 (#3): the Summary's 2027 Budget
+                        # (col7) must reflect the proposed budget the PM/FA set
+                        # on the income/expense tabs. col7_proposed_budget is
+                        # the FA's explicit Summary-level OVERRIDE (typed
+                        # directly on the Summary cell). When that override is
+                        # NULL, fall back to the aggregated line-level
+                        # proposed_budget so an accepted/edited proposal "hits"
+                        # the Summary page. _aggregate_by_prefix already mirrors
+                        # the income-tab display rule (capital → 0; proposed 0
+                        # with positive forecast → forecast×(1+inc_pct)), so
+                        # col7 ties to what the FA sees on the tabs. Only fall
+                        # back to a non-zero aggregate — a true $0/blank stays
+                        # blank rather than littering the column with zeros.
+                        if col7 is None:
+                            _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
+                            if abs(_agg_proposed) > 0.005:
+                                col7 = _agg_proposed
 
             # ── Fixed-forecast GL override ─────────────────────────────
             # Maintenance / Common Charges / Commercial Rent rows: pin
@@ -18796,7 +18843,7 @@ function scrollToGlRow(glCode) {
 }
 
 async function acceptPmReclass(fromGl, toGl, amount, invIdStr) {
-  if (!confirm('Accept reclass of ' + fmt(amount) + ' from ' + fromGl + ' to ' + toGl + '?\\n\\nThis will move ' + fmt(amount) + ' of YTD Actual from ' + fromGl + ' to ' + toGl + ' and recalculate both lines.')) return;
+  if (!confirm('Accept reclass of ' + fmt(amount) + ' from ' + fromGl + ' to ' + toGl + '?\\n\\nThis will move ' + fmt(amount) + ' of YTD Actual from ' + fromGl + ' to ' + toGl + ' and recalculate both lines. Any accrual adjustment on ' + fromGl + ' will move with it.')) return;
 
   try {
     const res = await fetch('/api/reclass/accept', {
@@ -21755,10 +21802,15 @@ async function renderBudgetSummary(contentDiv) {
         const colKey = 'col' + c.substring(1);
         let ovr = (r.overrides && r.overrides[colKey]) || null;
         if (c === 'c7') {
+          // FA dir 2026-06-03 (#3): subtotal c7 (proposed total) is a LIVE
+          // computed roll-up of the data-row proposed budgets — never an
+          // override. A subtotal-level c7 was never persisted server-side
+          // anyway (GET recomputes it as the sum of the data rows), so the old
+          // "non-null => overridden" synth just painted a misleading OVR badge
+          // and, worse, froze the cell so it stopped tracking data-row edits.
+          // Mark it computed: sumRecalcTotals keeps it in sync and no badge.
           const c7v = (typeof r.col7 === 'number') ? r.col7 : null;
-          ovr = (c7v !== null && c7v !== undefined)
-            ? {is_overridden: true, override: c7v, computed: null}
-            : {is_overridden: false, override: null, computed: null};
+          ovr = {is_overridden: false, override: null, computed: c7v};
         }
         const fmla = (r.formulas && r.formulas[colKey]) || null;
         html += makeSubtotalInput(r.label, c, ovr, isGrand, fmla);
