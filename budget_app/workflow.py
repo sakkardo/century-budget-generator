@@ -9363,6 +9363,7 @@ def create_workflow_blueprint(db):
                         col5 = round(agg["forecast"], 2)
 
                         # FA dir 2026-06-03 (#3): the Summary's 2027 Budget
+                        # (deploy re-trigger 2026-06-03b — Railway missed c921013)
                         # (col7) must reflect the proposed budget the PM/FA set
                         # on the income/expense tabs. col7_proposed_budget is
                         # the FA's explicit Summary-level OVERRIDE (typed
