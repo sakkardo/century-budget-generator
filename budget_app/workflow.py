@@ -20096,6 +20096,31 @@ const RE_TAXES_TAB_HTML = `<style>
         </table>
       </div>
 
+      <div class="card">
+        <h2>4. Operating Assessment</h2>
+        <div class="note" style="margin-bottom:10px;">
+          Proposed operating assessment for the Budget Summary = <strong>first-half RE tax &times; 2 &times; the % below</strong>.
+          Default 17.5%, editable per building. Flows to the Operating Assessment (GL 4200) income row on the Summary 2027 Budget column.
+          A value typed directly on that Summary cell overrides this.
+        </div>
+        <table>
+          <tbody>
+            <tr>
+              <td>First-Half Tax &times; 2</td>
+              <td class="num" id="reOpAssessBase">&mdash;</td>
+            </tr>
+            <tr>
+              <td>Assessment % of taxes</td>
+              <td class="num"><input type="text" id="reOpAssessPct" value="17.50%" oninput="reOpAssessOnInput()" style="width:92px; text-align:right; padding:4px 6px; border:1px solid var(--border); border-radius:4px; background:var(--input-bg); font-size:13px;"></td>
+            </tr>
+            <tr style="font-weight:700; border-top:2px solid var(--border);">
+              <td>Proposed Operating Assessment</td>
+              <td class="num" id="reOpAssessProposed">&mdash;</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
     </div>
 
     </div>
@@ -21280,6 +21305,9 @@ function reTaxLoadFromBackend(re) {
     const afterOct31El = document.getElementById('reAfterOct31');
     if (afterOct31El) afterOct31El.checked = STATE.afterOct31;
 
+    // FA dir 2026-06-03 (#6): operating-assessment % + computed proposed.
+    try { _reUpdateOpAssess(re); } catch (e) { console.error('op-assess load', e); }
+
     // Restore saved per-cell overrides (numeric values + user-typed formula sources).
     // Each entry is either a raw number (legacy) or {override, overrideSrc}.
     if (re.cell_overrides) {
@@ -21339,6 +21367,33 @@ function _rePopulatePropertyCard(entityCode, re) {
   onPropFieldChange();
 }
 
+// FA dir 2026-06-03 (#6): Operating Assessment proposed = first-half RE tax
+// x 2 x the editable % on the RE Tax page. Drives the operating-assessment
+// (GL 4200) proposed budget on the Budget Summary 2027 column.
+function _reUpdateOpAssess(re) {
+  re = re || window._reTaxesData || {};
+  const fh = Number(re.first_half_tax || 0);
+  const baseEl = document.getElementById('reOpAssessBase');
+  if (baseEl) baseEl.textContent = fmtDollar(fh * 2);
+  const pctEl = document.getElementById('reOpAssessPct');
+  const pct = (re.operating_assessment_pct != null) ? Number(re.operating_assessment_pct) : 0.175;
+  // Don't clobber the field while the FA is actively typing in it.
+  if (pctEl && document.activeElement !== pctEl) pctEl.value = (pct * 100).toFixed(2) + '%';
+  _reRenderOpAssessProposed();
+}
+function _reRenderOpAssessProposed() {
+  const re = window._reTaxesData || {};
+  const fh = Number(re.first_half_tax || 0);
+  const pctEl = document.getElementById('reOpAssessPct');
+  const pct = pctEl ? parsePct(pctEl.value) : 0.175;
+  const el = document.getElementById('reOpAssessProposed');
+  if (el) el.textContent = fmtDollar(fh * 2 * pct);
+}
+function reOpAssessOnInput() {
+  _reRenderOpAssessProposed();
+  autosaveReTaxes();
+}
+
 // Build the 12-key payload the backend expects.
 // Sends DERIVED current-year values (G column) for exemptions, not base (F).
 function reTaxBuildPayload() {
@@ -21374,6 +21429,11 @@ function reTaxBuildPayload() {
     j51_amount:        cellRaw('i15'),
     // FA dir 2026-05-19: After-10/31 toggle (zeros out May-Dec estimate)
     after_oct31:       !!(STATE && STATE.afterOct31),
+    // FA dir 2026-06-03 (#6): operating-assessment % → Summary 4200 proposed
+    operating_assessment_pct: (function () {
+      const el = document.getElementById('reOpAssessPct');
+      return el ? parsePct(el.value) : 0.175;
+    })(),
     // Per-cell overrides (numeric values + user-typed formula sources)
     cell_overrides:    cellOverrides,
   };
@@ -21404,6 +21464,9 @@ async function saveRETaxes() {
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
     window._reTaxesData = data.re_taxes || window._reTaxesData;
+    // FA dir 2026-06-03 (#6): refresh the operating-assessment base/proposed
+    // from the backend's recomputed values after each save.
+    try { _reUpdateOpAssess(window._reTaxesData); } catch (e) {}
     if (status) {
       status.textContent = 'Saved ✓';
       status.style.color = '#16a34a';
