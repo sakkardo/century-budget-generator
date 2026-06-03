@@ -318,6 +318,10 @@ FIXED_FORECAST_GL_FULL = [
     "4200-0000", "4200-0005", "4200-0010",
 ]
 
+# Deploy-pipeline reconnect test 2026-06-03 — confirms Railway auto-deploys on
+# push after the GitHub source was re-linked. Harmless marker; removed next push.
+_DEPLOY_RECONNECT_TEST = "2026-06-03c"
+
 
 def _row_has_fixed_forecast_gl(gl_prefixes_json):
     """Check if a summary row's stored prefixes intersect the fixed-forecast set."""
