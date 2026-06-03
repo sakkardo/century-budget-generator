@@ -16367,9 +16367,15 @@ async function renderCommercialTab(contentDiv) {
   }
   if (escSync && escSync.row_id) {
     const newCol7 = escSync.new_col7 || 0;
-    html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
+    const newCol5 = escSync.new_col5 || 0;
+    html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px 12px; margin-bottom:8px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
       '<span style="color:var(--green); font-weight:700; font-size:14px;">✓</span>' +
       '<span><strong>Summary row "' + (escSync.label || '').replace(/</g,'&lt;') + '" (GL 4520)</strong> ' + BUDGET_Y + ' col7 = <strong>$' + Math.round(newCol7).toLocaleString() + '</strong> &mdash; auto-synced from per-tenant escalation math.</span>' +
+      '</div>';
+    // FA dir 2026-06-03 (#1): 2026 escalation off the 2026 Budget RE-tax basis -> col5 (Forecast).
+    html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; display:flex; align-items:center; gap:10px;">' +
+      '<span style="color:var(--green); font-weight:700; font-size:14px;">✓</span>' +
+      '<span><strong>Same row, ' + PRIOR_Y + ' (col5 / Forecast)</strong> = <strong>$' + Math.round(newCol5).toLocaleString() + '</strong> &mdash; ' + PRIOR_Y + ' escalation computed off the ' + PRIOR_Y + ' Budget RE-tax basis (same methodology); the imported ' + PRIOR_Y + ' budget (col6) is left untouched.</span>' +
       '</div>';
   } else if ((escSync === null || escSync === undefined) && tenants.some(t => t.escalation_model && t.escalation_model !== 'none')) {
     html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:#92400e;">⚠ No Commercial Escalations (4520) row on Summary tab. Escalation totals won\'t flow until one is added.</div>';
@@ -16510,12 +16516,17 @@ async function renderCommercialTab(contentDiv) {
     const escAmount = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant
       ? (data.summary_sync.escalations.per_tenant.find(e => e.tenant_id === t.id) || {}).amount || 0
       : 0);
+    // FA dir 2026-06-03 (#1): per-tenant 2026 escalation amount (off the 2026 Budget basis).
+    const escAmount2026 = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant_2026
+      ? (data.summary_sync.escalations.per_tenant_2026.find(e => e.tenant_id === t.id) || {}).amount || 0
+      : 0);
     html += '<details style="margin:6px 0; border:1px solid var(--gray-200); border-radius:6px; background:#fafaf7;">';
     html += '<summary style="padding:6px 10px; cursor:pointer; font-size:11px; color:var(--gray-700); user-select:none; display:flex; align-items:center; gap:8px;">' +
       '<span>📈 Escalation config</span>' +
       (escConfigured
         ? '<span style="background:var(--green-light); color:var(--green); padding:1px 6px; border-radius:3px; font-weight:600;">' + escLabels[t.escalation_model] + '</span>' +
-          '<span style="margin-left:auto; color:var(--green); font-weight:700;">' + BUDGET_Y + ' escalation: $' + Math.round(escAmount).toLocaleString() + '</span>'
+          '<span style="margin-left:auto; color:var(--gray-600); font-weight:600;">' + PRIOR_Y + ': $' + Math.round(escAmount2026).toLocaleString() + '</span>' +
+          '<span style="color:var(--green); font-weight:700;">' + BUDGET_Y + ': $' + Math.round(escAmount).toLocaleString() + '</span>'
         : '<span style="color:var(--gray-400); font-style:italic;">Not configured</span>') +
       '</summary>';
     html += '<div style="padding:10px 12px;">';
@@ -16564,16 +16575,27 @@ async function renderCommercialTab(contentDiv) {
       const b = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant
         ? (data.summary_sync.escalations.per_tenant.find(e => e.tenant_id === t.id) || {}).breakdown || {}
         : {});
-      if (t.escalation_model === 're_tax' && b.current_re_tax) {
-        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.6;">';
-        html += '(current RE Tax $' + Math.round(b.current_re_tax).toLocaleString() + ' − base $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
-        html += '<br>= $' + Math.round(b.escalatable).toLocaleString() + ' × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
-        html += '<br>= <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong>';
+      // FA dir 2026-06-03 (#1): the 2026 breakdown (off the 2026 Budget basis).
+      const b2026 = (data.summary_sync && data.summary_sync.escalations && data.summary_sync.escalations.per_tenant_2026
+        ? (data.summary_sync.escalations.per_tenant_2026.find(e => e.tenant_id === t.id) || {}).breakdown || {}
+        : {});
+      if (t.escalation_model === 're_tax' && (b.current_re_tax || b2026.current_re_tax)) {
+        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.7;">';
+        if (b2026.current_re_tax) {
+          html += '<div style="color:var(--gray-600);">' + PRIOR_Y + ' (2026 Budget basis): ($' + Math.round(b2026.current_re_tax).toLocaleString() + ' − $' + Math.round(b2026.base_year).toLocaleString() + ') × ' + ((b2026.share_pct || 0) * 100).toFixed(3) + '% = <strong style="font-family:inherit;">$' + Math.round(escAmount2026).toLocaleString() + '</strong></div>';
+        }
+        if (b.current_re_tax) {
+          html += '<div style="color:var(--green);">' + BUDGET_Y + ' (proposed basis): ($' + Math.round(b.current_re_tax).toLocaleString() + ' − $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '% = <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong></div>';
+        }
         html += '</div>';
-      } else if (t.escalation_model === 'opex' && b.current_opex) {
-        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.6;">';
-        html += '(current OpEx $' + Math.round(b.current_opex).toLocaleString() + ' − base $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '%';
-        html += '<br>= <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong>';
+      } else if (t.escalation_model === 'opex' && (b.current_opex || b2026.current_opex)) {
+        html += '<div style="grid-column: 1 / -1; padding:8px; background:white; border:1px solid var(--gray-200); border-radius:4px; font-size:10px; font-family:monospace; line-height:1.7;">';
+        if (b2026.current_opex) {
+          html += '<div style="color:var(--gray-600);">' + PRIOR_Y + ' (2026 Budget basis): ($' + Math.round(b2026.current_opex).toLocaleString() + ' − $' + Math.round(b2026.base_year).toLocaleString() + ') × ' + ((b2026.share_pct || 0) * 100).toFixed(3) + '% = <strong style="font-family:inherit;">$' + Math.round(escAmount2026).toLocaleString() + '</strong></div>';
+        }
+        if (b.current_opex) {
+          html += '<div style="color:var(--green);">' + BUDGET_Y + ': ($' + Math.round(b.current_opex).toLocaleString() + ' − $' + Math.round(b.base_year).toLocaleString() + ') × ' + ((b.share_pct || 0) * 100).toFixed(3) + '% = <strong style="color:var(--green); font-family:inherit;">$' + Math.round(escAmount).toLocaleString() + '</strong></div>';
+        }
         html += '</div>';
       }
     }
