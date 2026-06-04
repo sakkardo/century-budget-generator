@@ -25171,6 +25171,10 @@ function recalcPayroll() {
     profit_sharing: ovProfitShare
   };
 
+  // FA dir 2026-06-04: expose per-position calcs so the roster TOTAL row's
+  // click-to-inspect cells can show a per-position breakdown of each column.
+  window._payrollPosCalcs = posCalcs;
+
   // Render roster (pass assumption values for formula strings)
   renderPayrollRoster(posCalcs, totalEmployees, totalAnnualBase, totalOT, totalVSH, totalComp,
     {preWks, postWks, wageInc, otFactor, vshFactor});
@@ -25542,24 +25546,35 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
   body.innerHTML = rows;
 
   // Footer totals
+  // FA dir 2026-06-04: roster TOTAL row cells are click-to-inspect — clicking
+  // opens the lineage drill panel showing the per-position breakdown of that
+  // column. Mirrors the per-line cells; totals re-sum from the positions above.
+  const _b = 'border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;';
+  const _sumPC = f => _payrollPositions.reduce((s,p,i)=> s + ((posCalcs[i] && posCalcs[i][f]) || 0), 0);
+  const rosterCell = (key, label, val, extra) => '<td data-payroll-cell="' + key +
+    '" data-payroll-label="' + String(label).replace(/"/g, '&quot;') +
+    '" style="padding:8px 10px; text-align:right; ' + _b + ' cursor:pointer; position:relative; ' + (extra || '') + '"' +
+    ' onclick="payrollShowLineage(event, this)" title="Click to see the per-position breakdown">' +
+    '<span class="pr-total-val">' + val + '</span>' +
+    ' <span style="font-size:8px; color:#16a34a; border:1px solid #86efac; border-radius:3px; padding:0 2px; vertical-align:middle; font-weight:700;">fx</span></td>';
   foot.innerHTML =
     '<tr style="background:var(--gray-50); font-weight:700;">' +
-    '<td style="padding:8px 10px; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">TOTAL</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + (totalEmp || 0) + '</td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:700;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.bonus||0),0)) + '</td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.weeklyPay||0),0)) + '</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.preIncrWages||0),0)) + '</td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(_payrollPositions.reduce((s,p,i)=> s+(posCalcs[i]?.postIncrWages||0),0)) + '</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800;">' + fD(totalBase || 0) + '</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(totalOT || 0) + '</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;">' + fD(totalVSH || 0) + '</td>' +
-    '<td style="padding:8px 10px; text-align:right; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; font-weight:800; font-size:13px; color:#1e40af;">' + fD(totalComp || 0) + '</td>' +
-    '<td style="border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb;"></td>' +
+    '<td style="padding:8px 10px; ' + _b + '">TOTAL</td>' +
+    '<td style="padding:8px 10px; text-align:right; ' + _b + ' font-weight:700;">' + (totalEmp || 0) + '</td>' +
+    '<td style="' + _b + '"></td>' +
+    rosterCell('roster_bonus', 'Total Bonus', fD(_sumPC('bonus')), 'font-weight:700;') +
+    '<td style="' + _b + '"></td>' +
+    '<td style="' + _b + '"></td>' +
+    '<td style="' + _b + '"></td>' +
+    rosterCell('roster_weekly', 'Total Weekly Pay', fD(_sumPC('weeklyPay'))) +
+    rosterCell('roster_preincr', 'Total Pre-Incr Wages', fD(_sumPC('preIncrWages'))) +
+    '<td style="' + _b + '"></td>' +
+    rosterCell('roster_postincr', 'Total Post-Incr Wages', fD(_sumPC('postIncrWages'))) +
+    rosterCell('roster_base', 'Total Annual Base', fD(totalBase || 0), 'font-weight:800;') +
+    rosterCell('roster_ot', 'Total OT', fD(totalOT || 0)) +
+    rosterCell('roster_vsh', 'Total VSH', fD(totalVSH || 0)) +
+    rosterCell('roster_comp', 'Total Annual Comp', fD(totalComp || 0), 'font-weight:800; font-size:13px; color:#1e40af;') +
+    '<td style="' + _b + '"></td>' +
     '</tr>' +
     '<tr><td colspan="16" style="padding:8px 10px;">' +
     '<button onclick="addPayrollPosition()" style="padding:4px 12px; font-size:11px; font-weight:600; border-radius:5px; cursor:pointer; background:white; color:#2563eb; border:1px solid #2563eb;">+ Add Position</button>' +
@@ -25858,6 +25873,19 @@ function renderPayrollTaxes(t) {
   const catHdr = 'background:#f5efe7; font-weight:700; color:#5a4a3f; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; padding:8px 10px; border-bottom:2px solid #e5e7eb;';
   const subRow = 'background:var(--gray-50); font-weight:700; border-top:2px solid #d1d5db; border-bottom:2px solid #e5e7eb; padding:8px 10px;';
 
+  // FA dir 2026-06-04: total rows are click-to-inspect — clicking opens the
+  // lineage drill panel showing the component breakdown, exactly like the
+  // per-line tax/benefit cells. Totals are NOT directly editable: a total is
+  // the sum of its line items (recalc forces total = sum of the overridable
+  // lines), so you edit the lines above and the total re-sums (Excel SUM
+  // semantics). The little "fx" tag signals the cell is inspectable.
+  const inspectTotal = (key, label, val, extraStyle) => '<td data-payroll-cell="' + key +
+    '" data-payroll-label="' + String(label).replace(/"/g, '&quot;') +
+    '" style="' + (extraStyle || subRow) + ' text-align:right; font-weight:800; cursor:pointer; position:relative;"' +
+    ' onclick="payrollShowLineage(event, this)" title="Click to see the breakdown (sum of the lines above)">' +
+    '<span class="pr-total-val">' + val + '</span>' +
+    ' <span style="font-size:8px; color:#16a34a; border:1px solid #86efac; border-radius:3px; padding:0 3px; vertical-align:middle; font-weight:700;">fx</span></td>';
+
   let html = '';
   // Payroll Taxes
   html += '<tr><td colspan="4" style="' + catHdr + '">Payroll Taxes</td></tr>';
@@ -25867,7 +25895,7 @@ function renderPayrollTaxes(t) {
   html += taxRow('MTA', fP(a.mta||0), 'Gross Wages × Rate', fD(t.mtaAmt), 'mta');
   html += taxRow('NYS Disability', fP(a.nys_disability||0), 'Per employee/year', fD(t.nysDisAmt), 'nys_disability');
   html += taxRow('Paid Family Leave', fP(a.pfl||0), 'Gross Wages × Rate', fD(t.pflAmt), 'pfl');
-  html += '<tr><td colspan="3" style="' + subRow + '">Total Payroll Taxes</td><td style="' + subRow + ' text-align:right; font-weight:800;" data-payroll-cell="total_payroll_tax">' + fD(t.totalPayrollTax) + '</td></tr>';
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Payroll Taxes</td>' + inspectTotal('total_payroll_tax', 'Total Payroll Taxes', fD(t.totalPayrollTax)) + '</tr>';
 
   // Workers Comp — now click-to-inspect + editable like the other rows.
   html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
@@ -25882,14 +25910,14 @@ function renderPayrollTaxes(t) {
   html += taxRow('Legal Fund', '$' + (a.legal_monthly||0).toFixed(2) + '/mo', '$' + (a.legal_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.legalAmt), 'legal');
   html += taxRow('Training Fund', '$' + (a.training_monthly||0).toFixed(2) + '/mo', '$' + (a.training_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.trainingAmt), 'training');
   html += taxRow('Profit Sharing', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + '/qtr', '$' + (a.profit_sharing_quarterly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 4 qtr', fD(t.profitShareAmt), 'profit_sharing');
-  html += '<tr><td colspan="3" style="' + subRow + '">Total Union Benefits</td><td style="' + subRow + ' text-align:right; font-weight:800;" data-payroll-cell="total_union">' + fD(t.totalUnion) + '</td></tr>';
+  html += '<tr><td colspan="3" style="' + subRow + '">Total Union Benefits</td>' + inspectTotal('total_union', 'Total Union Benefits', fD(t.totalUnion)) + '</tr>';
 
   body.innerHTML = html;
 
   // Grand total footer
   foot.innerHTML = '<tr style="background:#f5efe7; font-weight:800; font-size:13px;">' +
     '<td colspan="3" style="border-top:3px double #5a4a3f; padding:10px;">TOTAL LABOR & RELATED (calculated)</td>' +
-    '<td style="border-top:3px double #5a4a3f; padding:10px; text-align:right; font-size:14px;">' + fD(t.totalLaborCalc) + '</td></tr>';
+    inspectTotal('total_labor', 'Total Labor & Related', fD(t.totalLaborCalc), 'border-top:3px double #5a4a3f; padding:10px; font-size:14px;') + '</tr>';
 
   // Update badge
   const badge = document.getElementById('prTaxTotal');
@@ -25985,6 +26013,17 @@ function payrollShowLineage(evt, td) {
   const grossW = (window._payrollComponents)
     ? ((window._payrollComponents.annual_base||0) + (window._payrollComponents.ot||0) + (window._payrollComponents.vsh_vacation||0) + (window._payrollComponents.vsh_holiday||0) + (window._payrollComponents.vsh_sick||0))
     : 0;
+  // FA dir 2026-06-04: helpers for the section-total breakdowns. Each component
+  // shows its applied (override-or-computed) value so the total ties out.
+  const _appliedComp = (k) => {
+    const ov = (_payrollOverrides || {})[k];
+    if (ov !== null && ov !== undefined && isFinite(parseFloat(ov))) return parseFloat(ov);
+    return (window._payrollComputed || {})[k] || 0;
+  };
+  const _sumComp = (keys) => keys.reduce((s, k) => s + _appliedComp(k), 0);
+  const TAX_KEYS = ['fica','sui','fui','mta','nys_disability','pfl'];
+  const UNION_KEYS = ['welfare','pension','supp_retirement','legal','training','profit_sharing'];
+  const COMP_LABELS = {fica:'FICA', sui:'SUI', fui:'FUI', mta:'MTA', nys_disability:'NYS Disability', pfl:'Paid Family Leave', workers_comp:'Workers Compensation', welfare:'Welfare', pension:'Pension', supp_retirement:'Supp. Retirement', legal:'Legal Fund', training:'Training Fund', profit_sharing:'Profit Sharing'};
   switch (key) {
     case 'fica':
       breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
@@ -26051,6 +26090,36 @@ function payrollShowLineage(evt, td) {
       if (adj.profit_sharing) breakdown.push({l: '+ Per-position adjustments', v: fD(adj.profit_sharing)});
       breakdown.push({l: '= Computed',      v: fD(computed)});
       break;
+    // FA dir 2026-06-04: section-total breakdowns (sum of the line items above).
+    case 'total_payroll_tax':
+      TAX_KEYS.forEach(k => breakdown.push({l: COMP_LABELS[k], v: fD(_appliedComp(k))}));
+      breakdown.push({l: '= Total Payroll Taxes', v: fD(_sumComp(TAX_KEYS))});
+      break;
+    case 'total_union':
+      UNION_KEYS.forEach(k => breakdown.push({l: COMP_LABELS[k], v: fD(_appliedComp(k))}));
+      breakdown.push({l: '= Total Union Benefits', v: fD(_sumComp(UNION_KEYS))});
+      break;
+    case 'total_labor':
+      breakdown.push({l: 'Gross Wages (base + OT + VSH)', v: fD(grossW)});
+      breakdown.push({l: '+ Total Payroll Taxes', v: fD(_sumComp(TAX_KEYS))});
+      breakdown.push({l: '+ Workers Compensation', v: fD(_appliedComp('workers_comp'))});
+      breakdown.push({l: '+ Total Union Benefits', v: fD(_sumComp(UNION_KEYS))});
+      breakdown.push({l: '= Total Labor & Related', v: fD(grossW + _sumComp(TAX_KEYS) + _appliedComp('workers_comp') + _sumComp(UNION_KEYS))});
+      break;
+    // Roster column totals — breakdown by position (uses window._payrollPosCalcs).
+    case 'roster_comp': case 'roster_base': case 'roster_ot': case 'roster_vsh':
+    case 'roster_weekly': case 'roster_preincr': case 'roster_postincr': case 'roster_bonus': {
+      const fieldMap = {roster_comp:'comp', roster_base:'annualBase', roster_ot:'ot', roster_vsh:'vsh', roster_weekly:'weeklyPay', roster_preincr:'preIncrWages', roster_postincr:'postIncrWages', roster_bonus:'bonus'};
+      const f = fieldMap[key];
+      const pc = window._payrollPosCalcs || [];
+      let tot = 0;
+      (_payrollPositions || []).forEach((p, i) => {
+        const v = (pc[i] && (pc[i][f] || 0)) || 0;
+        if (Math.abs(v) > 0.5) { breakdown.push({l: (p.position_name || 'Position ' + (i+1)) + (p.employee_count ? ' (' + p.employee_count + ')' : ''), v: fD(v)}); tot += v; }
+      });
+      breakdown.push({l: '= ' + label, v: fD(tot)});
+      break;
+    }
     default:
       breakdown.push({l: 'Formula', v: '(no breakdown defined for this cell)'});
   }
