@@ -2247,6 +2247,38 @@ def create_workflow_blueprint(db):
         return jsonify(result)
 
 
+    def _orphan_gls_for_budget(budget):
+        """Budget lines whose GL code is NOT claimed by any Summary row prefix
+        but DO carry data (ytd or current_budget). Mirrors the orphan
+        computation in /api/admin/summary-debug. Used to gate send-to-PM so a
+        building can't ship with material GL data dropped from the budget."""
+        import json as _json2
+        if not budget:
+            return []
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=budget.entity_code, budget_year=BUDGET_YEAR).all()
+        prefix_lists = []
+        for r in rows:
+            try:
+                pl = _json2.loads(r.gl_prefixes_json) if r.gl_prefixes_json else []
+            except Exception:
+                pl = []
+            if pl:
+                prefix_lists.append(pl)
+        orphans = []
+        for l in BudgetLine.query.filter_by(budget_id=budget.id).all():
+            gl = l.gl_code or ""
+            if not gl:
+                continue
+            if any(_gl_matches_prefixes(gl, pl) for pl in prefix_lists):
+                continue
+            ytd = float(l.ytd_actual or 0)
+            cb = float(l.current_budget or 0)
+            if abs(ytd) > 0.01 or abs(cb) > 0.01:
+                orphans.append({"gl_code": gl, "description": l.description or "",
+                                "ytd_actual": round(ytd, 2), "current_budget": round(cb, 2)})
+        return orphans
+
     @bp.route("/api/budgets/<entity_code>/status", methods=["POST"])
     def change_budget_status(entity_code):
         """Change budget status with validation using VALID_TRANSITIONS."""
@@ -2290,6 +2322,34 @@ def create_workflow_blueprint(db):
                     "total_rm_lines": BudgetLine.query.filter_by(
                         budget_id=budget.id, sheet_name="Repairs & Supplies",
                     ).count(),
+                }), 422
+
+        # FA dir 2026-06-04: orphaned-data gate. Block FA → PM ("Send to PM")
+        # when material GL data isn't mapped into the Summary — otherwise those
+        # dollars are silently dropped from the budget (entity 500 shipped to
+        # PM with $514K of orphaned expenses). The FA must map them via the
+        # orphan review ("Add to existing row") before handoff. Sub-$500
+        # stragglers don't block. Mirrors the R&M review gate above (422).
+        if new_status == "pm_pending":
+            try:
+                _orphans = _orphan_gls_for_budget(budget)
+            except Exception:
+                _orphans = []
+            _material = [o for o in _orphans
+                         if abs(o["ytd_actual"]) >= 500 or abs(o["current_budget"]) >= 500]
+            if _material:
+                _tot = round(sum(o["ytd_actual"] for o in _material), 2)
+                return jsonify({
+                    "error": "orphan_gls_unmapped",
+                    "message": (
+                        f"{len(_material)} GL account(s) holding ${abs(_tot):,.0f} "
+                        "of data aren't mapped to any Summary row, so they'd be "
+                        "dropped from the budget. Map them via the orphan review "
+                        "(‘Add to existing row’) before sending to the PM."
+                    ),
+                    "orphan_count": len(_material),
+                    "orphan_ytd_total": _tot,
+                    "orphan_gls": [o["gl_code"] for o in _material][:50],
                 }), 422
 
         if "notes" in data:
