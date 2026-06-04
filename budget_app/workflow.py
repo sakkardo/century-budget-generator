@@ -2270,6 +2270,13 @@ def create_workflow_blueprint(db):
             gl = l.gl_code or ""
             if not gl:
                 continue
+            # Only P&L / operating GLs belong in the budget Summary (income 4xxx,
+            # expenses 5xxx/6xxx, capital 7xxx). Balance-sheet & suspense accounts
+            # (0xxx/1xxx/2xxx/3xxx, incl. 0000-0000) are correctly NOT mapped to
+            # any operating row — they must NOT count as orphans, or the gate
+            # would false-block every building (they all carry large BS balances).
+            if gl[:1] not in ("4", "5", "6", "7"):
+                continue
             if any(_gl_matches_prefixes(gl, pl) for pl in prefix_lists):
                 continue
             ytd = float(l.ytd_actual or 0)
