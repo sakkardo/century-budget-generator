@@ -31,6 +31,7 @@ LABEL_ALIASES = {
     # already exists.
     "Bicycle Storage": "Bicycle Charge",
     "Commercial Rent": "Commercial",
+    "Commerical Rent": "Commercial",   # common misspelling on the summary template (e.g. 710)
     # FA directive 2026-05-14: portfolio scan #1 surfaced 234 unmapped
     # labels across the 100 buildings with parseable approved-2026 files.
     # The block below adds 31 aliases targeting EXISTING canonical labels
@@ -183,7 +184,14 @@ SUMMARY_ROW_MAP = {
         #   4070 — prepaid (future-period received in advance)
         # All three are maintenance revenue, just timing variants. PMs and FAs
         # need the combined number to see total maintenance cash flow.
-        "gl_prefix": ["4010", "4060", "4070"],
+        # FA dir 2026-06-04: CONDOS bill primary income as "Common Charges" on
+        # GL 4020 (co-ops use 4010). "Common Charges" aliases to this row, so
+        # 4020 must live here or every condo's entire income base orphans out
+        # of the Summary (found $7.9M dropped on 847, $1.78M on 710). 4020 is
+        # already in FIXED_FORECAST_GL_BASES, so the income forecast-pin applies
+        # to condo common charges exactly like co-op maintenance. A co-op has no
+        # 4020 GL, so adding it is a no-op for co-ops.
+        "gl_prefix": ["4010", "4020", "4060", "4070"],
         "section": "income",
         "notes": "Primary revenue. 4010 = billed maintenance, 4060 = arrears "
                  "(prior-period collections), 4070 = prepaid (future-period "
@@ -212,6 +220,17 @@ SUMMARY_ROW_MAP = {
         "gl_prefix": ["4040"],
         "section": "income",
         "notes": "Commercial rent. May also pull from Comm Rent & Escalations sheet."
+    },
+    "Commercial Common Charges": {
+        "sheet": "Income",
+        # FA dir 2026-06-04: condo commercial units pay common charges on GL
+        # 4030 (vs co-op commercial rent on 4040 above). Was unmapped, so the
+        # condo "Commercial Common Charges" summary row sat empty (e.g. 847,
+        # ~$118k budget orphaned). 4030 is in FIXED_FORECAST_GL_BASES.
+        "gl_prefix": ["4030"],
+        "section": "income",
+        "notes": "Condo commercial common charges (GL 4030). Co-op equivalent "
+                 "is 'Commercial' (4040)."
     },
     "Garage": {
         "sheet": "Income",
