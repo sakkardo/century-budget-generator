@@ -2632,18 +2632,37 @@ def create_workflow_blueprint(db):
             # covering summary rows live under the same year — mirror /api/summary.
             _summary_rows = BudgetSummaryRow.query.filter_by(
                 entity_code=entity_code, budget_year=BUDGET_YEAR).all()
+            # GL -> current_budget from the loaded worksheet lines. A row counts
+            # as "has a budget" when its GL lines carry one even if the Summary's
+            # imported col6 is missing (the two budget sources can disagree —
+            # entity 500 maintenance: GL current_budget present, Summary col6
+            # None). Without this the forecast pin wouldn't fire and the income
+            # tab would annualize instead of matching the approved budget.
+            # (Mirrors the /api/summary col6 fallback so tab == Summary.)
+            _cb_by_gl = {}
+            for _sn in sheets:
+                for _ld in sheets[_sn]:
+                    _g = _ld.get("gl_code") or ""
+                    if _g:
+                        _cb_by_gl[_g] = _cb_by_gl.get(_g, 0) + (_ld.get("current_budget") or 0)
             _pinned_prefixes = []
             for _sr in _summary_rows:
-                if (_sr.row_type == "data"
-                        and _sr.col6_approved_budget is not None
-                        and _row_has_fixed_forecast_gl(_sr.gl_prefixes_json)):
-                    try:
-                        for _p in (_json.loads(_sr.gl_prefixes_json) or []):
-                            _b = str(_p).split("-")[0].strip()
-                            if _b in FIXED_FORECAST_GL_BASES:
-                                _pinned_prefixes.append(_p)
-                    except Exception:
-                        pass
+                if _sr.row_type != "data" or not _row_has_fixed_forecast_gl(_sr.gl_prefixes_json):
+                    continue
+                try:
+                    _prefs = _json.loads(_sr.gl_prefixes_json) or []
+                except Exception:
+                    _prefs = []
+                _has_budget = _sr.col6_approved_budget is not None
+                if not _has_budget:
+                    _row_cb = sum(cb for _g, cb in _cb_by_gl.items()
+                                  if _g and gl_matches_prefixes(_g, _prefs))
+                    _has_budget = abs(_row_cb) > 0.01
+                if _has_budget:
+                    for _p in _prefs:
+                        _b = str(_p).split("-")[0].strip()
+                        if _b in FIXED_FORECAST_GL_BASES:
+                            _pinned_prefixes.append(_p)
             if _pinned_prefixes:
                 for _sn in sheets:
                     for _ld in sheets[_sn]:
@@ -9452,6 +9471,22 @@ def create_workflow_blueprint(db):
                         col3 = round(agg["ytd_only"], 2)
                         col4 = round(agg["accrual_unpaid"] + agg["estimate"], 2)
                         col5 = round(agg["forecast"], 2)
+
+                        # FA dir 2026-06-04: col6 (2026 approved budget) fallback.
+                        # The 2026-approved-budget Summary import sets
+                        # col6_approved_budget per row, but it can be missing even
+                        # when the underlying GL lines DO carry a current_budget
+                        # (entity 500 maintenance: GL budget ~$2.8M present, but
+                        # Summary col6 was None). Fall back to the aggregated GL
+                        # current_budget so (a) the Summary budget column matches
+                        # the income tab, and (b) the fixed-forecast pin below
+                        # fires (col5 -> col6) for fully-collectible income. Only
+                        # fills a blank with a real GL budget — never overwrites an
+                        # imported col6; a true $0 stays blank.
+                        if col6 is None:
+                            _agg_cb = round(agg.get("current_budget", 0) or 0, 2)
+                            if abs(_agg_cb) > 0.005:
+                                col6 = _agg_cb
 
                         # FA dir 2026-06-03 (#3): the Summary's 2027 Budget
                         # (col7) must reflect the proposed budget the PM/FA set
