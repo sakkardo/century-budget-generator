@@ -190,6 +190,66 @@ def check_active_fa_filter():
     return f"{len(data)} active FAs, no joint-name pseudo-users"
 
 
+# ──────────── Behavioral regression checks (2026-06-04) ────────────
+# Lock the budget invariants shipped this cycle so future commits can't
+# silently break them. All read-only GETs against prod. Relational asserts
+# (not magic numbers) so they survive legitimate budget edits.
+
+def _summary_rows(entity):
+    code, data = _http_get(f"/api/summary/{entity}")
+    assert code == 200, f"/api/summary/{entity} returned {code}"
+    return data.get("rows", []) or []
+
+
+def check_income_forecast_pins_to_budget():
+    """Fully-collectible income (Maintenance) must pin 12-Mo Forecast (col5) to
+    the approved budget (col6). Regression catcher for the income-pin + col6
+    fallback fix — entity 500 was annualizing $2.69M against a $2.82M budget
+    because the Summary col6 was blank while the GL lines carried the budget."""
+    out = []
+    for ent in ("148", "500"):
+        m = next((r for r in _summary_rows(ent) if (r.get("label") or "") == "Maintenance"), None)
+        assert m, f"{ent}: no Maintenance row"
+        c5, c6 = m.get("col5"), m.get("col6")
+        assert isinstance(c6, (int, float)) and c6 > 0, \
+            f"{ent} Maintenance col6 (budget) missing/zero: {c6} — col6 fallback regressed?"
+        assert isinstance(c5, (int, float)) and abs(c5 - c6) < 1, \
+            f"{ent} Maintenance forecast {c5} != budget {c6} — income pin regressed"
+        out.append(f"{ent}=${c6:,.0f}")
+    return "forecast==budget: " + ", ".join(out)
+
+
+def check_operating_assessment_formula():
+    """Operating Assessment proposed (col7) = first-half RE tax x 2 x pct (#6)."""
+    oa = next((r for r in _summary_rows(TEST_ENTITY_2)   # 148
+               if "Assessment-Operating" in (r.get("label") or "")), None)
+    if not oa or not isinstance(oa.get("col7"), (int, float)):
+        return "no op-assessment proposed (skipped)"
+    _, rt = _http_get(f"/api/re-taxes/{TEST_ENTITY_2}")
+    re = (rt or {}).get("re_taxes", {})
+    fh = re.get("first_half_tax", 0) or 0
+    pct = re.get("operating_assessment_pct", 0.175) or 0.175
+    expected = fh * 2 * pct
+    assert abs(oa["col7"] - expected) < 2, \
+        f"148 op-assessment col7 {oa['col7']} != first_half {fh} x2 x{pct} = {expected:.2f}"
+    return f"148 op-assessment ${oa['col7']:,.0f} ties to ½-tax x2 x{pct:.3f}"
+
+
+def check_capital_no_proposed():
+    """Capital lines have NO proposed budget — capital Summary rows (7xxx) must
+    show col7 == 0, never an annualized value."""
+    caps = [r for r in _summary_rows(TEST_ENTITY_2)  # 148
+            if r.get("row_type") == "data"
+            and any(str(p).split("-")[0].strip().startswith("7") for p in (r.get("gl_prefixes") or []))]
+    if not caps:
+        return "no capital GL rows (skipped)"
+    for r in caps:
+        c7 = r.get("col7")
+        assert c7 in (0, 0.0, None), \
+            f"148 capital row {r.get('label')!r} col7={c7} should be 0 (capital has no proposed)"
+    return f"{len(caps)} capital rows, all col7=0"
+
+
 CHECKS = [
     ("buildings_index",         check_buildings_index),
     ("dashboard_168",           check_dashboard),
@@ -200,6 +260,10 @@ CHECKS = [
     ("diff_no_identity",        check_diff_no_identity),
     ("active_fa_filter",        check_active_fa_filter),
     ("pm_rm_review_gate",       check_pm_rm_review_gate_endpoints_exposed),
+    # Behavioral regressions (2026-06-04 cycle):
+    ("income_forecast_pin",     check_income_forecast_pins_to_budget),
+    ("op_assessment_formula",   check_operating_assessment_formula),
+    ("capital_no_proposed",     check_capital_no_proposed),
 ]
 
 
