@@ -25120,6 +25120,13 @@ function recalcPayroll() {
     workers_comp: wcAmt,
     welfare: welfareAmt, pension: pensionAmt, supp_retirement: suppRetAmt,
     legal: legalAmt, training: trainingAmt, profit_sharing: profitShareAmt,
+    // FA dir 2026-06-04: section totals (pre-override) so the lineage panel and
+    // revert-to-computed flow show the correct computed value when an FA has
+    // typed a hard override onto a total cell.
+    total_payroll_tax: ficaAmt + suiAmt + fuiAmt + mtaAmt + nysDisAmt + pflAmt,
+    total_union: welfareAmt + pensionAmt + suppRetAmt + legalAmt + trainingAmt + profitShareAmt,
+    total_labor: grossWages + (ficaAmt + suiAmt + fuiAmt + mtaAmt + nysDisAmt + pflAmt) + wcAmt
+                 + (welfareAmt + pensionAmt + suppRetAmt + legalAmt + trainingAmt + profitShareAmt),
   };
   const _applyOv = (key, fallback) => {
     const ov = _payrollOverrides[key];
@@ -25140,12 +25147,15 @@ function recalcPayroll() {
   const ovTraining = _applyOv('training', trainingAmt);
   const ovProfitShare = _applyOv('profit_sharing', profitShareAmt);
   // Recompute subtotals using overrides so they cascade through.
-  const ovTotalPayrollTax = ovFica + ovSui + ovFui + ovMta + ovNysDis + ovPfl;
-  const ovTotalUnion = ovWelfare + ovPension + ovSuppRet + ovLegal + ovTraining + ovProfitShare;
+  // FA dir 2026-06-04: section totals are themselves overridable (type a hard
+  // number on the total cell). Default = sum of the (possibly-overridden) line
+  // items; an explicit total override wins and cascades into Total Labor.
+  const ovTotalPayrollTax = _applyOv('total_payroll_tax', ovFica + ovSui + ovFui + ovMta + ovNysDis + ovPfl);
+  const ovTotalUnion = _applyOv('total_union', ovWelfare + ovPension + ovSuppRet + ovLegal + ovTraining + ovProfitShare);
 
   window._payrollComputed = _computed;   // pre-override values for lineage panel
 
-  const totalLaborCalc = grossWages + ovTotalPayrollTax + ovWc + ovTotalUnion;
+  const totalLaborCalc = _applyOv('total_labor', grossWages + ovTotalPayrollTax + ovWc + ovTotalUnion);
 
   // Store for tie-out
   window._payrollCalcTotal = totalLaborCalc;
@@ -25879,12 +25889,24 @@ function renderPayrollTaxes(t) {
   // the sum of its line items (recalc forces total = sum of the overridable
   // lines), so you edit the lines above and the total re-sums (Excel SUM
   // semantics). The little "fx" tag signals the cell is inspectable.
-  const inspectTotal = (key, label, val, extraStyle) => '<td data-payroll-cell="' + key +
-    '" data-payroll-label="' + String(label).replace(/"/g, '&quot;') +
-    '" style="' + (extraStyle || subRow) + ' text-align:right; font-weight:800; cursor:pointer; position:relative;"' +
-    ' onclick="payrollShowLineage(event, this)" title="Click to see the breakdown (sum of the lines above)">' +
-    '<span class="pr-total-val">' + val + '</span>' +
-    ' <span style="font-size:8px; color:#16a34a; border:1px solid #86efac; border-radius:3px; padding:0 3px; vertical-align:middle; font-weight:700;">fx</span></td>';
+  const inspectTotal = (key, label, val, extraStyle) => {
+    const _ov = !!(_payrollOverrides && _payrollOverrides[key] !== undefined && _payrollOverrides[key] !== null);
+    const _num = parseFloat(String(val).replace(/[$,]/g, '')) || 0;
+    const ovrStyle = _ov ? 'background:#fef3c7; color:#92400e;' : '';
+    const badge = _ov
+      ? '<span style="position:absolute; top:2px; right:3px; font-size:8px; font-weight:700; color:#92400e; background:#fde68a; padding:1px 3px; border-radius:3px; letter-spacing:0.3px; pointer-events:none;">OVR</span>'
+      : ' <span style="font-size:8px; color:#16a34a; border:1px solid #86efac; border-radius:3px; padding:0 3px; vertical-align:middle; font-weight:700;">fx</span>';
+    return '<td data-payroll-cell="' + key + '" data-payroll-label="' + String(label).replace(/"/g, '&quot;') +
+      '" style="' + (extraStyle || subRow) + ' text-align:right; font-weight:800; cursor:cell; position:relative; ' + ovrStyle + '"' +
+      ' onclick="payrollShowLineage(event, this)" oncontextmenu="return payrollRevertOverride(event, this)"' +
+      ' title="' + (_ov ? 'Override active — right-click to revert to computed' : 'Click for breakdown · double-click to type an override') + '">' +
+      '<span class="pr-total-val">' + val + '</span>' + badge +
+      '<input type="text" class="pr-total-edit" data-payroll-cell="' + key + '" data-raw="' + _num + '" value="' + val + '"' +
+      ' style="display:none; width:90%; padding:2px 4px; border:1px solid #d97706; border-radius:3px; text-align:right; font-variant-numeric:tabular-nums; background:white;"' +
+      ' onblur="payrollOverrideSave(this)"' +
+      ' onkeydown="if(event.key===\'Enter\'){this.blur();} else if(event.key===\'Escape\'){this.value=this.dataset.raw;this.blur();}">' +
+      '</td>';
+  };
 
   let html = '';
   // Payroll Taxes
