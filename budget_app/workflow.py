@@ -26933,6 +26933,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     } else {
       proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
     }
+    // FA rule (mirrors sumLines, _aggregate_by_prefix, and the Summary's capital
+    // row): Capital lines have NO proposed budget. Force the line cell to 0 so it
+    // matches the Sheet Total proposed (which already zeros capital) — otherwise
+    // the total reads 0 while the line cells show forecast×inc and don't add up.
+    if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
+      proposed = 0;
+    }
     const variance = budget - forecast;
     const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
