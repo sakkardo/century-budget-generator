@@ -15527,7 +15527,13 @@ function renderDetail(data) {
         }
 
         const tr = document.createElement('tr');
-        tr.id = 'prop_' + l.gl_code;
+        // FA dir 2026-06-04: prefix 'pendprop_' (NOT 'prop_') so these pending-
+        // review rows don't collide with the budget-grid proposed input cells
+        // (id 'prop_<gl>'). The duplicate id made getElementById('prop_'+gl)
+        // return this <tr> instead of the <input>, which broke the Sheet Total
+        // proposed FORMULA (fxSubtotalFocus read $0 parts) and the live total
+        // recompute (sumGLs) + per-cell updates whenever proposals were pending.
+        tr.id = 'pendprop_' + l.gl_code;
         tr.style.cssText = 'transition:background 0.15s;';
         tr.onmouseover = function() { this.style.background='var(--gray-50)'; };
         tr.onmouseout = function() { this.style.background=''; };
@@ -19081,7 +19087,7 @@ async function acceptProposal(glCode) {
     if (result.error) { showToast(result.error, 'error'); return; }
 
     // Update row in place
-    const row = document.getElementById('prop_' + glCode);
+    const row = document.getElementById('pendprop_' + glCode);
     if (row) {
       const cells = row.querySelectorAll('td');
       cells[6].innerHTML = '<span style="background:#dcfce7; color:#166534; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:600;">✓ Accepted</span>';
@@ -19157,7 +19163,7 @@ async function submitProposalReview() {
     if (result.error) { showToast(result.error, 'error'); return; }
 
     // Update row in place
-    const row = document.getElementById('prop_' + _proposalModalGl);
+    const row = document.getElementById('pendprop_' + _proposalModalGl);
     if (row) {
       const cells = row.querySelectorAll('td');
       if (_proposalModalAction === 'rejected') {
