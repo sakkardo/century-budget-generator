@@ -394,10 +394,18 @@ def create_expense_distribution_blueprint(db, workflow_models):
         invoices = ExpenseInvoice.query.filter_by(report_id=report.id)\
             .order_by(ExpenseInvoice.gl_code, ExpenseInvoice.invoice_date).all()
 
-        # Group by GL code
+        # Group by EFFECTIVE GL code. FA dir 2026-06-05 (QA on 733): a reclassed
+        # invoice keeps its original gl_code but reclass_to_gl points at the new
+        # home. Previously we grouped by gl_code, so a reclassed invoice stayed
+        # struck-through under the OLD GL and never appeared under the new one —
+        # the FA reclassed it and it "didn't move." Group by the target when a
+        # reclass is set so the invoice shows under its new GL (the YTD totals
+        # already move via applyReclassAdjustments). inv.to_dict() still carries
+        # the original gl_code, so the frontend can render "from <source>" + Undo,
+        # and the client-side YTD adjustment math is unchanged.
         gl_groups = {}
         for inv in invoices:
-            gl = inv.gl_code
+            gl = inv.reclass_to_gl if (inv.reclass_to_gl and inv.reclass_to_gl != inv.gl_code) else inv.gl_code
             if gl not in gl_groups:
                 gl_groups[gl] = {"gl_code": gl, "gl_name": inv.gl_name, "invoices": [], "total": 0}
             gl_groups[gl]["invoices"].append(inv.to_dict())

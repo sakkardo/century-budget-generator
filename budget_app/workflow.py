@@ -31614,8 +31614,13 @@ async function toggleInvoices(glCode, linkEl) {
     html += '<td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Payee</td><td style="padding:7px 16px; min-width:140px; border-bottom:2px solid var(--gray-300);">Description</td><td style="padding:7px 16px; min-width:70px; border-bottom:2px solid var(--gray-300);">Inv #</td><td style="padding:7px 16px; min-width:85px; border-bottom:2px solid var(--gray-300);">Date</td><td style="padding:7px 16px; min-width:100px; text-align:right; border-bottom:2px solid var(--gray-300);">Amount</td><td style="padding:7px 16px; min-width:90px; border-bottom:2px solid var(--gray-300);">Check #</td><td style="padding:7px 16px; min-width:90px; text-align:center; border-bottom:2px solid var(--gray-300);">Action</td></tr></thead>';
 
     glGroup.invoices.forEach(inv => {
-        const isReclassed = !!inv.reclass_to_gl;
-        html += '<tr style="' + (isReclassed ? ' opacity:0.5; text-decoration:line-through;' : '') + '">';
+        // FA dir 2026-06-05 (QA on 733): invoices are now grouped under their
+        // EFFECTIVE GL (target when reclassed). So a reclassed invoice appears
+        // HERE because it was moved INTO this GL from inv.gl_code — show it
+        // normally with a "from <source>" tag + Undo, not greyed-out under the
+        // old GL. This is the actual "move" the FA expects.
+        const isIncoming = !!inv.reclass_to_gl && inv.reclass_to_gl !== inv.gl_code;
+        html += '<tr>';
         html += '<td style="padding:7px 16px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--gray-200);">' + (inv.payee_name || inv.payee_code || '—') + '</td>';
         html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; color:var(--gray-600); border-bottom:1px solid var(--gray-200);">' + (inv.notes || '—') + '</td>';
         html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; font-family:monospace; border-bottom:1px solid var(--gray-200);">' + (inv.invoice_num || '—') + '</td>';
@@ -31623,8 +31628,8 @@ async function toggleInvoices(glCode, linkEl) {
         html += '<td style="padding:7px 16px; white-space:nowrap; text-align:right; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; border-bottom:1px solid var(--gray-200);">' + fmtAmt(inv.amount) + '</td>';
         html += '<td style="padding:7px 16px; white-space:nowrap; font-size:12px; border-bottom:1px solid var(--gray-200);">' + (inv.check_num || '—') + '</td>';
         html += '<td style="padding:7px 16px; text-align:center; border-bottom:1px solid var(--gray-200);">';
-        if (isReclassed) {
-            html += '<span style="font-size:11px; color:var(--orange);">→ ' + inv.reclass_to_gl + '</span> ';
+        if (isIncoming) {
+            html += '<span style="font-size:11px; color:#15803d;" title="Reclassed into this GL from ' + inv.gl_code + '">↩ from ' + inv.gl_code + '</span> ';
             html += '<button onclick="inlineUndoReclass(' + inv.id + ',\'' + glCode + '\')" style="font-size:11px; padding:2px 8px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:4px; cursor:pointer;">Undo</button>';
         } else {
             html += '<span id="reclass_label_' + inv.id + '" style="font-size:11px; color:var(--gray-500); margin-right:4px;"></span>';
