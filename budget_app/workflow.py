@@ -18644,14 +18644,15 @@ function faLineChanged(gl, field, value) {
     faAutoSave(gl, 'proposed_budget', Math.round(proposed));
   }
 
-  // Excel: Variance = Curr Budget - 12 Mo Forecast; % Change = (Budget - Forecast) / Forecast
-  const variance = budget - forecast;
-  const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
+  // FA dir 2026-06-05: $ Var = Proposed - Curr Budget; % Chg = (Proposed - Budget) / Budget.
+  // (was Excel budget-vs-forecast parity — recomputed here on every cell edit.)
+  const variance = proposed - budget;
+  const pctChange = budget ? ((proposed - budget) / budget) : 0;
   const varEl = document.getElementById('var_' + gl);
   if (varEl) {
     varEl.value = fmt(variance);
     varEl.dataset.raw = Math.round(variance);
-    varEl.dataset.formula = '= ' + fmt(budget) + ' - ' + fmt(forecast);
+    varEl.dataset.formula = '= ' + fmt(proposed) + ' - ' + fmt(budget);
     varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const varTd = varEl.closest('td');
     if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
@@ -18660,7 +18661,7 @@ function faLineChanged(gl, field, value) {
   if (pctEl) {
     pctEl.value = (pctChange * 100).toFixed(1) + '%';
     pctEl.dataset.raw = pctChange;
-    pctEl.dataset.formula = '= (' + fmt(budget) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
+    pctEl.dataset.formula = '= (' + fmt(proposed) + ' - ' + fmt(budget) + ') / ' + fmt(budget);
   }
 
   // Recalculate sheet totals from live cell values
@@ -18689,8 +18690,8 @@ function faUpdateSheetTotals() {
 
   function updateTotalRow(rowEl, t) {
     if (!rowEl) return;
-    const v = t.budget - t.forecast;
-    const p = t.forecast ? ((t.budget - t.forecast) / t.forecast) : 0;
+    const v = t.proposed - t.budget;
+    const p = t.budget ? ((t.proposed - t.budget) / t.budget) : 0;
     const cells = rowEl.querySelectorAll('td');
     // With colspan="3" first cell: cells[0]=label, cells[1]=prior, cells[2]=ytd,
     // cells[3]=accrual, cells[4]=unpaid,
@@ -27133,8 +27134,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
       proposed = 0;
     }
-    const variance = budget - forecast;
-    const pctChange = forecast ? ((budget - forecast) / forecast) : 0;
+    // FA dir 2026-06-05: $ Var / % Chg compare PROPOSED to Current Budget (the
+    // change the FA is making to the budget), not the old Excel budget-vs-forecast
+    // parity — that read as unrelated noise sitting next to the Proposed column.
+    const variance = proposed - budget;
+    const pctChange = budget ? ((proposed - budget) / budget) : 0;
     const incPct = ((l.increase_pct || 0) * 100).toFixed(1);
     const varColor = variance >= 0 ? 'var(--red)' : 'var(--green)';
     const reclassBadge = l.reclass_to_gl ? ' <span style="background:var(--orange-light); color:var(--orange); font-size:10px; padding:1px 5px; border-radius:8px;">R</span>' : '';
@@ -27244,8 +27248,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   }
 
   function subtotalRow(label, t, cls, rowId) {
-    const v = t.budget - t.forecast;
-    const p = t.forecast ? ((t.budget - t.forecast)/t.forecast) : 0;
+    const v = t.proposed - t.budget;
+    const p = t.budget ? ((t.proposed - t.budget)/t.budget) : 0;
     const idAttr = rowId ? ' id="' + rowId + '"' : '';
     const isTotal = cls === 'total-row';
     const bs = isTotal ? 'background:rgba(255,255,255,0.2); color:white; border-color:rgba(255,255,255,0.4);' : '';
