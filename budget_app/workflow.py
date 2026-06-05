@@ -27411,22 +27411,39 @@ function computeForecast(l) {
 
 async function sendToPM() {
   if (!confirm('Send to PM for expense review?')) return;
-  await fetch('/api/budgets/' + entityCode + '/status', {
+  const resp = await fetch('/api/budgets/' + entityCode + '/status', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'pm_pending'})
   });
+  // FA dir 2026-06-05 (QA on 733): the status POST can be REJECTED (e.g. 422
+  // orphan_gls_unmapped — material GL data not mapped to the Summary). The old
+  // code fired a success toast unconditionally, so the FA saw "Sent to PM" even
+  // when the send was blocked and the budget stayed in draft. Check the response
+  // and surface the server's reason instead of lying.
+  if (!resp.ok) {
+    let msg = 'Send to PM failed (HTTP ' + resp.status + ').';
+    try { const j = await resp.json(); msg = j.message || j.error || msg; } catch (e) {}
+    showToast(msg, 'error');
+    return;
+  }
   showToast('Sent to PM for review', 'success');
   loadDetail();
 }
 
 async function approvePM() {
   if (!confirm('Approve PM review?')) return;
-  await fetch('/api/budgets/' + entityCode + '/status', {
+  const resp = await fetch('/api/budgets/' + entityCode + '/status', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'approved'})
   });
+  if (!resp.ok) {
+    let msg = 'Approve failed (HTTP ' + resp.status + ').';
+    try { const j = await resp.json(); msg = j.message || j.error || msg; } catch (e) {}
+    showToast(msg, 'error');
+    return;
+  }
   showToast('Budget approved!', 'success');
   loadDetail();
 }
@@ -27434,11 +27451,17 @@ async function approvePM() {
 async function returnPM() {
   const notes = prompt('Notes for PM:');
   if (notes === null) return;
-  await fetch('/api/budgets/' + entityCode + '/status', {
+  const resp = await fetch('/api/budgets/' + entityCode + '/status', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: 'returned', notes: notes})
   });
+  if (!resp.ok) {
+    let msg = 'Return failed (HTTP ' + resp.status + ').';
+    try { const j = await resp.json(); msg = j.message || j.error || msg; } catch (e) {}
+    showToast(msg, 'error');
+    return;
+  }
   showToast('Budget returned to PM', 'info');
   loadDetail();
 }
