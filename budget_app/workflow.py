@@ -9710,7 +9710,7 @@ def create_workflow_blueprint(db):
                 if sk in section_data:
                     section_data[sk].append(rd)
 
-        # Recompute subtotal cols (3-5, 7, 8) from data rows
+        # Recompute subtotal cols (1, 3-8) from data rows
         for rd in result_rows:
             if rd["row_type"] != "subtotal":
                 continue
@@ -9726,6 +9726,17 @@ def create_workflow_blueprint(db):
                     iv = sum(r.get(ck) or 0 for r in inc)
                     ev = sum(r.get(ck) or 0 for r in exp)
                     rd[ck] = round(iv - ev, 2) if (iv or ev) else None
+                # Footing fix 2026-06-06: foot col1 (2024 actual) / col6 (2026
+                # budget) from data rows too, so an "Add Row to Summary" row
+                # rolls into the section totals. Only when the section actually
+                # carries sectioned data rows — flat-format buildings (e.g. 148)
+                # store already-footed col1/col6 on the subtotal row, and
+                # recomputing from their (empty) section buckets would null them.
+                if inc or exp:
+                    for ck in ["col1", "col6"]:
+                        iv = sum(r.get(ck) or 0 for r in inc)
+                        ev = sum(r.get(ck) or 0 for r in exp)
+                        rd[ck] = round(iv - ev, 2)
                 if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                     rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
                 continue
@@ -9745,6 +9756,16 @@ def create_workflow_blueprint(db):
                     ni = sum(r.get(ck) or 0 for r in noi)
                     ne = sum(r.get(ck) or 0 for r in noe)
                     rd[ck] = round((iv - ev) + ni - ne, 2) if (iv or ev or ni or ne) else None
+                # Footing fix 2026-06-06: foot col1/col6 from data rows too
+                # (see Net Operating note). Preserve stored values for flat-
+                # format buildings whose section buckets are empty.
+                if inc or exp or noi or noe:
+                    for ck in ["col1", "col6"]:
+                        iv = sum(r.get(ck) or 0 for r in inc)
+                        ev = sum(r.get(ck) or 0 for r in exp)
+                        ni = sum(r.get(ck) or 0 for r in noi)
+                        ne = sum(r.get(ck) or 0 for r in noe)
+                        rd[ck] = round((iv - ev) + ni - ne, 2)
                 if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                     rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
                 continue
@@ -9755,6 +9776,13 @@ def create_workflow_blueprint(db):
             for ck in ["col2", "col3", "col4", "col5", "col7"]:
                 vals = [r.get(ck) or 0 for r in data_rows]
                 rd[ck] = round(sum(vals), 2) if any(v != 0 for v in vals) else None
+            # Footing fix 2026-06-06: foot col1/col6 from data rows too, so an
+            # "Add Row to Summary" row rolls into the section total. Skip when
+            # the section has no sectioned data rows (flat-format buildings like
+            # 148 store already-footed col1/col6 — recomputing would null them).
+            if data_rows:
+                for ck in ["col1", "col6"]:
+                    rd[ck] = round(sum(r.get(ck) or 0 for r in data_rows), 2)
             if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                 rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
 
