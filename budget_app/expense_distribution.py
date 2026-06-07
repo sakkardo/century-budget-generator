@@ -88,37 +88,49 @@ def parse_expense_distribution(file_path):
     # GL header row → detail rows → Total row hierarchy.
     # We detect flat by checking if col C (payee code) is populated on
     # the same row that has a GL code in col A.
+    def _cell(row, i):
+        # Some Yardi ExpDist exports (2026-06-05 batch on 212/215/217/810) emit
+        # short rows — total, blank, or note rows with fewer than 16 columns. A
+        # hard row[15] access then raises IndexError ("tuple index out of range")
+        # and aborts the ENTIRE parse, so one stray row drops every invoice in
+        # the file. Guard every cell read so short rows degrade to None.
+        return row[i].value if i < len(row) else None
+
     def _extract_invoice(row, gl_code, gl_name):
         """Pull invoice fields from a row given its GL code + name."""
-        amount = row[11].value  # Column L
+        amount = _cell(row, 11)  # Column L
         if amount is None:
             return None
-        invoice_date = row[8].value
-        period = row[9].value
-        check_date = row[14].value
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            return None  # non-numeric amount (stray total/label row) — skip
+        invoice_date = _cell(row, 8)
+        period = _cell(row, 9)
+        check_date = _cell(row, 14)
         return {
             "gl_code": gl_code,
             "gl_name": gl_name,
-            "payee_code": str(row[2].value or "").strip(),
-            "payee_name": str(row[3].value or "").strip(),
-            "payable_control": str(row[4].value or "").strip(),
-            "batch": str(row[5].value or "").strip(),
-            "property_code": str(row[6].value or "").strip(),
-            "invoice_num": str(row[7].value or "").strip(),
+            "payee_code": str(_cell(row, 2) or "").strip(),
+            "payee_name": str(_cell(row, 3) or "").strip(),
+            "payable_control": str(_cell(row, 4) or "").strip(),
+            "batch": str(_cell(row, 5) or "").strip(),
+            "property_code": str(_cell(row, 6) or "").strip(),
+            "invoice_num": str(_cell(row, 7) or "").strip(),
             "invoice_date": invoice_date.isoformat() if hasattr(invoice_date, 'isoformat') else str(invoice_date or ""),
             "period": period.isoformat() if hasattr(period, 'isoformat') else str(period or ""),
-            "payment_method": str(row[10].value or "").strip(),
-            "amount": float(amount),
-            "check_control": str(row[12].value or "").strip(),
-            "check_num": str(row[13].value or "").strip(),
+            "payment_method": str(_cell(row, 10) or "").strip(),
+            "amount": amount,
+            "check_control": str(_cell(row, 12) or "").strip(),
+            "check_num": str(_cell(row, 13) or "").strip(),
             "check_date": check_date.isoformat() if hasattr(check_date, 'isoformat') else str(check_date or ""),
-            "notes": str(row[15].value or "").strip(),
+            "notes": str(_cell(row, 15) or "").strip(),
         }
 
     for row in ws.iter_rows(min_row=5, max_row=ws.max_row, values_only=False):
-        a_val = row[0].value  # Column A
-        b_val = row[1].value  # Column B
-        c_val = row[2].value  # Column C — payee code (key to flat-vs-hierarchical detection)
+        a_val = _cell(row, 0)  # Column A
+        b_val = _cell(row, 1)  # Column B
+        c_val = _cell(row, 2)  # Column C — payee code (key to flat-vs-hierarchical detection)
 
         if a_val and isinstance(a_val, str):
             a_val = a_val.strip()
@@ -150,7 +162,7 @@ def parse_expense_distribution(file_path):
                 continue
 
         # Hierarchical: invoice detail row — col A empty, col C has payee code.
-        if current_gl and row[2].value is not None:
+        if current_gl and c_val is not None:
             inv = _extract_invoice(row, current_gl, current_gl_name)
             if inv is not None:
                 invoices.append(inv)
