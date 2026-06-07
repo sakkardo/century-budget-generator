@@ -32646,8 +32646,7 @@ function _buildSumFormula(cellId) {
   if (field === 'forecast') {
     // Show SUM of GL forecasts
     const vals = lines.map(l => Math.round(computeForecast(l)));
-    if (vals.length <= 8) return '= ' + vals.join(' + ');
-    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+    return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
   }
   if (field === 'proposed') {
     // FA directive 2026-05-05: Capital — no proposed budget.
@@ -32655,23 +32654,19 @@ function _buildSumFormula(cellId) {
       const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
       return Math.round(isCap ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
     });
-    if (vals.length <= 8) return '= ' + vals.join(' + ');
-    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+    return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
   }
   if (field === 'ytd') {
     const vals = lines.map(l => Math.round(l.ytd_actual || 0)).filter(v => v !== 0);
-    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
-    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
   }
   if (field === 'estimate') {
     const vals = lines.map(l => Math.round(computeEstimate(l))).filter(v => v !== 0);
-    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
-    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
   }
   if (field === 'budget') {
     const vals = lines.map(l => Math.round(l.current_budget || 0)).filter(v => v !== 0);
-    if (vals.length <= 8) return '= ' + (vals.length ? vals.join(' + ') : '0');
-    return '= SUM of ' + vals.length + ' GL lines = ' + Math.round(vals.reduce((a, b) => a + b, 0));
+    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
   }
   // Subtotal rows (field starts with 'sub_')
   if (field.startsWith('sub_')) {
