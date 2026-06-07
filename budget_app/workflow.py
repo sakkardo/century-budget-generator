@@ -27237,7 +27237,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="var_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(variance) + '"' +
         ' data-raw="' + Math.round(variance) + '"' +
-        ' data-formula="= ' + fmt(budget) + ' - ' + fmt(forecast) + '"' +
+        ' data-formula="= ' + fmt(proposed) + ' - ' + fmt(budget) + '"' +
         ' data-gl="' + gl + '" data-field="variance"' +
         ' style="cursor:pointer; pointer-events:none; color:'+varColor+';"></td>' +
       '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'pct_'+gl+'\'))">' +
@@ -27245,7 +27245,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="pct_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + (pctChange*100).toFixed(1) + '%"' +
         ' data-raw="' + pctChange + '"' +
-        ' data-formula="= (' + fmt(budget) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast) + '"' +
+        ' data-formula="= (' + fmt(proposed) + ' - ' + fmt(budget) + ') / ' + fmt(budget) + '"' +
         ' data-gl="' + gl + '" data-field="pct_change"' +
         ' style="cursor:pointer; pointer-events:none;"></td>' +
       '<td class="col-notes"><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td></tr>';
