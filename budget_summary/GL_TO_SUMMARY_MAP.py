@@ -77,6 +77,10 @@ LABEL_ALIASES = {
     # Financial Expenses
     "Financial Expense": "Financial Expenses",
     "Financial Expenses-Mortgage": "Financial Expenses",
+    # Orphan scan 2026-06-07: 215's G&A row is misspelled "Adminsitrative &
+    # Other" (transposed letters), so resolve never stamped its 67xx prefixes
+    # and 20+ Gen&Admin GLs (~$45K) orphaned. Alias the typo to the canonical key.
+    "Adminsitrative & Other": "Administrative & Other",
     # SBA-PPP variants
     "SBA-PPP Loan Proceeds": "SBA - PPP Loan Proceeds",
     "PPP Loan": "SBA - PPP Loan Proceeds",
@@ -303,7 +307,13 @@ SUMMARY_ROW_MAP = {
                        "4725-0055", "4725-0060", "4725-0065", "4725-0070",
                        "4725-0075", "4725-0080", "4725-0085", "4725-0090",
                        "4803", "4812", "4815", "4818", "4911", "4917", "4922",
-                       "4926", "4932", "4956", "4990"],
+                       "4926", "4932", "4956", "4990",
+                       # Orphan scan 2026-06-07: misc operating income with no
+                       # dedicated row → Other Income catch-all (its purpose).
+                       # 4605 Conference Room (308/847/710), 4830 Water & Sewer
+                       # Refunds (847), 4925 Pet Fees (308/710), 4944 Window
+                       # Guards (710), 4130-0040 Apartment Charges (500).
+                       "4605", "4830", "4925", "4944", "4130-0040"],
         "section": "income",
         "notes": "Catch-all. SUM of all Income GL codes not covered above. "
                  "Added 2026-05-03 from 168 orphan scan: 4070 (Prepaid Income), "
@@ -382,11 +392,20 @@ SUMMARY_ROW_MAP = {
             "5633", "5635", "5636", "5639", "5640", "5642", "5645", "5648", "5650",
             "5655", "5660", "5665", "5666", "5668", "5670", "5678", "5680", "5682", "5690",
             "5695",
+            # Orphan scan 2026-06-07: amenity/repair sub-GLs missing from the
+            # range (orphaned on 847/500/308/212/358/710), all cat=repairs:
+            # 5603 Apt, 5621 Equipment, 5624 Heating, 5651 Garage, 5657 Lobby,
+            # 5676 Roof, 5684 Sidewalk, 5686 Pool, 5692 Fitness Equipment.
+            "5603", "5621", "5624", "5651", "5657", "5676", "5684", "5686", "5692",
             # Maintenance contracts (5800-5874)
             "5803", "5806", "5809", "5810", "5812", "5815", "5818", "5820",
             "5821", "5825", "5828", "5830", "5831", "5834", "5835", "5837",
             "5840", "5845", "5850", "5852", "5855", "5860", "5865", "5870",
             "5874",
+            # Orphan scan 2026-06-07: maintenance contracts missing from range
+            # (847/500/308), all cat=maintenance: 5846 Garage, 5859 Pool,
+            # 5862 Cesspool, 5872 Generator.
+            "5846", "5859", "5862", "5872",
         ],
         "category": ["repairs", "maintenance"],
         "section": "expenses",
@@ -397,12 +416,14 @@ SUMMARY_ROW_MAP = {
     "Insurance": {
         "sheet": "Gen & Admin",
         # 2026-05-13: added 6145 (Errors & Omissions Insurance) — orphan on 148.
-        "gl_prefix": ["6105", "6110", "6115", "6120", "6125", "6126", "6135",
-                       "6145", "6180", "6195"],
+        "gl_prefix": ["6105", "6110", "6115", "6120", "6125", "6126", "6130", "6135",
+                       "6145", "6150", "6180", "6195"],
         "section": "expenses",
         "gl_range": ("6100-0000", "6199-9999"),
         "notes": "All 61xx codes. building_assumptions has per-policy overrides. "
-                 "Added 6145 (Errors & Omissions) 2026-05-13."
+                 "Added 6145 (Errors & Omissions) 2026-05-13. "
+                 "Added 6130 (Auto Insurance, 308) + 6150 (Flood/Hurricane "
+                 "Insurance, 308/500) 2026-06-07 from orphan scan."
     },
     "Real Estate Taxes": {
         "sheet": "RE Taxes",
@@ -460,6 +481,9 @@ SUMMARY_ROW_MAP = {
             "6745", "6746", "6750", "6754", "6755", "6760", "6762", "6763", "6764",
             "6765", "6768", "6770", "6774", "6775", "6780", "6785", "6790",
             "6795",
+            # Orphan scan 2026-06-07: 6732 Meter Reading Charges (215/308/847),
+            # 6748 Party Supplies (215/358/500/710). Both cat=gen_admin.
+            "6732", "6748",
         ],
         "section": "expenses",
         "gl_range": ("6700-0000", "6899-9999"),
@@ -469,10 +493,11 @@ SUMMARY_ROW_MAP = {
     },
     "Financial Expenses": {
         "sheet": "Gen & Admin",
-        "gl_prefix": ["2510", "6905", "6925", "6995"],
+        "gl_prefix": ["2510", "6905", "6920", "6925", "6995"],
         "section": "expenses",
         "gl_range": ("6900-0000", "6999-9999"),
-        "notes": "Mortgage interest, bank fees. 2510 = mortgage note payable."
+        "notes": "Mortgage interest, bank fees. 2510 = mortgage note payable. "
+                 "Added 6920 (Financing Fees, 308) 2026-06-07 from orphan scan."
     },
 
     # ─── NON-OPERATING INCOME ────────────────────────────────────────────

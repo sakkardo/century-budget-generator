@@ -18739,33 +18739,33 @@ function faUpdateSheetTotals() {
     if (!rowEl) return;
     const v = t.proposed - t.budget;
     const p = t.budget ? ((t.proposed - t.budget) / t.budget) : 0;
-    const cells = rowEl.querySelectorAll('td');
-    // With colspan="3" first cell: cells[0]=label, cells[1]=prior, cells[2]=ytd,
-    // cells[3]=accrual, cells[4]=unpaid,
-    // cells[5]=estimate, cells[6]=forecast, cells[7]=budget, cells[8]=inc%(empty),
-    // cells[9]=proposed, cells[10]=variance, cells[11]=pctChange
-    function setC(cell, val) {
+    // Address cells by data-col, NOT by position. The total rows have TWO
+    // leading cells (empty frozen-gl + label), but this used to assume a single
+    // colspan label at cells[0], so every total was written one cell to the
+    // LEFT — proposed landed in the inc% gap, the variance value landed in the
+    // proposed cell, and the label got overwritten with the prior total. That
+    // scrambled the row on every line edit. Every total cell carries data-col,
+    // so target them directly and leave the label / spacer cells alone.
+    const setCol = (col, val, isPct) => {
+      const cell = rowEl.querySelector('[data-col="' + col + '"]');
+      if (!cell) return null;
+      const txt = isPct ? ((val * 100).toFixed(1) + '%') : fmt(val);
       const sp = cell.querySelector('.sub-val');
-      if (sp) { sp.textContent = fmt(val); cell.dataset.raw = Math.round(val).toString(); }
-      else { cell.textContent = fmt(val); }
-    }
-    if (cells.length >= 12) {
-      setC(cells[1], t.prior);
-      setC(cells[2], t.ytd);
-      setC(cells[3], t.accrual);
-      setC(cells[4], t.unpaid);
-      setC(cells[5], t.estimate);
-      setC(cells[6], t.forecast);
-      setC(cells[7], t.budget);
-      setC(cells[9], t.proposed);
-      const vs = cells[10].querySelector('.sub-val');
-      if (vs) { vs.textContent = fmt(v); cells[10].dataset.raw = Math.round(v).toString(); }
-      else { cells[10].textContent = fmt(v); }
-      cells[10].style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
-      const ps = cells[11].querySelector('.sub-val');
-      if (ps) { ps.textContent = (p * 100).toFixed(1) + '%'; cells[11].dataset.raw = p.toString(); }
-      else { cells[11].textContent = (p * 100).toFixed(1) + '%'; }
-    }
+      if (sp) { sp.textContent = txt; cell.dataset.raw = (isPct ? val : Math.round(val)).toString(); }
+      else { cell.textContent = txt; cell.dataset.raw = (isPct ? val : Math.round(val)).toString(); }
+      return cell;
+    };
+    setCol('prior', t.prior);
+    setCol('ytd', t.ytd);
+    setCol('accrual', t.accrual);
+    setCol('unpaid', t.unpaid);
+    setCol('estimate', t.estimate);
+    setCol('forecast', t.forecast);
+    setCol('budget', t.budget);
+    setCol('proposed', t.proposed);
+    const vc = setCol('variance', v);
+    if (vc) vc.style.color = v >= 0 ? 'var(--red)' : 'var(--green)';
+    setCol('pctchange', p, true);
   }
 
   // Update category subtotal rows
