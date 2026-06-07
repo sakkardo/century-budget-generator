@@ -22494,22 +22494,38 @@ function sumCellFocus(el) {
   if (lbl) lbl.textContent = el.dataset.label + ' \u2192 ' + cl;
   const inp = document.getElementById('sumFBInput');
   if (inp) {
+    // 2026-06-07: bring the Summary formula bar to the SAME Excel standard as
+    // every other tab — the bar shows the EQUATION (all the numbers adding
+    // together) for computed cells, not a bare single figure. Section
+    // subtotals + Net Operating / grand totals use the subtotal breakdown;
+    // GL-aggregated data cells (c2-c5) use the line-level breakdown.
+    const lineage = (window._sumLineage || {})[el.dataset.label];
+    const isSub = el.dataset.subtotal === '1';
+    const isOvr = el.dataset.overridden === '1';
+    const isFxData = el.dataset.fx === '1';
+    let eq = '';
+    if (!isOvr) {
+      if (isSub) eq = sumBuildSubtotalBreakdown(el);
+      else if (isFxData) eq = sumBuildFormulaText(el.dataset.label, el.dataset.col, lineage, el.dataset.raw);
+    }
     if (isReadOnly) {
-      const lineage = (window._sumLineage || {})[el.dataset.label];
-      inp.value = sumBuildFormulaText(el.dataset.label, el.dataset.col, lineage, el.dataset.raw);
+      inp.value = eq || (el.dataset.raw || '');
       inp.disabled = true;
       inp.style.opacity = '0.85';
       inp.placeholder = '';
+      delete el.dataset._fxeq;
     } else {
-      // FA dir 2026-05-17: if the FA previously saved a formula here, show
-      // the formula text so they can edit it (e.g. "=300*12*4" → change "4"
-      // to "3"). Otherwise fall back to the raw value. data-formula is
-      // stamped by makeInput from row.formulas[col_key].
+      // FA dir 2026-05-17: if the FA previously saved a formula here, show the
+      // formula text so they can edit it. Otherwise show the computed equation
+      // (stored as a baseline in _fxeq so Accept-without-edit is a no-op and
+      // never turns the computed value into a spurious override), else raw.
       const savedFormula = el.dataset.formula;
       if (savedFormula) {
-        inp.value = savedFormula;
+        inp.value = savedFormula; delete el.dataset._fxeq;
+      } else if (eq) {
+        inp.value = eq; el.dataset._fxeq = eq;
       } else {
-        inp.value = el.dataset.raw || el.value || '';
+        inp.value = el.dataset.raw || el.value || ''; delete el.dataset._fxeq;
       }
       inp.disabled = false;
       inp.style.opacity = '1';
@@ -22576,7 +22592,12 @@ function sumBuildSubtotalBreakdown(el) {
     return r < 0 ? '(' + Math.abs(r).toLocaleString('en-US') + ')' : r.toLocaleString('en-US');
   };
   if (col === 'c8') {
-    return '= (Col 7 − Col 5) / |Col 5| × 100';
+    const c7i = tr.querySelector('input[data-col="c7"]');
+    const c5i = tr.querySelector('input[data-col="c5"]');
+    const c7v = c7i ? (parseFloat(c7i.dataset.raw) || 0) : 0;
+    const c5v = c5i ? (parseFloat(c5i.dataset.raw) || 0) : 0;
+    const pct = c5v ? ((c7v - c5v) / Math.abs(c5v)) * 100 : 0;
+    return '= (' + fmt(c7v) + ' − ' + fmt(c5v) + ') / ' + fmt(Math.abs(c5v)) + ' × 100 = ' + pct.toFixed(1) + '%';
   }
   if (tr.dataset.sums) {
     // Section subtotal: list all non-zero data-row values that roll up.
@@ -22591,8 +22612,9 @@ function sumBuildSubtotalBreakdown(el) {
     });
     if (!vals.length) return '= 0';
     const total = vals.reduce((a, b) => a + b, 0);
-    if (vals.length <= 10) return '= ' + vals.map(fmt).join(' + ') + ' = ' + fmt(total);
-    return '= sum of ' + vals.length + ' lines = ' + fmt(total);
+    // 2026-06-07: show ALL the numbers adding together (no "sum of N lines"
+    // collapse) — the FA wants every component visible in the formula bar.
+    return '= ' + vals.map(fmt).join(' + ') + ' = ' + fmt(total);
   }
   if (tr.dataset.calc === 'income-expenses') {
     // Net Operating = Income − Expenses (read live from the subtotal inputs).
@@ -23407,6 +23429,12 @@ async function _sumTabRestoreFromHistory(revId, btn) {
 function sumAcceptFormula() {
   if (!_sumActiveCell) return;
   const val = document.getElementById('sumFBInput').value;
+  // 2026-06-07: if the bar still shows the computed equation we pre-filled
+  // (FA only looked at the breakdown, didn't edit it), do NOT turn it into an
+  // override — just close. Prevents a spurious freeze on computed cells.
+  if (_sumActiveCell.dataset._fxeq !== undefined && val === _sumActiveCell.dataset._fxeq) {
+    return;
+  }
   let parsed = null;
   if (val === '' || val === null || val === undefined) {
     // Empty input \u2192 clear value / revert override
