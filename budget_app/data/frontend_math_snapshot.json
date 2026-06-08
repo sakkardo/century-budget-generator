@@ -1,0 +1,34 @@
+[
+ [
+  "computeEstimate",
+  "44bee289d5de49d8"
+ ],
+ [
+  "computeEstimate",
+  "a9a678619854c78e"
+ ],
+ [
+  "computeForecast",
+  "1ffad012d75d381e"
+ ],
+ [
+  "computeForecast",
+  "7c380fa8bda67d64"
+ ],
+ [
+  "computeForecast",
+  "b4770aa676999aa4"
+ ],
+ [
+  "computeProposed",
+  "51d7478cb8b24807"
+ ],
+ [
+  "faComputeEstimate",
+  "3e7ccb50905d7306"
+ ],
+ [
+  "faComputeForecast",
+  "e4366e8668d913f3"
+ ]
+]
