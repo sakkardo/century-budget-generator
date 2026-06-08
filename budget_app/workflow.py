@@ -201,7 +201,15 @@ except ImportError:
 #   Col 6 = 2026 Budget   (BY-1)
 #   Col 7 = 2027 Budget   (BY)
 import os
-BUDGET_YEAR = int(os.environ.get("BUDGET_YEAR", 2027))
+# Phase 3 step 4 (2026-06-08): BUDGET_YEAR moved to budget_config.py (a leaf module
+# that imports only stdlib). The models reference BUDGET_YEAR 13x; putting it below
+# them in the import graph is the prerequisite for extracting them without a circular
+# dependency. Re-imported here so every reference in this file — and app.py's
+# `from workflow import BUDGET_YEAR` — resolves to the identical value, unchanged.
+try:
+    from budget_config import BUDGET_YEAR
+except ImportError:
+    from budget_app.budget_config import BUDGET_YEAR
 
 
 
