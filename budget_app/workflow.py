@@ -2346,18 +2346,36 @@ def create_workflow_blueprint(db):
                          if abs(o["ytd_actual"]) >= 500 or abs(o["current_budget"]) >= 500]
             if _material:
                 _tot = round(sum(o["ytd_actual"] for o in _material), 2)
-                return jsonify({
-                    "error": "orphan_gls_unmapped",
-                    "message": (
-                        f"{len(_material)} GL account(s) holding ${abs(_tot):,.0f} "
-                        "of data aren't mapped to any Summary row, so they'd be "
-                        "dropped from the budget. Map them via the orphan review "
-                        "(‘Add to existing row’) before sending to the PM."
-                    ),
-                    "orphan_count": len(_material),
-                    "orphan_ytd_total": _tot,
-                    "orphan_gls": [o["gl_code"] for o in _material][:50],
-                }), 422
+                # FA dir 2026-06-08: allow an explicit override. The FA may know the
+                # orphan GLs are intentional / handled outside the budget and choose
+                # to send anyway. Default still BLOCKS (422) so nobody drops data by
+                # accident; only an explicit override_orphans=true bypasses — and it
+                # is logged (never silent) so the excluded $ is on the audit trail.
+                if not data.get("override_orphans"):
+                    return jsonify({
+                        "error": "orphan_gls_unmapped",
+                        "message": (
+                            f"{len(_material)} GL account(s) holding ${abs(_tot):,.0f} "
+                            "of data aren't mapped to any Summary row, so they'd be "
+                            "dropped from the budget. Map them via the orphan review "
+                            "(‘Add to existing row’) before sending to the PM."
+                        ),
+                        "orphan_count": len(_material),
+                        "orphan_ytd_total": _tot,
+                        "orphan_gls": [o["gl_code"] for o in _material][:50],
+                        "can_override": True,
+                    }), 422
+                try:
+                    db.session.add(BudgetRevision(
+                        budget_id=budget.id, action="orphan_override",
+                        field_name="status", old_value=budget.status, new_value="pm_pending",
+                        notes=("OVERRIDE send-to-PM: %d unmapped GL(s) excluded ($%s ytd): %s" % (
+                            len(_material), f"{abs(_tot):,.0f}",
+                            ", ".join(o["gl_code"] for o in _material)))[:480],
+                        source="web", user_id=_read_fa_id_from_cookie(),
+                    ))
+                except Exception:
+                    pass
 
         if "notes" in data:
             budget.fa_notes = data["notes"]
@@ -27497,12 +27515,14 @@ function computeForecast(l) {
   return ytdTotal + (ytdTotal / ytdMonths) * remaining;
 }
 
-async function sendToPM() {
-  if (!confirm('Send to PM for expense review?')) return;
+async function sendToPM(overrideOrphans) {
+  if (!overrideOrphans && !confirm('Send to PM for expense review?')) return;
+  const body = {status: 'pm_pending'};
+  if (overrideOrphans) body.override_orphans = true;
   const resp = await fetch('/api/budgets/' + entityCode + '/status', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({status: 'pm_pending'})
+    body: JSON.stringify(body)
   });
   // FA dir 2026-06-05 (QA on 733): the status POST can be REJECTED (e.g. 422
   // orphan_gls_unmapped — material GL data not mapped to the Summary). The old
@@ -27510,12 +27530,27 @@ async function sendToPM() {
   // when the send was blocked and the budget stayed in draft. Check the response
   // and surface the server's reason instead of lying.
   if (!resp.ok) {
-    let msg = 'Send to PM failed (HTTP ' + resp.status + ').';
-    try { const j = await resp.json(); msg = j.message || j.error || msg; } catch (e) {}
+    let j = null;
+    try { j = await resp.json(); } catch (e) {}
+    // FA dir 2026-06-08: orphan gate is overridable. Offer an explicit
+    // "send anyway" path that re-sends with override_orphans=true (logged
+    // server-side). The override is a conscious choice, with the excluded
+    // GLs + $ spelled out in the confirm.
+    if (resp.status === 422 && j && j.error === 'orphan_gls_unmapped') {
+      const gls = (j.orphan_gls || []).join(', ');
+      const proceed = confirm(
+        (j.message || 'Unmapped GL data would be dropped from the budget.') +
+        '\n\nGLs not mapped: ' + gls +
+        '\n\nOVERRIDE and send to PM anyway?\nThese dollars will NOT appear in the budget the PM sees. This override is recorded in the budget history.'
+      );
+      if (proceed) return sendToPM(true);
+      return;
+    }
+    const msg = (j && (j.message || j.error)) || ('Send to PM failed (HTTP ' + resp.status + ').');
     showToast(msg, 'error');
     return;
   }
-  showToast('Sent to PM for review', 'success');
+  showToast(overrideOrphans ? 'Sent to PM (orphan gate overridden — logged)' : 'Sent to PM for review', 'success');
   loadDetail();
 }
 
