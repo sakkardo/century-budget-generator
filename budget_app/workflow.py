@@ -1356,20 +1356,12 @@ def create_workflow_blueprint(db):
         (estimate = 0, forecast = YTD only). Recurring negatives (tax
         credits where prior_year is also negative) keep extrapolating.
         """
-        ytd_total = ytd_actual + accrual_adj + unpaid_bills
-        remaining = 12 - ytd_months
-        prior = prior_year or 0
-
-        # FA #7 cap
-        if ytd_total < 0 and prior >= 0:
-            return ytd_total
-
-        if ytd_months > 0:
-            estimate = (ytd_total / ytd_months) * remaining
-        else:
-            estimate = 0
-
-        return ytd_total + estimate
+        # Phase 1 (2026-06-08): delegate to the single source of truth. Behavior is
+        # byte-identical to the prior inline version (anomaly cap preserved); the math
+        # now lives in exactly one place. See budget_math.forecast + test_budget_math.py.
+        import budget_math
+        return budget_math.forecast(ytd_actual, accrual_adj, unpaid_bills, prior_year,
+                                    ytd_months, anomaly_cap=True, payroll=False)
 
 
     def forecast_method(ytd_actual, accrual_adj, unpaid_bills, prior_year):
@@ -1388,12 +1380,9 @@ def create_workflow_blueprint(db):
           % set:      proposed = forecast × (1 + %)
           both NULL:  proposed = forecast
         """
-        if increase_dollar is not None:
-            try:
-                return float(forecast or 0) + float(increase_dollar)
-            except (TypeError, ValueError):
-                pass
-        return float(forecast or 0) * (1 + float(increase_pct or 0))
+        # Phase 1 (2026-06-08): delegate to the single source of truth (byte-identical).
+        import budget_math
+        return budget_math.proposed(forecast, increase_pct, increase_dollar)
 
 
     # ─── Budget Summary Table ───────────────────────────────────────────────
