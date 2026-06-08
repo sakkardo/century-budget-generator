@@ -1,0 +1,92 @@
+{
+ "ARHandoff": {
+  "columns": 17,
+  "relationships": 1,
+  "table": "ar_handoffs"
+ },
+ "AuditSyncRun": {
+  "columns": 12,
+  "relationships": 0,
+  "table": "audit_sync_runs"
+ },
+ "Budget": {
+  "columns": 28,
+  "relationships": 1,
+  "table": "budgets"
+ },
+ "BudgetLine": {
+  "columns": 34,
+  "relationships": 1,
+  "table": "budget_lines"
+ },
+ "BudgetRevision": {
+  "columns": 11,
+  "relationships": 1,
+  "table": "budget_revisions"
+ },
+ "BudgetSummaryRow": {
+  "columns": 23,
+  "relationships": 0,
+  "table": "budget_summary_rows"
+ },
+ "BuildingAssignment": {
+  "columns": 4,
+  "relationships": 1,
+  "table": "building_assignments"
+ },
+ "BuildingInfo": {
+  "columns": 8,
+  "relationships": 0,
+  "table": "building_info"
+ },
+ "BuildingVisit": {
+  "columns": 6,
+  "relationships": 0,
+  "table": "building_visits"
+ },
+ "CommercialRentPeriod": {
+  "columns": 8,
+  "relationships": 0,
+  "table": "commercial_rent_periods"
+ },
+ "CommercialTenant": {
+  "columns": 16,
+  "relationships": 0,
+  "table": "commercial_tenants"
+ },
+ "CommercialTenantBillback": {
+  "columns": 6,
+  "relationships": 0,
+  "table": "commercial_tenant_billbacks"
+ },
+ "DataSource": {
+  "columns": 8,
+  "relationships": 1,
+  "table": "data_sources"
+ },
+ "PayrollAssumption": {
+  "columns": 6,
+  "relationships": 0,
+  "table": "payroll_assumptions"
+ },
+ "PayrollPosition": {
+  "columns": 15,
+  "relationships": 0,
+  "table": "payroll_positions"
+ },
+ "PresentationEdit": {
+  "columns": 7,
+  "relationships": 1,
+  "table": "presentation_edits"
+ },
+ "PresentationSession": {
+  "columns": 9,
+  "relationships": 1,
+  "table": "presentation_sessions"
+ },
+ "User": {
+  "columns": 5,
+  "relationships": 1,
+  "table": "users"
+ }
+}
