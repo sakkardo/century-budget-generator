@@ -25710,9 +25710,12 @@ function renderPayrollGL() {
       }
       const fcstFormula = '=' + yta + '+' + Math.round(est);
       const componentKey = PAYROLL_COMPONENT_MAP[l.gl_code];
+      // Proposed = Forecast * (1 + Increase%). Emit a REAL Excel formula with raw
+      // numbers (forecast = yta + est here) instead of the word-token placeholder.
+      // Linked rows show a plain descriptive tooltip (title attr only, not a formula).
       const propFormulaDisplay = isLinked
-        ? '=Roster.' + componentKey + ' (auto-linked)'
-        : '=Forecast*(1+IncreasePct)';
+        ? ('Roster-linked (' + componentKey + ')')
+        : ('=(' + yta + '+' + Math.round(est) + ')*(1+' + (l.increase_pct || 0).toFixed(4) + ')');
 
       // Determine override states
       const estOverride = l.estimate_override !== null && l.estimate_override !== undefined;
