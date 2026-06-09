@@ -1025,13 +1025,16 @@ header {
       <!-- Source legend strip: decodes the B / E / Y / A / Au letters
            used in the Data-status / Missing column. Cheap to render,
            saves new FAs from having to guess. FA dir 2026-05-24. -->
+      <!-- Status UX Phase 2 (2026-06-09): legend now decodes the COLORS, not just
+           the letters — the audit found the old all-amber chips implied amber was
+           the "normal" tile color. One rule: green = in a built budget. -->
       <div class="wizard-legend" style="margin-bottom:12px; padding:7px 14px; background:#faf7f4; border:1px solid var(--gray-200); border-radius:8px; font-size:10px; color:var(--gray-600); display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-        <span style="font-size:9px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.7px;">Source legend</span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">B</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">2026 Approved Budget</span></span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">E</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">Expense Distribution</span></span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">Y</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">YSL (Yardi)</span></span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">A</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">AP Aging</span></span>
-        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:16px; padding:0 4px; border-radius:3px; font-size:9px; font-weight:700; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;">Au</span><span style="font-size:10px; color:var(--gray-700); font-weight:500;">2025 Audit PDF</span></span>
+        <span style="font-size:9px; font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.7px;">Files</span>
+        <span style="font-size:10px; color:var(--gray-700); font-weight:500;">B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:#fef3c7; border:1px solid #fcd34d;"></span><span style="font-size:10px; color:var(--gray-700);"><b>In SharePoint</b> — arrived, date shown</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:#def7ec; border:1px solid #a7f3d0;"></span><span style="font-size:10px; color:var(--gray-700);"><b>In the budget</b> — wizard ingested it, budget built</span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:#fef2f2; border:1px solid #fecaca;"></span><span style="font-size:10px; color:var(--gray-700);"><b>Missing / failed</b></span></span>
+        <span style="display:inline-flex; align-items:center; gap:5px;"><span style="display:inline-block; width:12px; height:12px; border-radius:3px; background:#f1f0ec; border:1px solid #e0dcd2;"></span><span style="font-size:10px; color:var(--gray-700);">Setup — not started</span></span>
       </div>
 
       <div class="entity-table-wrap" style="background:white; border:1px solid var(--gray-200); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.04); margin-bottom:32px;">
@@ -1079,7 +1082,7 @@ header {
         <p class="step-description">Lock in the prior-year framework. The 2026 Approved Budget and 2025 Audit must both be confirmed before the rest of the budget process unlocks.</p>
       </div>
       <div class="prompt-banner">
-        Step 2 collects the source files. Nothing is committed to your budget until you click "Build Budget" in Step 5. Files staged in SharePoint will be detected here — you confirm each one explicitly.
+        Sources stage here as they arrive in SharePoint — most load automatically, and you can re-stage any file safely. Nothing becomes a budget until you click "Generate budget" in Step 4. Confirm the Foundation (2026 Budget + 2025 Audit) first; it unlocks the Yardi sources.
       </div>
 
       <!-- Foundation Panel (Phase E) -->
@@ -1534,70 +1537,54 @@ function loadEnrichedBudgets() {
 // the point of having tiles.
 function _renderEntityTiles(entityCode) {
   const e = _enrichedByEntity[String(entityCode)];
-  if (!e) {
+  if (!e || !e.source_states) {
     return "<span style=\"color:var(--gray-300); font-size:11px;\">…</span>";
   }
-  const ts = e.timestamps || {};
-  const sp = e.sp_inventory || {};
-  const meta = e.sp_meta || {};  // FA dir 2026-05-24: SP arrival timestamps
-  const au = e.audit || null;
-  // Build per-source state once so we can decide tile-vs-text + compose either.
-  // spDt = when the file was last modified in SP (read from sp_meta); used to
-  // show "arrived M/D" on amber tiles so the FA can confirm uploads landed.
-  const auOk = !!(au && au.status === "confirmed");
-  function _spDate(key) {
-    return (meta[key] && meta[key].modified) ? meta[key].modified : null;
+  // Status UX Phase 2 (2026-06-09): tiles render from the SHARED model
+  // (source_states, computed server-side in /api/budgets) — the same brain the
+  // FA dashboard uses, so the two pages cannot disagree. Jacob's rule:
+  // green = the file is in a BUILT budget; amber = in SharePoint (date shown);
+  // red = missing or failed during build; gray = building not started.
+  const ORDER = [["approved_2026","B"],["expense_distribution","E"],["ysl","Y"],
+                 ["ap_aging","A"],["maint_proof","M"],["audit_2025","Au"]];
+  const ss = e.source_states;
+  function _md(iso) { try { const d = new Date(iso); return (d.getMonth()+1) + "/" + d.getDate(); } catch (err) { return ""; } }
+  const states = ORDER.map(function (p) { return { key: p[0], letter: p[1], s: ss[p[0]] || { state: "missing" } }; });
+  if (states.every(function (x) { return x.s.state === "setup"; })) {
+    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#f1f0ec; color:#a39a8e; font-size:10px; font-weight:700;\">Not started</span>";
   }
-  const sources = [
-    {letter:"B",  ok:!!ts.budget_summary, inSP:!!sp.approved_2026,        dt:ts.budget_summary, spDt:_spDate("approved_2026")},
-    {letter:"E",  ok:!!e.has_expenses,    inSP:!!sp.expense_distribution, dt:ts.expense_dist,   spDt:_spDate("expense_distribution")},
-    {letter:"Y",  ok:!!ts.ysl,            inSP:!!sp.ysl,                  dt:ts.ysl,            spDt:_spDate("ysl")},
-    {letter:"A",  ok:!!ts.open_ap,        inSP:!!sp.ap_aging,             dt:ts.open_ap,        spDt:_spDate("ap_aging")},
-    {letter:"Au", ok:auOk,                inSP:!!sp.audit_2025,           dt:ts.audit,          spDt:_spDate("audit_2025")},
-  ];
-  const missing = sources.filter(function (s) { return !s.ok && !s.inSP; });
-  const allMissing = missing.length === sources.length;
-  if (allMissing) {
-    // Compact Missing label for fully-blocked rows (NEEDS_FILES tier).
-    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#fef2f2; color:#991b1b; font-size:10px; font-weight:700; letter-spacing:0.4px;\">Missing: B · E · Y · A · Au</span>";
+  const bad = states.filter(function (x) { return x.s.state === "missing" || x.s.state === "failed"; });
+  if (bad.length >= 3) {
+    // Mostly blocked — compact red label keeps scan-speed up (FA dir 2026-05-24).
+    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#fef2f2; color:#991b1b; font-size:10px; font-weight:700; letter-spacing:0.4px;\">Missing: " + bad.map(function (x) { return x.letter; }).join(" · ") + "</span>";
   }
-  if (missing.length >= 3 && missing.length < sources.length) {
-    // Mostly blocked — also use the text form to keep scan-speed up.
-    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#fef2f2; color:#991b1b; font-size:10px; font-weight:700; letter-spacing:0.4px;\">Missing: " + missing.map(function (s) { return s.letter; }).join(" · ") + "</span>";
-  }
-  // Mixed (some in, some out, or all in) — show tiles so the FA can see
-  // exactly which source is which state.
-  function _tile(s) {
-    let cls = "miss";
-    if (s.ok) cls = "ok";
-    else if (s.inSP) cls = "ready";
-    // FA dir 2026-05-24: show ingest date for green tiles + SP-arrival date
-    // for amber tiles. Before this, amber tiles were a silent letter with
-    // no way to see "did my upload land".
-    let dtTxt = "";
-    let tooltip = "";
-    if (s.ok && s.dt) {
-      const dt = new Date(s.dt);
-      dtTxt = (dt.getMonth()+1) + "/" + dt.getDate();
-      tooltip = s.letter + " ingested " + dt.toLocaleDateString();
-    } else if (cls === "ready" && s.spDt) {
-      const dt = new Date(s.spDt);
-      dtTxt = (dt.getMonth()+1) + "/" + dt.getDate();
-      tooltip = s.letter + " in SharePoint since " + dt.toLocaleDateString() + " — not yet ingested";
-    } else if (cls === "ready") {
-      tooltip = s.letter + " detected in SharePoint — not yet ingested";
-    } else {
-      tooltip = s.letter + " not in SharePoint";
+  function _tile(x) {
+    const st = x.s.state;
+    let bg = "#fef2f2", fg = "#991b1b", bd = "#fecaca", sub = "", tip = x.letter + " not in SharePoint — chase the file";
+    if (st === "in_budget") {
+      bg = "#def7ec"; fg = "#065f46"; bd = "#a7f3d0";
+      sub = (x.key === "audit_2025") ? "conf" : ("✓" + (x.s.date ? " " + _md(x.s.date) : ""));
+      tip = (x.key === "audit_2025") ? "Audit confirmed — mapping signed off" : (x.letter + " is in the built budget");
+    } else if (st === "needs_review") {
+      bg = "#fef3c7"; fg = "#92400e"; bd = "#fcd34d";
+      sub = x.s.sub || "review";
+      tip = (x.s.sub === "extract") ? "Audit PDF ready — click row to extract" : "Audit extracted — your confirm is pending";
+    } else if (st === "in_sp") {
+      bg = "#fef3c7"; fg = "#92400e"; bd = "#fcd34d";
+      sub = x.s.date ? ("SP " + _md(x.s.date)) : "SP";
+      tip = x.letter + " in SharePoint" + (x.s.date ? " since " + _md(x.s.date) : "") + " — turns green when the budget is built";
+    } else if (st === "failed") {
+      sub = "failed";
+      tip = x.letter + " failed during build — fix the file and rebuild";
+    } else if (st === "setup") {
+      bg = "#f1f0ec"; fg = "#a39a8e"; bd = "#e0dcd2"; sub = "—"; tip = "Not started";
     }
-    const bg = cls === "ok" ? "#def7ec" : (cls === "ready" ? "#fef3c7" : "#fef2f2");
-    const fg = cls === "ok" ? "#065f46" : (cls === "ready" ? "#92400e" : "#991b1b");
-    const bd = cls === "ok" ? "#a7f3d0" : (cls === "ready" ? "#fcd34d" : "#fecaca");
-    return "<span title=\"" + tooltip.replace(/"/g,"&quot;") + "\" style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:24px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
-         + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + s.letter + "</span>"
-         + (dtTxt ? "<span style=\"font-size:7px; opacity:0.75; margin-top:1px; font-variant-numeric:tabular-nums;\">" + dtTxt + "</span>" : "")
+    return "<span title=\"" + tip.replace(/"/g,"&quot;") + "\" style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:26px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
+         + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + x.letter + "</span>"
+         + (sub ? "<span style=\"font-size:7px; opacity:0.8; margin-top:1px; font-variant-numeric:tabular-nums;\">" + sub + "</span>" : "")
          + "</span>";
   }
-  return "<span style=\"display:inline-flex; gap:3px;\">" + sources.map(_tile).join("") + "</span>";
+  return "<span style=\"display:inline-flex; gap:3px;\">" + states.map(_tile).join("") + "</span>";
 }
 
 // FA dir 2026-05-24: compute the freshest activity timestamp across all
@@ -2329,7 +2316,7 @@ function renderSharepointSources() {
       headerColor = "#92400e"; headerIcon = "📥";
       headerNote = "ready — will auto-ingest";
     }
-    html += "<div style=\"border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px;\">";
+    html += "<div data-focus-key=\"" + escapeHtmlAttr(slot.key) + "\" style=\"border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px;\">";
     html += "<div style=\"display:flex; align-items:center; gap:10px; margin-bottom:" + (hasAny ? "8px" : "0") + ";\">";
     html += "<span style=\"color:" + headerColor + "; font-weight:700;\">" + headerIcon + "</span>";
     html += "<span style=\"font-weight:600;\">" + slot.label + "</span>";
@@ -3416,6 +3403,33 @@ function confirmAdminBypass() {
   document.getElementById('fileInput').click();
 }
 
+// Status UX Phase 2 (2026-06-09): make ?focus=<source_type> REAL. Dashboard
+// tiles and readiness next_url have always linked here with focus=…; the
+// wizard silently ignored it, dropping the FA on a generic Step 2. Now: poll
+// for the matching card (panels render async after fetches), scroll it into
+// view, and pulse its outline so the eye lands exactly where the click began.
+function _applyWizardFocus(key) {
+  const ids = { approved_2026: "foundationApprovedCard", audit_2025: "foundationAuditCard" };
+  let tries = 0;
+  const timer = setInterval(function () {
+    tries++;
+    const el = ids[key] ? document.getElementById(ids[key])
+                        : document.querySelector('[data-focus-key="' + key + '"]');
+    if (el && el.offsetParent !== null) {
+      clearInterval(timer);
+      try { el.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
+      el.style.outline = "3px solid #f59e0b";
+      el.style.outlineOffset = "2px";
+      let flips = 0;
+      const pulse = setInterval(function () {
+        flips++;
+        el.style.outlineColor = (flips % 2) ? "#fde68a" : "#f59e0b";
+        if (flips >= 8) { clearInterval(pulse); el.style.outline = ""; el.style.outlineOffset = ""; }
+      }, 600);
+    } else if (tries > 25) { clearInterval(timer); }
+  }, 400);
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   initializeData();
@@ -3461,6 +3475,12 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
         if (typeof showStep === 'function') showStep(stepParam);
       }, 250);
+    }
+    // Phase 2: honor ?focus=<source_type> — scroll + pulse the exact card the
+    // FA clicked on the dashboard (waits for async panels via _applyWizardFocus).
+    const focusParam = params.get('focus');
+    if (selectedEntity && focusParam) {
+      setTimeout(() => { try { _applyWizardFocus(focusParam); } catch (e) {} }, 700);
     }
   } catch (e) { /* noop */ }
 });
