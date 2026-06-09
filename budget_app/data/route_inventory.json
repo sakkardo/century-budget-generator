@@ -8,6 +8,7 @@
  "/admin/portfolio-health",
  "/api/admin/add-summary-row",
  "/api/admin/append-summary-prefix",
+ "/api/admin/audit-scan-master",
  "/api/admin/audit-sync-log",
  "/api/admin/audit-sync/run",
  "/api/admin/backfill-period/<entity_code>",

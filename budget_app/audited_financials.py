@@ -1278,26 +1278,27 @@ async function uploadAll() {
 </div>
 
 <script>
-    // Scan SharePoint for 2025 audit PDFs (per building, audit_2025 source files)
-    // and create AuditUpload rows for any not already here, then reload so they show.
-    // Calls the existing bulk sync endpoint; cookies (admin_key) ride along automatically.
+    // Scan the MASTER "2025 Audited Financial Statements" SharePoint folder directly
+    // (the central source-of-truth) and create AuditUpload rows for any audit PDFs not
+    // already here, then reload so they show. Matches the building number off each
+    // filename. Reads the master folder, not per-entity Supporting Documents copies.
     function afsScan() {
         var btn = document.getElementById('afsScanBtn');
         var status = document.getElementById('afsScanStatus');
         btn.disabled = true;
         btn.textContent = 'Scanning SharePoint...';
         status.style.color = 'var(--gray-500)';
-        status.textContent = 'Scanning every building audit folder. This can take a few minutes...';
-        fetch('/api/admin/sync-afs/all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        status.textContent = 'Scanning the master 2025 Audited Financial Statements folder...';
+        fetch('/api/admin/audit-scan-master', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
             .then(function(r) {
                 if (r.status === 401) { throw new Error('Admin login required. Open /admin/login, then retry.'); }
                 if (!r.ok) { return r.json().then(function(j) { throw new Error(j.error || ('HTTP ' + r.status)); }); }
                 return r.json();
             })
             .then(function(d) {
-                var scanned = d.entities_scanned || 0, created = d.total_created || 0, skipped = d.total_skipped || 0;
+                var scanned = d.scanned || 0, created = d.created || 0, skipped = d.skipped || 0, unmatched = d.unmatched || 0;
                 status.style.color = 'var(--green)';
-                status.textContent = 'Scanned ' + scanned + ' buildings. ' + created + ' new audit(s) added, ' + skipped + ' already present.' + (created > 0 ? ' Reloading...' : '');
+                status.textContent = 'Found ' + scanned + ' audit PDFs in the master folder. ' + created + ' new added, ' + skipped + ' already present' + (unmatched ? (', ' + unmatched + ' unmatched') : '') + '.' + (created > 0 ? ' Reloading...' : '');
                 if (created > 0) { setTimeout(function() { window.location.reload(); }, 1200); }
                 else { btn.disabled = false; btn.textContent = 'Scan SharePoint'; }
             })

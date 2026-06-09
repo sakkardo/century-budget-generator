@@ -9411,6 +9411,90 @@ def admin_audit_sync_run():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/audit-scan-master", methods=["POST"])
+def admin_audit_scan_master():
+    """Scan the MASTER '2025 Audited Financial Statements' SharePoint folder
+    DIRECTLY (the central source-of-truth) and create AuditUpload rows for any
+    audit PDFs not already in the DB. Backs the Audited Financials page's "Scan
+    SharePoint" button — reads the central folder, NOT the per-entity Supporting
+    Documents copies (which only exist after audit-sync/run distributes them).
+
+    No @require_admin: read-mostly + idempotent (creates/skips, never deletes),
+    matching the audit-sync/run pattern so an FA can run it from the page.
+    Returns {scanned, created, skipped, unmatched, results}.
+    """
+    import urllib.parse
+    import re as _re
+    AuditUpload = af_models["AuditUpload"]
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    try:
+        active = {str(r[0]) for r in db.session.query(Budget.entity_code).filter_by(year=_BY).all()}
+        drive_id = _graph_get_drive_id()
+        audit_path_enc = urllib.parse.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
+        listing = _graph_get(f"drives/{drive_id}/root:/{audit_path_enc}:/children")
+    except Exception as e:
+        return jsonify({"error": f"SharePoint listing failed: {str(e)[:200]}"}), 500
+
+    pdfs = [it for it in listing.get("value", [])
+            if "folder" not in it and (it.get("name") or "").lower().endswith(".pdf")]
+    try:
+        data_dir = af_helpers["get_data_dir"]()
+    except Exception:
+        data_dir = None
+    try:
+        bldgs = af_helpers["get_buildings_list"]()
+        name_by_ec = {b["entity_code"]: b["building_name"] for b in bldgs}
+    except Exception:
+        name_by_ec = {}
+
+    created = skipped = unmatched = 0
+    results = []
+    for it in pdfs:
+        name = it.get("name") or ""
+        ec = _parse_audit_entity_code(name)
+        if not ec or ec not in active:
+            unmatched += 1
+            results.append({"filename": name, "entity_code": ec, "status": "unmatched"})
+            continue
+        years = [int(m.group(1)) for m in _re.finditer(r"(20\d{2})", name)]
+        fiscal_year_end = str(max(years)) if years else ""
+        safe_filename = f"{ec}_{fiscal_year_end}_{name}"
+        existing = AuditUpload.query.filter_by(
+            entity_code=ec, fiscal_year_end=fiscal_year_end, pdf_filename=safe_filename
+        ).first()
+        if existing:
+            skipped += 1
+            results.append({"filename": name, "entity_code": ec, "status": "skipped_exists", "upload_id": existing.id})
+            continue
+        try:
+            _, pdf_bytes = _sharepoint_download_item(it.get("id"))
+            if data_dir is not None:
+                with open(str(data_dir / safe_filename), "wb") as fh:
+                    fh.write(pdf_bytes)
+            upload = AuditUpload(
+                entity_code=ec,
+                building_name=name_by_ec.get(ec, f"Entity {ec}"),
+                fiscal_year_end=fiscal_year_end,
+                pdf_filename=safe_filename,
+                sharepoint_web_url=it.get("webUrl"),
+                status="uploaded",
+            )
+            db.session.add(upload)
+            db.session.commit()
+            created += 1
+            results.append({"filename": name, "entity_code": ec, "status": "created", "upload_id": upload.id})
+        except Exception as e:
+            db.session.rollback()
+            results.append({"filename": name, "entity_code": ec, "status": "error", "error": str(e)[:200]})
+
+    return jsonify({
+        "scanned": len(pdfs), "created": created, "skipped": skipped,
+        "unmatched": unmatched, "results": results,
+    })
+
+
 @app.route("/api/admin/clear-source", methods=["POST"])
 @require_admin
 def admin_clear_source():
