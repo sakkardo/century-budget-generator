@@ -21393,6 +21393,99 @@ document.addEventListener('click', function(e) {
 let _sumActiveCell = null;
 
 // Build an Excel-style numerical formula string for a read-only summary cell
+// ── Excel-valid formula for the formula BAR (Step 1 toward dynamic .xlsx export) ──
+// Emits a REAL single-'=' Excel formula: raw integers (no thousands-commas, no
+// parens), ASCII operators (+ - * /), no trailing '= result', no word labels. So a
+// cell exported to Excel is a working formula. The human-readable explanation
+// (= 39,730 + 79,460 = 119,190) stays in the breakdown row + Inspector below.
+// sumExcelExpr folds a term's sign into the operator, so we emit '=a-b', never '=a+-b'.
+function sumExcelExpr(nums) {
+  const nz = nums.map(n => Math.round(Number(n) || 0)).filter(n => n !== 0);
+  if (!nz.length) return '';
+  let s = (nz[0] < 0 ? '-' + Math.abs(nz[0]) : '' + nz[0]);
+  for (let i = 1; i < nz.length; i++) s += (nz[i] < 0 ? '-' + Math.abs(nz[i]) : '+' + nz[i]);
+  return '=' + s;
+}
+function sumBuildExcelFormula(label, col, lineage, raw) {
+  const v = (n) => String(Math.round(Number(n) || 0));
+  // c1 / c6 are direct Excel imports — plain values, not formulas (no leading '=').
+  if (col === 'c1' || col === 'c6') return raw ? v(raw) : '';
+  if (!lineage) return raw ? v(raw) : '';
+  if (col === 'c2') {
+    const c2 = lineage.c2 || {};
+    if (!c2.has_audit || !c2.matched_category) return '';
+    return '=' + v(c2.value);
+  }
+  const gl = lineage.gl || {};
+  const ff = lineage.fixed_forecast || {};
+  const rowData = (window._sumRowMap || {})[label] || {};
+  if (ff.applied && col === 'c5') return '=' + v(rowData.col6);
+  if (ff.applied && col === 'c4') return sumExcelExpr([rowData.col5, -(Number(rowData.col3) || 0)]);
+  const allLines = gl.lines || [];
+  const ytdM = gl.ytd_months || 0;
+  const remM = gl.remaining_months || 0;
+  if (col === 'c3') {
+    const lines = allLines.filter(l => Math.round(Number(l.ytd) || 0) !== 0);
+    return sumExcelExpr(lines.map(l => l.ytd));
+  }
+  if (col === 'c4') {
+    const tY = allLines.reduce((s, l) => s + (Number(l.ytd) || 0), 0);
+    if (!ytdM || !remM) return tY ? ('=' + v(tY)) : '';
+    return '=' + v(tY) + '/' + ytdM + '*' + remM;
+  }
+  if (col === 'c5') {
+    const tY = allLines.reduce((s, l) => s + (Number(l.ytd) || 0), 0);
+    const tA = allLines.reduce((s, l) => s + (Number(l.accrual) || 0), 0);
+    const tU = allLines.reduce((s, l) => s + (Number(l.unpaid) || 0), 0);
+    const tE = allLines.reduce((s, l) => s + (Number(l.estimate) || 0), 0);
+    return sumExcelExpr([tY, tA, tU, tE]);
+  }
+  return '';
+}
+function sumBuildExcelSubtotal(el) {
+  const col = el.dataset.col;
+  const tr = el.closest('tr');
+  if (!tr) return '';
+  const tbody = document.getElementById('sumBody');
+  if (!tbody) return '';
+  const v = (n) => String(Math.round(Number(n) || 0));
+  if (col === 'c8') {
+    const c7i = tr.querySelector('input[data-col="c7"]');
+    const c5i = tr.querySelector('input[data-col="c5"]');
+    const c7v = c7i ? (parseFloat(c7i.dataset.raw) || 0) : 0;
+    const c5v = c5i ? (parseFloat(c5i.dataset.raw) || 0) : 0;
+    if (!Math.round(c5v)) return '';
+    const num = sumExcelExpr([c7v, -c5v]);   // '=c7-c5'
+    return '=(' + num.slice(1) + ')/' + v(Math.abs(c5v));
+  }
+  if (tr.dataset.sums) {
+    const secKey = tr.dataset.sums;
+    const vals = [];
+    tbody.querySelectorAll('tr[data-type="d"][data-sec="' + secKey + '"]').forEach(dr => {
+      const inp = dr.querySelector('input[data-col="' + col + '"]');
+      if (inp) { const x = parseFloat(inp.dataset.raw); if (!isNaN(x) && Math.round(x) !== 0) vals.push(Math.round(x)); }
+    });
+    return sumExcelExpr(vals);
+  }
+  if (tr.dataset.calc === 'income-expenses') {
+    const incInp = tbody.querySelector('tr[data-sums="income"] input[data-col="' + col + '"]');
+    const expInp = tbody.querySelector('tr[data-sums="expenses"] input[data-col="' + col + '"]');
+    const incV = incInp ? parseFloat(incInp.dataset.raw) || 0 : 0;
+    const expV = expInp ? parseFloat(expInp.dataset.raw) || 0 : 0;
+    return sumExcelExpr([incV, -expV]);
+  }
+  if (tr.dataset.calc === 'grand') {
+    const netInp = tbody.querySelector('tr[data-calc="income-expenses"] input[data-col="' + col + '"]');
+    const noiInp = tbody.querySelector('tr[data-sums="noi"] input[data-col="' + col + '"]');
+    const noeInp = tbody.querySelector('tr[data-sums="noe"] input[data-col="' + col + '"]');
+    const netV = netInp ? parseFloat(netInp.dataset.raw) || 0 : 0;
+    const noiV = noiInp ? parseFloat(noiInp.dataset.raw) || 0 : 0;
+    const noeV = noeInp ? parseFloat(noeInp.dataset.raw) || 0 : 0;
+    return sumExcelExpr([netV, noiV, -noeV]);
+  }
+  return '';
+}
+
 function sumBuildFormulaText(label, col, lineage, raw) {
   const fmt = (n) => {
     if (n === null || n === undefined || isNaN(n)) return '0';
@@ -21492,8 +21585,10 @@ function sumCellFocus(el) {
     const isFxData = el.dataset.fx === '1';
     let eq = '';
     if (!isOvr) {
-      if (isSub) eq = sumBuildSubtotalBreakdown(el);
-      else if (isFxData) eq = sumBuildFormulaText(el.dataset.label, el.dataset.col, lineage, el.dataset.raw);
+      // The BAR shows a valid Excel formula (=A+B); the breakdown row + Inspector
+      // below keep the readable explanation. Same numbers, two renderings.
+      if (isSub) eq = sumBuildExcelSubtotal(el);
+      else if (isFxData) eq = sumBuildExcelFormula(el.dataset.label, el.dataset.col, lineage, el.dataset.raw);
     }
     if (isReadOnly) {
       inp.value = eq || (el.dataset.raw || '');
