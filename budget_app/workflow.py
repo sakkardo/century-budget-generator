@@ -29900,6 +29900,16 @@ function pmFxCellBlur(el) {
 }
 
 // Subtotal focus: show SUM formula (read-only)
+// Excel-valid signed sum for PM formula bars: raw integers, ASCII +/-, single '='.
+// Mirrors the Summary tab's sumExcelExpr (PM is a separate template/script, so it's
+// defined locally). Folds each term's sign into the operator -> '=a-b', never '=a+-b'.
+function pmXlExpr(nums) {
+  const nz = nums.map(n => Math.round(Number(n) || 0)).filter(n => n !== 0);
+  if (!nz.length) return '';
+  let s = (nz[0] < 0 ? '-' + Math.abs(nz[0]) : '' + nz[0]);
+  for (let i = 1; i < nz.length; i++) s += (nz[i] < 0 ? '-' + Math.abs(nz[i]) : '+' + nz[i]);
+  return '=' + s;
+}
 function pmSubtotalFocus(td) {
     const col = td.dataset.col;
     const bar = document.getElementById('pmFormulaBar');
@@ -29941,17 +29951,16 @@ function pmSubtotalFocus(td) {
         const sp = lines.reduce((s, l) => s + computeProposed(l), 0);
         const sf = lines.reduce((s, l) => s + computeForecast(l), 0);
         if (col === 'variance') {
-            display = '= ' + fmt(sp) + ' − ' + fmt(sf) + ' = ' + fmt(sp - sf);
+            display = pmXlExpr([sp, -sf]) || '=0';
         } else {
-            display = sf ? ('= (' + fmt(sp) + ' − ' + fmt(sf) + ') / ' + fmt(sf) + ' = ' + (((sp - sf) / sf) * 100).toFixed(1) + '%') : '= 0%';
+            display = sf ? ('=(' + (pmXlExpr([sp, -sf]) || '=0').slice(1) + ')/' + Math.round(sf)) : '';
         }
     } else {
         // Sum column — show each non-zero line value + the total.
         const nz = lines.map(l => valFor(l, col)).filter(v => Math.round(v) !== 0);
         const sum = lines.reduce((s, l) => s + valFor(l, col), 0);
-        if (!nz.length) display = '= ' + fmt(parseFloat(td.dataset.raw) || 0);
-        else if (nz.length === 1) display = '= ' + fmt(nz[0]);
-        else display = '= ' + nz.map(fmt).join(' + ') + ' = ' + fmt(sum);
+        if (!nz.length) display = '=' + Math.round(parseFloat(td.dataset.raw) || 0);
+        else display = pmXlExpr(nz) || '=0';
     }
 
     bar.value = display;
@@ -30438,13 +30447,13 @@ function pmLineChanged(gl, field, value) {
     if (varEl) {
         varEl.value = fmt(variance); varEl.dataset.raw = Math.round(variance);
         varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
-        varEl.dataset.formula = '= ' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast);
+        varEl.dataset.formula = pmXlExpr([proposed, -forecast]) || '=0';   // proposed - forecast (matches the displayed value)
         const varTd = varEl.parentElement; if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
     }
     if (pctEl) {
         const pctDisp = isFinite(pctChange) ? (pctChange * 100).toFixed(1) : '0.0';
         pctEl.value = pctDisp + '%'; pctEl.dataset.raw = isFinite(pctChange) ? pctChange : 0;
-        pctEl.dataset.formula = '= (' + fmt(line.current_budget || 0) + ' - ' + fmt(forecast) + ') / ' + fmt(forecast);
+        pctEl.dataset.formula = Math.round(forecast) ? ('=(' + (pmXlExpr([proposed, -forecast]) || '=0').slice(1) + ')/' + Math.round(forecast)) : '=0';
     }
 
     // Refresh material-variance note nudge
@@ -30716,11 +30725,11 @@ function renderTable() {
                 })()}
                 <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_pct_${gl}'))">
                     <span class="pm-fx">fx</span>
-                    <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="= (${fmt(proposed)} − ${fmt(forecast)}) / ${fmt(forecast)}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
+                    <input id="pm_pct_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${(pctChange*100).toFixed(1)}%" data-raw="${pctChange}" data-formula="${Math.round(forecast) ? ('=(' + (pmXlExpr([proposed, -forecast]) || '=0').slice(1) + ')/' + Math.round(forecast)) : '=0'}" data-gl="${gl}" data-field="pct_change" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
                 </td>
                 <td class="number" style="position:relative; cursor:pointer; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};" onclick="pmFxCellFocus(document.getElementById('pm_var_${gl}'))">
                     <span class="pm-fx">fx</span>
-                    <input id="pm_var_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(variance)}" data-raw="${Math.round(variance)}" data-formula="= ${fmt(proposed)} − ${fmt(forecast)}" data-gl="${gl}" data-field="variance" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
+                    <input id="pm_var_${gl}" class="pm-cell pm-cell-fx" type="text" readonly value="${fmt(variance)}" data-raw="${Math.round(variance)}" data-formula="${pmXlExpr([proposed, -forecast]) || '=0'}" data-gl="${gl}" data-field="variance" style="cursor:pointer; pointer-events:none; color:${variance >= 0 ? 'var(--red)' : 'var(--green)'};">
                 </td>
                 <td class="col-notes${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? ' needs-note' : ''}"><input type="text" value="${(line.notes || '').replace(/"/g, '&quot;')}" data-gl="${gl}" data-field="notes" oninput="onInput(this)" onchange="onInput(this)" ${CAN_EDIT ? '' : 'disabled'} placeholder="${(Math.abs(pctChange) > 0.10 && !(line.notes || '').trim()) ? 'Required at >10%' : 'Add context...'}" maxlength="500" style="min-width:140px; width:100%;"></td>
             `;
