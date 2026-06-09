@@ -80,6 +80,24 @@ for label, src, present, absent in CHECKS:
         if needle in text:
             fails.append("  [%s] REGRESSED — old pattern is back: %r" % (label, needle))
 
+# ─── Excel-formula validity (line-scoped) ──────────────────────────────────
+# THE PRODUCT RULE, machine-enforced: every formula-string assignment must be a
+# valid, Excel-parseable formula — no Unicode math operators (U+2212 '−', U+00D7
+# '×'), no old "= ... = result" human prefix. This freezes the "Invalid formula" /
+# non-exportable class (fixed across Summary, FA tabs, PM portal in 2026-06-08) so
+# it cannot silently regress. Comments may use − / × in prose, so they're skipped.
+_FORMULA_MARKERS = ('data-formula="', '.dataset.formula', 'bar.value =', 'barInput.value =')
+for _i, _line in enumerate((wf or "").splitlines(), 1):
+    _s = _line.lstrip()
+    if _s.startswith("//") or _s.startswith("#") or _s.startswith("*"):
+        continue  # comment line — prose may use − / ×
+    if 'data-formula="= ' in _line:
+        fails.append("  [excel-formula] line %d: data-formula uses the old '= ' human prefix; "
+                     "emit a bare Excel '=expr' (e.g. via sumExcelExpr/pmXlExpr)" % _i)
+    if any(_m in _line for _m in _FORMULA_MARKERS) and ("−" in _line or "×" in _line):
+        fails.append("  [excel-formula] line %d: Unicode math operator (− or ×) in a formula "
+                     "string; use ASCII '-' / '*'" % _i)
+
 if fails:
     sys.stderr.write("\nFORMULA-INVARIANT GATE FAILED — a formula-bar fix regressed:\n")
     sys.stderr.write("\n".join(fails) + "\n")

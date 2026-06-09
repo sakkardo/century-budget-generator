@@ -12199,7 +12199,9 @@ ACTION_CENTER_TEMPLATE = r"""
 const entityCode = '{{ entity_code }}';
 const BY = {{ budget_year }};
 document.getElementById('bcEntity').textContent = entityCode;
-document.getElementById('downloadExcelLink').href = '/api/budget/' + entityCode + '/export';
+// /api/budget/<e>/export was never a registered route (dead 404). Point at the
+// real, working full-budget export (live SUMIF/forecast/proposed formulas).
+document.getElementById('downloadExcelLink').href = '/api/export-excel/' + entityCode;
 
 function fmt(n) {
   if (n == null || isNaN(n)) return '$0';
