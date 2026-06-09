@@ -17174,18 +17174,21 @@ function fxSubtotalFocus(td) {
     });
     const v = pSum - bSum;
     if (col === 'variance') {
-      bar.value = '= ' + fmt(pSum) + ' − ' + fmt(bSum) + ' = ' + fmt(v);
+      // Valid Excel: =Proposed-Budget (single =, ASCII -, no $/commas, no trailing result)
+      bar.value = sumExcelExpr([pSum, -bSum]) || '=0';
     } else {
-      bar.value = bSum ? ('= (' + fmt(pSum) + ' − ' + fmt(bSum) + ') / ' + fmt(bSum) + ' = ' + ((v / bSum) * 100).toFixed(1) + '%') : '= 0%';
+      // Valid Excel: =(Proposed-Budget)/Budget (ratio; the cell shows the % via format)
+      bar.value = bSum ? ('=(' + (sumExcelExpr([pSum, -bSum]) || '=0').slice(1) + ')/' + String(Math.round(bSum))) : '';
     }
   } else {
     const pfx = colPrefix[col];
     if (pfx && glCodes.length) {
-      const parts = glCodes.map(gl => { const el = document.getElementById(pfx + gl); return el ? fmt(parseFloat(el.dataset.raw) || 0) : '$0'; });
-      const sum = glCodes.reduce((s, gl) => { const el = document.getElementById(pfx + gl); return s + (el ? (parseFloat(el.dataset.raw) || 0) : 0); }, 0);
-      bar.value = (parts.length > 1) ? ('= ' + parts.join(' + ') + ' = ' + fmt(sum)) : ('= ' + (parts[0] || fmt(0)));
+      // Valid Excel: =a+b+c (raw integers, ASCII +/-, no trailing total). Reuses the
+      // shared sumExcelExpr so the FA tabs and Summary tab format identically.
+      const vals = glCodes.map(gl => { const el = document.getElementById(pfx + gl); return el ? (parseFloat(el.dataset.raw) || 0) : 0; });
+      bar.value = sumExcelExpr(vals) || ('=' + String(Math.round(parseFloat(td.dataset.raw) || 0)));
     } else {
-      bar.value = '= ' + fmt(parseFloat(td.dataset.raw) || 0);
+      bar.value = '=' + String(Math.round(parseFloat(td.dataset.raw) || 0));
     }
   }
   _formulaBarOriginal = bar.value;
@@ -17200,7 +17203,7 @@ function fxSubtotalFocus(td) {
   if (savedOverride) {
     bar.value = td.dataset.overrideFormula
       ? td.dataset.overrideFormula
-      : ('= ' + parseFloat(td.dataset.overrideValue).toLocaleString('en-US'));
+      : ('=' + String(Math.round(parseFloat(td.dataset.overrideValue) || 0)));
   }
   if (_fxDerived) {
     // Variance / % change are computed from Proposed and Budget — read-only,
@@ -20256,7 +20259,7 @@ function syncFormulaBar() {
       // the bar shows real numbers (e.g. "= $125,000 + $30,000"), not refs.
       const _gl = activeCellId.slice(2);
       const _r = (STATE.rows && STATE.rows[_gl]) ? STATE.rows[_gl] : null;
-      barInput.value = _r ? ('= ' + fmtDollar(_r.D || 0) + ' + ' + fmtDollar(_r.E || 0))
+      barInput.value = _r ? sumExcelExpr([_r.D || 0, _r.E || 0])
                           : _reSubstituteFormulaWithNumbers(meta.excel || '');
     } else {
       barInput.value = _reSubstituteFormulaWithNumbers(meta.excel || '');
