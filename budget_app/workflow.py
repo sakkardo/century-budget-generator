@@ -11107,6 +11107,11 @@ DASHBOARD_TEMPLATE = r"""
     color: #92400e;
     border-color: #fcd34d;
   }
+  .ds-tile.setup {
+    background: #f1f0ec;
+    color: #a39a8e;
+    border-color: #e0dcd2;
+  }
   .pill-fa_review {
     background: var(--orange-light);
     color: var(--orange);
@@ -11199,17 +11204,16 @@ DASHBOARD_TEMPLATE = r"""
         <!-- Populated by renderReadinessChips() in JS -->
       </div>
       <!-- FA dir 2026-05-22: legend for the Data Status mini-tiles. -->
-      <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
-        <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Data Status tiles</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">B</span></span> 2026 Budget</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">E</span></span> Expense Dist.</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">Y</span></span> YSL (Yardi GL)</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">A</span></span> AP Aging</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:24px; height:22px;"><span class="t-letter">Au</span></span> Audited Financials</span>
+      <!-- Status UX Phase 3 (2026-06-09): legend decodes the COLORS, identical to
+           the wizard's. One rule: green = the file is in a BUILT budget. -->
+      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+        <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Files</span>
+        <span style="font-size:12px;">B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
         <span style="color:var(--gray-300); margin:0 2px;">·</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:18px; height:14px;">✓</span> ingested / confirmed</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="width:18px; height:14px;">!</span> in progress</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:18px; height:14px;">✗</span> missing</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="width:16px; height:13px;"></span> <b>In SharePoint</b> — arrived, date shown (audit: extract / confirm)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:16px; height:13px;"></span> <b>In the budget</b> — wizard ingested it, budget built</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:16px; height:13px;"></span> <b>Missing / failed</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="width:16px; height:13px;"></span> Setup — not started</span>
         <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
       </div>
       <!-- FA dir 2026-05-22 (Phase 2): SharePoint inventory refresh. Amber
@@ -11228,9 +11232,8 @@ DASHBOARD_TEMPLATE = r"""
               <th data-sort="building_name" onclick="sortBuildings('building_name')" style="cursor:pointer; user-select:none; white-space:nowrap;">Building <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th data-sort="entity_code" onclick="sortBuildings('entity_code')" style="cursor:pointer; user-select:none; white-space:nowrap;">Entity <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th data-sort="pm_name" onclick="sortBuildings('pm_name')" style="cursor:pointer; user-select:none; white-space:nowrap;">PM <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th>Data Status</th>
-              <th data-sort="pm_review" onclick="sortBuildings('pm_review')" style="cursor:pointer; user-select:none; white-space:nowrap;">PM Review <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
-              <th data-sort="status" onclick="sortBuildings('status')" style="cursor:pointer; user-select:none; white-space:nowrap;">Status <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
+              <th>Files</th>
+              <th data-sort="status" onclick="sortBuildings('status')" style="cursor:pointer; user-select:none; white-space:nowrap;">Stage <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th data-sort="days" onclick="sortBuildings('days')" style="cursor:pointer; user-select:none; white-space:nowrap;">Days <span class="sort-arrow" style="opacity:0.25;">&#9650;</span></th>
               <th>Action</th>
             </tr>
@@ -11356,6 +11359,29 @@ function sortBuildings(col) {
 // On dashboard load, fetch the cache freshness; on button click, kick off
 // the synchronous scan (5+ minutes for 147 entities) and re-render the
 // dashboard so amber tiles light up where SP files were detected.
+// Status UX Phase 3 (2026-06-09): auto-refresh on view. If the SP cache is
+// stale (>15 min) when the dashboard opens, kick off a background rescan
+// silently — same lazy pattern the wizard has had since 2026-05-24. The
+// dashboard used to have NO auto-refresh, so its amber/red tile split could
+// be days stale while the wizard checked live: the root of the two pages
+// contradicting each other. Session-guarded so reloads during the ~5-min
+// scan don't stack scans.
+function maybeAutoScanSP(minsAgo) {
+  try {
+    const STALE_MIN = 15;
+    if (minsAgo !== null && minsAgo <= STALE_MIN) return;
+    const last = parseInt(sessionStorage.getItem('dash_auto_sp_scan') || '0', 10);
+    if (Date.now() - last < 10 * 60000) return;
+    sessionStorage.setItem('dash_auto_sp_scan', String(Date.now()));
+    const status = document.getElementById('spInventoryStatus');
+    if (status) status.innerHTML = '<span style="color:#1d4ed8; font-weight:600;">⟳ Auto-refreshing SharePoint in the background…</span>';
+    fetch('/api/admin/sp-inventory/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(r => r.json())
+      .then(() => { loadSpInventoryStatus(); loadBudgets(); })
+      .catch(() => {});
+  } catch (e) {}
+}
+
 function loadSpInventoryStatus() {
   fetch('/api/admin/sp-inventory/status')
     .then(r => r.ok ? r.json() : null)
@@ -11364,10 +11390,12 @@ function loadSpInventoryStatus() {
       if (!el) return;
       if (!d || !d.newest_scan) {
         el.innerHTML = '<span style="color:#92400e; font-weight:600;">Never scanned</span> — amber tiles inactive until first scan';
+        maybeAutoScanSP(null);
         return;
       }
       const newest = new Date(d.newest_scan);
       const minsAgo = Math.floor((Date.now() - newest.getTime()) / 60000);
+      maybeAutoScanSP(minsAgo);
       const tag = minsAgo < 60 ? (minsAgo + 'm ago')
                 : minsAgo < 1440 ? (Math.floor(minsAgo/60) + 'h ago')
                 : (Math.floor(minsAgo/1440) + 'd ago');
@@ -11667,93 +11695,89 @@ function renderBudgets(budgets) {
         `</div></div>`;
     }
 
-    // FA dir 2026-05-22 (B2 + Phase 2): mini-tile data status, 3-state.
-    //   green ('ok')    = ingested into our DB tables (real data exists)
-    //   amber ('ready') = file exists in SharePoint but not yet ingested —
-    //                     FA hasn't clicked the source through the wizard
-    //   red ('miss')    = no SP file + no ingest (true gap)
-    // The amber state requires sp_inventory to be populated — see the
-    // "Scan SharePoint" admin button which kicks off the portfolio scan.
-    const ts = b.timestamps || {};
-    const sp = b.sp_inventory || {};
+    // Status UX Phase 3 (2026-06-09): tiles render from the SHARED model
+    // (b.source_states, computed once in /api/budgets) — the same brain as the
+    // wizard, so the two pages cannot disagree. Jacob's rule: green = the file
+    // is in a BUILT budget; amber = in SharePoint (date shown) or audit in
+    // review; red = missing or failed during build; gray = not started.
+    const ss = b.source_states || {};
+    const au = b.audit || null;
     function fmtDt(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth()+1) + '/' + d.getDate(); }
-    const dataItems = [
-      { letter: 'B',  label: 'Budget',   ok: !!ts.budget_summary, dt: ts.budget_summary, focus: 'budget',                spKey: 'approved_2026' },
-      { letter: 'E',  label: 'Exp Dist', ok: !!b.has_expenses,    dt: ts.expense_dist,   focus: 'expense_distribution',  spKey: 'expense_distribution' },
-      { letter: 'Y',  label: 'YSL',      ok: !!ts.ysl,            dt: ts.ysl,            focus: 'ysl',                   spKey: 'ysl' },
-      { letter: 'A',  label: 'AP Aging', ok: !!ts.open_ap,        dt: ts.open_ap,        focus: 'ap_aging',              spKey: 'ap_aging' },
+    const TILE_ORDER = [
+      ['approved_2026', 'B', 'Budget'], ['expense_distribution', 'E', 'Exp Dist'],
+      ['ysl', 'Y', 'YSL'], ['ap_aging', 'A', 'AP Aging'],
+      ['maint_proof', 'M', 'Maint Proof'], ['audit_2025', 'Au', 'Audit'],
     ];
-    const tiles = dataItems.map(function (i) {
-      const inSP = !!sp[i.spKey];
-      let cls = 'ds-tile miss';
-      let tipBody;
-      if (i.ok) {
+    const tiles = TILE_ORDER.map(function (o) {
+      const key = o[0], letter = o[1], label = o[2];
+      const s = ss[key] || { state: 'missing' };
+      let cls = 'ds-tile miss', sub = '', tip = label + ' — not in SharePoint · chase the file';
+      let href = '/wizard/' + b.entity_code + '?step=2&focus=' + key;
+      if (s.state === 'in_budget') {
         cls = 'ds-tile ok';
-        tipBody = i.label + ' — ingested ' + (fmtDt(i.dt) || '?');
-      } else if (inSP) {
+        sub = (key === 'audit_2025') ? 'conf' : ('✓ ' + (fmtDt(s.date) || ''));
+        tip = (key === 'audit_2025') ? ('Audit confirmed ' + (fmtDt(s.date) || '')) : (label + ' is in the built budget');
+        if (key === 'audit_2025' && au && au.id) href = '/audited-financials/review/' + au.id;
+      } else if (s.state === 'needs_review') {
         cls = 'ds-tile ready';
-        tipBody = i.label + ' — file in SharePoint, not ingested · click to ingest in wizard';
-      } else {
-        tipBody = i.label + ' — no file in SharePoint · click to open wizard';
+        sub = s.sub || 'review';
+        tip = (s.sub === 'extract') ? 'Audit PDF ready — click to extract' : 'Audit extracted — click to confirm the mapping';
+        if (au && au.id) href = '/audited-financials/review/' + au.id;
+      } else if (s.state === 'in_sp') {
+        cls = 'ds-tile ready';
+        sub = fmtDt(s.date) ? ('SP ' + fmtDt(s.date)) : 'SP';
+        tip = label + ' in SharePoint' + (fmtDt(s.date) ? ' since ' + fmtDt(s.date) : '') + ' — turns green when the budget is built';
+      } else if (s.state === 'failed') {
+        sub = 'failed';
+        tip = label + ' failed during build — fix the file and rebuild';
+      } else if (s.state === 'setup') {
+        cls = 'ds-tile setup';
+        sub = '';
+        tip = 'Not started';
       }
-      const dt = fmtDt(i.dt);
-      const wizUrl = '/wizard/' + b.entity_code + '?step=2&focus=' + i.focus;
-      return '<a href="' + wizUrl + '" class="' + cls + '" title="' + tipBody.replace(/"/g, '&quot;') + '" data-focus="' + i.focus + '">' +
-               '<span class="t-letter">' + i.letter + '</span>' +
-               (i.ok && dt ? '<span class="t-dt">' + dt + '</span>' : '') +
+      return '<a href="' + href + '" class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '" data-focus="' + key + '">' +
+               '<span class="t-letter">' + letter + '</span>' +
+               (sub ? '<span class="t-dt">' + sub + '</span>' : '') +
              '</a>';
     });
-    // FA dir 2026-05-22: Au tile = audited financial status. Three-state:
-    //   green  ('ok')    = audit status 'confirmed' — FA signed off on mapping
-    //   amber  ('ready') = audit status 'extracted' or 'mapped' — Claude got
-    //                      the data but FA still has work to do
-    //   red    ('miss')  = no audit_uploads row for this entity yet
-    // Click target depends on state — if we have an upload id, go to the
-    // review page; otherwise jump to the wizard's audit slot.
-    const au = b.audit || null;
-    const audInSP = !!sp.audit_2025;
-    let auCls = 'ds-tile miss';
-    let auTip = 'Audit — no file uploaded · click to open wizard';
-    let auHref = '/wizard/' + b.entity_code + '?step=2&focus=audit_2025';
-    let auDt = '';
-    if (au) {
-      const dt = fmtDt(ts.audit);
-      auDt = dt;
-      if (au.status === 'confirmed') {
-        auCls = 'ds-tile ok';
-        auTip = 'Audit confirmed ' + (dt || '');
-      } else {
-        auCls = 'ds-tile ready';
-        auTip = 'Audit ' + au.status + ' — FA still mapping · click to review';
-      }
-      if (au.id) auHref = '/audited-financials/review/' + au.id;
-    } else if (audInSP) {
-      // Audit PDF detected in SP but no audit_uploads row yet — FA needs to
-      // trigger Claude extraction via the wizard's audit_2025 source.
-      auCls = 'ds-tile ready';
-      auTip = 'Audit PDF in SharePoint, not yet extracted · click to extract';
-    }
-    tiles.push(
-      '<a href="' + auHref + '" class="' + auCls + '" title="' + auTip.replace(/"/g, '&quot;') + '" data-focus="audit">' +
-        '<span class="t-letter">Au</span>' +
-        (auDt && au && au.status === 'confirmed' ? '<span class="t-dt">' + auDt + '</span>' : '') +
-      '</a>'
-    );
     const dataHtml = '<div class="ds-tiles">' + tiles.join('') + '</div>';
 
-    // SLA: days in current status (using updated_at as proxy)
-    // For Setup entities (no work yet), show 0d in gray — the row\'s updated_at
-    // reflects auto-creation, not FA activity, so days-since is meaningless.
+    // Status UX Phase 3 (2026-06-09): Days unified with the wizard \u2014 same
+    // anchor (last ACTIVITY = freshest of any load timestamp or budget edit)
+    // and same thresholds (gray <14, amber >=14, red >=21). The two pages used
+    // to measure staleness differently (7/14 vs 14/21, different anchors).
     const doneStatuses = ['approved','ar_pending','ar_complete'];
     let daysHtml = '<span style="color:var(--gray-300);">\u2014</span>';
-    if (b.lifecycle_stage === 'Setup') {
-      daysHtml = '<span style="color:var(--gray-300); font-weight:600;">0d</span>';
-    } else if (!doneStatuses.includes(b.status) && b.updated_at) {
-      const days = Math.floor((Date.now() - new Date(b.updated_at).getTime()) / 86400000);
-      const color = days >= 14 ? 'var(--red)' : days >= 7 ? '#d97706' : 'var(--green)';
-      const icon = days >= 14 ? ' \uD83D\uDD34' : days >= 7 ? ' \uD83D\uDFE1' : '';
-      daysHtml = `<span style="font-weight:700;color:${color};">${days}d</span>${icon}`;
+    if (b.lifecycle_stage !== 'Setup' && !doneStatuses.includes(b.status)) {
+      let last = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      const tsAll = b.timestamps || {};
+      Object.keys(tsAll).forEach(function (k) {
+        if (tsAll[k]) { const t = new Date(tsAll[k]).getTime(); if (t > last) last = t; }
+      });
+      if (last > 0) {
+        const days = Math.floor((Date.now() - last) / 86400000);
+        const color = days >= 21 ? 'var(--red)' : days >= 14 ? '#a16207' : 'var(--gray-500)';
+        daysHtml = `<span style="font-weight:${days >= 14 ? 700 : 600};color:${color};" title="Days since last activity (file loads or edits)">${days}d</span>`;
+      }
     }
+
+    // Phase 3: ONE Stage column (lifecycle words, stage-keyed colors) replaces
+    // the old Status + PM Review double pill (both were derived from b.status \u2014
+    // same fact rendered twice). The PM-phase detail (Sent/Working/Submitted)
+    // lives in the pill tooltip instead of its own column.
+    const stageStyles = {
+      'Setup': 'background:#f1f0ec; color:#a39a8e;',
+      'Sources Collected': 'background:#f5efe7; color:#5a4a3f;',
+      'Assumptions Confirmed': 'background:#f5efe7; color:#5a4a3f;',
+      'Budget Built (draft)': 'background:#def7ec; color:#065f46;',
+      'PM Review': 'background:#fef3c7; color:#a16207;',
+      'Approved': 'background:#def7ec; color:#057a55; font-weight:700;',
+    };
+    const stageStyle = stageStyles[statusLabel] || '';
+    const stageTip = (statusLabel === 'PM Review') ? ('PM Review \u2014 ' + pmLabel) : statusLabel;
+    const stagePill = stageStyle
+      ? `<span class="pill" style="${stageStyle}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`
+      : `<span class="pill ${statusClass}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`;
 
     const pmName = _pmByEntity[b.entity_code] || '\u2014';
     tr.innerHTML = `
@@ -11761,8 +11785,7 @@ function renderBudgets(budgets) {
       <td style="font-family:monospace; font-size:13px;">${b.entity_code}</td>
       <td style="font-size:12px; color:var(--gray-500); white-space:nowrap;">${pmName}</td>
       <td>${dataHtml}</td>
-      <td><span class="pill ${statusClass}">${pmLabel}</span></td>
-      <td><span class="pill ${statusClass}">${statusLabel}</span></td>
+      <td>${stagePill}</td>
       <td style="text-align:center;">${daysHtml}</td>
       <td>${actionHtml}</td>
     `;

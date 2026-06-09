@@ -984,7 +984,10 @@ header {
            latest file uploads across the portfolio. Lets the FA confirm a
            batch upload landed without clicking into individual buildings.
            Populated by loadRecentSPUploads() from /api/admin/sp-inventory/recent. -->
-      <div id="spRecentPanel" style="margin-bottom:14px; display:none; background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a; border-radius:0 10px 10px 0; padding:10px 14px;">
+      <!-- Status UX Phase 3: panel + badges are AMBER — these files just ARRIVED
+           in SharePoint (the amber state); they are not in a budget yet. The old
+           green badges meant the opposite of green tiles 30px below them. -->
+      <div id="spRecentPanel" style="margin-bottom:14px; display:none; background:#fffbeb; border:1px solid #fcd34d; border-left:4px solid #d97706; border-radius:0 10px 10px 0; padding:10px 14px;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
           <div style="font-size:12px; color:#15803d; font-weight:700;">
             <span id="spRecentHeader">Recently arrived in SharePoint</span>
@@ -1482,7 +1485,7 @@ function renderRecentSPUploads(uploads) {
     const tag = sourceLabels[u.source_type] || u.source_type;
     const fname = (u.file_name || '').replace(/</g, '&lt;');
     return '<div style="display:flex; align-items:center; gap:8px; padding:3px 0; font-size:11px;">'
-         + '<span style="display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:16px; padding:0 5px; background:#16a34a; color:white; border-radius:3px; font-size:9px; font-weight:700;">' + tag + '</span>'
+         + '<span style="display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:16px; padding:0 5px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:3px; font-size:9px; font-weight:700;">' + tag + '</span>'
          + '<span style="font-weight:700; color:#15803d;">' + u.entity_code + '</span>'
          + '<span style="color:#15803d; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + fname + '</span>'
          + '<span style="color:#15803d; font-variant-numeric:tabular-nums; opacity:0.8;">' + dtTxt + '</span>'
