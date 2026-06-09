@@ -20180,6 +20180,14 @@ function _reFmtByFormat(val, format) {
   return String(n);
 }
 
+// Raw, Excel-SAFE number for substituting into a formula bar (no $, no commas, no %).
+// Those characters make the formula unparseable ("Invalid formula") and break export.
+// Dollars round to whole numbers; ratios/percents keep precision so the math stays exact.
+function _xlNum(val, format) {
+  const n = (typeof val === 'number' && !isNaN(val)) ? val : 0;
+  return (format === 'dollar') ? String(Math.round(n)) : String(n);
+}
+
 // Replace cell references in an Excel-style formula with their current numeric
 // values. Handles SUM(X1:X9) column ranges by summing the member cells.
 // Unknown tokens are left literal so we don't corrupt the expression shape.
@@ -20203,7 +20211,7 @@ function _reSubstituteFormulaWithNumbers(formula) {
         anyFound = true;
       }
     }
-    return anyFound ? _reFmtByFormat(sum, fmt) : full;
+    return anyFound ? _xlNum(sum, fmt) : full;
   });
   // 2. Replace individual cell tokens (case-insensitive) with formatted values
   s = s.replace(/\b([A-Z]{1,3}\d{1,3})\b/gi, (token) => {
@@ -20212,7 +20220,7 @@ function _reSubstituteFormulaWithNumbers(formula) {
     const meta = CELL_META[id];
     if (!st || !meta) return token;
     const v = (typeof st.value === 'number') ? st.value : 0;
-    return _reFmtByFormat(v, meta.format);
+    return _xlNum(v, meta.format);
   });
   return s;
 }
