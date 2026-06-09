@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PREVIEW v2 — Unified status: green = in a built budget</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+  :root { --brown:#5a4a3f; --beige:#f5efe7; --g50:#f4f1eb; --g100:#ede9e1; --g200:#e5e0d5; --g300:#d5cfc5; --g500:#8a7e72; --g700:#4a4039; --g900:#1a1714;
+          --ok-bg:#def7ec; --ok-fg:#065f46; --ok-bd:#a7f3d0; --act-bg:#fef3c7; --act-fg:#92400e; --act-bd:#fcd34d; --blk-bg:#fef2f2; --blk-fg:#991b1b; --blk-bd:#fecaca;
+          --na-bg:#f1f0ec; --na-fg:#a39a8e; --na-bd:#e0dcd2; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Plus Jakarta Sans',sans-serif; background:var(--g50); color:var(--g900); line-height:1.5; padding-bottom:60px; }
+  header { background:linear-gradient(135deg,#2c2825,#3d322a); color:#fff; padding:26px 28px; }
+  header h1 { font-size:22px; } header p { font-size:13px; opacity:.85; margin-top:2px; }
+  .preview-tag { display:inline-block; background:#fbbf24; color:#451a03; font-size:11px; font-weight:700; padding:2px 10px; border-radius:10px; margin-bottom:8px; letter-spacing:.5px; }
+  .wrap { max-width:1180px; margin:0 auto; padding:26px 20px; }
+  h2.sec { font-size:16px; color:var(--brown); margin:34px 0 6px; } p.sub { font-size:13px; color:var(--g500); margin-bottom:14px; }
+  .panel { background:#fff; border:1px solid var(--g200); border-radius:12px; padding:18px 20px; }
+  .rulebar { display:flex; gap:0; border:1px solid var(--g300); border-radius:10px; overflow:hidden; margin-bottom:16px; }
+  .rulebar div { flex:1; padding:12px 16px; font-size:13px; }
+  .rulebar b { display:block; font-size:14px; margin-bottom:2px; }
+  .hero { display:flex; align-items:center; justify-content:space-between; gap:14px; background:linear-gradient(90deg,#ecfdf5,#f0fdf4); border:1px solid #6ee7b7; border-radius:10px; padding:12px 18px; margin-bottom:14px; }
+  .hero b { color:#065f46; font-size:15px; } .hero span { color:#047857; font-size:13px; }
+  .hero button { background:#16a34a; color:#fff; border:none; border-radius:8px; padding:9px 18px; font-weight:600; font-size:13px; cursor:pointer; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:12px; flex-wrap:wrap; }
+  .spchip { font-size:12px; color:#047857; background:#ecfdf5; border:1px solid #a7f3d0; padding:4px 12px; border-radius:14px; white-space:nowrap; }
+  .legend { display:flex; gap:20px; align-items:center; flex-wrap:wrap; background:#fff; border:1px solid var(--g200); border-radius:10px; padding:10px 16px; font-size:12.5px; }
+  .lg-sw { display:inline-block; width:14px; height:14px; border-radius:4px; margin-right:6px; vertical-align:-2px; border:1px solid; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--g500); padding:8px 10px; border-bottom:2px solid var(--g300); background:var(--g100); }
+  td { padding:10px; border-bottom:1px solid var(--g200); vertical-align:middle; }
+  tr:hover td { background:var(--g50); }
+  .bname { font-weight:600; } .ecode { font-size:11.5px; color:var(--g500); }
+  .tiles { display:flex; gap:4px; }
+  .tile { width:50px; border-radius:6px; border:1px solid; text-align:center; padding:3px 0 2px; cursor:pointer; }
+  .tile b { display:block; font-size:12px; font-weight:700; } .tile i { display:block; font-style:normal; font-size:9.5px; line-height:1.2; }
+  .t-ok { background:var(--ok-bg); color:var(--ok-fg); border-color:var(--ok-bd); }
+  .t-act { background:var(--act-bg); color:var(--act-fg); border-color:var(--act-bd); }
+  .t-blk { background:var(--blk-bg); color:var(--blk-fg); border-color:var(--blk-bd); }
+  .t-na { background:var(--na-bg); color:var(--na-fg); border-color:var(--na-bd); cursor:default; }
+  .stage { display:inline-block; font-size:11.5px; font-weight:600; background:var(--beige); color:var(--brown); border-radius:12px; padding:3px 11px; white-space:nowrap; }
+  .stage.pm { background:#fef3c7; color:#a16207; } .stage.setup { background:var(--na-bg); color:var(--na-fg); } .stage.built { background:var(--ok-bg); color:var(--ok-fg); }
+  .days { font-variant-numeric:tabular-nums; } .days.warn { color:#a16207; font-weight:600; } .days.late { color:#dc2626; font-weight:700; }
+  .next { display:inline-block; font-size:12px; font-weight:600; border-radius:7px; padding:6px 13px; cursor:pointer; border:1px solid var(--g300); background:#fff; color:var(--g700); white-space:nowrap; }
+  .next.go { background:#16a34a; border-color:#16a34a; color:#fff; } .next.act { background:#d97706; border-color:#d97706; color:#fff; }
+  .next.blk { background:#dc2626; border-color:#dc2626; color:#fff; }
+  .wcard { border:1px solid var(--g200); border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .wcard h4 { font-size:14px; } .wcard p { font-size:12px; color:var(--g500); }
+  .wpill { font-size:11.5px; font-weight:700; padding:3px 10px; border-radius:10px; white-space:nowrap; }
+  .focusring { outline:3px solid #f59e0b; outline-offset:2px; animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { outline-color:#fde68a; } }
+  .ba { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .ba .panel h3 { font-size:14px; margin-bottom:10px; } .ba ul { list-style:none; font-size:12.5px; } .ba li { padding:4px 0; border-bottom:1px dashed var(--g200); }
+  .bad { color:#991b1b; } .good { color:#065f46; }
+</style>
+</head>
+<body>
+<header>
+  <span class="preview-tag">PREVIEW v2 — NO PRODUCTION CHANGES</span>
+  <h1>FA Dashboard — the one home</h1>
+  <p>The tile tracks the file's journey into a built budget · amber = in SharePoint · green = the wizard ingested it and a budget exists</p>
+</header>
+<div class="wrap">
+
+<h2 class="sec">The rule (one sentence per color)</h2>
+<div class="rulebar">
+  <div style="background:var(--act-bg); color:var(--act-fg);"><b>🟡 In SharePoint</b>The file is there — date shown on the tile. Audits show their sub-step: extract / confirm.</div>
+  <div style="background:var(--ok-bg); color:var(--ok-fg);"><b>🟢 In the budget</b>The wizard ingested it and a budget was created from it. All-green row = wizard ran.</div>
+  <div style="background:var(--blk-bg); color:var(--blk-fg);"><b>🔴 Missing / failed</b>Not in SharePoint (chase someone), or the build tried it and it failed (fix + rebuild).</div>
+  <div style="background:var(--na-bg); color:var(--na-fg);"><b>⬜ Setup</b>Building not started yet. Quiet, not alarming.</div>
+</div>
+
+<h2 class="sec">1 · The dashboard (home)</h2>
+<p class="sub">Read a row left to right: files → stage → next step. An all-amber row is begging to be built; an all-green row is a built budget; green-with-one-red is a partial build.</p>
+
+<div class="topbar">
+  <div class="legend">
+    <span><b style="font-size:12px;">Files:</b>&nbsp; B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
+  </div>
+  <div class="spchip">✓ SharePoint checked 4 min ago · auto</div>
+</div>
+
+<div class="hero">
+  <div><b>🚀 2 buildings have everything in SharePoint and audits confirmed — ready to build</b><br><span>One more unlocks when you confirm The Orion's audit.</span></div>
+  <button>Build all 2 →</button>
+</div>
+
+<div class="panel" style="padding:0; overflow:hidden;">
+<table>
+<thead><tr><th>Building</th><th>PM</th><th>Files</th><th>Stage</th><th>Days</th><th>Next step</th></tr></thead>
+<tbody>
+<tr><td><div class="bname">2575 Owners Corp</div><div class="ecode">500</div></td><td>S. Greenbaum</td>
+  <td><div class="tiles"><span class="tile t-act"><b>B</b><i>SP 5/22</i></span><span class="tile t-act"><b>E</b><i>SP 5/22</i></span><span class="tile t-act"><b>Y</b><i>SP 5/22</i></span><span class="tile t-act"><b>A</b><i>SP 5/24</i></span><span class="tile t-act"><b>M</b><i>SP 5/24</i></span><span class="tile t-ok"><b>Au</b><i>✓ conf</i></span></div></td>
+  <td><span class="stage">Sources Collected</span></td><td class="days">1d</td><td><span class="next go">Build now →</span></td></tr>
+<tr><td><div class="bname">The Armory Condominium</div><div class="ecode">217</div></td><td>M. Vega</td>
+  <td><div class="tiles"><span class="tile t-act"><b>B</b><i>SP 6/01</i></span><span class="tile t-act"><b>E</b><i>SP 6/01</i></span><span class="tile t-act"><b>Y</b><i>SP 6/01</i></span><span class="tile t-act"><b>A</b><i>SP 6/02</i></span><span class="tile t-act"><b>M</b><i>SP 6/02</i></span><span class="tile t-ok"><b>Au</b><i>✓ conf</i></span></div></td>
+  <td><span class="stage">Sources Collected</span></td><td class="days">2d</td><td><span class="next go">Build now →</span></td></tr>
+<tr><td><div class="bname">The Orion — 350 W 42nd</div><div class="ecode">847</div></td><td>A. Bruno</td>
+  <td><div class="tiles"><span class="tile t-act"><b>B</b><i>SP 5/28</i></span><span class="tile t-act"><b>E</b><i>SP 5/28</i></span><span class="tile t-act"><b>Y</b><i>SP 5/28</i></span><span class="tile t-act"><b>A</b><i>SP 5/30</i></span><span class="tile t-act"><b>M</b><i>SP 5/30</i></span><span class="tile t-act"><b>Au</b><i>Confirm</i></span></div></td>
+  <td><span class="stage">Sources Collected</span></td><td class="days">2d</td><td><span class="next act">Confirm audit →</span></td></tr>
+<tr><td><div class="bname">35 Prospect Park West</div><div class="ecode">358</div></td><td>D. Roth</td>
+  <td><div class="tiles"><span class="tile t-act"><b>B</b><i>SP 6/07</i></span><span class="tile t-act"><b>E</b><i>SP today</i></span><span class="tile t-act"><b>Y</b><i>SP 6/07</i></span><span class="tile t-act"><b>A</b><i>SP today</i></span><span class="tile t-act"><b>M</b><i>SP 6/07</i></span><span class="tile t-blk"><b>Au</b><i>missing</i></span></div></td>
+  <td><span class="stage">Sources Collected</span></td><td class="days">today</td><td><span class="next blk">Upload audit →</span></td></tr>
+<tr><td><div class="bname">Fillmore Gardens</div><div class="ecode">308</div></td><td>S. Katz</td>
+  <td><div class="tiles"><span class="tile t-blk"><b>B</b><i>missing</i></span><span class="tile t-blk"><b>E</b><i>missing</i></span><span class="tile t-act"><b>Y</b><i>SP 5/18</i></span><span class="tile t-act"><b>A</b><i>SP 5/18</i></span><span class="tile t-blk"><b>M</b><i>missing</i></span><span class="tile t-blk"><b>Au</b><i>missing</i></span></div></td>
+  <td><span class="stage">Sources Collected</span></td><td class="days late">16d</td><td><span class="next blk">Chase Steven →</span></td></tr>
+<tr><td><div class="bname">Booth Street Owners Corp</div><div class="ecode">410</div></td><td>R. Ades</td>
+  <td><div class="tiles"><span class="tile t-na"><b>B</b><i>—</i></span><span class="tile t-na"><b>E</b><i>—</i></span><span class="tile t-na"><b>Y</b><i>—</i></span><span class="tile t-na"><b>A</b><i>—</i></span><span class="tile t-na"><b>M</b><i>—</i></span><span class="tile t-na"><b>Au</b><i>—</i></span></div></td>
+  <td><span class="stage setup">Setup</span></td><td class="days">—</td><td><span class="next">Open wizard →</span></td></tr>
+<tr><td><div class="bname">142 E 16 Cooperative</div><div class="ecode">733</div></td><td>M. Vega</td>
+  <td><div class="tiles"><span class="tile t-ok"><b>B</b><i>✓ built</i></span><span class="tile t-ok"><b>E</b><i>✓ built</i></span><span class="tile t-ok"><b>Y</b><i>✓ built</i></span><span class="tile t-ok"><b>A</b><i>✓ built</i></span><span class="tile t-ok"><b>M</b><i>✓ built</i></span><span class="tile t-ok"><b>Au</b><i>✓ conf</i></span></div></td>
+  <td><span class="stage built">Budget Built (draft)</span></td><td class="days">1d</td><td><span class="next go">Send to PM →</span></td></tr>
+<tr><td><div class="bname">Armory Owners Inc</div><div class="ecode">215</div></td><td>M. Vega</td>
+  <td><div class="tiles"><span class="tile t-ok"><b>B</b><i>✓ built</i></span><span class="tile t-blk"><b>E</b><i>failed</i></span><span class="tile t-ok"><b>Y</b><i>✓ built</i></span><span class="tile t-ok"><b>A</b><i>✓ built</i></span><span class="tile t-ok"><b>M</b><i>✓ built</i></span><span class="tile t-ok"><b>Au</b><i>✓ conf</i></span></div></td>
+  <td><span class="stage built">Budget Built (draft)</span></td><td class="days warn">5d</td><td><span class="next blk">Fix E + rebuild →</span></td></tr>
+<tr><td><div class="bname">130 E. 18 Owners Corp</div><div class="ecode">148</div></td><td>M. Vega</td>
+  <td><div class="tiles"><span class="tile t-ok"><b>B</b><i>✓ built</i></span><span class="tile t-ok"><b>E</b><i>✓ built</i></span><span class="tile t-ok"><b>Y</b><i>✓ built</i></span><span class="tile t-ok"><b>A</b><i>✓ built</i></span><span class="tile t-ok"><b>M</b><i>✓ built</i></span><span class="tile t-ok"><b>Au</b><i>✓ conf</i></span></div></td>
+  <td><span class="stage pm">PM Review</span></td><td class="days">3d</td><td><span class="next">View PM progress →</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 class="sec">2 · Click a tile → the wizard answers in the same language</h2>
+<p class="sub">Clicking 847's amber Au tile opens /wizard/847?step=2&focus=audit_2025 — the focus parameter finally works: scrolls to the audit card and pulses it. Cards use the same colors and words as the tile you clicked. Note: 847 isn't built yet, so its files read "In SharePoint" — they all flip green together the moment the budget is generated.</p>
+
+<div class="panel" style="max-width:760px;">
+  <div style="font-size:12px; color:var(--g500); margin-bottom:4px;">Wizard · The Orion (847) · Step 2 — Sources</div>
+  <div style="font-size:12.5px; background:var(--beige); color:var(--brown); border-radius:8px; padding:8px 14px; margin-bottom:14px;">
+    Files appear here as they arrive in SharePoint. When you generate the budget (Step 4), every file used turns green.
+  </div>
+  <div class="wcard focusring"><div><h4>2025 Audited Financials</h4><p>Extracted by Claude 5/30 · mapping ready · waiting on your sign-off</p></div><div style="display:flex;gap:8px;align-items:center;"><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">Needs review</span><span class="next act">Review &amp; confirm →</span></div></div>
+  <div class="wcard"><div><h4>2026 Approved Budget</h4><p>In SharePoint since 5/28 · approved_2026_847.xlsx</p></div><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">In SharePoint</span></div>
+  <div class="wcard"><div><h4>YSL (Yardi)</h4><p>In SharePoint since 5/28</p></div><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">In SharePoint</span></div>
+  <div class="wcard"><div><h4>Expense Distribution</h4><p>In SharePoint since 5/28</p></div><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">In SharePoint</span></div>
+  <div class="wcard"><div><h4>AP Aging</h4><p>In SharePoint since 5/30</p></div><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">In SharePoint</span></div>
+  <div class="wcard"><div><h4>Maintenance Proof</h4><p>In SharePoint since 5/30</p></div><span class="wpill" style="background:var(--act-bg);color:var(--act-fg);">In SharePoint</span></div>
+</div>
+
+<h2 class="sec">3 · What changed</h2>
+<div class="ba">
+  <div class="panel"><h3 class="bad">Before</h3><ul>
+    <li class="bad">Amber meant 8 different things; green meant opposites 30px apart</li>
+    <li class="bad">Green tile told you nothing about whether the wizard ran</li>
+    <li class="bad">Dashboard and wizard checked SharePoint differently → contradictory colors</li>
+    <li class="bad">Clicking a dashboard tile dropped you on a generic wizard page</li>
+    <li class="bad">"Nothing commits until Step 5" — false; and stale caches manufactured false alarms</li>
+    <li class="bad">Status shown twice per row; Maintenance Proof invisible</li>
+  </ul></div>
+  <div class="panel"><h3 class="good">After</h3><ul>
+    <li class="good">Amber = in SharePoint (with date) · Green = in a built budget · Red = missing/failed · Gray = setup</li>
+    <li class="good">All-green row = the wizard ran. All-amber row = build me. Green+one-red = partial build</li>
+    <li class="good">One server-side status model feeds both pages — they cannot disagree</li>
+    <li class="good">Tile click lands on the exact wizard card, highlighted, same words</li>
+    <li class="good">Auto-refresh on view + honest copy: files load on arrival, Step 4 generates</li>
+    <li class="good">One Stage column · all six files visible · newer-file-after-build gets a marker</li>
+  </ul></div>
+</div>
+
+</div>
+</body>
+</html>

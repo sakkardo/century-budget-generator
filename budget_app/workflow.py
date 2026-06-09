@@ -190,6 +190,15 @@ except ImportError:
     from budget_app.budget_status import (BUDGET_STATUSES, USER_ROLES, VALID_TRANSITIONS,
                                           LIFECYCLE_STAGES, derive_lifecycle_stage)
 
+# Status UX Phase 1 (2026-06-09): shared per-source file-status model — the one
+# brain the FA dashboard AND the wizard render tile colors from. Jacob's rule:
+# green = the file is in a BUILT budget; amber = in SharePoint; red = missing/
+# failed; gray = setup. See STATUS_UX_PLAN.md + source_status.py.
+try:
+    from source_status import compute_source_states
+except ImportError:
+    from budget_app.source_status import compute_source_states
+
 # ─── Budget Year Config ─────────────────────────────────────────────────────
 # Change this ONE value each cycle. All routes, queries, and column headers
 # derive their years from this.  BY=2027 means:
@@ -994,8 +1003,14 @@ def create_workflow_blueprint(db):
         # 1) Budget summary import timestamps (earliest imported_at per entity)
         summary_ts = {}
         try:
+            # Phase 1 (2026-06-09): year-filtered — the canonical "B loaded" rule.
+            # Was unfiltered, which disagreed with the foundation page (year-
+            # filtered) and the wizard (row_type-filtered); prior-cycle rows no
+            # longer count as this cycle's approved budget.
             rows = db.session.execute(
-                db.text("SELECT entity_code, MIN(imported_at) FROM budget_summary_rows GROUP BY entity_code")
+                db.text("SELECT entity_code, MIN(imported_at) FROM budget_summary_rows "
+                        "WHERE budget_year = :by GROUP BY entity_code"),
+                {"by": BUDGET_YEAR}
             ).fetchall()
             for r in rows:
                 summary_ts[r[0]] = r[1].isoformat() if r[1] else None
@@ -1038,6 +1053,31 @@ def create_workflow_blueprint(db):
             ).fetchall()
             for r in rows:
                 open_ap_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 4b) Phase 1 (2026-06-09): Maintenance Proof staged timestamps — the M
+        # tile's "loaded" signal. Tracked in data all along, invisible until now.
+        maint_ts = {}
+        try:
+            rows = db.session.execute(
+                db.text("SELECT entity_code, MAX(uploaded_at) FROM maint_proof_reports GROUP BY entity_code")
+            ).fetchall()
+            for r in rows:
+                maint_ts[r[0]] = r[1].isoformat() if r[1] else None
+        except Exception:
+            db.session.rollback()
+
+        # 4c) Phase 1: unresolved build failures -> the "failed" tile state
+        # (build tried this source and it failed to parse; red with a fix link).
+        failures_by_entity = {}
+        try:
+            rows = db.session.execute(db.text(
+                "SELECT DISTINCT entity_code, source_type FROM build_failures "
+                "WHERE resolved_at IS NULL"
+            )).fetchall()
+            for r in rows:
+                failures_by_entity.setdefault(r[0], set()).add(r[1])
         except Exception:
             db.session.rollback()
 
@@ -1130,7 +1170,10 @@ def create_workflow_blueprint(db):
             # Tier classification — checked in order, first match wins
             if built:
                 tier = "BUILT"
-                tier_order = 0
+                # Phase 1 fix (2026-06-09): was 0, colliding with NEEDS_FILES so
+                # finished buildings interleaved with empty ones at the bottom of
+                # the readiness sort. -1 = own rank: done = least prep-actionable.
+                tier_order = -1
                 next_action = "review_built"
                 next_url = f"/dashboard/{ec}"
                 tier_label = "Already built"
@@ -1161,7 +1204,12 @@ def create_workflow_blueprint(db):
                 next_url = f"/wizard/{ec}?step=2&focus=audit_2025"
                 tier_label = "Audit PDF ready to extract"
             elif (sp_e.get("approved_2026") or sp_e.get("ysl") or
-                  sp_e.get("expense_distribution") or sp_e.get("ap_aging")):
+                  sp_e.get("expense_distribution") or sp_e.get("ap_aging") or
+                  has_bud or has_ysl or has_exp or has_ap):
+                # Phase 1 fix (2026-06-09): also check DB-staged data, not just the
+                # sp_inventory cache. A building with loaded sources but a stale SP
+                # cache used to fall through to NEEDS_FILES ("Chase the FA") —
+                # a false alarm manufactured by cache staleness.
                 tier = "NEEDS_AUDIT"
                 tier_order = 1
                 next_action = "wait"
@@ -1180,6 +1228,25 @@ def create_workflow_blueprint(db):
                 "next_action": next_action,
                 "next_url": next_url,
             }
+            # Phase 1 (2026-06-09): the shared per-source status — Jacob's rule
+            # (green = in a BUILT budget; amber = in SharePoint; red = missing/
+            # failed; gray = setup). Both the dashboard and the wizard will render
+            # tiles from THIS dict, so the two pages can never disagree again.
+            d["source_states"] = compute_source_states(
+                built=built,
+                is_setup=(d.get("lifecycle_stage") == "Setup"),
+                staged={
+                    "approved_2026": {"loaded": has_bud, "ts": summary_ts.get(ec)},
+                    "expense_distribution": {"loaded": has_exp, "ts": expense_ts.get(ec)},
+                    "ysl": {"loaded": has_ysl, "ts": ysl_ts.get(ec)},
+                    "ap_aging": {"loaded": has_ap, "ts": open_ap_ts.get(ec)},
+                    "maint_proof": {"loaded": bool(maint_ts.get(ec)), "ts": maint_ts.get(ec)},
+                },
+                sp_found=sp_e,
+                sp_meta=sp_modified.get(ec) or {},
+                audit=audit_info.get(ec),
+                failures=failures_by_entity.get(ec) or set(),
+            )
             result.append(d)
         return jsonify(result)
 
