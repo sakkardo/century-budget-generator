@@ -19931,149 +19931,10 @@ function recalc() {
 // FA directive 2026-05-19 (148 RE Tax redesign): estimate column now derives
 // from Sections 1 + 2 per-GL. The popover shows the actual formula for each
 // GL, and switches to "zero" messaging when the After-10/31 toggle is on.
-function _reEstFormulaEntry(glCode, label) {
-  const lbl = _rePeriodLabels();
-  const row = STATE.rows && STATE.rows[glCode] ? STATE.rows[glCode] : { D: 0, H: 0, E: 0 };
-  const afterOct31 = !!(STATE && STATE.afterOct31);
-  if (afterOct31) {
-    return {
-      title: glCode + ' ' + label + ' · ' + lbl.estimate,
-      excel: '= 0',
-      expanded: '= 0 (After-10/31 toggle ON)',
-      result: 0,
-      note: 'After 10/31 the YSL has the full year of actuals. Remaining-months estimate is forced to zero so the 12-Mo Forecast equals YTD Actual.',
-    };
-  }
-  // Map GL → human-readable Section-1/2 formula
-  const FORMULAS = {
-    '6315-0000': { excel: '= I11 / 2',  note: 'Section 1 first-half tax (I11) divided by 2 = expected May-Dec tax accrual.' },
-    '6315-0010': { excel: '= -F29 / 4', note: 'Co-op Abatement (Section 2 base F29) split into 4 quarters; one quarter falls in May-Dec.', src: 'f29' },
-    '6315-0020': { excel: '= -F28 / 4', note: 'STAR Exemption (Section 2 base F28) split into 4 quarters; one quarter falls in May-Dec.', src: 'f28' },
-    '6315-0025': { excel: '= -F26 / 4', note: 'Veteran Exemption (Section 2 base F26) split into 4 quarters; one quarter falls in May-Dec.', src: 'f26' },
-    '6315-0030': { excel: '= 0',        note: 'SCRIE Credit has no Section 2 input. FA can override directly if needed.' },
-    '6315-0035': { excel: '= -F27 / 4', note: 'SCHE Credit (Section 2 base F27) split into 4 quarters; one quarter falls in May-Dec.', src: 'f27' },
-    '6315-0040': { excel: '= 0',        note: 'J-51 Credit has no Section 2 input. FA can override directly if needed.' },
-  };
-  const f = FORMULAS[glCode] || { excel: '= H - YTD', note: 'Period-independent fallback.' };
-  let expanded;
-  if (glCode === '6315-0000') {
-    expanded = '= ' + fmtDollar(STATE.I11 || 0) + ' / 2';
-  } else if (f.src) {
-    const base = (CELL_STATE[f.src] && CELL_STATE[f.src].value) || 0;
-    expanded = '= -' + fmtDollar(base) + ' / 4';
-  } else {
-    expanded = '= 0';
-  }
-  return {
-    title: glCode + ' ' + label + ' · ' + lbl.estimate,
-    excel: f.excel,
-    expanded: expanded,
-    result: row.E,
-    note: f.note,
-  };
-}
-
-const FORMULA_DEFS = {
-  // E column — Estimate (= H - YTD, period-independent)
-  'e_6315-0000': () => _reEstFormulaEntry('6315-0000', 'Real Estate Tax'),
-  'e_6315-0010': () => _reEstFormulaEntry('6315-0010', 'Real Estate Tax Abatement'),
-  'e_6315-0020': () => _reEstFormulaEntry('6315-0020', 'STAR Exemption'),
-  'e_6315-0025': () => _reEstFormulaEntry('6315-0025', 'Veteran Exemption'),
-  'e_6315-0030': () => _reEstFormulaEntry('6315-0030', 'SCRIE Credit'),
-  'e_6315-0035': () => _reEstFormulaEntry('6315-0035', 'SCHE Credit'),
-  'e_6315-0040': () => _reEstFormulaEntry('6315-0040', 'J-51 Credit'),
-  // F column — 12 Month Forecast
-  'f_6315-0000': () => fcastFormula('6315-0000'),
-  'f_6315-0010': () => fcastFormula('6315-0010'),
-  'f_6315-0020': () => fcastFormula('6315-0020'),
-  'f_6315-0025': () => fcastFormula('6315-0025'),
-  'f_6315-0030': () => fcastFormula('6315-0030'),
-  'f_6315-0035': () => fcastFormula('6315-0035'),
-  'f_6315-0040': () => fcastFormula('6315-0040'),
-  // H column — Current Year Budget
-  'h_6315-0000': () => ({
-    title: '6315-0000 Real Estate Tax · Current Year Budget',
-    excel: '=+I19',
-    expanded: `= ${fmtDollar(STATE.I19)}`,
-    result: STATE.rows['6315-0000'].H,
-    note: 'Pulls Full Year Tax Liability (Gross) from Section 1'
-  }),
-  'h_6315-0010': () => ({
-    title: '6315-0010 Real Estate Tax Abatement · Current Year Budget',
-    excel: '=+G29/2*-1 + H29/2*-1',
-    expanded: `= -(${fmtDollar(STATE.G29)} / 2) − (${fmtDollar(STATE.H29)} / 2)`,
-    result: STATE.rows['6315-0010'].H,
-    note: 'Half of 25/26 abatement + half of 26/27 abatement, negated. Calendar year overlaps two tax years.'
-  }),
-  'h_6315-0020': () => ({
-    title: '6315-0020 STAR Exemption · Current Year Budget',
-    excel: '=+G28*-0.5 + H28/2*-1',
-    expanded: `= -(${fmtDollar(STATE.G28)} × 0.5) − (${fmtDollar(STATE.H28)} / 2)`,
-    result: STATE.rows['6315-0020'].H,
-    note: 'Excel uses G28*-0.5 (same as -G28/2). Half 25/26 + half 26/27, negated.'
-  }),
-  'h_6315-0025': () => ({
-    title: '6315-0025 Veteran Exemption · Current Year Budget',
-    excel: '=+G26/2*-1 + H26/2*-1',
-    expanded: `= -(${fmtDollar(STATE.G26)} / 2) − (${fmtDollar(STATE.H26)} / 2)`,
-    result: STATE.rows['6315-0025'].H,
-    note: 'Half 25/26 + half 26/27, negated'
-  }),
-  'h_6315-0030': () => ({
-    title: '6315-0030 SCRIE Credit · Current Year Budget',
-    excel: '0',
-    expanded: '0',
-    result: 0,
-    note: 'Always 0 in 212 Excel'
-  }),
-  'h_6315-0035': () => ({
-    title: '6315-0035 SCHE Credit · Current Year Budget',
-    excel: '=+G27/2*-1 + H27/2*-1',
-    expanded: `= -(${fmtDollar(STATE.G27)} / 2) − (${fmtDollar(STATE.H27)} / 2)`,
-    result: STATE.rows['6315-0035'].H,
-    note: 'Half 25/26 SCHE + half 26/27 SCHE, negated'
-  }),
-  'h_6315-0040': () => ({
-    title: '6315-0040 J-51 Credit · Current Year Budget',
-    excel: '0',
-    expanded: '0',
-    result: 0,
-    note: 'Always 0 in 212 Excel'
-  }),
-  // Totals row — period labels are dynamic (FA directive 2026-05-10).
-  'd47': () => totalFormula('D', _rePeriodLabels().actual,    STATE.D47),
-  'e47': () => totalFormula('E', _rePeriodLabels().estimate,  STATE.E47),
-  'f47': () => totalFormula('F', '12 Month Forecast',          STATE.F47),
-  'g47': () => totalFormula('G', 'Prior Year Budget',          STATE.G47),
-  'h47': () => totalFormula('H', 'Current Year Budget',        STATE.H47)
-};
-
-function fcastFormula(glKey) {
-  const r = STATE.rows[glKey];
-  const lbl = _rePeriodLabels();
-  return {
-    title: `${glKey} ${r.label} · 12 Month Forecast`,
-    excel: '=YTD + Estimate',
-    expanded: `= ${fmtDollar(r.D)} + ${fmtDollar(r.E)}`,
-    result: r.F,
-    note: lbl.actual + ' (from YSL) + ' + lbl.estimate
-  };
-}
-
-function totalFormula(col, label, val) {
-  let parts = [];
-  GL_ROWS.forEach(r => {
-    const v = STATE.rows[r.gl][col];
-    parts.push(fmtDollar(v));
-  });
-  return {
-    title: `Row 47 Total · ${label}`,
-    excel: `=SUM(${col}40:${col}46)`,
-    expanded: '= ' + parts.join(' + '),
-    result: val,
-    note: 'Sum of all 7 GL rows in this column'
-  };
-}
+// RE-Tax formula POPOVER builders removed 2026-06-08: the popover was replaced by
+// the unified formula bar (CELL_META.excel + _xlNum, valid Excel). _reEstFormulaEntry /
+// FORMULA_DEFS / fcastFormula / totalFormula were dead (FORMULA_DEFS was never read)
+// and used Unicode operators. Nothing live referenced them.
 
 function showFormula(ev, el, glKey, col) { /* popover removed — formula bar shows it */ }
 
@@ -20253,15 +20114,16 @@ function syncFormulaBar() {
   barInput.disabled = false;
   const overridden = (st && st.override != null);
   if (meta.type === 'input') {
-    // For input cells, the bar shows the current literal value
-    barInput.value = fmtForCell(activeCellId, cellRaw(activeCellId));
+    // Input cell: show the bare value (Excel-style, no $/commas) for dollar cells;
+    // keep % formatting for percent cells (e.g. Tax Rate) so value entry isn't confusing.
+    barInput.value = (meta.format === 'pct') ? fmtForCell(activeCellId, cellRaw(activeCellId)) : String(Math.round(cellRaw(activeCellId) || 0));
   } else {
     // Computed cell — show user override formula raw; numeric override formatted;
     // built-in formula with cell refs replaced by live numeric values.
     if (st && st.overrideSrc) {
       barInput.value = st.overrideSrc;
     } else if (overridden) {
-      barInput.value = fmtForCell(activeCellId, st.override);
+      barInput.value = (meta.format === 'pct') ? fmtForCell(activeCellId, st.override) : String(Math.round(st.override || 0));
     } else if (activeCellId.charAt(0) === 'f' && activeCellId.charAt(1) === '_') {
       // 12-Month Forecast = YTD (D) + Estimate (E). These per-GL columns are
       // not A1-addressable, so the generic ref-substituter can't expand
