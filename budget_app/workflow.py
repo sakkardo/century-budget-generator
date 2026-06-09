@@ -3320,6 +3320,17 @@ def create_workflow_blueprint(db):
                 "data": data or [],
             })
 
+        # Calibration (2026-06-08): an unbuilt budget (no lines) has nothing to
+        # data-quality-check. Short-circuit so the preflight doesn't cry wolf about
+        # "missing" rows on a building that simply hasn't been built yet.
+        if not lines:
+            _check("Budget built", "warn",
+                   "No budget lines yet. This building hasn't been built; run the wizard before data-quality checks apply.")
+            return jsonify({"entity_code": entity_code,
+                            "scanned_at": datetime.utcnow().isoformat() + "Z",
+                            "summary": {"pass": 0, "warn": 1, "fail": 0},
+                            "checks": checks})
+
         # ── Check 1: GL coverage — no orphan lines on Unmapped sheet ─────
         orphans = [l for l in lines if (l.sheet_name or "") == "Unmapped"
                    and (abs(float(l.ytd_actual or 0)) > 0.01 or abs(float(l.current_budget or 0)) > 0.01)]
@@ -3334,22 +3345,25 @@ def create_workflow_blueprint(db):
                           "ytd": float(l.ytd_actual or 0)} for l in orphans[:8]])
 
         # ── Check 2: All standard summary rows present ────────────────────
-        STANDARD_LABELS = [
-            "Maintenance", "Commercial Rent", "Tax Benefit Credits (Abatement, Star,etc)",
-            "Cable TV", "Other Income", "Total Income",
+        # Calibration (2026-06-08): only the rows EVERY building must have. Conditional
+        # income rows (Commercial Rent, Cable TV, Flip Tax, Tax Benefit Credits, RE
+        # Taxes) have their own data-conditional checks; listing them here warned
+        # 147/148 buildings for line items they legitimately don't carry.
+        STRUCTURAL_LABELS = [
+            "Maintenance", "Total Income",
             "Payroll", "Electric", "Water & Sewer", "Supplies",
-            "Repairs & Maintenance", "Insurance", "Real Estate Taxes",
+            "Repairs & Maintenance", "Insurance",
             "Professional Fees", "Administrative & Other",
             "Total Expenses", "Net Operating Surplus <Deficit>",
-            "Flip Tax/Transfer Fees", "Total Surplus <Deficit>",
+            "Total Surplus <Deficit>",
         ]
-        missing = [lbl for lbl in STANDARD_LABELS if lbl not in rows_by_label]
+        missing = [lbl for lbl in STRUCTURAL_LABELS if lbl not in rows_by_label]
         if not missing:
             _check("All standard summary rows present", "pass",
-                   f"{len(rows)} summary rows on this building. All standard labels found.")
+                   f"{len(rows)} summary rows. All structural rows (income total, expense categories, totals) present.")
         else:
             _check("All standard summary rows present", "warn",
-                   f"{len(missing)} standard summary row{'s' if len(missing) != 1 else ''} missing on this building's summary.",
+                   f"{len(missing)} structural summary row{'s' if len(missing) != 1 else ''} missing on this building's summary.",
                    data=[{"gl": "", "desc": lbl, "ytd": 0} for lbl in missing[:8]])
 
         # ── Check 3: Maintenance row includes 4010 + 4060 + 4070 ──────────
@@ -3358,19 +3372,26 @@ def create_workflow_blueprint(db):
             m_prefixes = _json.loads(m_row.gl_prefixes_json) if m_row and m_row.gl_prefixes_json else []
         except Exception:
             m_prefixes = []
-        m_expected = {"4010", "4060", "4070"}
+        # Calibration (2026-06-08): only require a maintenance-income prefix if the
+        # building actually HAS data on it. 4060 (arrears)/4070 (prepaid) are often $0,
+        # which previously warned 92/148 buildings for income families they don't have.
+        def _has_prefix_data(pfx):
+            return any((l.gl_code or "").startswith(pfx) and
+                       (abs(float(l.ytd_actual or 0)) > 0.01 or abs(float(l.current_budget or 0)) > 0.01)
+                       for l in lines)
+        m_expected = {p for p in ("4010", "4060", "4070") if _has_prefix_data(p)}
         m_missing = m_expected - set(p for p in m_prefixes)
         if not m_row:
             _check("Maintenance income aggregation", "warn",
                    "Maintenance row not present on this building.")
         elif not m_missing:
             _check("Maintenance income aggregation", "pass",
-                   f"Maintenance row pulls all three account families: 4010 (billed), 4060 (arrears), 4070 (prepaid).")
+                   f"Maintenance row pulls every maintenance-income family that has data ({', '.join(sorted(m_expected)) or 'none'}).")
         else:
             _check("Maintenance income aggregation", "fail",
-                   f"Maintenance row is missing account prefixes: {', '.join(sorted(m_missing))}. Prepaid income / arrears won't roll up here.",
+                   f"Maintenance row is missing account prefixes that HAVE data: {', '.join(sorted(m_missing))}. That income won't roll up here.",
                    fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"},
-                   data=[{"gl": p, "desc": "Missing from Maintenance prefix list", "ytd": 0} for p in sorted(m_missing)])
+                   data=[{"gl": p, "desc": "Has data but missing from Maintenance prefix list", "ytd": 0} for p in sorted(m_missing)])
 
         # ── Check 4: Cable TV breakout (own row, not in Other Income) ─────
         cable_row = rows_by_label.get("Cable TV")
@@ -3378,14 +3399,19 @@ def create_workflow_blueprint(db):
             cable_prefixes = _json.loads(cable_row.gl_prefixes_json) if cable_row and cable_row.gl_prefixes_json else []
         except Exception:
             cable_prefixes = []
+        # Calibration (2026-06-08): only flag cable routing if the building HAS cable
+        # income (4250). Warning a building with $0 cable about a "missing cable row"
+        # fired on 143/148 buildings and buried the real problems.
+        cable_ytd = sum(float(l.ytd_actual or 0) for l in lines if (l.gl_code or "").startswith("4250"))
         if cable_row and "4250" in cable_prefixes:
-            cable_lines = [l for l in lines if (l.gl_code or "").startswith("4250") and float(l.ytd_actual or 0) != 0]
-            cable_ytd = sum(float(l.ytd_actual or 0) for l in cable_lines)
             _check("Cable TV breakout", "pass",
                    f"Cable TV income (account 4250) routes to its own summary row. ${cable_ytd:,.0f} YTD on this building.")
+        elif abs(cable_ytd) < 0.01:
+            _check("Cable TV breakout", "pass",
+                   "No cable income (account 4250) on this building. Not applicable.")
         else:
             _check("Cable TV breakout", "warn",
-                   "Cable TV row missing or doesn't include account 4250. Cable income may be lumped into Other Income.",
+                   f"${cable_ytd:,.0f} of cable income (4250) exists but isn't broken out into its own row; it's likely lumped into Other Income.",
                    fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"})
 
         # ── Check 5: Flip Tax routes below the line ───────────────────────
@@ -3395,16 +3421,22 @@ def create_workflow_blueprint(db):
         except Exception:
             flip_prefixes = []
         flip_has_7025 = any(p == "7025" for p in flip_prefixes)
+        # Calibration (2026-06-08): only flag flip-tax routing if the building HAS flip
+        # tax income (7025). Previously fired on 131/148 buildings with no flip tax.
+        flip_ytd = sum(float(l.ytd_actual or 0) for l in lines if (l.gl_code or "").startswith("7025"))
         if flip_row and flip_has_7025:
             _check("Flip Tax routes below the line", "pass",
                    "Account 7025 (Flip Tax - Capital) routes to non-operating income, not Capital Expenses.")
+        elif abs(flip_ytd) < 0.01:
+            _check("Flip Tax routes below the line", "pass",
+                   "No flip tax income (account 7025) on this building. Not applicable.")
         elif flip_row:
             _check("Flip Tax routes below the line", "warn",
-                   "Flip Tax row exists but doesn't include account 7025. Any flip tax income may be stuck on the Capital sheet.",
+                   f"${flip_ytd:,.0f} of flip tax exists but the Flip Tax row doesn't include account 7025, so it may be stuck on the Capital sheet.",
                    fix={"label": "Run resolve-summary-aliases", "endpoint": f"/api/admin/resolve-summary-aliases/{entity_code}"})
         else:
             _check("Flip Tax routes below the line", "warn",
-                   "No 'Flip Tax/Transfer Fees' row on this building's summary.")
+                   f"${flip_ytd:,.0f} of flip tax income (7025) exists but there's no 'Flip Tax/Transfer Fees' row to hold it.")
 
         # ── Check 6: Working Capital Contribution row exists when GL has data ─
         wc_lines = [l for l in lines if (l.gl_code or "") == "4725-0040"
