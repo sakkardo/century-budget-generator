@@ -9391,6 +9391,35 @@ def create_workflow_blueprint(db):
         })
 
 
+    @bp.route("/api/summary/<entity_code>/export.xlsx", methods=["GET"])
+    def api_summary_export_xlsx(entity_code):
+        """Download the summary as a DYNAMIC .xlsx — computed cells are live Excel
+        formulas (Forecast =D+E, subtotals =SUM(...), Net Op / Total Surplus cross-row,
+        %Var), so the workbook recalculates in Excel. Reuses api_summary_get so the file
+        is always byte-identical in meaning to the on-screen summary (single source)."""
+        res = api_summary_get(entity_code)
+        if isinstance(res, tuple):   # (error_response, status)
+            return res
+        data = res.get_json() if hasattr(res, "get_json") else None
+        if not data or not data.get("rows"):
+            return jsonify({"error": "No summary data for %s" % entity_code}), 404
+        try:
+            try:
+                from excel_export import build_summary_workbook
+            except ImportError:
+                from budget_app.excel_export import build_summary_workbook
+            xb = build_summary_workbook(data)
+        except Exception as e:
+            logger.error("xlsx export failed for %s: %s", entity_code, e)
+            return jsonify({"error": "Export failed: %s" % str(e)[:200]}), 500
+        from flask import Response
+        fname = "Budget_Summary_%s_%s.xlsx" % (entity_code, data.get("budget_year") or "")
+        return Response(
+            xb,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="%s"' % fname},
+        )
+
     @bp.route("/api/summary/<entity_code>", methods=["PUT"])
     def api_summary_edit(entity_code):
         """FA edits cells on summary rows.
@@ -20908,6 +20937,7 @@ async function renderBudgetSummary(contentDiv) {
     '<span style="display:inline-block;width:1px;height:22px;background:var(--gray-200);margin:0 4px;"></span>' +
     '<button onclick="sumTabUndoLast()" title="Restore the most recent change on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u21a9 Undo last</button>' +
     '<button onclick="sumTabShowHistory()" title="See the last 50 changes on the Summary tab" style="padding:4px 10px;font-size:11px;background:white;color:var(--gray-700);border:1px solid var(--gray-300);border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u23f1 History</button>' +
+    '<button onclick="sumExportExcel()" title="Download this summary as a live Excel workbook (formulas recalculate in Excel)" style="padding:4px 10px;font-size:11px;background:#f0fdf4;color:#15803d;border:1px solid #16a34a;border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">\u2b07 Excel</button>' +
     '</div>' +
     // FA dir 2026-05-24: second-row formula breakdown \u2014 long expressions like
     // "= Income (47,900) \u2212 Expenses (35,200) = 12,700" need full-width space
@@ -21551,6 +21581,10 @@ function sumBuildFormulaText(label, col, lineage, raw) {
   return '';
 }
 
+function sumExportExcel() {
+  // Download the dynamic .xlsx (live formulas) for the building currently open.
+  window.location.href = '/api/summary/' + encodeURIComponent(entityCode) + '/export.xlsx';
+}
 function sumCellFocus(el) {
   // Clear any subtotal highlight
   if (_activeSumSubtotal) { _activeSumSubtotal.style.outline = ''; _activeSumSubtotal = null; }

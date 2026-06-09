@@ -139,6 +139,7 @@
  "/api/sharepoint/explore",
  "/api/sheet-subtotal-override/<entity_code>",
  "/api/summary/<entity_code>",
+ "/api/summary/<entity_code>/export.xlsx",
  "/api/summary/import/<entity_code>",
  "/api/sync-monday",
  "/api/sync-monday-fetch",
