@@ -18517,13 +18517,13 @@ function faGetFormulaTooltip(l, field) {
   if (field === 'estimate') {
     if (faIsFixedToBudget(l)) {
       const cb = l.current_budget || 0;
-      return '=' + cb + ' − ' + ytd + '  (current budget − YTD, ' + (((l.gl_code || '').indexOf('6315') === 0) ? 'GL 6315' : 'fully collectible income') + ' pinned)';
+      return sumExcelExpr([cb, -ytd]) || '=0';   // estimate pinned: current budget - YTD (valid Excel)
     }
     if (faIsOneTimeFeeBilled(l)) {
-      return '= 0  (one-time fee rule, GL ' + (l.gl_code || '') + ' — already billed YTD)';
+      return '=0';   // one-time fee already billed YTD -> no estimate
     }
     if (faIsCapital(l)) {
-      return '= 0  (Capital — no estimate)';
+      return '=0';   // Capital -> no estimate
     }
     if (YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
     return '=0';
@@ -18531,20 +18531,20 @@ function faGetFormulaTooltip(l, field) {
   if (field === 'forecast') {
     if (faIsFixedToBudget(l)) {
       const cb = l.current_budget || 0;
-      return '=' + cb + '  (pinned to budget — ' + (((l.gl_code || '').indexOf('6315') === 0) ? 'GL 6315 (RE Tax)' : 'fully collectible income') + ')';
+      return '=' + Math.round(cb);   // forecast pinned to current budget
     }
     if (faIsOneTimeFeeBilled(l)) {
-      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0  (one-time fee — no additional projection)';
+      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0';   // one-time fee: no additional projection
     }
     if (faIsCapital(l)) {
-      return '=' + ytd + '−(' + accrual + ')+(' + unpaid + ')  (Capital — YTD less accrual, plus unpaid)';
+      return '=' + ytd + '-(' + accrual + ')+(' + unpaid + ')';   // Capital: YTD less accrual, plus unpaid
     }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   }
   if (field === 'proposed') {
     if (faIsCapital(l)) {
-      return '= 0  (Capital — no proposed budget)';
+      return '=0';   // Capital -> no proposed budget
     }
     if (l.proposed_formula) return l.proposed_formula;
     const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
@@ -26420,7 +26420,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="var_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(variance) + '"' +
         ' data-raw="' + Math.round(variance) + '"' +
-        ' data-formula="= ' + fmt(proposed) + ' - ' + fmt(budget) + '"' +
+        ' data-formula="' + (sumExcelExpr([proposed, -budget]) || '=0') + '"' +
         ' data-gl="' + gl + '" data-field="variance"' +
         ' style="cursor:pointer; pointer-events:none; color:'+varColor+';"></td>' +
       '<td class="num" style="position:relative; cursor:pointer;" onclick="fxCellFocus(document.getElementById(\'pct_'+gl+'\'))">' +
@@ -26428,7 +26428,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         '<input id="pct_'+gl+'" class="cell cell-fx" type="text" readonly' +
         ' value="' + (pctChange*100).toFixed(1) + '%"' +
         ' data-raw="' + pctChange + '"' +
-        ' data-formula="= (' + fmt(proposed) + ' - ' + fmt(budget) + ') / ' + fmt(budget) + '"' +
+        ' data-formula="' + (Math.round(budget) ? ('=(' + (sumExcelExpr([proposed, -budget]) || '=0').slice(1) + ')/' + Math.round(budget)) : '=0') + '"' +
         ' data-gl="' + gl + '" data-field="pct_change"' +
         ' style="cursor:pointer; pointer-events:none;"></td>' +
       '<td class="col-notes"><input class="cell cell-notes" type="text" value="' + (l.notes||'').replace(/"/g,'&quot;') + '" data-gl="' + gl + '" data-field="notes" onchange="faAutoSave(\'' + gl + '\',\'notes\',this.value)"></td></tr>';
