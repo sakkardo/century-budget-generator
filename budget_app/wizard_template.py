@@ -1082,10 +1082,10 @@ header {
       <div class="step-header">
         <div class="step-badge">Step 2 of 5</div>
         <h1 class="step-title">Foundation</h1>
-        <p class="step-description">Lock in the prior-year framework. The 2026 Approved Budget and 2025 Audit must both be confirmed before the rest of the budget process unlocks.</p>
+        <p class="step-description">Lock in the prior-year framework. Sources can stage any time; the 2026 Approved Budget and 2025 Audit must both be confirmed before the budget can be generated.</p>
       </div>
       <div class="prompt-banner">
-        Sources stage here as they arrive in SharePoint — most load automatically, and you can re-stage any file safely. Nothing becomes a budget until you click "Generate budget" in Step 4. Confirm the Foundation (2026 Budget + 2025 Audit) first; it unlocks the Yardi sources.
+        Sources stage here as they arrive in SharePoint — most load automatically, and you can re-stage any file safely. Nothing becomes a budget until you click "Generate budget" in Step 4, and generating requires the Foundation (2026 Budget + 2025 Audit) confirmed.
       </div>
 
       <!-- Foundation Panel (Phase E) -->
@@ -2530,7 +2530,7 @@ function renderFoundationPanel() {
   const banner = document.getElementById("foundationStatusBanner");
   if (banner) {
     if (fs.foundation_confirmed_at) {
-      banner.innerHTML = '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:14px 18px; display:flex; align-items:center; gap:14px;"><div style="font-size:20px;">\u2713</div><div style="flex:1;"><div style="font-weight:700; color:#15803d;">Foundation confirmed</div><div style="font-size:12px; color:var(--gray-600,#4b5563); margin-top:2px;">Yardi sources, assumptions, and Build Budget are now unlocked. You can come back any time before the cycle starts.</div></div></div>';
+      banner.innerHTML = '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:14px 18px; display:flex; align-items:center; gap:14px;"><div style="font-size:20px;">\u2713</div><div style="flex:1;"><div style="font-weight:700; color:#15803d;">Foundation confirmed</div><div style="font-size:12px; color:var(--gray-600,#4b5563); margin-top:2px;">Assumptions and budget generation are now unlocked. You can come back any time before the cycle starts.</div></div></div>';
     } else if (fs.blocking_reason) {
       banner.innerHTML = '<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:8px; padding:12px 16px; font-size:13px; color:#92400e;"><strong>Foundation pending \u00b7</strong> ' + escapeHtml(fs.blocking_reason) + '</div>';
     } else {
