@@ -1853,6 +1853,22 @@ async function uploadAll() {
         if not upload:
             return "Upload not found", 404
 
+        # Auto-extract on landing (Jacob 2026-06-10: clicking a "ready to
+        # extract" tile landed on an empty mapping page — the FA shouldn't
+        # need to know extraction is a separate manual step). Queue the
+        # background worker and fall through to the self-polling 'extracting'
+        # banner; the page reloads into the mapping when it finishes. Failed
+        # attempts do NOT auto-retry: extract_error keeps the manual Extract
+        # button in charge so a bad PDF can't burn an API call per page view.
+        _recover_stale_extracting(upload)
+        if upload.status == "uploaded" and not getattr(upload, "extract_error", None):
+            upload.status = "extracting"
+            upload.updated_at = datetime.utcnow()
+            db.session.commit()
+            threading.Thread(target=_extract_worker,
+                             args=(current_app._get_current_object(), upload_id),
+                             daemon=True).start()
+
         try:
             raw_extraction = json.loads(upload.raw_extraction) if upload.raw_extraction else {}
             mapped_data = json.loads(upload.mapped_data) if upload.mapped_data else {}
