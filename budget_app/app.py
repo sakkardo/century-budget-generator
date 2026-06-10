@@ -730,6 +730,16 @@ with app.app_context():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
         ]
+        # Never let these legacy ALTERs queue forever behind a long-running
+        # transaction (2026-06-10 outage: each ALTER takes ACCESS EXCLUSIVE
+        # even when the column already exists, and this block had no lock
+        # timeout — a re-run mid-traffic deadlocked the whole site). They are
+        # idempotent; a timed-out one simply retries on the next boot.
+        try:
+            db.session.execute(db.text("SET lock_timeout = '5000'"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
         for ddl in _payroll_tables:
             try:
                 db.session.execute(db.text(ddl))
@@ -755,6 +765,11 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE budgets ADD CONSTRAINT uq_entity_year_ver UNIQUE (entity_code, year, version)"))
             db.session.commit()
             logger.info("Added new uq_entity_year_ver constraint")
+        except Exception:
+            db.session.rollback()
+        try:
+            db.session.execute(db.text("SET lock_timeout = DEFAULT"))
+            db.session.commit()
         except Exception:
             db.session.rollback()
 
