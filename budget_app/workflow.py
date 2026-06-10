@@ -18746,9 +18746,11 @@ function faComputeForecast(l) {
   if (faIsFixedToBudget(l)) {
     return l.current_budget || 0;
   }
-  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  // FA directive 2026-06-10 (Jacob, 829 Cap-Doors: an accrual that zeros YTD
+  // must zero the forecast too — supersedes 2026-05-05's minus sign, which
+  // double-counted): Capital forecast = YTD + accrual + unpaid (no estimate).
   if (faIsCapital(l)) {
-    return (l.ytd_actual || 0) - (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+    return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
   }
   return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0) + faComputeEstimate(l);
 }
@@ -18784,7 +18786,7 @@ function faGetFormulaTooltip(l, field) {
       return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0';   // one-time fee: no additional projection
     }
     if (faIsCapital(l)) {
-      return '=' + ytd + '-(' + accrual + ')+(' + unpaid + ')';   // Capital: YTD less accrual, plus unpaid
+      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')';   // Capital: YTD net of accrual, plus unpaid (2026-06-10 sign fix)
     }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
@@ -26317,6 +26319,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       .fa-grid .total-row td.frozen { background:#1e3a5f; color:white; }
       .fa-grid tr.drill-row td.frozen { border-right:none; box-shadow:none; }
       .fa-grid .cell { min-width:50px; width:auto; padding:4px 6px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; text-align:right; background:#fbfaf4; cursor:text; }
+      /* Jacob 2026-06-10: the shrink-to-fit columns size to the header text,
+         and "MAY-DEC EST" is short — six-figure estimates clipped ($99,31).
+         Give estimate inputs room for $9,999,999. */
+      .fa-grid input[data-field="estimate_override"] { min-width:92px; }
       .fa-grid .cell:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-light, #f5efe7); }
       .fa-grid .cell-fx { background:transparent; border-color:#e5e1d8; box-shadow:inset 3px 0 0 #16a34a; color:#15803d; }
       .fa-grid .cell-fx:focus { background:#ecfdf5; }
@@ -26723,9 +26729,10 @@ function computeForecast(l) {
   const accrualAdj = l.accrual_adj || 0;
   const unpaidBills = l.unpaid_bills || 0;
   const ytdTotal = ytdActual + accrualAdj + unpaidBills;
-  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  // FA directive 2026-06-10 (supersedes 2026-05-05 minus sign): Capital
+  // forecast = YTD + accrual + unpaid (no estimate).
   if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
-    return ytdActual - accrualAdj + unpaidBills;
+    return ytdActual + accrualAdj + unpaidBills;
   }
   // FA #7 anomaly cap: negative YTD against non-negative prior year is a
   // one-time refund/credit; don't extrapolate.
@@ -29337,9 +29344,10 @@ function computeForecast(line) {
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
-    // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid.
+    // FA directive 2026-06-10 (supersedes 2026-05-05 minus sign): Capital
+    // forecast = YTD + accrual + unpaid.
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
-        return ytd - accrual + unpaid;
+        return ytd + accrual + unpaid;
     }
     return ytd + accrual + unpaid + computeEstimate(line);
 }
@@ -31805,9 +31813,10 @@ function computeEstimate(l) {
 function computeForecast(l) {
   if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
   if (isFixedToBudgetLine(l)) return l.current_budget || 0;
-  // FA directive 2026-05-05: Capital forecast = YTD − accrual + unpaid (no estimate).
+  // FA directive 2026-06-10 (supersedes 2026-05-05 minus sign): Capital
+  // forecast = YTD + accrual + unpaid (no estimate).
   if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
-    return (l.ytd_actual || 0) - (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+    return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
   }
   // Payroll: Forecast = YTD + Estimate (no accrual/unpaid). Other tabs unchanged.
   const isPayroll = l.sheet_name === 'Payroll';
