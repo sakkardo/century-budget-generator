@@ -1893,9 +1893,14 @@ async function uploadAll() {
 
     {{ status_banner }}
 
-    <!-- Auditor profile + dropdown scope controls -->
+    <!-- Auditor profile controls HIDDEN (Jacob dir 2026-06-10: picking a profile
+         is not part of the FA process). The picker was decoration anyway — the
+         "Save Mappings is disabled" warning had NO backing logic (Confirm & Save
+         gates on all-rows-accepted, never on profile). Auto-detect still assigns
+         a matching firm profile silently when one exists; the elements stay in
+         the DOM (display:none) so that code keeps working. -->
     <div style="background:white; border:1px solid var(--gray-200); border-radius:10px; padding:14px 18px; margin-bottom:16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
-        <div style="display:flex; align-items:center; gap:10px;">
+        <div style="display:none; align-items:center; gap:10px;">
             <label for="profilePicker" style="font-size:12px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--gray-500);">Auditor Profile</label>
             <select id="profilePicker" onchange="onProfileChange()" style="padding:6px 10px; border:1px solid var(--gray-300); border-radius:4px; font-size:13px; min-width:240px;">
                 <option value="">— Loading profiles… —</option>
