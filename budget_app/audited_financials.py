@@ -628,12 +628,22 @@ def create_audited_financials_blueprint(db):
                         expense_labels = [r[0] for r in rows if r[1] and r[1].lower() == "expenses"]
                         nonop_inc = [r[0] for r in rows if r[1] and "non" in r[1].lower() and "income" in r[1].lower()]
                         nonop_exp = [r[0] for r in rows if r[1] and "non" in r[1].lower() and "expense" in r[1].lower()]
-                        budget_categories = {
-                            "income": income_labels,
-                            "expenses": expense_labels,
-                            "non_operating_income": nonop_inc,
-                            "non_operating_expense": nonop_exp,
-                        }
+                        # Only force the building's categories when the rows
+                        # actually carry section labels. Flat-format buildings
+                        # (section=NULL on every row, e.g. 826) produced four
+                        # EMPTY lists here — the prompt then forced every
+                        # auditor line into "Other Income"/"Other Expenses",
+                        # defeating the review page's suggest-a-mapping
+                        # screening (Jacob, 2026-06-10). With no usable list,
+                        # keep the auditor's own labels and let the review
+                        # page's auto-suggest do the mapping.
+                        if income_labels or expense_labels or nonop_inc or nonop_exp:
+                            budget_categories = {
+                                "income": income_labels,
+                                "expenses": expense_labels,
+                                "non_operating_income": nonop_inc,
+                                "non_operating_expense": nonop_exp,
+                            }
                 except Exception as e:
                     logger.warning(f"Could not load building categories for {entity_code}: {e}")
 
