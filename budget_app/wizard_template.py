@@ -1409,6 +1409,7 @@ function maybeAutoScanSharePoint() {
   // Stale → background scan. Don't await: FA sees stale tiles for 1 pass,
   // next refresh shows fresh ones.
   fetch('/api/admin/sp-inventory/scan', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} })
+    .then(function () { return fetch('/api/admin/auto-load-arrivals', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} }).catch(function () {}); })
     .then(function () { loadSPScanStatus(); loadEnrichedBudgets(); loadRecentSPUploads(); })
     .catch(function () { /* silent */ });
 }
@@ -1425,6 +1426,17 @@ function scanSharePointFromWizard() {
       if (data.error) {
         alert('Scan failed: ' + data.error);
       } else {
+        // Phase 3b: arrivals load themselves — sweep stages newly-arrived
+        // sources server-side, then the reloads below pick up the new states.
+        fetch('/api/admin/auto-load-arrivals', { method: 'POST', body: '{}', headers: {'Content-Type': 'application/json'} })
+          .then(function (r) { return r.json(); })
+          .then(function (al) {
+            if (al && al.loaded && typeof showToast === 'function') {
+              showToast('Auto-loaded ' + al.loaded + ' newly arrived file(s)' + (al.failed ? (' · ' + al.failed + ' failed') : ''), 'success');
+            }
+            loadEnrichedBudgets();
+          })
+          .catch(function () {});
         // Reload enriched data + sync status + recent uploads so the FA
         // sees the new tiles + dates immediately without a hard refresh.
         loadEnrichedBudgets();
@@ -1941,7 +1953,7 @@ function renderEntityGrid() {
           "<div style=\"background:linear-gradient(90deg,#ecfdf5 0%,#f0fdf4 100%); border:1px solid #6ee7b7; border-radius:10px; padding:14px 18px; display:flex; align-items:center; gap:14px;\">"
         + "<span style=\"font-size:22px;\">🚀</span>"
         + "<div style=\"flex:1;\"><strong style=\"color:#065f46; font-size:14px;\">" + ready + " building" + (ready === 1 ? "" : "s") + " ready to build right now</strong>"
-        + "<div style=\"color:#047857; font-size:11px; margin-top:2px;\">All files staged, audit confirmed. " + (inProg > 0 ? (inProg + " more in progress." ) : "") + "</div></div>"
+        + "<div style=\"color:#047857; font-size:11px; margin-top:2px;\">All sources loaded, audit confirmed. " + (inProg > 0 ? (inProg + " more in progress." ) : "") + "</div></div>"
         + "<button onclick=\"buildAllReady()\" style=\"background:#16a34a; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; cursor:pointer;\">Build all " + ready + " →</button>"
         + "</div>";
       } else if (inProg > 0) {
@@ -2300,17 +2312,21 @@ function renderSharepointSources() {
       headerColor = "#15803d"; headerIcon = "✓";
       const dt = _ingestedAtFor(slot.key);
       const detail = _ingestDetailFor(slot.key);
-      // "ingested 5/22 · 67 invoices" — gives FA a visual receipt that
-      // real data flowed, not just that a click was recorded.
-      let parts = ["ingested"];
+      // "loaded 5/22 · 67 invoices" — a visual receipt that real data flowed.
+      let parts = ["loaded"];
       if (dt) parts.push(dt);
       headerNote = parts.join(" ") + (detail ? (" · " + detail) : "");
     } else if (state === 'ingesting') {
       headerColor = "#1d4ed8"; headerIcon = "⟳";
-      headerNote = "auto-ingesting…";
+      headerNote = "loading…";
     } else if (state === 'ready') {
       headerColor = "#92400e"; headerIcon = "📥";
-      headerNote = "ready — will auto-ingest";
+      // Phase 3b honesty: multi-file slots are NOT auto-loaded (ambiguity
+      // needs a human) — say so instead of promising an auto-load that
+      // will never happen.
+      headerNote = (files.length > 1)
+        ? (files.length + " files — pick one below")
+        : "in SharePoint — loads automatically";
     }
     html += "<div data-focus-key=\"" + escapeHtmlAttr(slot.key) + "\" style=\"border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px;\">";
     html += "<div style=\"display:flex; align-items:center; gap:10px; margin-bottom:" + (hasAny ? "8px" : "0") + ";\">";
@@ -2675,9 +2691,12 @@ function useSharepointFile(sourceType, itemId, filename, auto) {
         if (!auto) {
           alert("Click failed: " + err);
         } else {
-          // Auto-ingest failed \u2014 log + leave the session marker so we don't
-          // retry in a loop. FA can click "Ingest now" manually to retry.
+          // Auto-ingest failed \u2014 log it AND clear the session marker so the
+          // next render retries (Phase 3b fix: the marker used to be set
+          // before the request and never cleared, so one transient failure
+          // froze the slot on "loading\u2026" for the whole browser session).
           try { console.warn("[A2] Auto-ingest failed for " + sourceType + ": " + err); } catch (e) {}
+          try { sessionStorage.removeItem('cb_auto_' + ent + '_' + sourceType); } catch (e) {}
         }
         if (btn) {
           btn.disabled = false;

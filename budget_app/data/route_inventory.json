@@ -11,6 +11,7 @@
  "/api/admin/audit-scan-master",
  "/api/admin/audit-sync-log",
  "/api/admin/audit-sync/run",
+ "/api/admin/auto-load-arrivals",
  "/api/admin/backfill-period/<entity_code>",
  "/api/admin/backfill-period/all",
  "/api/admin/build-all-ready",

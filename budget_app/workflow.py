@@ -11377,6 +11377,9 @@ function maybeAutoScanSP(minsAgo) {
     if (status) status.innerHTML = '<span style="color:#1d4ed8; font-weight:600;">⟳ Auto-refreshing SharePoint in the background…</span>';
     fetch('/api/admin/sp-inventory/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then(r => r.json())
+      // Phase 3b: after every refresh, arrivals load themselves — sweep stages
+      // any in-SP-not-staged sources server-side, then repaint with the result.
+      .then(() => fetch('/api/admin/auto-load-arrivals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}))
       .then(() => { loadSpInventoryStatus(); loadBudgets(); })
       .catch(() => {});
   } catch (e) {}
@@ -11419,6 +11422,13 @@ function scanSharePoint() {
       } else {
         showToast('Scan complete: ' + d.ok + '/' + d.total + ' entities (' + (d.errors||[]).length + ' errors)', 'success');
       }
+      // Phase 3b: stage any newly-arrived files automatically, then repaint.
+      return fetch('/api/admin/auto-load-arrivals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(r => r.json())
+        .then(al => { if (al && al.loaded) showToast('Auto-loaded ' + al.loaded + ' newly arrived file(s)' + (al.failed ? (' · ' + al.failed + ' failed — see red tiles') : ''), 'success'); })
+        .catch(() => {});
+    })
+    .then(() => {
       loadSpInventoryStatus();
       loadBudgets();  // re-render dashboard so amber tiles update
     })

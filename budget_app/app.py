@@ -11079,6 +11079,137 @@ def admin_sp_inventory_recent():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/auto-load-arrivals", methods=["POST"])
+def admin_auto_load_arrivals():
+    """Status UX Phase 3b (2026-06-09): 'arrivals load themselves.'
+
+    Sweep entities whose source files are sitting in SharePoint but not yet
+    staged, and stage each through the SAME path as the wizard's click /
+    auto-ingest (_wizard_record_selection via a test request context — zero
+    drift from the manual flow). Root cause this replaces: client auto-ingest
+    only fired when an FA opened that one building's Step 2, so portfolio-wide
+    arrivals sat amber forever (45 buildings at time of writing).
+
+    Per-slot rules (safety first):
+      - entity NOT built (never mutate a built budget's data automatically)
+      - data not already staged; no UNRESOLVED build_failure (don't hammer a
+        known-bad file — it stays red until fixed)
+      - EXACTLY one matching file (ambiguity needs a human)
+      - slots: ysl / expense_distribution / ap_aging / maint_proof, plus
+        approved_2026 only when the entity has no summary rows this year AND
+        no 'no prior budget' acknowledgment. audit_2025 is NEVER auto-loaded
+        (extract costs a Claude call; confirm is an FA sign-off).
+    Capped per run (default 25 stagings) so the request stays well under the
+    worker timeout; idempotent — re-running drains the remainder. Failures
+    log to build_failures => red 'failed' tiles via /api/budgets.
+
+    Body (optional): {"entities": [...], "cap": 25}
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    only = set(str(x) for x in (body.get("entities") or [])) or None
+    cap = max(1, min(int(body.get("cap") or 25), 60))
+
+    q = Budget.query.filter_by(year=_BY).filter(Budget.wizard_completed_at.is_(None))
+    if only:
+        q = q.filter(Budget.entity_code.in_(only))
+    candidates = q.all()
+
+    # Batch staged-data facts (same definitions as /api/budgets source_states)
+    def _set(sql):
+        try:
+            return {r[0] for r in db.session.execute(db.text(sql)).fetchall()}
+        except Exception:
+            db.session.rollback()
+            return set()
+    staged = {
+        "ysl": _set("SELECT DISTINCT b.entity_code FROM budget_lines bl JOIN budgets b ON b.id = bl.budget_id"),
+        "expense_distribution": _set("SELECT DISTINCT entity_code FROM expense_reports"),
+        "ap_aging": _set("SELECT DISTINCT entity_code FROM open_ap_reports"),
+        "maint_proof": _set("SELECT DISTINCT entity_code FROM maint_proof_reports"),
+        "approved_2026": _set("SELECT DISTINCT entity_code FROM budget_summary_rows WHERE budget_year = %d" % int(_BY)),
+    }
+    failures = {}
+    try:
+        for r in db.session.execute(db.text(
+            "SELECT DISTINCT entity_code, source_type FROM build_failures WHERE resolved_at IS NULL"
+        )).fetchall():
+            failures.setdefault(r[0], set()).add(r[1])
+    except Exception:
+        db.session.rollback()
+
+    SLOTS = ("ysl", "expense_distribution", "ap_aging", "maint_proof", "approved_2026")
+    loaded = failed = skipped_ambiguous = 0
+    results = []
+    remaining = 0
+    for b in candidates:
+        ec = b.entity_code
+        todo = [s for s in SLOTS
+                if ec not in staged[s] and s not in (failures.get(ec) or set())
+                and not (s == "approved_2026" and bool(b.foundation_no_prior_budget))]
+        if not todo:
+            continue
+        try:
+            sp = _sharepoint_list_entity_sources(ec)
+            by = sp.get("by_source_type") or {}
+        except Exception as e:
+            results.append({"entity_code": ec, "error": "sp_list: " + str(e)[:120]})
+            continue
+        for slot in todo:
+            files = by.get(slot) or []
+            if len(files) == 0:
+                continue
+            if len(files) > 1:
+                skipped_ambiguous += 1
+                continue
+            if loaded + failed >= cap:
+                remaining += 1
+                continue
+            f = files[0]
+            try:
+                with app.test_request_context(json={
+                    "source_type": slot, "item_id": f.get("item_id"),
+                    "filename": f.get("name") or "", "web_url": f.get("web_url") or "",
+                }):
+                    rv = _wizard_record_selection(ec)
+                resp = rv[0] if isinstance(rv, tuple) else rv
+                payload = json.loads(resp.get_data(as_text=True) or "{}")
+                if payload.get("ok"):
+                    loaded += 1
+                    staged[slot].add(ec)
+                    results.append({"entity_code": ec, "slot": slot, "status": "loaded",
+                                    "filename": f.get("name")})
+                else:
+                    failed += 1
+                    err = payload.get("parse_error") or payload.get("error") or "unknown"
+                    try:
+                        _log_build_failure(ec, slot, f.get("name") or "", "auto_load",
+                                           Exception(err))
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                    results.append({"entity_code": ec, "slot": slot, "status": "failed",
+                                    "error": str(err)[:200]})
+            except Exception as e:
+                db.session.rollback()
+                failed += 1
+                try:
+                    _log_build_failure(ec, slot, f.get("name") or "", "auto_load", e)
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                results.append({"entity_code": ec, "slot": slot, "status": "failed",
+                                "error": str(e)[:200]})
+
+    return jsonify({
+        "ok": True, "loaded": loaded, "failed": failed,
+        "skipped_ambiguous": skipped_ambiguous, "deferred_past_cap": remaining,
+        "cap": cap, "results": results,
+    })
+
+
 @app.route("/api/wizard/<entity_code>/upload-to-sp", methods=["POST"])
 def wizard_upload_to_sp(entity_code):
     """Manual-upload escape hatch: FA drops a file from their computer; we
