@@ -3,6 +3,8 @@ Century Management Unified Budget & Assumptions System
 Run: python app.py  |  Open: http://localhost:5000
 """
 import os
+# Restart marker (2026-06-10): cleared wedged extraction threads.
+
 import sys
 import csv
 import json
