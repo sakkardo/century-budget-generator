@@ -10958,10 +10958,19 @@ def _build_apply_ysl(entity_code, selection):
             merged = merge_assumptions(entity_code)
         except Exception:
             pass
-        workflow_helpers["store_all_lines"](
+        _stored_ok = workflow_helpers["store_all_lines"](
             str(entity_code), building_name, gl_data, TEMPLATE_PATH,
             assumptions=merged, fresh_start=False,
         )
+        # store_all_lines swallows DB errors, rolls back, and returns False
+        # (2026-06-10 audit finding #3). Ignoring it let a build report
+        # "success — N gl_lines" while ZERO lines persisted. Surface it so the
+        # build fails honestly and the FA retries instead of trusting an empty
+        # budget.
+        if _stored_ok is False:
+            raise RuntimeError(
+                "YSL GL lines failed to store (DB error — see logs); nothing "
+                "was persisted for this source.")
         # FA #1 follow-up: auto-detect budget_period from YSL header.
         # Hybrid model — we PRE-FILL the wizard's staged assumptions so the
         # period dropdown shows the detected month; FA can still override.
