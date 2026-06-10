@@ -3951,7 +3951,60 @@ async function uploadAll() {
             pdf_path = data_dir / upload.pdf_filename
 
             if not pdf_path.exists():
-                return jsonify({"success": False, "error": "PDF file not found"}), 404
+                # Self-heal (2026-06-10): Railway wipes local files on every
+                # deploy, so a PDF saved by a scan days (or hours) ago is gone
+                # by extract time. SharePoint is the durable store — re-fetch
+                # the PDF (entity folder first, then the master Audited
+                # Financials folder) and re-cache it locally before extracting.
+                refetched = False
+                try:
+                    import urllib.parse as _up
+                    from app import (_sharepoint_list_entity_sources,
+                                     _sharepoint_download_item, _graph_get,
+                                     _graph_get_drive_id,
+                                     SHAREPOINT_AUDIT_MASTER_PATH)
+                    prefix = f"{upload.entity_code}_{upload.fiscal_year_end}_"
+                    original = (upload.pdf_filename[len(prefix):]
+                                if upload.pdf_filename.startswith(prefix)
+                                else upload.pdf_filename)
+                    item_id = None
+                    # 1) the building's own Supporting Documents folder
+                    try:
+                        sp = _sharepoint_list_entity_sources(upload.entity_code)
+                        files = (sp.get("by_source_type") or {}).get("audit_2025") or []
+                        match = next((f for f in files if (f.get("name") or "") == original), None)
+                        if not match and len(files) == 1:
+                            match = files[0]
+                        if match:
+                            item_id = match.get("item_id")
+                    except Exception:
+                        pass
+                    # 2) the master 2025 Audited Financial Statements folder
+                    if not item_id:
+                        try:
+                            drive_id = _graph_get_drive_id()
+                            enc = _up.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
+                            listing = _graph_get(f"drives/{drive_id}/root:/{enc}:/children")
+                            match = next((it for it in listing.get("value", [])
+                                          if (it.get("name") or "") == original), None)
+                            if match:
+                                item_id = match.get("id")
+                        except Exception:
+                            pass
+                    if item_id:
+                        _, pdf_bytes = _sharepoint_download_item(item_id)
+                        with open(str(pdf_path), "wb") as fh:
+                            fh.write(pdf_bytes)
+                        refetched = True
+                        logger.info(f"Re-fetched audit PDF from SharePoint for upload {upload_id} ({original})")
+                except Exception as _e:
+                    logger.warning(f"SharePoint re-fetch failed for upload {upload_id}: {_e}")
+                if not refetched:
+                    return jsonify({"success": False, "error": (
+                        "PDF not on this server (deploys clear local files) and it "
+                        "could not be re-fetched from SharePoint. Re-run Scan "
+                        "SharePoint on the Audited Financials page, then Extract again."
+                    )}), 404
 
             # Extract from PDF (pass entity_code for building-aware categories)
             extracted = extract_from_pdf(str(pdf_path), upload.building_name, entity_code=upload.entity_code)
