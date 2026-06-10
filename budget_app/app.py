@@ -913,6 +913,44 @@ with app.app_context():
             db.session.rollback()
             logger.warning(f"Summary prefix override backfill skipped: {e}")
 
+        # Gas-split pass (Jacob 2026-06-10: "gas cooking and gas heating show
+        # the same number — the fix needs to be done again"). The label-keyed
+        # backfill above stamps ALL THREE gas GLs (5250 cooking / 5251
+        # transport / 5252 heating) onto every gas row — right for buildings
+        # with ONE combined gas row, double-counted for buildings with
+        # separate cooking + heating rows. Earlier manual repairs were erased
+        # by that very backfill on the next boot. Running the split HERE,
+        # after it, makes every boot enforce the split instead of undoing it.
+        try:
+            split = 0
+            for sql in (
+                # cooking-kind rows (gas, no 'heat') where a heating sibling exists
+                "UPDATE budget_summary_rows r SET gl_prefixes_json = '[\"5250\"]' "
+                "WHERE r.row_type='data' AND r.label ILIKE '%gas%' "
+                "AND r.label NOT ILIKE '%heat%' "
+                "AND r.gl_prefixes_json = '[\"5250\", \"5251\", \"5252\"]' "
+                "AND EXISTS (SELECT 1 FROM budget_summary_rows h "
+                "WHERE h.entity_code=r.entity_code AND h.budget_year=r.budget_year "
+                "AND h.row_type='data' AND h.label ILIKE '%gas%' "
+                "AND h.label ILIKE '%heat%' AND h.label NOT ILIKE '%cook%')",
+                # heating-kind rows (gas+heat, no 'cook') where a cooking sibling exists
+                "UPDATE budget_summary_rows r SET gl_prefixes_json = '[\"5251\", \"5252\"]' "
+                "WHERE r.row_type='data' AND r.label ILIKE '%gas%' "
+                "AND r.label ILIKE '%heat%' AND r.label NOT ILIKE '%cook%' "
+                "AND r.gl_prefixes_json = '[\"5250\", \"5251\", \"5252\"]' "
+                "AND EXISTS (SELECT 1 FROM budget_summary_rows c "
+                "WHERE c.entity_code=r.entity_code AND c.budget_year=r.budget_year "
+                "AND c.row_type='data' AND c.label ILIKE '%gas%' "
+                "AND c.label NOT ILIKE '%heat%')",
+            ):
+                split += db.session.execute(db.text(sql)).rowcount or 0
+            if split:
+                db.session.commit()
+                logger.info(f"Gas-split pass: separated prefixes on {split} cooking/heating rows")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Gas-split pass skipped: {e}")
+
 # Health check for Railway
 @app.route("/healthz")
 def healthz():
