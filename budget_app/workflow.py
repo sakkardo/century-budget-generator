@@ -11003,10 +11003,10 @@ DASHBOARD_TEMPLATE = r"""
     padding: 32px 20px;
   }
   .status-summary {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 16px;
-    margin-bottom: 32px;
+    /* Design cleanup (2026-06-10, Jacob: "way too busy"): was a grid of six
+       full-size cards (mostly zeros); now a single quiet line. */
+    display: block;
+    margin-bottom: 10px;
   }
   .status-card {
     background: white;
@@ -11239,13 +11239,20 @@ DASHBOARD_TEMPLATE = r"""
       <div id="readinessHero" style="display:none; margin-bottom:12px;"></div>
       <!-- Readiness-tier filter chips — clicking applies a filter on the table -->
       <div id="readinessChips" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
-        <span style="font-size:10px; font-weight:700; color:var(--gray-500); letter-spacing:0.08em; margin-right:2px;">FILTER BY READINESS</span>
-        <!-- Populated by renderReadinessChips() in JS -->
+        <!-- Populated by renderReadinessChips() in JS (label dropped
+             2026-06-10 — the chips are self-evident) -->
       </div>
-      <!-- FA dir 2026-05-22: legend for the Data Status mini-tiles. -->
-      <!-- Status UX Phase 3 (2026-06-09): legend decodes the COLORS, identical to
-           the wizard's. One rule: green = the file is in a BUILT budget. -->
-      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
+      <!-- Design cleanup (2026-06-10, Jacob: "way too busy"): the legend is
+           reference material, not daily reading — collapsed behind a toggle
+           (remembered per browser). The boxed SharePoint scan bar shrank to
+           the same quiet utility line. -->
+      <div style="display:flex; align-items:center; gap:12px; font-size:12px; color:var(--gray-500); margin-bottom:10px; padding:0 2px;">
+        <a href="javascript:void(0)" id="legendToggle" onclick="toggleTileLegend()" style="color:var(--gray-500); text-decoration:none; font-weight:600;">Tile legend &#9656;</a>
+        <span style="flex:1"></span>
+        <span id="spInventoryStatus">Loading…</span>
+        <button id="spScanBtn" onclick="scanSharePoint()" style="font-size:11px; padding:3px 10px; border:1px solid var(--gray-300); background:white; color:var(--gray-700); border-radius:4px; cursor:pointer; font-weight:600;">⟳ Scan SharePoint</button>
+      </div>
+      <div id="tileLegend" style="display:none; align-items:center; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--gray-700); padding:8px 12px; background:var(--gray-50); border:1px solid var(--gray-200); border-radius:8px; margin-bottom:12px;">
         <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Files</span>
         <span style="font-size:12px;">B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
         <span style="color:var(--gray-300); margin:0 2px;">·</span>
@@ -11255,15 +11262,6 @@ DASHBOARD_TEMPLATE = r"""
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✕</span> <b>Missing / failed</b></span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">–</span> Setup — not started</span>
         <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
-      </div>
-      <!-- FA dir 2026-05-22 (Phase 2): SharePoint inventory refresh. Amber
-           tiles come from this cache — without a scan, every non-ingested
-           tile shows red (no way to know if a file is staged in SP). -->
-      <div id="spInventoryBar" style="display:flex; align-items:center; gap:12px; font-size:12px; padding:6px 12px; margin-bottom:12px; background:#fff; border:1px dashed var(--gray-300); border-radius:8px;">
-        <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">SharePoint scan</span>
-        <span id="spInventoryStatus" style="color:var(--gray-700);">Loading…</span>
-        <span style="flex:1"></span>
-        <button id="spScanBtn" onclick="scanSharePoint()" style="font-size:12px; padding:5px 12px; border:1px solid var(--blue); background:white; color:var(--blue); border-radius:4px; cursor:pointer; font-weight:600;">⟳ Scan SharePoint now</button>
       </div>
       <div id="buildingsTableWrap">
         <table id="budgets-table">
@@ -11436,10 +11434,16 @@ function loadSpInventoryStatus() {
         maybeAutoScanSP(null);
         return;
       }
-      const newest = new Date(d.newest_scan);
-      const minsAgo = Math.floor((Date.now() - newest.getTime()) / 60000);
+      // Server timestamps are naive UTC — without the 'Z' the browser parses
+      // them as LOCAL time and the age goes NEGATIVE ("-65m ago", 2026-06-10).
+      let iso = String(d.newest_scan);
+      if (!/[zZ]$|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+      const newest = new Date(iso);
+      let minsAgo = Math.floor((Date.now() - newest.getTime()) / 60000);
+      if (minsAgo < 0) minsAgo = 0;
       maybeAutoScanSP(minsAgo);
-      const tag = minsAgo < 60 ? (minsAgo + 'm ago')
+      const tag = minsAgo < 1 ? 'just now'
+                : minsAgo < 60 ? (minsAgo + 'm ago')
                 : minsAgo < 1440 ? (Math.floor(minsAgo/60) + 'h ago')
                 : (Math.floor(minsAgo/1440) + 'd ago');
       const color = minsAgo > 1440 ? '#b91c1c' : (minsAgo > 60 ? '#92400e' : '#065f46');
@@ -11509,10 +11513,26 @@ function toggleBuildingsCollapse() {
   }
 }
 
-function renderStatusSummary(budgets) {
-  const summary = document.getElementById('status-summary');
-  summary.innerHTML = '';
+// Design cleanup (2026-06-10): tile legend is reference material — collapsed
+// by default, one click to expand, remembered per browser.
+function toggleTileLegend() {
+  const el = document.getElementById('tileLegend');
+  const t = document.getElementById('legendToggle');
+  if (!el) return;
+  const open = el.style.display === 'none';
+  el.style.display = open ? 'flex' : 'none';
+  if (t) t.innerHTML = 'Tile legend ' + (open ? '&#9662;' : '&#9656;');
+  try { localStorage.setItem('fa-tile-legend-open', open ? '1' : '0'); } catch (e) {}
+}
+try { if (localStorage.getItem('fa-tile-legend-open') === '1') toggleTileLegend(); } catch (e) {}
 
+function renderStatusSummary(budgets) {
+  // Design cleanup (2026-06-10, Jacob: "way too busy"): six full-size stat
+  // cards (mostly zeros) became one quiet line showing only non-zero counts.
+  // Lifecycle counts are secondary context — the readiness chips below are
+  // the real navigation.
+  const summary = document.getElementById('status-summary');
+  if (!summary) return;
   const counts = {
     'draft': 0,
     'pm_pending': 0,
@@ -11521,20 +11541,15 @@ function renderStatusSummary(budgets) {
     'approved': 0,
     'returned': 0
   };
-
   budgets.forEach(b => {
     if (counts.hasOwnProperty(b.status)) counts[b.status]++;
   });
-
-  Object.entries(counts).forEach(([status, count]) => {
-    const card = document.createElement('div');
-    card.className = 'status-card';
-    card.innerHTML = `
-      <div class="count">${count}</div>
-      <div class="label">${formatStatus(status)}</div>
-    `;
-    summary.appendChild(card);
-  });
+  const parts = Object.entries(counts)
+    .filter(([, c]) => c > 0)
+    .map(([s, c]) => '<b style="color:var(--gray-700);">' + c + '</b> ' + formatStatus(s));
+  summary.innerHTML = parts.length
+    ? '<span style="font-size:12px; color:var(--gray-500);">Budgets in flight: ' + parts.join(' <span style="color:var(--gray-300);">·</span> ') + '</span>'
+    : '';
 }
 
 // FA dir 2026-05-23: hero callout + readiness chips for the dashboard.
