@@ -686,8 +686,23 @@ verify your mapping. Each source line should have the auditor's exact descriptio
 If a category is a direct 1:1 match (auditor used the same name), still include it in source_lines.
 """
             else:
+                # No usable building category list — keep the auditor's own
+                # labels (the review page's auto-suggest maps them to Century
+                # categories). The breakdown instruction must live here too:
+                # without it, statements whose face page lumps expenses into
+                # 3-4 lines (Utilities / Administrative / Payroll and related)
+                # come back too coarse to screen (826, 2026-06-10).
                 cat_instruction = """
-Extract all line items using the auditor's own descriptions.
+Use the auditor's own line-item descriptions as each item's "description".
+
+When the statement lumps items together (e.g. "Utilities", "Administrative",
+"Payroll and related"), look for supplementary schedules or notes in the PDF
+that break them down, and output ONE item PER DETAIL LINE using the detail
+line's own description (e.g. Electric, Gas, Water and sewer — not the lump).
+Only keep the lumped line if no breakdown exists anywhere in the PDF.
+
+CRITICAL: For EVERY item, include a "source_lines" array with the auditor's
+original line description(s) and amounts backing that item, even for 1:1 matches.
 """
 
             # FA dir 2026-05-22: tighten prompt to prevent prose responses
@@ -745,7 +760,7 @@ Return ONLY valid JSON (no markdown, no code blocks) with this structure:
 }}
 
 RULES:
-- "description" = the Century budget category name (from the lists above)
+- "description" = the line's category name per the instructions above
 - "source_lines" = the auditor's ORIGINAL line items with their exact descriptions and amounts
 - source_lines amounts must sum to the parent item's amounts
 - Be precise with numbers. Include all line items found.
