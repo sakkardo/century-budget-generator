@@ -11144,8 +11144,19 @@ def admin_auto_load_arrivals():
     loaded = failed = skipped_ambiguous = 0
     results = []
     remaining = 0
+    stage_bumps = 0
     for b in candidates:
         ec = b.entity_code
+        # Stage-truth fix (2026-06-10, found via 347/500 Waverly): auto-loaded
+        # buildings kept lifecycle "Setup" because only manual wizard navigation
+        # bumped wizard_step. If data is staged, the building HAS its sources —
+        # bump to step 2 so the Stage pill reads "Sources Collected" and the
+        # setup-gray tile softening stops hiding real gaps (e.g. a missing
+        # audit shows red "missing", not quiet gray). Self-heals the backlog on
+        # every sweep run.
+        if (b.wizard_step or 0) < 2 and any(ec in staged[s] for s in SLOTS):
+            b.wizard_step = 2
+            stage_bumps += 1
         todo = [s for s in SLOTS
                 if ec not in staged[s] and s not in (failures.get(ec) or set())
                 and not (s == "approved_2026" and bool(b.foundation_no_prior_budget))]
@@ -11203,10 +11214,15 @@ def admin_auto_load_arrivals():
                 results.append({"entity_code": ec, "slot": slot, "status": "failed",
                                 "error": str(e)[:200]})
 
+    if stage_bumps:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
     return jsonify({
         "ok": True, "loaded": loaded, "failed": failed,
         "skipped_ambiguous": skipped_ambiguous, "deferred_past_cap": remaining,
-        "cap": cap, "results": results,
+        "stage_bumps": stage_bumps, "cap": cap, "results": results,
     })
 
 

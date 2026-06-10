@@ -1197,11 +1197,17 @@ def create_workflow_blueprint(db):
                 next_action = "build"
                 next_url = f"/wizard/{ec}?step=2"
                 tier_label = "Audit done, sources pending"
-            elif sp_e.get("audit_2025") and not au_status:
+            elif (sp_e.get("audit_2025") and not au_status) or au_status == "uploaded":
+                # Label-truth fix (2026-06-10, found via 826/147 Waverly): an
+                # audit row at status 'uploaded' (e.g. pulled in by the master-
+                # folder scan) means the PDF is HERE and ready to extract — it
+                # used to fall through to "Waiting for audit PDF", telling the
+                # FA to wait for a file that already arrived.
                 tier = "NEEDS_AUDIT_EXTRACT"
                 tier_order = 2
                 next_action = "audit_review"
-                next_url = f"/wizard/{ec}?step=2&focus=audit_2025"
+                next_url = (f"/audited-financials/review/{au_id}" if au_id
+                            else f"/wizard/{ec}?step=2&focus=audit_2025")
                 tier_label = "Audit PDF ready to extract"
             elif (sp_e.get("approved_2026") or sp_e.get("ysl") or
                   sp_e.get("expense_distribution") or sp_e.get("ap_aging") or
