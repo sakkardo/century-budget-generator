@@ -2598,26 +2598,21 @@ function acknowledgeNoPriorBudget() {
 }
 
 function applyYardiGate() {
-  // Visually lock the Yardi panel until Foundation is confirmed.
+  // Jacob dir 2026-06-09: the Yardi panel is ALWAYS unlocked. The old visual
+  // lock ("unlocks once Foundation is confirmed") was theater \u2014 staging these
+  // four sources never depended on the foundation (the YSL parser maps GLs
+  // from the template, not summary rows), and the Phase-3b auto-load sweep
+  // stages them pre-foundation anyway (111 loads, zero failures). The REAL
+  // ordering rules remain enforced where they're real: audit extraction
+  // requires the 2026 Approved Budget processed (audit card gate), and budget
+  // GENERATION requires foundation_confirmed_at (server-side build gate +
+  // step-3 navigation gate).
   const sp = document.getElementById("spSourcesPanel");
-  if (!sp || !_foundationStatus) return;
-  if (_foundationStatus.foundation_confirmed_at) {
-    sp.style.opacity = "1";
-    sp.style.pointerEvents = "auto";
-    // Remove any lock overlay
-    const overlay = document.getElementById("yardiLockOverlay");
-    if (overlay) overlay.remove();
-  } else {
-    sp.style.opacity = "0.55";
-    sp.style.pointerEvents = "none";
-    if (!document.getElementById("yardiLockOverlay")) {
-      const ov = document.createElement("div");
-      ov.id = "yardiLockOverlay";
-      ov.style.cssText = "background:#f9fafb; border:1px dashed #d1d5db; border-radius:8px; padding:10px 14px; margin-top:8px; font-size:12px; color:#6b7280; pointer-events:none;";
-      ov.innerHTML = "\ud83d\udd12 Yardi sources unlock once Foundation is confirmed above.";
-      sp.parentElement.insertBefore(ov, sp);
-    }
-  }
+  if (!sp) return;
+  sp.style.opacity = "1";
+  sp.style.pointerEvents = "auto";
+  const overlay = document.getElementById("yardiLockOverlay");
+  if (overlay) overlay.remove();
 }
 
 function escapeHtml(s) {
