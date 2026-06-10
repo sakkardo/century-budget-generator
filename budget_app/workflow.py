@@ -1197,7 +1197,7 @@ def create_workflow_blueprint(db):
                 next_action = "build"
                 next_url = f"/wizard/{ec}?step=2"
                 tier_label = "Audit done, sources pending"
-            elif (sp_e.get("audit_2025") and not au_status) or au_status == "uploaded":
+            elif (sp_e.get("audit_2025") and not au_status) or au_status in ("uploaded", "extracting"):
                 # Label-truth fix (2026-06-10, found via 826/147 Waverly): an
                 # audit row at status 'uploaded' (e.g. pulled in by the master-
                 # folder scan) means the PDF is HERE and ready to extract — it

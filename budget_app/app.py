@@ -215,6 +215,9 @@ def _run_idempotent_migrations():
         # FA dir 2026-05-21: store Claude-detected auditor firm name so the
         # review page can auto-select the matching profile.
         "ALTER TABLE audit_uploads ADD COLUMN IF NOT EXISTS detected_firm VARCHAR(255)",
+        # Background extraction (2026-06-10): persist the last extract failure
+        # so the review page can explain it instead of failing silently.
+        "ALTER TABLE audit_uploads ADD COLUMN IF NOT EXISTS extract_error TEXT",
         # FA dir 2026-05-21: portfolio smoke test runs. Each row is one full-
         # portfolio dry-run sweep. We persist the per-entity result JSON so
         # subsequent runs can diff vs the last one to surface regressions.

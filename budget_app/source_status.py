@@ -75,6 +75,8 @@ def compute_source_states(built, is_setup, staged, sp_found, sp_meta,
                 st = {"state": "needs_review", "sub": "confirm", "date": ts}
             elif status == "uploaded":
                 st = {"state": "needs_review", "sub": "extract", "date": ts}
+            elif status == "extracting":
+                st = {"state": "needs_review", "sub": "extracting", "date": ts}
             elif in_sp:
                 st = {"state": "needs_review", "sub": "extract", "date": sp_date}
             elif is_setup:

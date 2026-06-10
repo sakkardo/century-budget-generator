@@ -12,9 +12,10 @@ Implements:
 - Review and confirmation workflow
 """
 
-from flask import Blueprint, render_template_string, request, jsonify, send_file, abort
+from flask import Blueprint, render_template_string, request, jsonify, send_file, abort, current_app
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+import threading
 from decimal import Decimal
 import logging
 import os
@@ -398,7 +399,10 @@ def create_audited_financials_blueprint(db):
         # PDF cover/signature page. Used to auto-select the matching auditor
         # profile on the review page so FAs don't have to pick from a dropdown.
         detected_firm = db.Column(db.String(255), nullable=True)
-        status = db.Column(db.String(20), default="uploaded")  # uploaded, extracted, mapped, confirmed
+        # Background extraction (2026-06-10): last failure reason, shown on the
+        # review page so a failed extract is explained, not silent.
+        extract_error = db.Column(db.Text, nullable=True)
+        status = db.Column(db.String(20), default="uploaded")  # uploaded, extracting, extracted, mapped, confirmed
         confirmed_by = db.Column(db.String(255), default="")
         confirmed_at = db.Column(db.DateTime, nullable=True)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1345,15 +1349,30 @@ async function uploadAll() {
     }
 
     function extractUpload(uploadId) {
+        // Background extraction (2026-06-10): POST queues it; poll status and
+        // open the review page when the worker finishes.
+        document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-info">Extraction running in the background (~60s)&hellip; the review page will open when it finishes.</div>';
         fetch('/api/af/extract/' + uploadId, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
-            if (data.success) {
-                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-success">Extraction complete. Applying mapping rules...</div>';
-                mapUpload(uploadId);
-            } else {
-                document.getElementById('uploadStatus').innerHTML += '<div class="alert alert-error">Extraction error: ' + data.error + '</div>';
+            if (!data.success) {
+                document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-error">Could not queue extraction: ' + (data.error || 'unknown') + '</div>';
+                return;
             }
+            const t = setInterval(() => {
+                fetch('/api/af/extract-status/' + uploadId)
+                .then(r => r.json())
+                .then(s => {
+                    if (s.status === 'extracted' || s.status === 'mapped') {
+                        clearInterval(t);
+                        window.location = '/audited-financials/review/' + uploadId;
+                    } else if (s.status !== 'extracting') {
+                        clearInterval(t);
+                        document.getElementById('uploadStatus').innerHTML = '<div class="alert alert-error">Extraction failed: ' + (s.error || 'unknown') + '</div>';
+                    }
+                })
+                .catch(() => {});
+            }, 4000);
         });
     }
 
@@ -3498,26 +3517,42 @@ async function uploadAll() {
                 'when ready &mdash; this finalizes Col 2 on the Budget Summary.</div>'
             )
         elif upload.status == "uploaded":
-            # One-door fix (2026-06-10, Jacob: "seems confusing"): this page is
-            # THE audit room — it handled extracted/mapped/confirmed but not
-            # 'uploaded', so a freshly-scanned audit landed here with no Extract
-            # button (it lived on a different page). Now the whole journey is
-            # one page with one button per moment: Extract -> review -> Confirm.
+            # One-door (2026-06-10): this page is THE audit room — Extract runs
+            # from here. Background version: POST queues the extraction and the
+            # reload lands on the self-polling 'extracting' banner below.
+            err_html = ""
+            if getattr(upload, "extract_error", None):
+                err_html = ('<div style="margin-top:8px;color:#b91c1c;font-size:12px;">'
+                            'Last attempt failed: ' + str(upload.extract_error)[:300].replace("<", "&lt;")
+                            + '</div>')
             status_banner = (
                 '<div style="background:#fffbeb;border:1px solid #fcd34d;border-left:4px solid #d97706;'
                 'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;">'
-                '<b>PDF is in &mdash; extraction has not run yet.</b> Click Extract and Claude reads the '
-                'statement (~30&ndash;60 seconds), then the mapping appears here for your review. '
+                '<b>PDF is in &mdash; extraction has not run yet.</b> Click Extract &mdash; it runs in the '
+                'background (~30&ndash;60 seconds) and this page follows along. '
                 '<button type="button" style="margin-left:10px;background:#d97706;color:#fff;border:none;'
                 'border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer;" '
-                'onclick="(function(btn){btn.disabled=true;btn.textContent=\'Extracting… ~60s\';'
+                'onclick="(function(btn){btn.disabled=true;btn.textContent=\'Queuing…\';'
                 'fetch(\'/api/af/extract/' + str(upload_id) + '\',{method:\'POST\'})'
                 '.then(function(r){return r.json();})'
-                '.then(function(d){if(d.success){return fetch(\'/api/af/map/' + str(upload_id) + '\',{method:\'POST\'})'
-                '.then(function(){location.reload();});}'
-                'alert(\'Extraction error: \'+(d.error||\'unknown\'));btn.disabled=false;btn.textContent=\'Extract now\';})'
+                '.then(function(d){if(d.success){location.reload();return;}'
+                'alert(\'Could not queue extraction: \'+(d.error||\'unknown\'));btn.disabled=false;btn.textContent=\'Extract now\';})'
                 '.catch(function(e){alert(\'Error: \'+e);btn.disabled=false;btn.textContent=\'Extract now\';});})(this)">'
-                'Extract now</button></div>'
+                'Extract now</button>' + err_html + '</div>'
+            )
+        elif upload.status == "extracting":
+            # Live progress state: poll until the background worker finishes,
+            # then reload into the extracted/review view (or back to uploaded
+            # with the error shown if it failed).
+            status_banner = (
+                '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #3b82f6;'
+                'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1e3a8a;">'
+                '&#10227; <b>Extracting&hellip;</b> Claude is reading the statement (~30&ndash;60 seconds). '
+                'This page refreshes itself when it finishes &mdash; you can also leave; the work continues.'
+                '<script>(function(){var t=setInterval(function(){'
+                'fetch("/api/af/extract-status/' + str(upload_id) + '").then(function(r){return r.json();})'
+                '.then(function(d){if(d.status!=="extracting"){clearInterval(t);location.reload();}})'
+                '.catch(function(){});},4000);})();</script></div>'
             )
 
         # Audit PDF link — prefer the SharePoint web viewer (durable across
@@ -3944,90 +3979,135 @@ async function uploadAll() {
             return jsonify({"success": False, "error": str(e)}), 400
 
 
+    # ── Background extraction (2026-06-10) ─────────────────────────────────
+    # A synchronous ~60s Claude call used to occupy one of the single worker's
+    # threads per Extract click; a few at once took the whole site down
+    # (incident 2026-06-09 night). Extraction now runs in a daemon thread:
+    # POST returns immediately with status='extracting', the page polls
+    # /api/af/extract-status/<id>, and a semaphore caps concurrent extractions
+    # so batch-working the audit queue queues politely instead of stampeding.
+    _extract_gate = threading.Semaphore(2)
+
+    def _recover_stale_extracting(upload):
+        """Container restarts kill worker threads mid-extract. Reset rows stuck
+        in 'extracting' for >10 min so the FA can retry instead of waiting on a
+        thread that no longer exists. Called lazily wherever status is read."""
+        try:
+            if (upload and upload.status == "extracting" and upload.updated_at
+                    and (datetime.utcnow() - upload.updated_at).total_seconds() > 600):
+                upload.status = "uploaded"
+                upload.extract_error = "Extraction was interrupted (server restarted) — click Extract to retry."
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    def _fetch_pdf_if_missing(upload, pdf_path):
+        """Self-heal: Railway wipes local files on every deploy, so a PDF saved
+        by a scan is often gone by extract time. SharePoint is the durable
+        store — re-fetch (entity folder first, then the master Audited
+        Financials folder) and re-cache locally. Raises on failure."""
+        import urllib.parse as _up
+        from app import (_sharepoint_list_entity_sources, _sharepoint_download_item,
+                         _graph_get, _graph_get_drive_id, SHAREPOINT_AUDIT_MASTER_PATH)
+        prefix = f"{upload.entity_code}_{upload.fiscal_year_end}_"
+        original = (upload.pdf_filename[len(prefix):]
+                    if upload.pdf_filename.startswith(prefix) else upload.pdf_filename)
+        item_id = None
+        try:
+            sp = _sharepoint_list_entity_sources(upload.entity_code)
+            files = (sp.get("by_source_type") or {}).get("audit_2025") or []
+            match = next((f for f in files if (f.get("name") or "") == original), None)
+            if not match and len(files) == 1:
+                match = files[0]
+            if match:
+                item_id = match.get("item_id")
+        except Exception:
+            pass
+        if not item_id:
+            drive_id = _graph_get_drive_id()
+            enc = _up.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
+            listing = _graph_get(f"drives/{drive_id}/root:/{enc}:/children")
+            match = next((it for it in listing.get("value", [])
+                          if (it.get("name") or "") == original), None)
+            if match:
+                item_id = match.get("id")
+        if not item_id:
+            raise RuntimeError(
+                "PDF not on this server (deploys clear local files) and it could "
+                "not be re-fetched from SharePoint. Re-run Scan SharePoint on the "
+                "Audited Financials page, then Extract again.")
+        _, pdf_bytes = _sharepoint_download_item(item_id)
+        with open(str(pdf_path), "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info(f"Re-fetched audit PDF from SharePoint for upload {upload.id} ({original})")
+
+    def _extract_worker(app_obj, upload_id):
+        """Runs in a daemon thread with its own app context. Owns the full
+        extract lifecycle: self-heal the PDF, call Claude, commit 'extracted'
+        — or record the failure on the row (status back to 'uploaded')."""
+        with app_obj.app_context():
+            _extract_gate.acquire()
+            try:
+                upload = AuditUpload.query.get(upload_id)
+                if not upload or upload.status != "extracting":
+                    return
+                try:
+                    data_dir = get_data_dir()
+                    pdf_path = data_dir / upload.pdf_filename
+                    if not pdf_path.exists():
+                        _fetch_pdf_if_missing(upload, pdf_path)
+                    extracted = extract_from_pdf(str(pdf_path), upload.building_name,
+                                                 entity_code=upload.entity_code)
+                    if not extracted:
+                        raise RuntimeError("Claude returned no extractable data from the PDF")
+                    upload.raw_extraction = json.dumps(extracted)
+                    upload.status = "extracted"
+                    upload.extract_error = None
+                    upload.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    logger.info(f"Background extract OK for upload {upload_id}")
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Background extract failed for upload {upload_id}: {e}")
+                    try:
+                        u2 = AuditUpload.query.get(upload_id)
+                        if u2:
+                            u2.status = "uploaded"
+                            u2.extract_error = str(e)[:1000]
+                            u2.updated_at = datetime.utcnow()
+                            db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+            finally:
+                _extract_gate.release()
+
     @bp.route("/api/af/extract/<int:upload_id>", methods=["POST"])
     def api_extract(upload_id):
-        """Extract Schedule of Expenses/Revenue from PDF using Claude."""
+        """Queue extraction in a background thread. Returns immediately with
+        status='extracting'; poll /api/af/extract-status/<id> for completion."""
         upload = AuditUpload.query.get(upload_id)
         if not upload:
             return jsonify({"success": False, "error": "Upload not found"}), 404
+        _recover_stale_extracting(upload)
+        if upload.status == "extracting":
+            return jsonify({"success": True, "queued": True, "status": "extracting",
+                            "note": "already running"})
+        upload.status = "extracting"
+        upload.extract_error = None
+        upload.updated_at = datetime.utcnow()
+        db.session.commit()
+        app_obj = current_app._get_current_object()
+        threading.Thread(target=_extract_worker, args=(app_obj, upload_id), daemon=True).start()
+        return jsonify({"success": True, "queued": True, "status": "extracting"})
 
-        try:
-            data_dir = get_data_dir()
-            pdf_path = data_dir / upload.pdf_filename
-
-            if not pdf_path.exists():
-                # Self-heal (2026-06-10): Railway wipes local files on every
-                # deploy, so a PDF saved by a scan days (or hours) ago is gone
-                # by extract time. SharePoint is the durable store — re-fetch
-                # the PDF (entity folder first, then the master Audited
-                # Financials folder) and re-cache it locally before extracting.
-                refetched = False
-                try:
-                    import urllib.parse as _up
-                    from app import (_sharepoint_list_entity_sources,
-                                     _sharepoint_download_item, _graph_get,
-                                     _graph_get_drive_id,
-                                     SHAREPOINT_AUDIT_MASTER_PATH)
-                    prefix = f"{upload.entity_code}_{upload.fiscal_year_end}_"
-                    original = (upload.pdf_filename[len(prefix):]
-                                if upload.pdf_filename.startswith(prefix)
-                                else upload.pdf_filename)
-                    item_id = None
-                    # 1) the building's own Supporting Documents folder
-                    try:
-                        sp = _sharepoint_list_entity_sources(upload.entity_code)
-                        files = (sp.get("by_source_type") or {}).get("audit_2025") or []
-                        match = next((f for f in files if (f.get("name") or "") == original), None)
-                        if not match and len(files) == 1:
-                            match = files[0]
-                        if match:
-                            item_id = match.get("item_id")
-                    except Exception:
-                        pass
-                    # 2) the master 2025 Audited Financial Statements folder
-                    if not item_id:
-                        try:
-                            drive_id = _graph_get_drive_id()
-                            enc = _up.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
-                            listing = _graph_get(f"drives/{drive_id}/root:/{enc}:/children")
-                            match = next((it for it in listing.get("value", [])
-                                          if (it.get("name") or "") == original), None)
-                            if match:
-                                item_id = match.get("id")
-                        except Exception:
-                            pass
-                    if item_id:
-                        _, pdf_bytes = _sharepoint_download_item(item_id)
-                        with open(str(pdf_path), "wb") as fh:
-                            fh.write(pdf_bytes)
-                        refetched = True
-                        logger.info(f"Re-fetched audit PDF from SharePoint for upload {upload_id} ({original})")
-                except Exception as _e:
-                    logger.warning(f"SharePoint re-fetch failed for upload {upload_id}: {_e}")
-                if not refetched:
-                    return jsonify({"success": False, "error": (
-                        "PDF not on this server (deploys clear local files) and it "
-                        "could not be re-fetched from SharePoint. Re-run Scan "
-                        "SharePoint on the Audited Financials page, then Extract again."
-                    )}), 404
-
-            # Extract from PDF (pass entity_code for building-aware categories)
-            extracted = extract_from_pdf(str(pdf_path), upload.building_name, entity_code=upload.entity_code)
-            if not extracted:
-                return jsonify({"success": False, "error": "Failed to extract from PDF"}), 400
-
-            upload.raw_extraction = json.dumps(extracted)
-            upload.status = "extracted"
-            upload.updated_at = datetime.utcnow()
-            db.session.commit()
-
-            return jsonify({
-                "success": True,
-                "extraction": extracted
-            })
-        except Exception as e:
-            logger.error(f"Extract error: {e}")
-            return jsonify({"success": False, "error": str(e)}), 400
+    @bp.route("/api/af/extract-status/<int:upload_id>", methods=["GET"])
+    def api_extract_status(upload_id):
+        """Poll target for the extracting banner / list button."""
+        upload = AuditUpload.query.get(upload_id)
+        if not upload:
+            return jsonify({"error": "Upload not found"}), 404
+        _recover_stale_extracting(upload)
+        return jsonify({"status": upload.status, "error": upload.extract_error})
 
 
     @bp.route("/api/af/map/<int:upload_id>", methods=["POST"])

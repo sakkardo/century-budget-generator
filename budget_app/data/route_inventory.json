@@ -59,6 +59,7 @@
  "/api/admin/wizard-events",
  "/api/af/bulk-upload",
  "/api/af/confirm/<int:upload_id>",
+ "/api/af/extract-status/<int:upload_id>",
  "/api/af/extract/<int:upload_id>",
  "/api/af/map/<int:upload_id>",
  "/api/af/profiles",
