@@ -686,23 +686,46 @@ verify your mapping. Each source line should have the auditor's exact descriptio
 If a category is a direct 1:1 match (auditor used the same name), still include it in source_lines.
 """
             else:
-                # No usable building category list — keep the auditor's own
-                # labels (the review page's auto-suggest maps them to Century
-                # categories). The breakdown instruction must live here too:
-                # without it, statements whose face page lumps expenses into
-                # 3-4 lines (Utilities / Administrative / Payroll and related)
-                # come back too coarse to screen (826, 2026-06-10).
-                cat_instruction = """
-Use the auditor's own line-item descriptions as each item's "description".
+                # No usable building list (flat-format summary rows carry no
+                # section labels). Jacob 2026-06-10: grouping must still
+                # happen — auditor lines that likely roll into one Century
+                # category are consolidated (description = Century category,
+                # every auditor line preserved in source_lines), so the review
+                # page shows groups the FA can split apart and remap line by
+                # line. Target the STANDARD Century list as a best fit, never
+                # forced — hard-forcing into a list is how every line became
+                # "Other Expenses" earlier today.
+                std_income = [c for c in CENTURY_CATEGORIES
+                              if CENTURY_TO_SUMMARY.get(c) == "Total Operating Income"]
+                std_nonop_inc = [c for c in CENTURY_CATEGORIES
+                                 if CENTURY_TO_SUMMARY.get(c) == "Non-Operating Income"]
+                std_nonop_exp = [c for c in CENTURY_CATEGORIES
+                                 if CENTURY_TO_SUMMARY.get(c) == "Non-Operating Expense"]
+                std_expense = [c for c in CENTURY_CATEGORIES
+                               if c not in std_income and c not in std_nonop_inc
+                               and c not in std_nonop_exp]
+                cat_instruction = f"""
+GROUP the auditor's line items into Century's standard budget categories.
 
-When the statement lumps items together (e.g. "Utilities", "Administrative",
-"Payroll and related"), look for supplementary schedules or notes in the PDF
-that break them down, and output ONE item PER DETAIL LINE using the detail
-line's own description (e.g. Electric, Gas, Water and sewer — not the lump).
-Only keep the lumped line if no breakdown exists anywhere in the PDF.
+Standard INCOME categories: {json.dumps(std_income)}
+Standard EXPENSE categories: {json.dumps(std_expense)}
+Standard NON-OPERATING INCOME: {json.dumps(std_nonop_inc)}
+Standard NON-OPERATING EXPENSE: {json.dumps(std_nonop_exp)}
 
-CRITICAL: For EVERY item, include a "source_lines" array with the auditor's
-original line description(s) and amounts backing that item, even for 1:1 matches.
+- Use the best-matching standard category as each item's "description".
+- Combine auditor line items that map to the same category into ONE entry
+  with the summed amounts.
+- If NO standard category is a reasonable fit, keep the auditor's own
+  description as that item's "description" — do NOT force a poor match and
+  do NOT dump unmatched items into a generic "Other" bucket.
+- When the statement lumps items together (e.g. "Utilities",
+  "Administrative", "Payroll and related"), use the supplementary schedules
+  or notes to break them into detail lines FIRST, then group those detail
+  lines by category.
+
+CRITICAL: For EVERY item, include a "source_lines" array showing EXACTLY the
+auditor's original line items and their individual amounts — even for 1:1
+matches. The user verifies and re-splits your grouping from source_lines.
 """
 
             # FA dir 2026-05-22: tighten prompt to prevent prose responses
@@ -2120,21 +2143,14 @@ async function uploadAll() {
 
         function renderSourceLines(sourceLines, years, section) {
             if (!sourceLines || sourceLines.length === 0) return '';
-            // Single direct match — inline green tag + amount-split link.
-            // FA dir 2026-06-10 (Jacob): single-line rows had no way to split
-            // a lumped amount across categories (the Split button only existed
-            // on multi-line consolidations). The link synthesizes two editable
-            // part-rows via splitAmountRow → splitRow.
+            // Single direct match — show inline green tag
+            // (FA dir 2026-06-10: an amount-split link lived here briefly;
+            // Jacob asked for it to be removed same day. The multi-line
+            // "Split into individual rows" button below is the keeper.)
             if (sourceLines.length === 1) {
                 const sl = sourceLines[0];
                 const auditorDesc = sl.auditor_desc || sl.description || '';
-                const oneJson = JSON.stringify(sourceLines).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-                return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"'
-                    + ' <a href="javascript:void(0)" onclick="splitAmountRow(this); return false;"'
-                    + ' data-sources="' + oneJson + '" data-section="' + (section || 'expense') + '"'
-                    + ' style="margin-left:8px; color:#b45309; text-decoration:underline; cursor:pointer; font-size:10px;"'
-                    + ' title="Split this amount into two rows so each part can map to a different category. The amounts stay editable and must still tie to the audited totals.">'
-                    + '&#9986; Split across categories</a></div>';
+                return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"</div>';
             }
             // Multiple source lines — show expandable list with Split button
             const sourcesJson = JSON.stringify(sourceLines).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
@@ -2485,23 +2501,6 @@ async function uploadAll() {
         // every child row this split creates. Cleared when unsplit fires.
         window._splitOriginalHTML = window._splitOriginalHTML || {};
         let _splitIdCounter = 0;
-
-        // FA dir 2026-06-10 (Jacob): amount-split for single-source-line rows.
-        // Auditors sometimes lump what Century budgets separately and provide
-        // no schedule to break it down — the FA needs to carve one line into
-        // parts and map each to its own category. Synthesizes two child lines
-        // (part 1 = full amount, part 2 = 0, both year-0 amounts editable)
-        // and reuses splitRow's machinery, so Unsplit and the reconciliation
-        // panel (parts must tie to audited totals) work unchanged.
-        function splitAmountRow(el) {
-            const src = JSON.parse(el.dataset.sources)[0] || {};
-            const desc = src.auditor_desc || src.description || '?';
-            const amts = (src.amounts || []).slice();
-            const a = Object.assign({}, src, { auditor_desc: desc + ' (part 1)', amounts: amts });
-            const b = Object.assign({}, src, { auditor_desc: desc + ' (part 2)', amounts: amts.map(() => 0) });
-            el.dataset.sources = JSON.stringify([a, b]);
-            splitRow(el);
-        }
 
         function splitRow(btn) {
             const row = btn.closest('tr');
@@ -4086,31 +4085,40 @@ async function uploadAll() {
         Financials folder) and re-cache locally. Raises on failure.
         Takes plain values, not the AuditUpload row — the caller closes its DB
         transaction before this slow path (incident 2026-06-10)."""
+        import re as _re
         import urllib.parse as _up
         from app import (_sharepoint_list_entity_sources, _sharepoint_download_item,
                          _graph_get, _graph_get_drive_id, SHAREPOINT_AUDIT_MASTER_PATH)
-        prefix = f"{entity_code}_{fiscal_year_end}_"
-        original = (pdf_filename[len(prefix):]
-                    if pdf_filename.startswith(prefix) else pdf_filename)
+        # Cache names are f"{ec}_{fy}_{original}", but fy may have been blank
+        # at save time and corrected later ('' -> '2025' repair, 2026-06-10) —
+        # building the prefix from the CURRENT fy then mismatched the stored
+        # name and every batch re-fetch 404'd. Strip any "{ec}_<fy-ish>_"
+        # prefix shape instead.
+        original = _re.sub(r"^" + _re.escape(entity_code) + r"_[^_]*_", "", pdf_filename)
+
+        def _pick(candidates, name_key, id_key):
+            m = next((c for c in candidates if (c.get(name_key) or "") == original), None)
+            if not m:
+                # Suffix fallback: the stored name is <some prefix> + SP name,
+                # so the SP name is always a suffix of pdf_filename.
+                m = next((c for c in candidates
+                          if (c.get(name_key) or "") and pdf_filename.endswith(c.get(name_key))), None)
+            return m.get(id_key) if m else None
+
         item_id = None
         try:
             sp = _sharepoint_list_entity_sources(entity_code)
             files = (sp.get("by_source_type") or {}).get("audit_2025") or []
-            match = next((f for f in files if (f.get("name") or "") == original), None)
-            if not match and len(files) == 1:
-                match = files[0]
-            if match:
-                item_id = match.get("item_id")
+            item_id = _pick(files, "name", "item_id")
+            if not item_id and len(files) == 1:
+                item_id = files[0].get("item_id")
         except Exception:
             pass
         if not item_id:
             drive_id = _graph_get_drive_id()
             enc = _up.quote(SHAREPOINT_AUDIT_MASTER_PATH, safe="/")
             listing = _graph_get(f"drives/{drive_id}/root:/{enc}:/children")
-            match = next((it for it in listing.get("value", [])
-                          if (it.get("name") or "") == original), None)
-            if match:
-                item_id = match.get("id")
+            item_id = _pick(listing.get("value", []), "name", "id")
         if not item_id:
             raise RuntimeError(
                 "PDF not on this server (deploys clear local files) and it could "
