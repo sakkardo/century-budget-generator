@@ -11164,6 +11164,11 @@ DASHBOARD_TEMPLATE = r"""
     color: #7d7468;
     border-color: #e0dcd2;
   }
+  /* Green tile, amber ring: in the budget BUT a newer file is in SharePoint
+     than what was ingested (sub=newer_in_sp). Click to re-ingest. */
+  .ds-tile.ok.stale {
+    border: 1.5px solid #d97706;
+  }
   .pill-fa_review {
     background: var(--orange-light);
     color: var(--orange);
@@ -11272,6 +11277,7 @@ DASHBOARD_TEMPLATE = r"""
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✓</span> <b>In the budget</b></span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile act" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">!</span> <b>Act now</b> — audit needs you (extract / confirm)</span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">◷</span> <b>Arrived</b> — loads automatically (staged ✓ = data already in)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok stale" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">↻</span> <b>Newer file in SP</b> — click to re-ingest</span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✕</span> <b>Missing / failed</b></span>
         <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">–</span> Setup — not started</span>
         <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
@@ -11797,6 +11803,16 @@ function renderBudgets(budgets) {
         sub = (key === 'audit_2025') ? 'conf' : (fmtDt(s.date) || '');
         tip = (key === 'audit_2025') ? ('Audit confirmed ' + (fmtDt(s.date) || '')) : (label + ' is in the built budget');
         if (key === 'audit_2025' && au && au.id) href = '/audited-financials/review/' + au.id;
+        // Stale-source flag (Jacob 2026-06-10, 733's ExpDist): a newer file
+        // is in SharePoint than what was ingested — surface it instead of
+        // silently running on the old file. Click lands on the wizard slot
+        // where one click on the new file re-ingests (parse-on-click).
+        if (s.sub === 'newer_in_sp') {
+          cls = 'ds-tile ok stale';
+          glyph = '↻';
+          sub = 'new file';
+          tip = label + ': a NEWER file (' + (fmtDt(s.sp_date) || 'recent') + ') is in SharePoint than the ingested data (' + (fmtDt(s.date) || '') + ') — click, then pick the new file to re-ingest';
+        }
       } else if (s.state === 'needs_review') {
         cls = 'ds-tile act';
         glyph = (s.sub === 'extracting') ? '⟳' : '!';

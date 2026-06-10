@@ -47,6 +47,18 @@ SOURCE_LABELS = {
 }
 
 
+def _sp_newer(sp_date, loaded_ts):
+    """True if the SharePoint file's modified time postdates the loaded data
+    (Jacob 2026-06-10, 733's ExpDist: a new file in SP sat un-ingested behind
+    a built budget with no signal). Both sides arrive as ISO-ish strings;
+    normalize the space/T variant and compare lexically — safe for ISO."""
+    if not sp_date or not loaded_ts:
+        return False
+    a = str(sp_date).strip().replace(" ", "T")[:19]
+    b = str(loaded_ts).strip().replace(" ", "T")[:19]
+    return a > b
+
+
 def compute_source_states(built, is_setup, staged, sp_found, sp_meta,
                           audit, failures):
     """Return {source_key: {state, sub, date, via, filename}} for one entity.
@@ -94,12 +106,20 @@ def compute_source_states(built, is_setup, staged, sp_found, sp_meta,
 
         if built and loaded:
             st = {"state": "in_budget", "sub": None, "date": loaded_ts, "via": None}
+            # Stale-source flag: the file in SharePoint postdates what was
+            # ingested. State stays in_budget (the budget IS built from real
+            # data); sub tells the UI to offer a re-ingest.
+            if in_sp and _sp_newer(sp_date, loaded_ts):
+                st["sub"] = "newer_in_sp"
+                st["sp_date"] = sp_date
         elif key in failures and not loaded:
             st = {"state": "failed", "sub": "failed", "date": None, "via": None}
         elif in_sp or loaded:
             st = {"state": "in_sp", "sub": None,
                   "date": sp_date or loaded_ts,
                   "via": "sharepoint" if in_sp else "staged"}
+            if in_sp and loaded and _sp_newer(sp_date, loaded_ts):
+                st["sub"] = "newer_in_sp"
         elif is_setup:
             st = {"state": "setup", "sub": None, "date": None, "via": None}
         else:
