@@ -158,6 +158,7 @@
  "/api/wizard/<entity_code>/flag",
  "/api/wizard/<entity_code>/foundation-status",
  "/api/wizard/<entity_code>/generate",
+ "/api/wizard/<entity_code>/label-action",
  "/api/wizard/<entity_code>/preview",
  "/api/wizard/<entity_code>/scan-findings",
  "/api/wizard/<entity_code>/selections",

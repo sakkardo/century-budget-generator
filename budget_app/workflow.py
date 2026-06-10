@@ -2802,9 +2802,25 @@ def create_workflow_blueprint(db):
                     "ORDER BY scanned_at DESC LIMIT 1"
                 ), {"ec": entity_code}).fetchone()
                 if scan_row:
-                    unmapped_n = int(scan_row[2] or 0)
                     has_file = bool(scan_row[1])
                     parse_err = scan_row[3]
+                    # One brain with the Pre-import card (2026-06-10, Jacob —
+                    # 224's note flagged 5 labels that all had their own rows
+                    # with values on the summary): filter the stored unmapped
+                    # list through the building's rows + FA overrides before
+                    # deciding whether to warn at all.
+                    try:
+                        ul_j = json.loads(scan_row[4] or '{"unmapped":[]}')
+                        raw_unmapped = ul_j.get("unmapped", []) or []
+                    except Exception:
+                        raw_unmapped = []
+                    try:
+                        from app import _effective_unmapped_labels
+                        still_unmapped, _res, _ov, _bl = _effective_unmapped_labels(
+                            entity_code, raw_unmapped)
+                    except Exception:
+                        still_unmapped = raw_unmapped
+                    unmapped_n = len(still_unmapped)
                     if parse_err and not has_file:
                         notes.append({
                             "type": "scan_no_approved_file",
@@ -2818,15 +2834,10 @@ def create_workflow_blueprint(db):
                             ),
                         })
                     elif unmapped_n > 0:
-                        # Extract label sample for display
-                        try:
-                            ul_j = json.loads(scan_row[4] or '{"unmapped":[]}')
-                            sample = [
-                                (u.get("label") if isinstance(u, dict) else u)
-                                for u in (ul_j.get("unmapped", []) or [])
-                            ][:6]
-                        except Exception:
-                            sample = []
+                        sample = [
+                            (u.get("label") if isinstance(u, dict) else u)
+                            for u in still_unmapped
+                        ][:6]
                         sev = "high" if unmapped_n > 2 else "medium"
                         notes.append({
                             "type": "scan_unmapped_labels",
@@ -2837,8 +2848,10 @@ def create_workflow_blueprint(db):
                             ),
                             "message": (
                                 "These labels in the approved 2026 file have "
-                                "no canonical row to flow into. After import, "
-                                "those rows will show $0 on the summary tab. "
+                                "no canonical row and no row of their own on "
+                                "this building's summary — their amounts won't "
+                                "land anywhere. Use the Pre-import label check "
+                                "card to map, add a row, or override. "
                                 "Sample: " + ", ".join(sample[:5]) +
                                 ("..." if len(sample) > 5 else "")
                             ),
@@ -13335,59 +13348,111 @@ function _isUnchangedInput(el) {
       sidebar.innerHTML = html;
       document.body.appendChild(sidebar);
 
-      // Now fire the scan-findings fetch and populate the card. Auto-runs
-      // a fresh scan if no cached finding exists for this building.
-      fetch(`/api/wizard/${entityCode}/scan-findings`)
-        .then(r => r.json())
-        .then(sf => {
-          const body = document.getElementById('scanFindingsBody');
-          if (!body) return;
-          const verdict = sf.verdict || 'unknown';
-          const bg = verdict === 'clean' ? '#dcfce7' :
-                     (verdict === 'warn' ? '#fef3c7' :
-                      (verdict === 'fail' ? '#fee2e2' : '#f3f4f6'));
-          const border = verdict === 'clean' ? '#86efac' :
-                         (verdict === 'warn' ? '#fde68a' :
-                          (verdict === 'fail' ? '#fca5a5' : '#e5e7eb'));
-          const titleColor = verdict === 'clean' ? '#15803d' :
-                             (verdict === 'warn' ? '#a16207' :
-                              (verdict === 'fail' ? '#991b1b' : '#6b7280'));
-          const icon = verdict === 'clean' ? '✓' :
-                       (verdict === 'warn' ? '⚠' :
-                        (verdict === 'fail' ? '✕' : '?'));
-          let h = '';
-          h += `<div style="background:${bg};border:1px solid ${border};padding:8px 10px;border-radius:5px;line-height:1.4;">`;
-          h += `<div style="font-weight:700;color:${titleColor};font-size:11px;margin-bottom:4px;">${icon} ${verdict.toUpperCase()}</div>`;
-          h += `<div style="color:${titleColor};font-size:10px;">${(sf.verdict_msg || '').replace(/</g,'&lt;')}</div>`;
-          // Show sample unmapped labels if any
-          if (Array.isArray(sf.unmapped_labels) && sf.unmapped_labels.length) {
-            h += `<div style="margin-top:6px;font-size:9px;font-weight:600;color:${titleColor};">Labels not mapped:</div>`;
-            const samp = sf.unmapped_labels.slice(0, 5);
-            samp.forEach(u => {
-              const lbl = (u.label || '').replace(/</g,'&lt;');
-              const sug = u.suggested ? ` <span style="color:#6b7280;font-size:9px;">→ ${u.suggested.replace(/</g,'&lt;')}</span>` : '';
-              h += `<div style="font-size:9px;color:${titleColor};margin-top:2px;">• <code style="background:rgba(0,0,0,0.05);padding:0 3px;font-size:9px;">${lbl}</code>${sug}</div>`;
-            });
-            if (sf.unmapped_labels.length > 5) {
-              h += `<div style="font-size:9px;color:#6b7280;margin-top:3px;">+${sf.unmapped_labels.length - 5} more</div>`;
-            }
+      // FA dir 2026-06-10 (Jacob): the label-check card is now ACTIONABLE —
+      // each flagged label shows its dollars at stake and offers Map /
+      // Add row / Ignore (manual override). Resolved labels list how they
+      // were resolved, with Undo on FA decisions. State lives in
+      // window._slcLast; buttons reference items by index so labels with
+      // quotes/parens never travel through onclick strings.
+      window._slcAct = function(label, action, target) {
+        fetch('/api/wizard/' + entityCode + '/label-action', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({label: label, action: action, target: target || null})
+        }).then(r => r.json()).then(d => {
+          if (!d.success) { alert('Action failed: ' + (d.error || 'unknown')); return; }
+          window._slcLoad(false);
+        }).catch(e => alert('Action failed: ' + e));
+      };
+      window._slcActIdx = function(i, action) {
+        const u = (window._slcLast.unmapped_labels || [])[i];
+        if (u) window._slcAct(u.label, action, null);
+      };
+      window._slcUndoIdx = function(i) {
+        const r = (window._slcLast.resolved_labels || [])[i];
+        if (r) window._slcAct(r.label, 'clear', null);
+      };
+      window._slcMapOpen = function(i) {
+        const el = document.getElementById('slcMap' + i);
+        if (el) el.style.display = (el.style.display === 'none' ? 'block' : 'none');
+      };
+      window._slcMapApply = function(i) {
+        const sel = document.getElementById('slcMapSel' + i);
+        const u = (window._slcLast.unmapped_labels || [])[i];
+        if (!sel || !sel.value || !u) return;
+        window._slcAct(u.label, 'map', sel.value);
+      };
+      window._slcIgnoreAll = function() {
+        const items = (window._slcLast.unmapped_labels || []);
+        if (!items.length) return;
+        if (!confirm('Override all ' + items.length + ' remaining labels? They will be excluded from this check (undoable per label).')) return;
+        Promise.all(items.map(u => fetch('/api/wizard/' + entityCode + '/label-action', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({label: u.label, action: 'ignore'})
+        }))).then(() => window._slcLoad(false));
+      };
+      window._slcRender = function(sf) {
+        window._slcLast = sf;
+        const body = document.getElementById('scanFindingsBody');
+        if (!body) return;
+        const verdict = sf.verdict || 'unknown';
+        const bg = verdict === 'clean' ? '#dcfce7' : (verdict === 'warn' ? '#fef3c7' : (verdict === 'fail' ? '#fee2e2' : '#f3f4f6'));
+        const border = verdict === 'clean' ? '#86efac' : (verdict === 'warn' ? '#fde68a' : (verdict === 'fail' ? '#fca5a5' : '#e5e7eb'));
+        const titleColor = verdict === 'clean' ? '#15803d' : (verdict === 'warn' ? '#a16207' : (verdict === 'fail' ? '#991b1b' : '#6b7280'));
+        const icon = verdict === 'clean' ? '✓' : (verdict === 'warn' ? '⚠' : (verdict === 'fail' ? '✕' : '?'));
+        const esc = s => String(s || '').replace(/</g, '&lt;');
+        const fmtAmt = a => (a === null || a === undefined || isNaN(Number(a))) ? '' : (' · $' + Math.round(Number(a)).toLocaleString());
+        let h = '';
+        h += '<div style="background:' + bg + ';border:1px solid ' + border + ';padding:8px 10px;border-radius:5px;line-height:1.4;">';
+        h += '<div style="font-weight:700;color:' + titleColor + ';font-size:11px;margin-bottom:4px;">' + icon + ' ' + verdict.toUpperCase() + '</div>';
+        h += '<div style="color:' + titleColor + ';font-size:10px;">' + esc(sf.verdict_msg) + '</div>';
+        const un = sf.unmapped_labels || [];
+        if (un.length) {
+          h += '<div style="margin-top:6px;font-size:9px;font-weight:600;color:' + titleColor + ';">Needs a decision:</div>';
+          const opts = (sf.building_row_labels || []).map(l => '<option value="' + esc(l).replace(/"/g, '&quot;') + '">' + esc(l) + '</option>').join('');
+          un.forEach((u, i) => {
+            const sug = u.suggested ? ' <span style="color:#6b7280;">→ ' + esc(u.suggested) + '</span>' : '';
+            h += '<div style="font-size:9px;color:' + titleColor + ';margin-top:4px;">• <code style="background:rgba(0,0,0,0.05);padding:0 3px;font-size:9px;">' + esc(u.label) + '</code>' + fmtAmt(u.amount) + sug + '</div>';
+            h += '<div style="margin:2px 0 0 10px;">'
+               + '<button onclick="window._slcMapOpen(' + i + ')" style="font-size:8px;border:1px solid #d1d5db;background:white;color:#374151;padding:1px 6px;border-radius:3px;cursor:pointer;" title="Point this file label at an existing summary row">Map to…</button> '
+               + '<button onclick="window._slcActIdx(' + i + ',\'add_row\')" style="font-size:8px;border:1px solid #d1d5db;background:white;color:#374151;padding:1px 6px;border-radius:3px;cursor:pointer;" title="Create a row with this label on the summary so the amount has a home">Add row</button> '
+               + '<button onclick="window._slcActIdx(' + i + ',\'ignore\')" style="font-size:8px;border:1px solid #d97706;background:#fffbeb;color:#92400e;padding:1px 6px;border-radius:3px;cursor:pointer;" title="Manual override — acknowledged, excluded from this check (undoable)">Ignore</button>'
+               + '</div>';
+            h += '<div id="slcMap' + i + '" style="display:none;margin:3px 0 0 10px;">'
+               + '<select id="slcMapSel' + i + '" style="font-size:9px;max-width:150px;"><option value="">— pick a row —</option>' + opts + '</select> '
+               + '<button onclick="window._slcMapApply(' + i + ')" style="font-size:8px;border:none;background:#0369a1;color:white;padding:2px 6px;border-radius:3px;cursor:pointer;">OK</button>'
+               + '</div>';
+          });
+          if (un.length > 1) {
+            h += '<div style="margin-top:6px;"><button onclick="window._slcIgnoreAll()" style="font-size:9px;border:1px solid #d97706;background:#fffbeb;color:#92400e;padding:2px 8px;border-radius:3px;cursor:pointer;font-weight:600;">Override all ' + un.length + ' (ignore)</button></div>';
           }
-          // Show file info + refresh button
-          if (sf.file_name) {
-            h += `<div style="margin-top:6px;font-size:9px;color:#6b7280;">File: <code style="font-size:9px;">${(sf.file_name || '').slice(0,40)}</code></div>`;
-          }
-          if (sf.scanned_at) {
-            const dt = new Date(sf.scanned_at);
-            h += `<div style="margin-top:2px;font-size:9px;color:#9ca3af;">Scanned ${dt.toLocaleString()}</div>`;
-          }
-          h += `<div style="margin-top:6px;"><button onclick="(function(){const b=document.getElementById('scanFindingsBody');if(b)b.innerHTML='<span style=\\'font-style:italic;color:#6b7280;\\'>Re-scanning...</span>';fetch('/api/wizard/${entityCode}/scan-findings?refresh=1',{method:'POST'}).then(r=>r.json()).then(()=>{location.reload();});})();" style="font-size:9px;border:1px solid #d1d5db;background:white;color:#374151;padding:3px 8px;border-radius:3px;cursor:pointer;">Re-scan</button></div>`;
-          h += `</div>`;
-          body.innerHTML = h;
-        })
-        .catch(e => {
-          const body = document.getElementById('scanFindingsBody');
-          if (body) body.innerHTML = '<span style="color:#9ca3af;">scan unavailable</span>';
-        });
+        }
+        const res = sf.resolved_labels || [];
+        if (res.length) {
+          h += '<div style="margin-top:6px;font-size:9px;font-weight:600;color:#15803d;">✓ ' + res.length + ' resolved:</div>';
+          res.forEach((r, i) => {
+            const how = r.how === 'building_row' ? 'has its own row here' :
+                        (r.how === 'ignored' ? 'overridden by FA' :
+                         (r.how === 'mapped_by_fa' ? ('→ ' + esc(r.target) + ' (FA)') : esc(r.how)));
+            const undo = (r.how === 'ignored' || r.how === 'mapped_by_fa')
+              ? ' <a href="javascript:void(0)" onclick="window._slcUndoIdx(' + i + ')" style="color:#0369a1;font-size:8px;text-decoration:underline;">Undo</a>' : '';
+            h += '<div style="font-size:9px;color:#15803d;margin-top:2px;">• <code style="background:rgba(0,0,0,0.05);padding:0 3px;font-size:9px;">' + esc(r.label) + '</code> <span style="color:#6b7280;">' + how + '</span>' + undo + '</div>';
+          });
+        }
+        if (sf.file_name) h += '<div style="margin-top:6px;font-size:9px;color:#6b7280;">File: <code style="font-size:9px;">' + esc((sf.file_name || '').slice(0, 40)) + '</code></div>';
+        if (sf.scanned_at) h += '<div style="margin-top:2px;font-size:9px;color:#9ca3af;">Scanned ' + new Date(sf.scanned_at).toLocaleString() + '</div>';
+        h += '<div style="margin-top:6px;"><button onclick="window._slcLoad(true)" style="font-size:9px;border:1px solid #d1d5db;background:white;color:#374151;padding:3px 8px;border-radius:3px;cursor:pointer;">Re-scan</button></div>';
+        h += '</div>';
+        body.innerHTML = h;
+      };
+      window._slcLoad = function(refresh) {
+        const body = document.getElementById('scanFindingsBody');
+        if (!body) return;
+        if (refresh) body.innerHTML = '<span style="font-style:italic;color:#6b7280;">Re-scanning…</span>';
+        fetch('/api/wizard/' + entityCode + '/scan-findings' + (refresh ? '?refresh=1' : ''), refresh ? {method: 'POST'} : undefined)
+          .then(r => r.json()).then(window._slcRender)
+          .catch(() => { body.innerHTML = '<span style="color:#9ca3af;">scan unavailable</span>'; });
+      };
+      window._slcLoad(false);
 
       // Adjust main content + nav so the wizard sidebar doesn't overlap the
       // breadcrumb's "Open in Wizard" link (which was getting truncated).

@@ -431,6 +431,21 @@ def _run_idempotent_migrations():
         "ON build_failures (entity_code, failed_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_build_failures_unresolved "
         "ON build_failures (entity_code) WHERE resolved_at IS NULL",
+        # FA dir 2026-06-10 (Jacob, 224/159 Madison): per-building FA decisions
+        # on pre-import label-check items. action='ignore' = manual override
+        # (label intentionally won't aggregate; excluded from the verdict);
+        # action='map' = FA points the file label at an existing summary row.
+        """
+        CREATE TABLE IF NOT EXISTS building_label_overrides (
+            id SERIAL PRIMARY KEY,
+            entity_code VARCHAR(20) NOT NULL,
+            label TEXT NOT NULL,
+            action VARCHAR(10) NOT NULL,
+            target_label TEXT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (entity_code, label)
+        )
+        """,
     ]
     with app.app_context():
         # Never let a boot-time ALTER queue forever behind a long-running
@@ -7146,6 +7161,69 @@ def _load_canonical_label_sets():
             LABEL_ALIASES)
 
 
+def _norm_label(s):
+    """Whitespace/case-insensitive label key for matching."""
+    return " ".join((s or "").strip().lower().split())
+
+
+def _effective_unmapped_labels(entity_code, unmapped_items):
+    """Filter a finding's unmapped labels through what the scanner can't see.
+
+    The scanner classifies file labels against the PORTFOLIO-wide canonical
+    map only. Two more things make a label fine in practice (2026-06-10,
+    Jacob — 224's FAIL flagged 5 labels that all had rows WITH VALUES on the
+    very summary behind the card):
+      1. the building's own summary rows — a label with its own row imports
+         fine (values land; the row just has no GL aggregation), and
+      2. FA overrides — 'ignore' (manual override) or 'map' (FA pointed the
+         label at an existing row).
+    Applied at READ time so all cached findings correct themselves without
+    a re-scan. Returns (still_unmapped, resolved, overrides, building_labels).
+    """
+    building_norm = {}
+    try:
+        rows = db.session.execute(db.text(
+            "SELECT label FROM budget_summary_rows "
+            "WHERE entity_code = :ec AND row_type = 'data'"
+        ), {"ec": entity_code}).fetchall()
+        for r in rows:
+            building_norm.setdefault(_norm_label(r[0]), r[0])
+    except Exception:
+        db.session.rollback()
+    overrides = {}
+    try:
+        orows = db.session.execute(db.text(
+            "SELECT label, action, target_label FROM building_label_overrides "
+            "WHERE entity_code = :ec"
+        ), {"ec": entity_code}).fetchall()
+        for r in orows:
+            overrides[_norm_label(r[0])] = {"label": r[0], "action": r[1], "target": r[2]}
+    except Exception:
+        db.session.rollback()
+
+    still, resolved = [], []
+    for u in unmapped_items or []:
+        item = dict(u) if isinstance(u, dict) else {"label": u}
+        n = _norm_label(item.get("label"))
+        if not n:
+            continue
+        ov = overrides.get(n)
+        if n in building_norm:
+            item["how"] = "building_row"
+            item["target"] = building_norm[n]
+            resolved.append(item)
+        elif ov and ov["action"] == "ignore":
+            item["how"] = "ignored"
+            resolved.append(item)
+        elif ov and ov["action"] == "map":
+            item["how"] = "mapped_by_fa"
+            item["target"] = ov["target"]
+            resolved.append(item)
+        else:
+            still.append(item)
+    return still, resolved, list(overrides.values()), sorted(building_norm.values())
+
+
 def _scan_one_building(ec, canonical_keys, alias_keys, label_aliases):
     """Scan ONE building's approved 2026 budget file. Returns a finding dict
     suitable for persisting to building_scan_findings.
@@ -7264,7 +7342,15 @@ def _scan_one_building(ec, canonical_keys, alias_keys, label_aliases):
         elif lbl in alias_keys:
             alias_count += 1
         else:
-            unmapped.append({"label": lbl, "suggested": None})
+            # Dollars at stake (2026-06-10): rightmost numeric column in the
+            # file row = the approved budget figure, so the FA sees what
+            # amount has no home instead of just a label name.
+            amt = None
+            vals = row.get("values") or {}
+            for cn in sorted(vals.keys()):
+                if isinstance(vals[cn], (int, float)):
+                    amt = vals[cn]
+            unmapped.append({"label": lbl, "suggested": None, "amount": amt})
 
     finding["labels_total"] = len(all_labels)
     finding["labels_canonical"] = canon_count
@@ -7986,7 +8072,14 @@ def wizard_scan_findings(entity_code):
             "label": lbl,
             "suggested": suggestion,
             "suggestion_kind": suggestion_kind,
+            "amount": (u.get("amount") if isinstance(u, dict) else None),
         })
+
+    # Read-time correction (2026-06-10): the scanner only knows the
+    # portfolio canonical map — filter through this building's own rows
+    # and the FA's recorded decisions before computing a verdict.
+    unmapped_with_suggestions, resolved_labels, active_overrides, building_row_labels = \
+        _effective_unmapped_labels(entity_code, unmapped_with_suggestions)
 
     unmapped_count = len(unmapped_with_suggestions)
     has_file = bool(finding_row[2])
@@ -8000,13 +8093,21 @@ def wizard_scan_findings(entity_code):
         verdict_msg = f"Parse error: {parse_error}"
     elif unmapped_count == 0:
         verdict = "clean"
-        verdict_msg = "All labels in the approved 2026 file map to canonical rows. Import will produce clean data."
+        if resolved_labels:
+            verdict_msg = (f"All labels accounted for — {len(resolved_labels)} resolved "
+                           "per-building (own summary row, or your decision below).")
+        else:
+            verdict_msg = "All labels in the approved 2026 file map to canonical rows. Import will produce clean data."
     elif unmapped_count <= 2:
         verdict = "warn"
-        verdict_msg = f"{unmapped_count} label{'s' if unmapped_count != 1 else ''} won't aggregate to a canonical row. Those rows will show $0 on the summary tab unless fixed first."
+        verdict_msg = (f"{unmapped_count} label{'s' if unmapped_count != 1 else ''} "
+                       "has no home — no canonical row and no row of its own on this "
+                       "building's summary. Its amount won't land anywhere. Map it, "
+                       "add a row, or override below.")
     else:
         verdict = "fail"
-        verdict_msg = f"{unmapped_count} labels won't aggregate. Review before importing — multiple summary rows will show $0."
+        verdict_msg = (f"{unmapped_count} labels have no home — their amounts won't "
+                       "land anywhere on the summary. Map, add rows, or override below.")
 
     return jsonify({
         "entity_code": entity_code,
@@ -8020,9 +8121,70 @@ def wizard_scan_findings(entity_code):
         "labels_alias": finding_row[7] or 0,
         "labels_unmapped": unmapped_count,
         "unmapped_labels": unmapped_with_suggestions,
+        "resolved_labels": resolved_labels,
+        "overrides": active_overrides,
+        "building_row_labels": building_row_labels,
         "verdict": verdict,
         "verdict_msg": verdict_msg,
     })
+
+
+@app.route("/api/wizard/<entity_code>/label-action", methods=["POST"])
+def wizard_label_action(entity_code):
+    """FA actions on pre-import label-check items (2026-06-10, Jacob:
+    "provide a way to take action on the flagged items").
+
+    Body: {"label": str, "action": "ignore"|"map"|"add_row"|"clear", "target": str|None}
+      ignore  — manual override: acknowledged; excluded from the verdict
+      map     — record that this file label belongs to an existing summary row
+      add_row — create a data row with this label on the building's summary
+                so the import has a home for it
+      clear   — undo a previous ignore/map
+    """
+    data = request.get_json(silent=True) or {}
+    label = (data.get("label") or "").strip()
+    action = (data.get("action") or "").strip()
+    target = (data.get("target") or "").strip() or None
+    if not label or action not in ("ignore", "map", "add_row", "clear"):
+        return jsonify({"success": False,
+                        "error": "label + action (ignore|map|add_row|clear) required"}), 400
+    try:
+        if action == "clear":
+            db.session.execute(db.text(
+                "DELETE FROM building_label_overrides "
+                "WHERE entity_code = :ec AND lower(label) = lower(:lbl)"
+            ), {"ec": entity_code, "lbl": label})
+        elif action == "add_row":
+            exists = db.session.execute(db.text(
+                "SELECT 1 FROM budget_summary_rows "
+                "WHERE entity_code = :ec AND row_type = 'data' "
+                "AND lower(label) = lower(:lbl) LIMIT 1"
+            ), {"ec": entity_code, "lbl": label}).fetchone()
+            if not exists:
+                db.session.execute(db.text(
+                    "INSERT INTO budget_summary_rows "
+                    "(entity_code, budget_year, display_order, label, row_type) "
+                    "SELECT :ec, COALESCE(MAX(budget_year), 2027), "
+                    "COALESCE(MAX(display_order), 0) + 1, :lbl, 'data' "
+                    "FROM budget_summary_rows WHERE entity_code = :ec"
+                ), {"ec": entity_code, "lbl": label})
+        else:
+            if action == "map" and not target:
+                return jsonify({"success": False,
+                                "error": "map requires a target row label"}), 400
+            db.session.execute(db.text(
+                "INSERT INTO building_label_overrides "
+                "(entity_code, label, action, target_label) "
+                "VALUES (:ec, :lbl, :act, :tgt) "
+                "ON CONFLICT (entity_code, label) "
+                "DO UPDATE SET action = :act, target_label = :tgt, created_at = NOW()"
+            ), {"ec": entity_code, "lbl": label, "act": action, "tgt": target})
+        db.session.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"label-action failed for {entity_code}: {e}")
+        return jsonify({"success": False, "error": str(e)[:300]}), 500
 
 
 @app.route("/api/wizard/<entity_code>/approved-budget-files", methods=["GET"])
