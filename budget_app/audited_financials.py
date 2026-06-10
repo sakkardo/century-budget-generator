@@ -4782,7 +4782,18 @@ async function uploadAll() {
         from pathlib import Path as _Path
         pdf_path = _Path(get_data_dir()) / upload.pdf_filename
         if not pdf_path.exists():
-            abort(404)
+            # Self-heal (2026-06-10, Jacob: "make sure open audit pdf works"):
+            # Railway wipes local files on every deploy, so this 404'd for any
+            # upload without a recorded SharePoint web URL. Re-fetch from
+            # SharePoint the same way the extract worker does, then serve.
+            try:
+                _fetch_pdf_if_missing(upload.entity_code, upload.fiscal_year_end,
+                                      upload.pdf_filename, upload_id, pdf_path)
+            except Exception as e:
+                logger.warning(f"PDF re-fetch failed for upload {upload_id}: {e}")
+                return ("This PDF is not cached on the server and could not be "
+                        "re-fetched from SharePoint. Run Scan SharePoint on the "
+                        "Audited Financials page, then try again.", 404)
         # Inline display so the browser opens the PDF rather than downloading.
         return send_file(
             str(pdf_path),
