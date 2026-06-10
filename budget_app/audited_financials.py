@@ -637,6 +637,15 @@ def create_audited_financials_blueprint(db):
                 except Exception as e:
                     logger.warning(f"Could not load building categories for {entity_code}: {e}")
 
+            # Release the read transaction before the long Claude call — an
+            # open txn holds ACCESS SHARE on the tables read above, and a
+            # booting process's ALTER bootstrap queues behind it, wedging
+            # every query on those tables (incident 2026-06-10).
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
             if budget_categories:
                 cat_instruction = f"""
 IMPORTANT: This building's budget uses these EXACT categories. You MUST map every
@@ -4001,20 +4010,23 @@ async function uploadAll() {
         except Exception:
             db.session.rollback()
 
-    def _fetch_pdf_if_missing(upload, pdf_path):
+    def _fetch_pdf_if_missing(entity_code, fiscal_year_end, pdf_filename,
+                              upload_id, pdf_path):
         """Self-heal: Railway wipes local files on every deploy, so a PDF saved
         by a scan is often gone by extract time. SharePoint is the durable
         store — re-fetch (entity folder first, then the master Audited
-        Financials folder) and re-cache locally. Raises on failure."""
+        Financials folder) and re-cache locally. Raises on failure.
+        Takes plain values, not the AuditUpload row — the caller closes its DB
+        transaction before this slow path (incident 2026-06-10)."""
         import urllib.parse as _up
         from app import (_sharepoint_list_entity_sources, _sharepoint_download_item,
                          _graph_get, _graph_get_drive_id, SHAREPOINT_AUDIT_MASTER_PATH)
-        prefix = f"{upload.entity_code}_{upload.fiscal_year_end}_"
-        original = (upload.pdf_filename[len(prefix):]
-                    if upload.pdf_filename.startswith(prefix) else upload.pdf_filename)
+        prefix = f"{entity_code}_{fiscal_year_end}_"
+        original = (pdf_filename[len(prefix):]
+                    if pdf_filename.startswith(prefix) else pdf_filename)
         item_id = None
         try:
-            sp = _sharepoint_list_entity_sources(upload.entity_code)
+            sp = _sharepoint_list_entity_sources(entity_code)
             files = (sp.get("by_source_type") or {}).get("audit_2025") or []
             match = next((f for f in files if (f.get("name") or "") == original), None)
             if not match and len(files) == 1:
@@ -4039,31 +4051,49 @@ async function uploadAll() {
         _, pdf_bytes = _sharepoint_download_item(item_id)
         with open(str(pdf_path), "wb") as fh:
             fh.write(pdf_bytes)
-        logger.info(f"Re-fetched audit PDF from SharePoint for upload {upload.id} ({original})")
+        logger.info(f"Re-fetched audit PDF from SharePoint for upload {upload_id} ({original})")
 
     def _extract_worker(app_obj, upload_id):
         """Runs in a daemon thread with its own app context. Owns the full
         extract lifecycle: self-heal the PDF, call Claude, commit 'extracted'
-        — or record the failure on the row (status back to 'uploaded')."""
+        — or record the failure on the row (status back to 'uploaded').
+
+        Lock discipline (incident 2026-06-10): NO DB transaction may stay open
+        across the slow work. The first version held the autobegun read txn
+        through the ~60s Claude call; a booting process's ALTER bootstrap
+        queued behind its ACCESS SHARE lock and every audit_uploads query
+        queued behind the ALTER — audit pages hung site-wide. So: read fields,
+        close the txn, do the slow work, then reopen briefly to write."""
         with app_obj.app_context():
             _extract_gate.acquire()
             try:
                 upload = AuditUpload.query.get(upload_id)
                 if not upload or upload.status != "extracting":
                     return
+                pdf_filename = upload.pdf_filename
+                building_name = upload.building_name
+                entity_code = upload.entity_code
+                fiscal_year_end = upload.fiscal_year_end
+                db.session.rollback()  # end the read txn before slow work
                 try:
                     data_dir = get_data_dir()
-                    pdf_path = data_dir / upload.pdf_filename
+                    pdf_path = data_dir / pdf_filename
                     if not pdf_path.exists():
-                        _fetch_pdf_if_missing(upload, pdf_path)
-                    extracted = extract_from_pdf(str(pdf_path), upload.building_name,
-                                                 entity_code=upload.entity_code)
+                        _fetch_pdf_if_missing(entity_code, fiscal_year_end,
+                                              pdf_filename, upload_id, pdf_path)
+                        db.session.rollback()  # SP helpers may read DB too
+                    extracted = extract_from_pdf(str(pdf_path), building_name,
+                                                 entity_code=entity_code)
                     if not extracted:
                         raise RuntimeError("Claude returned no extractable data from the PDF")
-                    upload.raw_extraction = json.dumps(extracted)
-                    upload.status = "extracted"
-                    upload.extract_error = None
-                    upload.updated_at = datetime.utcnow()
+                    u2 = AuditUpload.query.get(upload_id)
+                    if not u2 or u2.status != "extracting":
+                        db.session.rollback()
+                        return
+                    u2.raw_extraction = json.dumps(extracted)
+                    u2.status = "extracted"
+                    u2.extract_error = None
+                    u2.updated_at = datetime.utcnow()
                     db.session.commit()
                     logger.info(f"Background extract OK for upload {upload_id}")
                 except Exception as e:
@@ -4071,11 +4101,13 @@ async function uploadAll() {
                     logger.error(f"Background extract failed for upload {upload_id}: {e}")
                     try:
                         u2 = AuditUpload.query.get(upload_id)
-                        if u2:
+                        if u2 and u2.status == "extracting":
                             u2.status = "uploaded"
                             u2.extract_error = str(e)[:1000]
                             u2.updated_at = datetime.utcnow()
                             db.session.commit()
+                        else:
+                            db.session.rollback()
                     except Exception:
                         db.session.rollback()
             finally:

@@ -433,6 +433,16 @@ def _run_idempotent_migrations():
         "ON build_failures (entity_code) WHERE resolved_at IS NULL",
     ]
     with app.app_context():
+        # Never let a boot-time ALTER queue forever behind a long-running
+        # transaction: the waiting ACCESS EXCLUSIVE makes every subsequent
+        # query on that table queue too, wedging whole pages site-wide
+        # (incident 2026-06-10). Time out fast — these statements are
+        # idempotent, so the next boot simply retries.
+        try:
+            db.session.execute(db.text("SET lock_timeout = '5000'"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
         for stmt in statements:
             try:
                 db.session.execute(db.text(stmt))
@@ -440,6 +450,11 @@ def _run_idempotent_migrations():
             except Exception as e:
                 db.session.rollback()
                 logger.warning(f"Migration skipped or failed (non-fatal): {stmt} :: {e}")
+        try:
+            db.session.execute(db.text("SET lock_timeout = DEFAULT"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 try:
     _run_idempotent_migrations()
