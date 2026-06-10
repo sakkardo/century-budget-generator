@@ -4079,6 +4079,9 @@ async function uploadAll() {
     # /api/af/extract-status/<id>, and a semaphore caps concurrent extractions
     # so batch-working the audit queue queues politely instead of stampeding.
     _extract_gate = threading.Semaphore(2)
+    # One PDF self-heal at a time (2026-06-10 outage #2): concurrent inline
+    # SharePoint fetches each wedge a gunicorn thread when Graph stalls.
+    _pdf_heal_gate = threading.Semaphore(1)
 
     def _recover_stale_extracting(upload):
         """Container restarts kill worker threads mid-extract. Reset rows stuck
@@ -4782,18 +4785,41 @@ async function uploadAll() {
         from pathlib import Path as _Path
         pdf_path = _Path(get_data_dir()) / upload.pdf_filename
         if not pdf_path.exists():
-            # Self-heal (2026-06-10, Jacob: "make sure open audit pdf works"):
-            # Railway wipes local files on every deploy, so this 404'd for any
-            # upload without a recorded SharePoint web URL. Re-fetch from
-            # SharePoint the same way the extract worker does, then serve.
-            try:
-                _fetch_pdf_if_missing(upload.entity_code, upload.fiscal_year_end,
-                                      upload.pdf_filename, upload_id, pdf_path)
-            except Exception as e:
-                logger.warning(f"PDF re-fetch failed for upload {upload_id}: {e}")
-                return ("This PDF is not cached on the server and could not be "
-                        "re-fetched from SharePoint. Run Scan SharePoint on the "
-                        "Audited Financials page, then try again.", 404)
+            # Self-heal with a HARD time budget (2026-06-10 outage #2: the
+            # first version ran the SharePoint fetch inline with no bound —
+            # when Graph stalled, every click wedged a worker thread until
+            # the whole site stopped answering). Now: single-flight (extra
+            # clicks get a retry message, not a queued thread), no DB txn
+            # held across the network wait, and the request waits at most
+            # 25s — the daemon keeps caching in the background either way,
+            # so the next click serves from disk.
+            ec, fy, fname = upload.entity_code, upload.fiscal_year_end, upload.pdf_filename
+            db.session.rollback()
+            if not _pdf_heal_gate.acquire(blocking=False):
+                return ("This PDF is being fetched from SharePoint right now — "
+                        "try again in about 30 seconds.", 503)
+            heal_err = []
+
+            def _heal():
+                try:
+                    _fetch_pdf_if_missing(ec, fy, fname, upload_id, pdf_path)
+                except Exception as e:
+                    heal_err.append(str(e)[:300])
+                finally:
+                    _pdf_heal_gate.release()
+
+            t = threading.Thread(target=_heal, daemon=True)
+            t.start()
+            t.join(25)
+            if t.is_alive():
+                return ("Fetching this PDF from SharePoint is taking longer than "
+                        "usual. It keeps loading in the background — try again "
+                        "in about 30 seconds.", 503)
+            if heal_err or not pdf_path.exists():
+                logger.warning(f"PDF re-fetch failed for upload {upload_id}: {heal_err}")
+                return ("This PDF could not be re-fetched from SharePoint. Run "
+                        "Scan SharePoint on the Audited Financials page, then "
+                        "try again.", 404)
         # Inline display so the browser opens the PDF rather than downloading.
         return send_file(
             str(pdf_path),
