@@ -3492,6 +3492,28 @@ async function uploadAll() {
                 '<b>Mapping saved, awaiting confirm.</b> Review the categorization and click Confirm &amp; Save '
                 'when ready &mdash; this finalizes Col 2 on the Budget Summary.</div>'
             )
+        elif upload.status == "uploaded":
+            # One-door fix (2026-06-10, Jacob: "seems confusing"): this page is
+            # THE audit room — it handled extracted/mapped/confirmed but not
+            # 'uploaded', so a freshly-scanned audit landed here with no Extract
+            # button (it lived on a different page). Now the whole journey is
+            # one page with one button per moment: Extract -> review -> Confirm.
+            status_banner = (
+                '<div style="background:#fffbeb;border:1px solid #fcd34d;border-left:4px solid #d97706;'
+                'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;">'
+                '<b>PDF is in &mdash; extraction has not run yet.</b> Click Extract and Claude reads the '
+                'statement (~30&ndash;60 seconds), then the mapping appears here for your review. '
+                '<button type="button" style="margin-left:10px;background:#d97706;color:#fff;border:none;'
+                'border-radius:6px;padding:6px 14px;font-weight:700;font-size:13px;cursor:pointer;" '
+                'onclick="(function(btn){btn.disabled=true;btn.textContent=\'Extracting… ~60s\';'
+                'fetch(\'/api/af/extract/' + str(upload_id) + '\',{method:\'POST\'})'
+                '.then(function(r){return r.json();})'
+                '.then(function(d){if(d.success){return fetch(\'/api/af/map/' + str(upload_id) + '\',{method:\'POST\'})'
+                '.then(function(){location.reload();});}'
+                'alert(\'Extraction error: \'+(d.error||\'unknown\'));btn.disabled=false;btn.textContent=\'Extract now\';})'
+                '.catch(function(e){alert(\'Error: \'+e);btn.disabled=false;btn.textContent=\'Extract now\';});})(this)">'
+                'Extract now</button></div>'
+            )
 
         # Audit PDF link — prefer the SharePoint web viewer (durable across
         # Railway dyno restarts that wipe the local file cache). Fall back
