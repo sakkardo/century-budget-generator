@@ -8365,6 +8365,16 @@ def admin_foundation_summary():
     })
 
 
+# Reentrancy guard for the db.session.commit monkey-patch used by the dry-run
+# and smoke-run endpoints (2026-06-10 audit). The patch replaces commit on the
+# PROCESS-WIDE scoped_session, so overlapping runs would (a) make concurrent FA
+# saves flush-only and (b) the second run's restore could pin commit to a
+# flush-only fn permanently. This lock makes the two operations mutually
+# exclusive process-wide; a second caller is refused, not allowed to overlap.
+import threading as _threading_cp
+_COMMIT_PATCH_LOCK = _threading_cp.Lock()
+
+
 @app.route("/api/admin/dryrun-2026-import", methods=["POST"])
 def admin_dryrun_2026_import():
     # Note: no @require_admin to allow curl testing — non-destructive endpoint
@@ -8436,6 +8446,11 @@ def admin_dryrun_2026_import():
     #
     # This is belt-and-suspenders: even if other inner commits get added
     # later, the dry-run stays non-destructive.
+    # Refuse to start if another commit-patch operation is live — prevents
+    # the overlap-corruption + permanent-broken-commit modes (2026-06-10).
+    if not _COMMIT_PATCH_LOCK.acquire(blocking=False):
+        return jsonify({"error": "A dry-run or smoke-run is already in progress; "
+                        "retry in a minute."}), 409
     _orig_commit = db.session.commit
     def _flush_only_commit():
         # Flush makes pending writes visible to subsequent queries in this
@@ -8554,6 +8569,7 @@ def admin_dryrun_2026_import():
             db.session.rollback()
         except Exception:
             pass
+        _COMMIT_PATCH_LOCK.release()
 
     # Aggregate counts for filter/summary display
     status_counts = {}
@@ -8611,6 +8627,13 @@ def admin_portfolio_smoke_run():
             # Mirror the dry-run endpoint but loop ALL entities in one go.
             # Same commit-interception safety: monkey-patch session.commit
             # so internal commits become flushes; final rollback wipes all.
+            # Reentrancy guard (2026-06-10): never overlap with a dry-run or
+            # another smoke-run — overlapping patches corrupt the shared
+            # session's commit. Bail out cleanly if one is already live.
+            if not _COMMIT_PATCH_LOCK.acquire(blocking=False):
+                logger.warning("portfolio-smoke-run: another commit-patch op is "
+                               "live; aborting this run to protect concurrent saves.")
+                return
             _orig_commit = db.session.commit
             def _flush_only_commit():
                 db.session.flush()
@@ -8698,6 +8721,7 @@ def admin_portfolio_smoke_run():
                     db.session.rollback()
                 except Exception:
                     pass
+                _COMMIT_PATCH_LOCK.release()
 
             # Compute summary
             status_counts = {}
@@ -10481,11 +10505,18 @@ def _build_apply_audit_2025(entity_code, selection):
                 "note": "Existing confirmed mapping preserved — wizard re-click is a no-op.",
                 "skipped": True,
             }
-    AuditUpload.query.filter_by(entity_code=entity_code).delete()
+    # Scope the wipe to THIS fiscal year (2026-06-10 audit): the unscoped
+    # delete destroyed confirmed audits of OTHER years — including the prior-
+    # year audit this same function reads ~100 lines below for the Col-1
+    # fallback — plus any in-progress 'mapped' work. Only clear the BY-2 slot
+    # we're about to re-extract.
+    AuditUpload.query.filter_by(
+        entity_code=entity_code, fiscal_year_end=expected_fy
+    ).delete()
     db.session.execute(db.text(
         "UPDATE budgets SET foundation_confirmed_at = NULL, foundation_confirmed_by = NULL "
-        "WHERE entity_code = :ec"
-    ), {"ec": entity_code})
+        "WHERE entity_code = :ec AND year = :yr"
+    ), {"ec": entity_code, "yr": _BY_AUDIT_PRECHECK})
     db.session.flush()
 
     # fiscal_year_end is the load-bearing key for the summary endpoint's Col 2

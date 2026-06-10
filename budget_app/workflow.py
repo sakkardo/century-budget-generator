@@ -8208,7 +8208,11 @@ def create_workflow_blueprint(db):
                 "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename, raw_extraction, summary_overrides FROM audit_uploads "
                 "WHERE entity_code = :ec AND status = 'confirmed' "
                 "AND (fiscal_year_end = :fy OR fiscal_year_end IS NULL OR fiscal_year_end = '') "
-                "ORDER BY (fiscal_year_end = :fy) DESC, confirmed_at DESC LIMIT 1"
+                # NULLS LAST (2026-06-10 audit): Postgres DESC defaults to
+                # NULLS FIRST, so a NULL-fiscal-year confirmed upload outranked
+                # the exact-year row — Col 2 from the wrong audit. Force the
+                # exact-year match to win.
+                "ORDER BY (fiscal_year_end = :fy) DESC NULLS LAST, confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
             # FA #2 (148 working session 2026-05-13): an audit row can land at
             # status='confirmed' with an EMPTY mapped_data ({}). Pre-fd0d170
@@ -8527,8 +8531,19 @@ def create_workflow_blueprint(db):
                     "capital expense" in _row_label_lower
                     or "capital expenses" in _row_label_lower
                 )
-                if not _is_capital_row and prefixes:
-                    for _p in prefixes:
+                # Parse THIS row's prefixes locally. BUG (2026-06-10 audit):
+                # the loop-scoped `prefixes` var isn't assigned for the current
+                # row until ~20 lines below, so referencing it here read the
+                # PREVIOUS row's prefixes — mis-forcing col7=0 on whatever data
+                # row followed a capital row, and skipping the very first row.
+                _row_prefixes = []
+                if row.gl_prefixes_json:
+                    try:
+                        _row_prefixes = _json.loads(row.gl_prefixes_json)
+                    except Exception:
+                        _row_prefixes = []
+                if not _is_capital_row and _row_prefixes:
+                    for _p in _row_prefixes:
                         _base = str(_p).split("-")[0].strip()
                         if _base.startswith("7"):
                             _is_capital_row = True
