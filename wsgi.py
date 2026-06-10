@@ -23,6 +23,17 @@ flask_sqlalchemy.SQLAlchemy.create_all = _safe_create_all
 
 from budget_app.app import app, db
 
+# CRITICAL (2026-06-10, outage root cause): the app module loads here as
+# 'budget_app.app', but request handlers contain lazy `from app import X`
+# calls that refer to it as 'app'. Without this alias, the FIRST such import
+# per worker re-imports app.py as a SECOND module copy — re-running the
+# entire boot sequence (migrations, ALTER loops, seeding, a second DB pool)
+# INSIDE a request thread. When that request's open transaction already held
+# a lock on a table being ALTERed, the worker self-deadlocked and every
+# query on that table queued behind it: site-wide timeouts. The alias makes
+# both names point at the one already-initialized module.
+sys.modules.setdefault("app", sys.modules["budget_app.app"])
+
 print("[WSGI] Application imported successfully", flush=True)
 
 # Restore original and retry create_all now that Postgres should be ready
