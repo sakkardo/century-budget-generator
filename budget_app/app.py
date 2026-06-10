@@ -10695,7 +10695,60 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
     except Exception:
         logger.warning(f"populate_building_info_from_income skipped for {entity_code}", exc_info=True)
 
+    # Gas-split post-pass (Jacob 2026-06-10: "gas cooking and gas heating
+    # show the same number — the fix needs to be done again"). The label
+    # override maps EVERY gas label variant to all three gas GLs (5250
+    # cooking / 5251 transport / 5252 heating) because each row is seen
+    # alone at import — right for a single combined gas row, double-counted
+    # when a building has separate cooking + heating rows. Earlier manual
+    # row repairs were washed away by exactly this re-import path, so the
+    # split now lives IN the import.
+    try:
+        _dedupe_gas_prefixes_for_entity(entity_code, BudgetSummaryRow, BUDGET_YEAR)
+    except Exception:
+        logger.warning(f"gas-prefix dedupe skipped for {entity_code}", exc_info=True)
+
     return written
+
+
+def _dedupe_gas_prefixes_for_entity(entity_code, BudgetSummaryRow, budget_year):
+    """When a building has BOTH a gas-cooking-ish row and a gas-heating-ish
+    row still carrying the shared ["5250","5251","5252"] prefix triple,
+    split them: cooking keeps 5250, heating gets 5251 (Gas Transport) +
+    5252 (Gas - Heating). Rows with custom/absent prefixes are untouched;
+    single-gas-row buildings keep the full triple (one bucket holds all
+    gas there — correct). Returns number of rows changed."""
+    import json as _json
+    rows = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=budget_year, row_type="data").all()
+    gas_rows = [r for r in rows if "gas" in (r.label or "").lower()]
+
+    def _kind(lbl):
+        l = (lbl or "").lower()
+        heat, cook = "heat" in l, "cook" in l
+        if heat and cook:
+            return "combined"
+        return "heating" if heat else "cooking"
+
+    kinds = {r.id: _kind(r.label) for r in gas_rows}
+    if not (any(k == "cooking" for k in kinds.values())
+            and any(k == "heating" for k in kinds.values())):
+        return 0
+    changed = 0
+    for r in gas_rows:
+        try:
+            cur = _json.loads(r.gl_prefixes_json) if r.gl_prefixes_json else []
+        except Exception:
+            cur = []
+        if sorted(cur) != ["5250", "5251", "5252"]:
+            continue  # only rows still on the shared triple
+        if kinds[r.id] == "cooking":
+            r.gl_prefixes_json = _json.dumps(["5250"])
+            changed += 1
+        elif kinds[r.id] == "heating":
+            r.gl_prefixes_json = _json.dumps(["5251", "5252"])
+            changed += 1
+    return changed
 
 
 def _populate_building_info_from_income(entity_code, xlsx_path):
