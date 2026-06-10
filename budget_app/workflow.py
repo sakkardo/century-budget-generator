@@ -11109,7 +11109,7 @@ DASHBOARD_TEMPLATE = r"""
   }
   .ds-tile.setup {
     background: #f1f0ec;
-    color: #a39a8e;
+    color: #7d7468;
     border-color: #e0dcd2;
   }
   .pill-fa_review {
@@ -11766,7 +11766,7 @@ function renderBudgets(budgets) {
     // same fact rendered twice). The PM-phase detail (Sent/Working/Submitted)
     // lives in the pill tooltip instead of its own column.
     const stageStyles = {
-      'Setup': 'background:#f1f0ec; color:#a39a8e;',
+      'Setup': 'background:#f1f0ec; color:#7d7468;',
       'Sources Collected': 'background:#f5efe7; color:#5a4a3f;',
       'Assumptions Confirmed': 'background:#f5efe7; color:#5a4a3f;',
       'Budget Built (draft)': 'background:#def7ec; color:#065f46;',

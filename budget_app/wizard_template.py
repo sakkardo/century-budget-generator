@@ -1554,7 +1554,7 @@ function _renderEntityTiles(entityCode) {
   function _md(iso) { try { const d = new Date(iso); return (d.getMonth()+1) + "/" + d.getDate(); } catch (err) { return ""; } }
   const states = ORDER.map(function (p) { return { key: p[0], letter: p[1], s: ss[p[0]] || { state: "missing" } }; });
   if (states.every(function (x) { return x.s.state === "setup"; })) {
-    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#f1f0ec; color:#a39a8e; font-size:10px; font-weight:700;\">Not started</span>";
+    return "<span style=\"display:inline-block; padding:3px 8px; border-radius:5px; background:#f1f0ec; color:#7d7468; font-size:10px; font-weight:700;\">Not started</span>";
   }
   const bad = states.filter(function (x) { return x.s.state === "missing" || x.s.state === "failed"; });
   if (bad.length >= 3) {
@@ -1580,11 +1580,11 @@ function _renderEntityTiles(entityCode) {
       sub = "failed";
       tip = x.letter + " failed during build — fix the file and rebuild";
     } else if (st === "setup") {
-      bg = "#f1f0ec"; fg = "#a39a8e"; bd = "#e0dcd2"; sub = "—"; tip = "Not started";
+      bg = "#f1f0ec"; fg = "#7d7468"; bd = "#e0dcd2"; sub = "—"; tip = "Not started";
     }
-    return "<span title=\"" + tip.replace(/"/g,"&quot;") + "\" style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:26px; height:24px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
+    return "<span title=\"" + tip.replace(/"/g,"&quot;") + "\" style=\"display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-width:32px; height:26px; padding:1px 4px; border-radius:4px; background:" + bg + "; color:" + fg + "; border:1px solid " + bd + "; line-height:1;\">"
          + "<span style=\"font-size:10px; font-weight:700; letter-spacing:0.3px;\">" + x.letter + "</span>"
-         + (sub ? "<span style=\"font-size:7px; opacity:0.8; margin-top:1px; font-variant-numeric:tabular-nums;\">" + sub + "</span>" : "")
+         + (sub ? "<span style=\"font-size:9px; opacity:0.85; margin-top:1px; font-variant-numeric:tabular-nums;\">" + sub + "</span>" : "")
          + "</span>";
   }
   return "<span style=\"display:inline-flex; gap:3px;\">" + states.map(_tile).join("") + "</span>";
@@ -1752,24 +1752,17 @@ function _entitySortValue(b, col) {
     // ingested) so partial progress beats nothing.
     const e = _enrichedByEntity[String(b.entity_code)];
     if (!e) return 0;
-    const ts = e.timestamps || {};
-    const sp = e.sp_inventory || {};
-    const au = e.audit || null;
-    const auOk = !!(au && au.status === "confirmed");
-    let ingested = 0;
-    if (ts.budget_summary) ingested += 1;
-    if (e.has_expenses) ingested += 1;
-    if (ts.ysl) ingested += 1;
-    if (ts.open_ap) ingested += 1;
-    if (auOk) ingested += 1;
-    let staged = 0;
-    if (sp.approved_2026) staged += 1;
-    if (sp.expense_distribution) staged += 1;
-    if (sp.ysl) staged += 1;
-    if (sp.ap_aging) staged += 1;
-    if (sp.audit_2025) staged += 1;
-    // Multiply ingested by 10 so it dominates the tiebreaker.
-    return ingested * 10 + staged;
+    // Design-critique fix (2026-06-09): sort by the SAME rule the tiles display
+    // (shared source_states), not the old ingested/SP counts. Sorting used to
+    // rank rows by a different definition than the colors the FA was reading.
+    const ss = e.source_states || {};
+    let score = 0;
+    Object.keys(ss).forEach(function (k) {
+      const st = (ss[k] || {}).state;
+      if (st === "in_budget") score += 10;            // green dominates
+      else if (st === "needs_review" || st === "in_sp") score += 1;  // amber tiebreak
+    });
+    return score;
   }
   return 0;
 }
