@@ -8185,10 +8185,16 @@ def create_workflow_blueprint(db):
             # FA via the Inspector — takes precedence over mapped_data + raw_extraction
             # when populated for a given summary label.
             fy = str(budget_year - 2)  # Col 2 = BY-2 actual
+            # Fiscal-year match is preferred but NOT required: uploads whose
+            # filename had no parseable year carry fiscal_year_end='' and used
+            # to vanish from Col 2 silently (826, 2026-06-10 — "none of the
+            # mapping got into the budget"). A confirmed audit with an unknown
+            # year is still this entity's audit; exact-year rows win the sort.
             row_au = db.session.execute(db.text(
                 "SELECT id, mapped_data, fiscal_year_end, confirmed_at, confirmed_by, pdf_filename, raw_extraction, summary_overrides FROM audit_uploads "
-                "WHERE entity_code = :ec AND fiscal_year_end = :fy AND status = 'confirmed' "
-                "ORDER BY confirmed_at DESC LIMIT 1"
+                "WHERE entity_code = :ec AND status = 'confirmed' "
+                "AND (fiscal_year_end = :fy OR fiscal_year_end IS NULL OR fiscal_year_end = '') "
+                "ORDER BY (fiscal_year_end = :fy) DESC, confirmed_at DESC LIMIT 1"
             ), {"ec": entity_code, "fy": fy}).fetchone()
             # FA #2 (148 working session 2026-05-13): an audit row can land at
             # status='confirmed' with an EMPTY mapped_data ({}). Pre-fd0d170

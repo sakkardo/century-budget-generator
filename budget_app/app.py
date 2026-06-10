@@ -9256,6 +9256,15 @@ def _audit_fiscal_year_from_name(name):
     m = _re.search(r"(20\d{2})\s*[-/]\s*(\d{2})(?!\d)", name or "")
     if m:
         years.append(int(m.group(1)[:2] + m.group(2)))
+    if not years:
+        # Date-style fallback (2026-06-10 fix): "FINAL FS 01.31.25.pdf" has no
+        # 4-digit year at all — the old parser returned "" and the upload then
+        # silently missed the Col 2 fiscal-year filter (826's "mapping never
+        # got into the budget"). Require all three M/D/YY components so street
+        # addresses like "29-45" can't misfire.
+        m3 = _re.search(r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{2})(?!\d)", name or "")
+        if m3:
+            years.append(2000 + int(m3.group(3)))
     return str(max(years)) if years else ""
 
 

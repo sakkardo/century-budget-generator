@@ -2104,11 +2104,21 @@ async function uploadAll() {
 
         function renderSourceLines(sourceLines, years, section) {
             if (!sourceLines || sourceLines.length === 0) return '';
-            // Single direct match — show inline green tag
+            // Single direct match — inline green tag + amount-split link.
+            // FA dir 2026-06-10 (Jacob): single-line rows had no way to split
+            // a lumped amount across categories (the Split button only existed
+            // on multi-line consolidations). The link synthesizes two editable
+            // part-rows via splitAmountRow → splitRow.
             if (sourceLines.length === 1) {
                 const sl = sourceLines[0];
                 const auditorDesc = sl.auditor_desc || sl.description || '';
-                return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"</div>';
+                const oneJson = JSON.stringify(sourceLines).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+                return '<div style="font-size:10px; color:#065f46; margin-top:2px;">Auditor: "' + auditorDesc + '"'
+                    + ' <a href="javascript:void(0)" onclick="splitAmountRow(this); return false;"'
+                    + ' data-sources="' + oneJson + '" data-section="' + (section || 'expense') + '"'
+                    + ' style="margin-left:8px; color:#b45309; text-decoration:underline; cursor:pointer; font-size:10px;"'
+                    + ' title="Split this amount into two rows so each part can map to a different category. The amounts stay editable and must still tie to the audited totals.">'
+                    + '&#9986; Split across categories</a></div>';
             }
             // Multiple source lines — show expandable list with Split button
             const sourcesJson = JSON.stringify(sourceLines).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
@@ -2459,6 +2469,23 @@ async function uploadAll() {
         // every child row this split creates. Cleared when unsplit fires.
         window._splitOriginalHTML = window._splitOriginalHTML || {};
         let _splitIdCounter = 0;
+
+        // FA dir 2026-06-10 (Jacob): amount-split for single-source-line rows.
+        // Auditors sometimes lump what Century budgets separately and provide
+        // no schedule to break it down — the FA needs to carve one line into
+        // parts and map each to its own category. Synthesizes two child lines
+        // (part 1 = full amount, part 2 = 0, both year-0 amounts editable)
+        // and reuses splitRow's machinery, so Unsplit and the reconciliation
+        // panel (parts must tie to audited totals) work unchanged.
+        function splitAmountRow(el) {
+            const src = JSON.parse(el.dataset.sources)[0] || {};
+            const desc = src.auditor_desc || src.description || '?';
+            const amts = (src.amounts || []).slice();
+            const a = Object.assign({}, src, { auditor_desc: desc + ' (part 1)', amounts: amts });
+            const b = Object.assign({}, src, { auditor_desc: desc + ' (part 2)', amounts: amts.map(() => 0) });
+            el.dataset.sources = JSON.stringify([a, b]);
+            splitRow(el);
+        }
 
         function splitRow(btn) {
             const row = btn.closest('tr');
