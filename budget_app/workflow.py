@@ -2487,7 +2487,17 @@ def create_workflow_blueprint(db):
     @bp.route("/wizard", methods=["GET"])
     @bp.route("/wizard/<entity_code>", methods=["GET"])
     def wizard_page(entity_code=None):
-        """Render the Budget Wizard gate page."""
+        """Render the Budget Wizard gate page.
+
+        Status UX Phase 4 (2026-06-09): the dashboard is the ONE portfolio home.
+        Bare /wizard (no building) redirects there — the wizard's duplicate
+        Select Entity grid is retired; the wizard is the per-building flow only
+        (/wizard/<entity_code>, steps 2-5). Route stays registered so old
+        bookmarks land somewhere sensible instead of 404ing.
+        """
+        if not entity_code:
+            from flask import redirect as _redirect
+            return _redirect("/dashboard")
         # FA dir 2026-05-23: defensive diagnostic — if anything in the
         # render fails, surface the real error instead of the generic
         # "Something went wrong" page. Remove once /wizard is stable.
