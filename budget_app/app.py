@@ -9223,6 +9223,22 @@ def _graph_put_content(path, body_bytes, content_type="application/octet-stream"
         raise RuntimeError(f"Graph {e.code} {e.reason} on PUT {path}: {body_text}")
 
 
+def _audit_fiscal_year_from_name(name):
+    """Fiscal-year-END from an audit filename — range-aware (2026-06-10 fix).
+
+    '...2024-25 FINAL FINANCIAL STATEMENTS.pdf' is the FY-2025 audit, but the
+    old max-of-4-digit-years rule read it as 2024 ('25' isn't 4 digits), which
+    mis-tagged uploads and dodged the duplicate check. Now '2024-25'/'2024/25'
+    resolves to 2025; otherwise the largest 20xx wins.
+    """
+    import re as _re
+    years = [int(m.group(1)) for m in _re.finditer(r"(20\d{2})", name or "")]
+    m = _re.search(r"(20\d{2})\s*[-/]\s*(\d{2})(?!\d)", name or "")
+    if m:
+        years.append(int(m.group(1)[:2] + m.group(2)))
+    return str(max(years)) if years else ""
+
+
 def _parse_audit_entity_code(filename):
     """Extract leading numeric token. Handles all variations seen in master folder.
     Examples that all return their entity code: "106 - 2025 audit.pdf", "140- 29-45.pdf",
@@ -9458,11 +9474,16 @@ def admin_audit_scan_master():
             unmatched += 1
             results.append({"filename": name, "entity_code": ec, "status": "unmatched"})
             continue
-        years = [int(m.group(1)) for m in _re.finditer(r"(20\d{2})", name)]
-        fiscal_year_end = str(max(years)) if years else ""
+        fiscal_year_end = _audit_fiscal_year_from_name(name)
         safe_filename = f"{ec}_{fiscal_year_end}_{name}"
-        existing = AuditUpload.query.filter_by(
-            entity_code=ec, fiscal_year_end=fiscal_year_end, pdf_filename=safe_filename
+        # Duplicate guard (2026-06-10 fix): match by the ORIGINAL filename for
+        # this entity regardless of prefix/fy-tag. The old exact-match check let
+        # the same PDF in twice when the wizard path and this scan disagreed on
+        # the year tag (358: a fresh 'uploaded' duplicate of an already-
+        # extracted audit hijacked the Au tile and asked for a re-extract).
+        existing = AuditUpload.query.filter(
+            AuditUpload.entity_code == ec,
+            AuditUpload.pdf_filename.like("%" + name),
         ).first()
         if existing:
             skipped += 1
@@ -12011,8 +12032,7 @@ def _do_afs_sync(entity_code, dry_run=False, force=False, AuditUpload=None, retu
     for f in afs_files:
         name = f.get("name", "")
         # Year detection: prefer the largest 20xx that appears in the filename.
-        years_in_name = [int(m.group(1)) for m in _re.finditer(r"(20\d{2})", name)]
-        fiscal_year_end = str(max(years_in_name)) if years_in_name else ""
+        fiscal_year_end = _audit_fiscal_year_from_name(name)
 
         # Idempotency check: AuditUpload keyed by entity + fiscal_year_end + filename
         existing = AuditUpload.query.filter_by(
