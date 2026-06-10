@@ -11114,6 +11114,15 @@ DASHBOARD_TEMPLATE = r"""
     opacity: 0.75;
     font-variant-numeric: tabular-nums;
   }
+  /* Tile glyph (2026-06-10, Jacob-approved design review fix): every state
+     carries a non-color mark (✓ ! ◷ ✕ –) so tiles read without relying on
+     hue alone — and the two ambers below stop being the same color with
+     two opposite meanings. */
+  .ds-tile .t-glyph {
+    font-size: 10px;
+    margin-left: 2px;
+    font-weight: 700;
+  }
   .ds-tile.ok {
     background: #def7ec;
     color: #065f46;
@@ -11124,10 +11133,18 @@ DASHBOARD_TEMPLATE = r"""
     color: #991b1b;
     border-color: #fecaca;
   }
+  /* act = SOLID amber: a human action is pending (audit extract / confirm).
+     ready = PALE OUTLINED amber: file arrived, the system loads it
+     automatically — no action. Previously both rendered identical amber. */
+  .ds-tile.act {
+    background: #f59e0b;
+    color: #451a03;
+    border-color: #b45309;
+  }
   .ds-tile.ready {
-    background: #fef3c7;
+    background: #fffdf4;
     color: #92400e;
-    border-color: #fcd34d;
+    border: 1.5px solid #d9a23b;
   }
   .ds-tile.setup {
     background: #f1f0ec;
@@ -11232,10 +11249,11 @@ DASHBOARD_TEMPLATE = r"""
         <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Files</span>
         <span style="font-size:12px;">B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
         <span style="color:var(--gray-300); margin:0 2px;">·</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="width:16px; height:13px;"></span> <b>In SharePoint</b> — arrived, date shown (audit: extract / confirm)</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="width:16px; height:13px;"></span> <b>In the budget</b> — wizard ingested it, budget built</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="width:16px; height:13px;"></span> <b>Missing / failed</b></span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="width:16px; height:13px;"></span> Setup — not started</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✓</span> <b>In the budget</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile act" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">!</span> <b>Act now</b> — audit needs you (extract / confirm)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">◷</span> <b>Arrived</b> — loads automatically (staged ✓ = data already in)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✕</span> <b>Missing / failed</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">–</span> Setup — not started</span>
         <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
       </div>
       <!-- FA dir 2026-05-22 (Phase 2): SharePoint inventory refresh. Amber
@@ -11743,32 +11761,41 @@ function renderBudgets(budgets) {
     const tiles = TILE_ORDER.map(function (o) {
       const key = o[0], letter = o[1], label = o[2];
       const s = ss[key] || { state: 'missing' };
-      let cls = 'ds-tile miss', sub = '', tip = label + ' — not in SharePoint · chase the file';
+      let cls = 'ds-tile miss', glyph = '✕', sub = '', tip = label + ' — not in SharePoint · chase the file';
       let href = '/wizard/' + b.entity_code + '?step=2&focus=' + key;
       if (s.state === 'in_budget') {
         cls = 'ds-tile ok';
-        sub = (key === 'audit_2025') ? 'conf' : ('✓ ' + (fmtDt(s.date) || ''));
+        glyph = '✓';
+        sub = (key === 'audit_2025') ? 'conf' : (fmtDt(s.date) || '');
         tip = (key === 'audit_2025') ? ('Audit confirmed ' + (fmtDt(s.date) || '')) : (label + ' is in the built budget');
         if (key === 'audit_2025' && au && au.id) href = '/audited-financials/review/' + au.id;
       } else if (s.state === 'needs_review') {
-        cls = 'ds-tile ready';
+        cls = 'ds-tile act';
+        glyph = (s.sub === 'extracting') ? '⟳' : '!';
         sub = s.sub || 'review';
-        tip = (s.sub === 'extract') ? 'Audit PDF ready — click to extract' : 'Audit extracted — click to confirm the mapping';
+        tip = (s.sub === 'extracting') ? 'Extraction running — opens live progress'
+            : (s.sub === 'extract') ? 'Audit PDF ready — click to extract'
+            : 'Audit extracted — click to confirm the mapping';
         if (au && au.id) href = '/audited-financials/review/' + au.id;
       } else if (s.state === 'in_sp') {
         cls = 'ds-tile ready';
-        sub = fmtDt(s.date) ? ('SP ' + fmtDt(s.date)) : 'SP';
-        tip = label + ' in SharePoint' + (fmtDt(s.date) ? ' since ' + fmtDt(s.date) : '') + ' — turns green when the budget is built';
+        glyph = '◷';
+        sub = (s.via === 'staged') ? 'staged ✓' : (fmtDt(s.date) ? ('SP ' + fmtDt(s.date)) : 'SP');
+        tip = (s.via === 'staged')
+            ? (label + ' is staged — data already loaded, turns green when the budget is built')
+            : (label + ' in SharePoint' + (fmtDt(s.date) ? ' since ' + fmtDt(s.date) : '') + ' — loads automatically, turns green when the budget is built');
       } else if (s.state === 'failed') {
+        glyph = '✕';
         sub = 'failed';
         tip = label + ' failed during build — fix the file and rebuild';
       } else if (s.state === 'setup') {
         cls = 'ds-tile setup';
+        glyph = '–';
         sub = '';
         tip = 'Not started';
       }
       return '<a href="' + href + '" class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '" data-focus="' + key + '">' +
-               '<span class="t-letter">' + letter + '</span>' +
+               '<span class="t-letter">' + letter + '<span class="t-glyph">' + glyph + '</span></span>' +
                (sub ? '<span class="t-dt">' + sub + '</span>' : '') +
              '</a>';
     });

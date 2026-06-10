@@ -3620,7 +3620,22 @@ async function uploadAll() {
             # Live progress state: poll until the background worker finishes,
             # then reload into the extracted/review view (or back to uploaded
             # with the error shown if it failed).
+            # Design-review fix (2026-06-10, Jacob-approved): while extracting,
+            # hide the mapping columns + confirm section (an empty mapping
+            # table under a "working" banner reads as broken) and show a
+            # pulsing skeleton instead. The banner's self-poll reloads into
+            # the real mapping when the worker finishes.
+            skel_bar = ('<div class="af-skel" style="width:{w};margin-bottom:10px;"></div>')
+            skel_col = ('<div style="flex:1;background:#fff;border:1px solid #e5e7eb;'
+                        'border-radius:10px;padding:18px;">'
+                        + skel_bar.format(w="40%") + skel_bar.format(w="92%")
+                        + skel_bar.format(w="85%") + skel_bar.format(w="90%")
+                        + skel_bar.format(w="60%") + '</div>')
             status_banner = (
+                '<style>.columns,.confirm-section{display:none !important;}'
+                '@keyframes afPulse{0%,100%{opacity:.35}50%{opacity:.85}}'
+                '.af-skel{height:13px;border-radius:4px;background:#e5e7eb;'
+                'animation:afPulse 1.6s ease-in-out infinite;}</style>'
                 '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #3b82f6;'
                 'border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1e3a8a;">'
                 '&#10227; <b>Extracting&hellip;</b> Claude is reading the statement (~30&ndash;60 seconds). '
@@ -3629,6 +3644,7 @@ async function uploadAll() {
                 'fetch("/api/af/extract-status/' + str(upload_id) + '").then(function(r){return r.json();})'
                 '.then(function(d){if(d.status!=="extracting"){clearInterval(t);location.reload();}})'
                 '.catch(function(){});},4000);})();</script></div>'
+                '<div style="display:flex;gap:16px;">' + skel_col + skel_col + '</div>'
             )
 
         # Audit PDF link — prefer the SharePoint web viewer (durable across
