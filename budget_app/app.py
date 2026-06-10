@@ -6887,6 +6887,11 @@ def _wizard_record_selection(entity_code, source_label_default=None):
         "source": "sharepoint",
     }
     budget.wizard_selections_json = json.dumps(current)
+    # Commit the selection BEFORE the slow parse below (2026-06-10 lock
+    # discipline: the parsers download from SharePoint — holding an
+    # uncommitted budgets-row UPDATE across that network wait keeps a row
+    # lock open for seconds; boot-time ALTERs on budgets queue behind it).
+    db.session.commit()
 
     # ── PARSE-ON-CLICK dispatch (Phase D) ────────────────────────────────────
     # Each source-type click runs its parser immediately so the FA gets feedback
@@ -10504,72 +10509,35 @@ def _build_apply_audit_2025(entity_code, selection):
     db.session.add(upload)
     db.session.flush()  # need upload.id
 
-    # Run Claude extraction
-    extract_fn = af_helpers["extract_from_pdf"]
-    extracted = extract_fn(str(pdf_path), building_name, entity_code=entity_code)
-    if not extracted:
-        raise RuntimeError("Claude extraction returned no data")
-
-    upload.raw_extraction = json.dumps(extracted)
-    upload.status = "extracted"
-    upload.updated_at = _dt.utcnow()
-    # FA dir 2026-05-21: capture auditor firm name from Claude extraction so
-    # the review page can auto-select the matching AuditorProfile.
-    _detected_firm = (extracted.get("auditor_firm") or "").strip() or None
-    if _detected_firm:
-        # Cap to model column width (varchar 255) defensively
-        upload.detected_firm = _detected_firm[:255]
-        # Auto-link to a matching profile if exactly one fuzzy-matches.
-        try:
-            AuditorProfile = af_models["AuditorProfile"]
-            profs = AuditorProfile.query.all()
-            firm_lower = _detected_firm.lower()
-            matches = [p for p in profs
-                       if p.firm_name and (
-                           p.firm_name.lower() == firm_lower
-                           or p.firm_name.lower() in firm_lower
-                           or firm_lower in p.firm_name.lower()
-                       )]
-            if len(matches) == 1:
-                upload.profile_id = matches[0].id
-                logger.info(
-                    f"[audit auto-detect] {entity_code}: auto-linked profile "
-                    f"id={matches[0].id} firm={matches[0].firm_name!r} "
-                    f"(detected={_detected_firm!r})"
-                )
-        except Exception as _e:
-            logger.warning(f"[audit auto-detect] profile match failed for {entity_code}: {_e}")
-
-    # The extracted dict has nested structure: revenue.items (list) and
-    # expenses.categories (list of dicts each containing items list).
-    def _count_items(node):
-        if not node:
-            return 0
-        if isinstance(node, list):
-            return len(node)
-        if isinstance(node, dict):
-            return len(node.get("items") or [])
-        return 0
-    rev_count = _count_items(extracted.get("revenue"))
-    exp_node = extracted.get("expenses") or {}
-    exp_cats = exp_node.get("categories") if isinstance(exp_node, dict) else exp_node
-    exp_count = 0
-    if isinstance(exp_cats, list):
-        for c in exp_cats:
-            exp_count += _count_items(c)
-    elif isinstance(exp_cats, dict):
-        for c in exp_cats.values():
-            exp_count += _count_items(c)
+    # Queue the extraction in the BACKGROUND (2026-06-10 debugging sweep:
+    # this used to run the 30-60s Claude call synchronously inside the
+    # request thread — the exact thread-eater class behind the 2026-06-09
+    # outage. The review-page path was backgrounded that day; this wizard
+    # path wasn't). The internal POST reuses /api/af/extract verbatim
+    # (zero drift): it flips status to 'extracting', spawns the capped
+    # daemon worker, and returns immediately. Firm auto-detect now happens
+    # in the worker.
+    db.session.commit()  # persist the 'uploaded' row before handing off
+    queued = False
+    try:
+        with app.test_client() as _client:
+            _r = _client.post(f"/api/af/extract/{upload.id}")
+            queued = bool((_r.get_json() or {}).get("success"))
+    except Exception as _qe:
+        logger.warning(f"[wizard audit_2025] background queue failed for "
+                       f"upload {upload.id}: {_qe}")
 
     return {
         "source_type": "audit_2025",
         "upload_id": upload.id,
         "filename": filename,
-        "revenue_lines": rev_count,
-        "expense_lines": exp_count,
         "review_url": f"/audited-financials/review/{upload.id}",
-        "status": "extracted",
-        "note": "Open the review URL to assign auditor profile and confirm mapping.",
+        "status": "extracting" if queued else "uploaded",
+        "note": ("Extraction running in the background (~30-60s). Open the "
+                 "review URL — it follows the progress and shows the mapping "
+                 "when done." if queued else
+                 "Staged, but extraction could not be queued — open the "
+                 "review URL and click Extract."),
     }
 
 

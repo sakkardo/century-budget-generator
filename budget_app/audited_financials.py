@@ -4189,6 +4189,16 @@ async function uploadAll() {
                     u2.status = "extracted"
                     u2.extract_error = None
                     u2.updated_at = datetime.utcnow()
+                    # Firm auto-detect (parity with the old sync wizard path,
+                    # moved here 2026-06-10): lets the review page pre-select
+                    # the matching auditor profile.
+                    try:
+                        firm = (extracted.get("auditor_firm") or "").strip() \
+                            if isinstance(extracted, dict) else ""
+                        if firm:
+                            u2.detected_firm = firm[:255]
+                    except Exception:
+                        pass
                     db.session.commit()
                     logger.info(f"Background extract OK for upload {upload_id}")
                 except Exception as e:

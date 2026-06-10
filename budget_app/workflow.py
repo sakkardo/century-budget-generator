@@ -7946,13 +7946,14 @@ def create_workflow_blueprint(db):
             else:
                 est = 0
 
-            # Capital uses a different forecast formula (FA directive 2026-05-05).
-            # Keep accrual_unpaid contribution consistent: col4 = ytd_total - col3,
-            # so the forecast arithmetic ties out (col5 = col3 + col4).
+            # Capital forecast = ytd + accrual + unpaid, no estimate
+            # (FA directive 2026-06-10 — supersedes 2026-05-05's minus sign,
+            # which double-counted accruals that zero out YTD; mirrors the
+            # same-day fix in all four faComputeForecast JS copies).
             if is_capital:
-                line_forecast = ytd - accrual + unpaid
-                # col 4 contribution for capital = forecast − ytd_only = -accrual + unpaid
-                accrual_unpaid_contrib = -accrual + unpaid
+                line_forecast = ytd + accrual + unpaid
+                # col 4 contribution for capital = forecast − ytd_only
+                accrual_unpaid_contrib = accrual + unpaid
             else:
                 line_forecast = ytd_total + est
                 accrual_unpaid_contrib = accrual + unpaid
@@ -8471,11 +8472,12 @@ def create_workflow_blueprint(db):
                 prior = float(line.get("prior_year", 0) or 0)
                 ytd_total = ytd + accrual + unpaid
                 is_cap = _is_capital_line(line)
-                # FA #18 + 2026-05-05 directive: Capital — never extrapolate;
-                # forecast formula flips the accrual sign (see _aggregate_by_prefix).
+                # FA #18 + 2026-06-10 directive: Capital — never extrapolate;
+                # forecast = ytd + accrual + unpaid (sign fix mirrors
+                # _aggregate_by_prefix and the JS copies, same day).
                 if is_cap:
                     est = 0
-                    line_forecast = ytd - accrual + unpaid
+                    line_forecast = ytd + accrual + unpaid
                 # FA #7 anomaly cap: don't extrapolate one-time refund/credit
                 elif ytd_total < 0 and prior >= 0:
                     est = 0
