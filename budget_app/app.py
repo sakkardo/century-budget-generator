@@ -4,6 +4,7 @@ Run: python app.py  |  Open: http://localhost:5000
 """
 import os
 # Restart marker (2026-06-10): cleared wedged extraction threads.
+# Restart marker (2026-06-11): re-trigger Railway rollout of home-page update (01326b6 stalled).
 
 import sys
 import csv
