@@ -2551,6 +2551,17 @@ def create_workflow_blueprint(db):
 
         budgets_db = Budget.query.filter_by(year=BUDGET_YEAR).all()
 
+        # Perf (2026-06-11 audit): one grouped query for "which budgets have
+        # lines", instead of bool(b.lines) inside the loop below — that
+        # lazy-loaded every one of ~150 buildings' full line sets (~30K rows
+        # materialized) per /wizard view. budget_lines(budget_id) is the lead
+        # column of ix_budget_lines_review_state, so this is index-only.
+        _ids_with_lines = {
+            r[0] for r in db.session.execute(db.text(
+                "SELECT DISTINCT budget_id FROM budget_lines"
+            )).fetchall()
+        }
+
         # Build entity list from existing budgets in DB (not CSV)
         entity_list = []
         for b in budgets_db:
@@ -2561,7 +2572,7 @@ def create_workflow_blueprint(db):
                 "wizard_step": b.wizard_step or 0,
                 "wizard_completed_at": b.wizard_completed_at.isoformat() if b.wizard_completed_at else None,
                 "status": b.status or "not_started",
-                "has_lines": bool(b.lines),
+                "has_lines": b.id in _ids_with_lines,
             })
 
         # Load FA users and building assignments for the selector.

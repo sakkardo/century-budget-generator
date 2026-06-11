@@ -432,6 +432,23 @@ def _run_idempotent_migrations():
         "ON build_failures (entity_code, failed_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_build_failures_unresolved "
         "ON build_failures (entity_code) WHERE resolved_at IS NULL",
+        # Perf (2026-06-11 audit): index the foreign keys that hot per-report /
+        # per-budget reads filter on (Postgres does NOT auto-index FKs).
+        # Negligible cost now (small tables) but prevents a seq-scan cliff as
+        # expense_invoices / budget_revisions grow across budget cycles.
+        "CREATE INDEX IF NOT EXISTS ix_expense_invoices_report ON expense_invoices (report_id)",
+        "CREATE INDEX IF NOT EXISTS ix_open_ap_invoices_report ON open_ap_invoices (report_id)",
+        "CREATE INDEX IF NOT EXISTS ix_maint_proof_units_report ON maint_proof_units (report_id)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_revisions_budget ON budget_revisions (budget_id)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_revisions_line ON budget_revisions (budget_line_id)",
+        "CREATE INDEX IF NOT EXISTS ix_budget_revisions_user ON budget_revisions (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_presentation_edits_session ON presentation_edits (session_id)",
+        "CREATE INDEX IF NOT EXISTS ix_presentation_edits_line ON presentation_edits (budget_line_id)",
+        "CREATE INDEX IF NOT EXISTS ix_presentation_sessions_budget ON presentation_sessions (budget_id)",
+        "CREATE INDEX IF NOT EXISTS ix_presentation_sessions_creator ON presentation_sessions (created_by)",
+        "CREATE INDEX IF NOT EXISTS ix_mapping_rules_profile ON mapping_rules (profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_uploads_profile ON audit_uploads (profile_id)",
+        "CREATE INDEX IF NOT EXISTS ix_data_sources_budget ON data_sources (budget_id)",
         # FA dir 2026-06-10 (Jacob, 224/159 Madison): per-building FA decisions
         # on pre-import label-check items. action='ignore' = manual override
         # (label intentionally won't aggregate; excluded from the verdict);
