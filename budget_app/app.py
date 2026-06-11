@@ -3022,7 +3022,17 @@ HOME_TEMPLATE = r"""
 ::-webkit-scrollbar-corner { background: #f1f5f9; }
 * { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f3f1; color: #2d2520; min-height: 100vh; }
+  /* Design tokens — canonical set, see DESIGN.md (2026-06-11). Home is the
+     first adopter; other pages adopt incrementally with the SAME names. */
+  :root {
+    --ink:#2d2520; --ink-2:#4a3f35; --cream:#f5f3f1; --surface:#fff;
+    --surface-warm:#f5f0eb; --tan:#c4b5a6; --tan-muted:#a89888; --label:#8b7b6b;
+    --border:#e8e0d8; --rule:#ddd5cc;
+    --ok:#065f46; --ok-bg:#def7ec; --ok-bd:#a7f3d0;
+    --act-bg:#f59e0b; --act-ink:#451a03; --act-bd:#b45309;
+    --radius:10px; --radius-lg:12px; --radius-sm:6px;
+  }
+  body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--cream); color: var(--ink); min-height: 100vh; }
 
   /* Navbar */
   .navbar { position: sticky; top: 0; z-index: 100; background: #2d2520; padding: 0 40px; display: flex; align-items: center; justify-content: space-between; height: 54px; }
@@ -3083,8 +3093,23 @@ HOME_TEMPLATE = r"""
   .quick-card h4 { font-size: 14px; font-weight: 600; color: #2d2520; margin-bottom: 3px; }
   .quick-card p { font-size: 12px; color: #8b7b6b; line-height: 1.4; }
 
+  /* State-aware CTA banner (2026-06-11) — the home page's single "what do I
+     do next" action, populated from live portfolio readiness. */
+  .home-cta { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: var(--ok-bg); border: 1px solid var(--ok-bd); border-left: 4px solid var(--ok);
+    border-radius: var(--radius-lg); padding: 16px 22px; margin-bottom: 28px; }
+  .home-cta.act { background: #fffdf4; border-color: var(--act-bd); border-left-color: var(--act-bg); }
+  .home-cta .cta-text { font-size: 15px; font-weight: 600; color: var(--ink); }
+  .home-cta .cta-text span { color: var(--label); font-weight: 500; font-size: 13px; }
+  .home-cta a { font-size: 13px; font-weight: 700; color: var(--surface); background: var(--ink);
+    text-decoration: none; padding: 10px 18px; border-radius: var(--radius-sm); white-space: nowrap; transition: opacity 0.15s; }
+  .home-cta a:hover { opacity: 0.88; }
+  /* Live count chip on each phase card */
+  .phase-count { display: inline-block; margin-left: 8px; font-size: 12px; font-weight: 700;
+    color: var(--label); background: var(--surface-warm); border-radius: 999px; padding: 2px 10px; vertical-align: middle; }
+
   /* Footer */
-  .footer { text-align: center; padding: 24px 40px; font-size: 11px; color: #a89888; letter-spacing: 0.5px; border-top: 1px solid #e8e0d8; }
+  .footer { text-align: center; padding: 24px 40px; font-size: 11px; color: var(--tan-muted); letter-spacing: 0.5px; border-top: 1px solid var(--border); }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -3136,25 +3161,18 @@ HOME_TEMPLATE = r"""
 <!-- Main -->
 <div class="main">
 
+  <!-- State-aware next-action banner (populated from /api/budgets) -->
+  <div class="home-cta" id="heroCta" style="display:none;"></div>
+
   <!-- Process Checklist -->
   <div class="section-label">Your Budget Process</div>
   <div class="stepper" id="stepper"></div>
 
-  <!-- Quick Links -->
+  <!-- Quick Links — the three primary destinations (Wizard / Dashboard / PM)
+       live in the phase stepper above; Quick Links holds only the secondary
+       tools, so each destination appears once (2026-06-11). -->
   <div class="section-label">Quick Links</div>
   <div class="quick-grid">
-    <a href="/wizard" class="quick-card">
-      <div class="quick-icon blue">&#x1F9ED;</div>
-      <div><h4>Wizard</h4><p>Readiness tiers across all buildings. See what to build next.</p></div>
-    </a>
-    <a href="/dashboard" class="quick-card">
-      <div class="quick-icon green">&#x1F4C8;</div>
-      <div><h4>FA Dashboard</h4><p>Review status, manage workflow, approve submissions</p></div>
-    </a>
-    <a href="/pm" class="quick-card">
-      <div class="quick-icon amber">&#x1F527;</div>
-      <div><h4>PM Portal</h4><p>R&amp;M budget projections and building-level edits</p></div>
-    </a>
     <a href="/assumptions/workbench" class="quick-card">
       <div class="quick-icon purple">&#x2699;&#xFE0F;</div>
       <div><h4>Assumptions</h4><p>Portfolio defaults and per-building overrides</p></div>
@@ -3223,16 +3241,71 @@ function buildCards(role) {
       '<a href="' + p.link.href + '" class="phase-link">' + p.link.label + ' <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>' +
       '</div>';
   }).join('');
+  applyCounts();
 }
 
+var _counts = null;
+var _role = 'fa';
+
 function switchRole(role) {
+  _role = role;
+  try { localStorage.setItem('cbg_home_role', role); } catch (e) {}
   document.querySelectorAll('.role-btn').forEach(function(b) {
     b.classList.toggle('active', b.dataset.role === role);
   });
   renderStepper(role);
 }
 
-renderStepper('fa');
+// Decorate the stepper + hero CTA with live portfolio counts. FA-only — the
+// counts are portfolio-wide readiness, not a single PM's assigned buildings.
+function applyCounts() {
+  var cta = document.getElementById('heroCta');
+  if (!_counts || _role !== 'fa') { if (cta) cta.style.display = 'none'; return; }
+  var c = _counts;
+  var chips = [c.setup, c.review, c.built];  // Setup / Review / Finalize
+  document.querySelectorAll('#stepper .phase-card').forEach(function(card, i) {
+    var h3 = card.querySelector('h3');
+    if (h3 && !h3.querySelector('.phase-count') && chips[i] != null) {
+      var s = document.createElement('span');
+      s.className = 'phase-count';
+      s.textContent = chips[i];
+      h3.appendChild(s);
+    }
+  });
+  if (cta) {
+    var text, href, urgent = false;
+    if (c.ready > 0) { text = '<span class="cta-text">' + c.ready + ' building' + (c.ready > 1 ? 's' : '') + ' ready to build now</span>'; href = '/dashboard'; }
+    else if (c.review > 0) { text = '<span class="cta-text">' + c.review + ' in progress</span> <span>review &amp; finalize</span>'; href = '/dashboard'; }
+    else if (c.setup > 0) { text = '<span class="cta-text">' + c.setup + ' need setup</span> <span>files or audit</span>'; href = '/wizard'; urgent = true; }
+    else { text = '<span class="cta-text">All ' + (c.built || 0) + ' built &#10003;</span>'; href = '/dashboard'; }
+    cta.className = 'home-cta' + (urgent ? ' act' : '');
+    cta.innerHTML = '<div>' + text + '</div><a href="' + href + '">Open &rarr;</a>';
+    cta.style.display = 'flex';
+  }
+}
+
+function hydrateCounts() {
+  fetch('/api/budgets').then(function(r) { return r.json(); }).then(function(rows) {
+    if (!Array.isArray(rows)) return;
+    var c = { ready: 0, review: 0, built: 0, setup: 0 };
+    rows.forEach(function(b) {
+      var t = (b.readiness && b.readiness.tier) || '';
+      if (t === 'BUILT') c.built++;
+      else if (t === 'READY_TO_BUILD') { c.ready++; c.review++; }
+      else if (t === 'IN_PROGRESS') c.review++;
+      else c.setup++;  // NEEDS_AUDIT / NEEDS_AUDIT_EXTRACT / NEEDS_FILES
+    });
+    _counts = c;
+    applyCounts();
+  }).catch(function() {});
+}
+
+// Restore the last-used role so a PM isn't re-selecting every visit, then
+// render and hydrate live counts.
+try { var _saved = localStorage.getItem('cbg_home_role'); if (_saved === 'pm' || _saved === 'fa') _role = _saved; } catch (e) {}
+document.querySelectorAll('.role-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.role === _role); });
+renderStepper(_role);
+hydrateCounts();
 </script>
 
 </body>
