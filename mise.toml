@@ -1,0 +1,11 @@
+# Build-environment fix (2026-06-11). mise 2026.6.1 (released 2026-06-06) began
+# REQUIRING GitHub artifact attestations for python-build-standalone binaries,
+# which don't publish them -> every Railway build failed at "verify GitHub
+# artifact attestations" for python. mise's own error message prescribes this
+# exact setting. Checksum verification still runs, so the binary is still
+# validated; we only skip the attestation step the upstream artifacts lack.
+[tools]
+python = "3.13.1"
+
+[settings]
+python.github_attestations = false
