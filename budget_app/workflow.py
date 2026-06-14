@@ -6305,6 +6305,19 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "Budget not found"}), 404
         lap("budget_lookup")
 
+        # YTD months actual — drives the Remaining-Projection annualization in
+        # the detail tabs (and the yardi input cell). From the budget assumptions
+        # (budget_period like "2/10"); defaults to 2.
+        export_ytd_months = 2
+        try:
+            import json as _jm
+            _asum = _jm.loads(budget.assumptions_json) if (budget and budget.assumptions_json) else {}
+            _bp = _asum.get("budget_period", "")
+            if "/" in str(_bp):
+                export_ytd_months = int(str(_bp).split("/")[0])
+        except Exception:
+            pass
+
         # ── Find template source ─────────────────────────────────────
         # FA directive 2026-05-17: default back to generic template.
         # SharePoint overlay was attempted but openpyxl load+save on the
@@ -6453,7 +6466,7 @@ def create_workflow_blueprint(db):
             # ── Apply rewrites ────────────────────────────────────
             # Foundational source layer FIRST — every other tab references it.
             try:
-                _export_write_yardi_data(wb, entity_code, budget, edit_log)
+                _export_write_yardi_data(wb, entity_code, budget, edit_log, ytd_months=export_ytd_months)
             except Exception as e:
                 edit_log.append({"sheet": "yardi_data (2)", "error": str(e)[:200]})
                 logger.warning(f"export-excel yardi_data write failed: {traceback.format_exc()[-500:]}")
@@ -6490,6 +6503,14 @@ def create_workflow_blueprint(db):
                     edit_log.append({"sheet": "yrlycomp overlay", "error": str(e)[:200]})
                     logger.warning(f"export-excel yrlycomp overlay failed: {traceback.format_exc()[-500:]}")
             lap("rewrite_budget_summary")
+            # Live RE Taxes tab (co-ops) — defines cbg_re_tax_net used by the
+            # Commercial escalation formula below.
+            try:
+                _export_rewrite_re_taxes(wb, entity_code, budget, edit_log)
+            except Exception as e:
+                edit_log.append({"sheet": "RE Taxes", "error": str(e)[:200]})
+                logger.warning(f"export-excel re-taxes rewrite failed: {traceback.format_exc()[-500:]}")
+            lap("rewrite_re_taxes")
             try:
                 _export_rewrite_comm_rent(wb, entity_code, edit_log)
             except Exception as e:
@@ -6518,14 +6539,19 @@ def create_workflow_blueprint(db):
                             tab_name=tab_name,
                             sheet_filter=sheet_filter,
                             edit_log=edit_log,
+                            ytd_months=export_ytd_months,
                         )
                     except Exception as e:
                         edit_log.append({"sheet": tab_name, "error": str(e)[:200]})
                         logger.warning(f"export-excel {tab_name} rewrite failed: {traceback.format_exc()[-500:]}")
             lap("rewrite_detail_tabs")
 
-            # DRAFT watermark on yrlycomp if budget isn't approved
-            if (budget.status or "").lower() not in ("approved",):
+            # DRAFT watermark on yrlycomp if budget isn't approved.
+            # Generic path: the rebuilt Budget Summary carries its own DRAFT
+            # banner (row 4, no row insert), so we must NOT insert_rows() here —
+            # that would shift every live SUM formula out of alignment. Only the
+            # SharePoint path (untouched existing yrlycomp) still uses it.
+            if is_sharepoint and (budget.status or "").lower() not in ("approved",):
                 try:
                     _export_apply_draft_watermark(wb, edit_log)
                 except Exception as e:
@@ -6556,6 +6582,19 @@ def create_workflow_blueprint(db):
                     "skipped_save": True,
                 })
 
+            # Force Excel to recalculate every formula on open. openpyxl writes
+            # formula strings with NO cached value, and the Railway server has no
+            # LibreOffice to pre-compute — without this a client opening the file
+            # would see blanks/zeros until pressing F9. fullCalcOnLoad makes
+            # desktop Excel + Google Sheets recompute the whole workbook on open.
+            # (A browser / Quick Look preview may still show blanks until the
+            # file is opened in a real calc engine — noted on the cover.)
+            try:
+                wb.calculation.fullCalcOnLoad = True
+                wb.calculation.calcMode = "auto"
+            except Exception as _e:
+                edit_log.append({"action": "fullCalcOnLoad", "error": str(_e)[:120]})
+
             # ── Save + stream ────────────────────────────────────
             wb.save(out_path)
             lap("save")
@@ -6585,7 +6624,7 @@ def create_workflow_blueprint(db):
 
     def _export_rewrite_detail_tab(wb, entity_code, budget, tab_name,
                                     sheet_filter, edit_log=None,
-                                    extra_filter_fn=None):
+                                    extra_filter_fn=None, ytd_months=2):
         """Pass 3+4: rewrite a detail tab from BudgetLine data, presentation
         quality. Tight Calibri typography, alt-row cream banding, thin gray
         borders, real number formats with red parens for negatives.
@@ -6618,19 +6657,19 @@ def create_workflow_blueprint(db):
         FONT_BODY = Font(name="Calibri", size=10, color="1A1714")
         FONT_BODY_MUTED = Font(name="Calibri", size=10, color="8A7E72")
         FONT_HEADER = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-        FONT_TITLE = Font(name="Calibri", size=16, bold=True, color="5A4A3F")
+        FONT_TITLE = Font(name="Calibri", size=16, bold=True, color="001721")
         FONT_SUBTITLE = Font(name="Calibri", size=10, italic=True, color="8A7E72")
-        FONT_SUBTOTAL = Font(name="Calibri", size=10, bold=True, color="064E3B")
+        FONT_SUBTOTAL = Font(name="Calibri", size=10, bold=True, color="001721")
         FONT_INPUT = Font(name="Calibri", size=10, color="065F46")
         FONT_FORMULA = Font(name="Calibri", size=10, color="334155")
 
-        FILL_HEADER = PatternFill(start_color="5A4A3F", end_color="5A4A3F", fill_type="solid")
+        FILL_HEADER = PatternFill(start_color="001721", end_color="001721", fill_type="solid")
         FILL_ALT_ROW = PatternFill(start_color="FAFAF7", end_color="FAFAF7", fill_type="solid")
         FILL_INPUT = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")
-        FILL_SUBTOTAL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
+        FILL_SUBTOTAL = PatternFill(start_color="E3EAEE", end_color="E3EAEE", fill_type="solid")
 
         thin_gray = Side(border_style="thin", color="E5E0D5")
-        medium_brown = Side(border_style="medium", color="5A4A3F")
+        medium_brown = Side(border_style="medium", color="001721")
         ROW_BORDER = Border(bottom=thin_gray)
         HEADER_BORDER = Border(bottom=medium_brown)
         SUBTOTAL_BORDER = Border(top=medium_brown, bottom=medium_brown)
@@ -6696,6 +6735,17 @@ def create_workflow_blueprint(db):
         visible_lines = [l for l in lines if line_has_data(l)]
         skipped_count = len(lines) - len(visible_lines)
 
+        # Per-tab calculation flavor: Capital does NOT extrapolate or propose;
+        # Payroll annualizes on YTD only (accrual/unpaid excluded). These mirror
+        # budget_math exactly so the workbook's live formulas match the app.
+        is_capital = (tab_name or "").strip().lower() == "capital"
+        is_payroll = (tab_name or "").strip().lower() == "payroll"
+        _ym = int(ytd_months or 0)
+        # Live reference to the YTD-months input cell on the yardi sheet, so a
+        # client editing that one cell re-annualizes every detail line.
+        ym_ref = "'yardi_data (2)'!$M$2"
+        import budget_math
+
         r = 6
         for i, l in enumerate(visible_lines):
             alt = (i % 2 == 1)
@@ -6735,24 +6785,77 @@ def create_workflow_blueprint(db):
             set_cell(7, sumif("H"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
             # H: ytd_budget ← yardi col I
             set_cell(8, sumif("I"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # I: Remaining Projection — computed
-            set_cell(9, f"=IFERROR(MAX(0,D{r}-(E{r}+F{r}+G{r})),0)", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # J: 12-Month Forecast — computed
-            set_cell(10, f"=E{r}+F{r}+G{r}+I{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # I: Remaining Projection = (base)/ytd_months × remaining months,
+            #    mirroring budget_math.estimate. Base is YTD-only for Payroll,
+            #    else YTD+Accrual+Unpaid. FA-#7 anomaly cap: zero only when the
+            #    base is negative AND prior year (D) is >= 0 (a one-time refund);
+            #    recurring negatives (prior also < 0) keep extrapolating.
+            base_xpr = f"E{r}" if is_payroll else f"(E{r}+F{r}+G{r})"
+            # Income fixed-forecast pin (Maintenance / Common Charges / Commercial
+            # Rent — GL bases 4010/4020/4030/4040): forecast locks to the approved
+            # budget (K), estimate = budget − YTD, proposed = budget. Mirrors the
+            # dashboard's isFixedToBudgetLine rule so the workbook ties out.
+            _glbase = (l.gl_code or "").split("-")[0].strip()
+            _glfull = (l.gl_code or "").strip()
+            is_fixed = (not is_capital) and (
+                _glbase in FIXED_FORECAST_GL_BASES or _glfull in FIXED_FORECAST_GL_FULL)
+            if is_capital:
+                set_cell(9, 0, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            elif is_fixed:
+                set_cell(9, f"=K{r}-E{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            else:
+                set_cell(9, f"=IFERROR(IF(OR({base_xpr}>=0,D{r}<0),{base_xpr}/{ym_ref}*(12-{ym_ref}),0),0)",
+                         fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # J: 12-Month Forecast — fixed-forecast pins to budget (K), else base+remaining
+            if is_fixed:
+                set_cell(10, f"=K{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            else:
+                set_cell(10, f"={base_xpr}+I{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
             # K: current_budget ← yardi col J
             set_cell(11, sumif("J"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # L: increase_pct — yardi col K (FA-editable INPUT, yellow fill)
-            set_cell(12, f"=IFERROR(SUMIF({yardi}!$A:$A,$A{r},{yardi}!$K:$K),0)",
-                     fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
-            # M: Proposed Budget — yardi col L (FA-editable INPUT)
-            #    If FA hasn't set proposed yet, formula falls back to J*(1+L)
-            set_cell(13,
-                     f"=IF(SUMIF({yardi}!$A:$A,$A{r},{yardi}!$L:$L)<>0,SUMIF({yardi}!$A:$A,$A{r},{yardi}!$L:$L),J{r}*(1+L{r}))",
-                     fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
-            # N: $ Var
-            set_cell(14, f"=M{r}-D{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # O: % Change
-            set_cell(15, f"=IFERROR(M{r}/D{r}-1,0)", fmt=FMT_PERCENT, font=FONT_FORMULA)
+            # L: Increase % — the LIVE driver. Seed it to the rate that
+            #    reproduces this line's stored proposal off its basis (the
+            #    approved budget for fixed-forecast income, else the 12-month
+            #    forecast). So the column ties to the app AND, when a client
+            #    types a new %, Proposed (N) moves. Override (M) is used only
+            #    when there is no basis to drive off (forecast ~ 0).
+            incr_input = float(l.increase_pct or 0)
+            override_val = None
+            if is_fixed:
+                # Fixed-forecast income defaults to the approved budget (N = K),
+                # matching the app. Increase % starts at 0 and can still flex it
+                # (e.g. model a maintenance increase) without diverging at 0%.
+                incr_input = 0.0
+            elif not is_capital:
+                try:
+                    _basis = budget_math.forecast(l.ytd_actual or 0, l.accrual_adj or 0,
+                                                  l.unpaid_bills or 0, l.prior_year or 0,
+                                                  _ym, payroll=is_payroll)
+                    _stored = float(l.proposed_budget) if l.proposed_budget is not None else None
+                    if _stored is not None and abs(_stored) > 0.005:
+                        if abs(_basis) > 0.005:
+                            incr_input = _stored / _basis - 1.0   # back-solve the %
+                        else:
+                            override_val = _stored                # no forecast basis → pin
+                except Exception:
+                    pass
+            set_cell(12, incr_input, fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
+            # M: Proposed $ Override — blank for the normal %-driven case; carries
+            #    a value only when the line has no forecast basis to drive off.
+            set_cell(13, override_val, fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
+            # N: Proposed — Capital pinned to 0; fixed-forecast income =
+            #    budget × (1 + increase %); everything else = forecast ×
+            #    (1 + increase %), or the override when one was needed.
+            if is_capital:
+                set_cell(14, 0, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            elif is_fixed:
+                set_cell(14, f"=K{r}*(1+L{r})", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            else:
+                set_cell(14, f'=IF(M{r}<>"",M{r},J{r}*(1+L{r}))', fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # O: $ Var vs prior
+            set_cell(15, f"=N{r}-D{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # P: % Change
+            set_cell(16, f"=IFERROR(N{r}/D{r}-1,0)", fmt=FMT_PERCENT, font=FONT_FORMULA)
 
             r += 1
 
@@ -6768,7 +6871,7 @@ def create_workflow_blueprint(db):
             ws.cell(row=r, column=1).border = SUBTOTAL_BORDER
             ws.cell(row=r, column=3).fill = FILL_SUBTOTAL
             ws.cell(row=r, column=3).border = SUBTOTAL_BORDER
-            for col_i in [4, 5, 6, 7, 8, 9, 10, 11, 13, 14]:
+            for col_i in [4, 5, 6, 7, 8, 9, 10, 11, 14, 15]:
                 col_letter = chr(64 + col_i)
                 sc = ws.cell(row=r, column=col_i,
                               value=f"=SUM({col_letter}{sub_start}:{col_letter}{sub_end})")
@@ -6777,13 +6880,14 @@ def create_workflow_blueprint(db):
                 sc.alignment = ALIGN_RIGHT
                 sc.number_format = FMT_CURRENCY
                 sc.border = SUBTOTAL_BORDER
-            # L (Increase %) — leave blank in subtotal (it's a per-line rate)
-            l_cell = ws.cell(row=r, column=12)
-            l_cell.fill = FILL_SUBTOTAL
-            l_cell.border = SUBTOTAL_BORDER
-            # O = M/D - 1 for the subtotal
-            o_cell = ws.cell(row=r, column=15,
-                              value=f"=IFERROR(M{r}/D{r}-1,0)")
+            # L (Increase %) + M (Proposed override) — blank in subtotal
+            for _blank_col in (12, 13):
+                bc = ws.cell(row=r, column=_blank_col)
+                bc.fill = FILL_SUBTOTAL
+                bc.border = SUBTOTAL_BORDER
+            # P = Proposed/Prior - 1 for the subtotal
+            o_cell = ws.cell(row=r, column=16,
+                              value=f"=IFERROR(N{r}/D{r}-1,0)")
             o_cell.font = FONT_SUBTOTAL
             o_cell.fill = FILL_SUBTOTAL
             o_cell.alignment = ALIGN_RIGHT
@@ -6791,15 +6895,27 @@ def create_workflow_blueprint(db):
             o_cell.border = SUBTOTAL_BORDER
 
         # ── Column widths + row heights ──────────────────────────
-        widths = {"A": 12, "B": 38, "C": 22,
+        widths = {"A": 12, "B": 38, "C": 20,
                   "D": 14, "E": 14, "F": 11, "G": 11, "H": 14,
                   "I": 14, "J": 16, "K": 14, "L": 10,
-                  "M": 15, "N": 14, "O": 11}
+                  "M": 14, "N": 15, "O": 14, "P": 11}
         for col, w in widths.items():
             ws.column_dimensions[col].width = w
 
         # Freeze
         ws.freeze_panes = "D6"
+
+        # Variance data-bars on $ Var (O) and % Change (P): bar length shows
+        # magnitude, direction shows sign (positive right / negative left).
+        if r > 6:
+            try:
+                from openpyxl.formatting.rule import DataBarRule
+                for _col in ("O", "P"):
+                    ws.conditional_formatting.add(
+                        f"{_col}6:{_col}{r-1}",
+                        DataBarRule(start_type="min", end_type="max", color="001721"))
+            except Exception:
+                pass
 
         if edit_log is not None:
             edit_log.append({
@@ -6902,7 +7018,7 @@ def create_workflow_blueprint(db):
             })
 
 
-    def _export_write_yardi_data(wb, entity_code, budget, edit_log=None):
+    def _export_write_yardi_data(wb, entity_code, budget, edit_log=None, ytd_months=2):
         """Foundational source-layer tab. One row per BudgetLine, all values
         hardcoded. Every other tab in the workbook references this tab via
         SUMIF/SUMIFS — so when an FA opens the Excel and edits a cell here,
@@ -6930,7 +7046,7 @@ def create_workflow_blueprint(db):
         FONT_HEADER = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
         FONT_BODY = Font(name="Calibri", size=10, color="1A1714")
         FONT_BODY_MUTED = Font(name="Calibri", size=9, color="8A7E72")
-        FILL_HEADER = PatternFill(start_color="5A4A3F", end_color="5A4A3F", fill_type="solid")
+        FILL_HEADER = PatternFill(start_color="001721", end_color="001721", fill_type="solid")
         FILL_ALT = PatternFill(start_color="FAFAF7", end_color="FAFAF7", fill_type="solid")
         thin = Side(border_style="thin", color="E5E0D5")
         ROW_BORDER = Border(bottom=thin)
@@ -6938,7 +7054,7 @@ def create_workflow_blueprint(db):
 
         # Title
         ws.cell(row=1, column=1, value="Yardi Data — Source Layer").font = Font(
-            name="Calibri", size=14, bold=True, color="5A4A3F"
+            name="Calibri", size=14, bold=True, color="001721"
         )
         ws.cell(row=2, column=1,
                 value=f"Entity {entity_code} · {len(lines)} GL line(s) · Every other tab references this data via SUMIF formulas"
@@ -6952,15 +7068,13 @@ def create_workflow_blueprint(db):
                    "Unpaid\nBills",
                    f"{BUDGET_YEAR-1}\nYTD Budget",
                    f"{BUDGET_YEAR-1}\nCurrent Budget",
-                   "Increase\n%",
-                   f"{BUDGET_YEAR}\nProposed",
                    "Notes"]
         for col_i, h in enumerate(headers, start=1):
             c = ws.cell(row=4, column=col_i, value=h)
             c.font = FONT_HEADER
             c.fill = FILL_HEADER
             c.alignment = Alignment(
-                horizontal="right" if col_i >= 5 and col_i <= 12 else "left",
+                horizontal="right" if 5 <= col_i <= 10 else "left",
                 vertical="center", wrap_text=True,
             )
             c.border = ROW_BORDER
@@ -6997,10 +7111,11 @@ def create_workflow_blueprint(db):
             cell(8, float(l.unpaid_bills) if l.unpaid_bills else None, fmt=FMT_CURRENCY)
             cell(9, float(l.ytd_budget) if l.ytd_budget else None, fmt=FMT_CURRENCY)
             cell(10, float(l.current_budget) if l.current_budget else None, fmt=FMT_CURRENCY)
-            cell(11, float(l.increase_pct) if l.increase_pct else None,
-                 fmt="0.0%;[Red]-0.0%")
-            cell(12, float(l.proposed_budget) if l.proposed_budget else None, fmt=FMT_CURRENCY)
-            cell(13, l.notes or "",
+            # Increase% and Proposed are intentionally NOT stored here anymore.
+            # They live on the detail tabs (Increase% as an editable input,
+            # Proposed as a formula) so there is a single source of truth and
+            # every computed value flows from the raw leaf inputs via formulas.
+            cell(11, l.notes or "",
                  font=FONT_BODY_MUTED,
                  align=Alignment(horizontal="left", vertical="center", wrap_text=True))
             r += 1
@@ -7008,9 +7123,21 @@ def create_workflow_blueprint(db):
         # Column widths
         widths = {"A": 14, "B": 36, "C": 16, "D": 14,
                   "E": 14, "F": 14, "G": 12, "H": 12, "I": 14, "J": 14,
-                  "K": 10, "L": 14, "M": 24}
+                  "K": 24}
         for col, w in widths.items():
             ws.column_dimensions[col].width = w
+
+        # Workbook assumption input: YTD months actual. The detail tabs'
+        # Remaining-Projection formulas reference this exact cell
+        # ('yardi_data (2)'!$M$2), so editing it re-annualizes every line.
+        ws.cell(row=1, column=13, value="YTD months actual (input):").font = Font(
+            name="Calibri", size=10, bold=True, color="001721")
+        ym_cell = ws.cell(row=2, column=13, value=int(ytd_months or 0))
+        ym_cell.fill = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")
+        ym_cell.font = Font(name="Calibri", size=12, bold=True, color="065F46")
+        ym_cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions["M"].width = 18
+
         ws.freeze_panes = "C5"
 
         # Hide this tab by default — FAs don't usually need to see raw data.
@@ -7029,8 +7156,15 @@ def create_workflow_blueprint(db):
         FA directive 2026-05-17 (presentation quality).
         """
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-        from openpyxl.comments import Comment
-        # Find + replace existing
+        from openpyxl.drawing.image import Image as XLImage
+        from pathlib import Path as _P
+
+        # Century brand (sourced from centuryny.com): navy wordmark + red mark.
+        NAVY = "001721"; RED = "DE1C23"; INK = "1A1714"; MUTED = "7A8791"
+        TINT = "F2F5F6"; RULE = "D7DEE2"
+        MONEY = '_($* #,##0_);_($* (#,##0);_($* "-"??_);_(@_)'
+
+        # Find + replace existing cover
         old_index = None
         old_name = None
         for i, name in enumerate(wb.sheetnames):
@@ -7043,106 +7177,157 @@ def create_workflow_blueprint(db):
 
         building_name = (budget.building_name if budget else entity_code) or entity_code
         status = (budget.status if budget else None) or "draft"
+        approved = status.lower() in ("approved", "fa_approved")
         gen_stamp = datetime.utcnow().strftime("%B %d, %Y")
 
-        FONT_HUGE = Font(name="Calibri", size=36, bold=True, color="5A4A3F")
-        FONT_BIG = Font(name="Calibri", size=20, color="5A4A3F")
-        FONT_LABEL = Font(name="Calibri", size=10, bold=True, color="8A7E72")
-        FONT_VAL = Font(name="Calibri", size=12, color="1A1714")
-        FONT_FOOT = Font(name="Calibri", size=9, italic=True, color="8A7E72")
-        FONT_DRAFT = Font(name="Calibri", size=14, bold=True, color="9A3412")
+        for col, w in {"A": 3, "B": 20, "C": 20, "D": 20, "E": 20, "F": 20, "G": 3}.items():
+            ws.column_dimensions[col].width = w
+        ws.sheet_view.showGridLines = False
 
-        # Column widths for centered look
-        ws.column_dimensions["A"].width = 4
-        ws.column_dimensions["B"].width = 18
-        ws.column_dimensions["C"].width = 50
-        ws.column_dimensions["D"].width = 4
-
-        # Top breathing space
-        for r in range(1, 6):
-            ws.row_dimensions[r].height = 18
-
-        # Brand row 6
-        brand = ws.cell(row=6, column=2, value="CENTURY MANAGEMENT")
-        brand.font = Font(name="Calibri", size=10, bold=True, color="8A7E72")
-        ws.merge_cells(start_row=6, start_column=2, end_row=6, end_column=3)
-        # Subtle brand stripe
-        for c in range(2, 4):
-            ws.cell(row=7, column=c).border = Border(bottom=Side(border_style="medium", color="5A4A3F"))
-
-        # Title rows 9-10
-        ws.row_dimensions[8].height = 12
-        title = ws.cell(row=9, column=2, value="Operating Budget")
-        title.font = FONT_HUGE
-        ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=3)
-        ws.row_dimensions[9].height = 46
-
-        year_cell = ws.cell(row=10, column=2, value=f"Fiscal Year {BUDGET_YEAR}")
-        year_cell.font = FONT_BIG
-        ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=3)
-        ws.row_dimensions[10].height = 28
-
-        # DRAFT marker if not approved
-        ws.row_dimensions[11].height = 12
-        if status.lower() not in ("approved", "fa_approved"):
-            d = ws.cell(row=12, column=2, value="DRAFT  —  Not yet approved")
-            d.font = FONT_DRAFT
-            d.fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
-            ws.merge_cells(start_row=12, start_column=2, end_row=12, end_column=3)
-            ws.row_dimensions[12].height = 30
-
-        # Building info block (rows 15-21)
-        info_pairs = [
-            ("Building", building_name),
-            ("Entity Code", entity_code),
-        ]
+        # ── Logo (dark navy wordmark on the white cover) ─────────
         try:
-            BuildingInfo = workflow_models.get("BuildingInfo") if "workflow_models" in globals() else None
-            if BuildingInfo:
-                bi = BuildingInfo.query.filter_by(entity_code=entity_code).first()
-                if bi:
-                    addr_parts = []
-                    if getattr(bi, "address", None): addr_parts.append(bi.address)
-                    if getattr(bi, "city", None): addr_parts.append(bi.city)
-                    if addr_parts: info_pairs.append(("Address", ", ".join(addr_parts)))
-                    btype = getattr(bi, "building_type", None)
-                    if btype: info_pairs.append(("Building Type", btype))
+            lp = _P(__file__).parent / "brand" / "century_logo_dark.png"
+            if lp.exists():
+                img = XLImage(str(lp))
+                try:
+                    from PIL import Image as _PILImg
+                    with _PILImg.open(str(lp)) as _pi:
+                        _iw, _ih = _pi.size
+                    tw = 280
+                    img.width = tw
+                    img.height = max(40, int(_ih * tw / _iw))
+                except Exception:
+                    img.width = 280; img.height = 60
+                ws.add_image(img, "B2")
+        except Exception:
+            pass
+        for rr0 in range(1, 6):
+            ws.row_dimensions[rr0].height = 16
+
+        # Tagline + red brand rule
+        tg = ws.cell(row=6, column=2, value="A New York Property Management Company")
+        tg.font = Font(name="Calibri", size=10, color=MUTED)
+        ws.merge_cells(start_row=6, start_column=2, end_row=6, end_column=6)
+        for c in range(2, 7):
+            ws.cell(row=7, column=c).border = Border(bottom=Side(border_style="thick", color=RED))
+        ws.row_dimensions[7].height = 6
+
+        # Title block
+        ws.row_dimensions[8].height = 10
+        t = ws.cell(row=9, column=2, value="Operating Budget")
+        t.font = Font(name="Calibri", size=34, bold=True, color=NAVY)
+        ws.merge_cells(start_row=9, start_column=2, end_row=9, end_column=6)
+        ws.row_dimensions[9].height = 44
+        bn = ws.cell(row=10, column=2, value=building_name)
+        bn.font = Font(name="Calibri", size=18, color=NAVY)
+        ws.merge_cells(start_row=10, start_column=2, end_row=10, end_column=6)
+        ws.row_dimensions[10].height = 26
+        fy = ws.cell(row=11, column=2, value=f"Fiscal Year {BUDGET_YEAR}  ·  Entity {entity_code}")
+        fy.font = Font(name="Calibri", size=12, color=MUTED)
+        ws.merge_cells(start_row=11, start_column=2, end_row=11, end_column=6)
+        ws.row_dimensions[11].height = 22
+
+        if not approved:
+            d = ws.cell(row=12, column=2, value="DRAFT — not yet board-approved")
+            d.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+            d.fill = PatternFill(start_color=RED, end_color=RED, fill_type="solid")
+            d.alignment = Alignment(horizontal="center", vertical="center")
+            ws.merge_cells(start_row=12, start_column=2, end_row=12, end_column=3)
+            ws.row_dimensions[12].height = 22
+
+        # ── KPI cards (live: reference the summary's total cells) ─
+        kpis = [("Total revenue", '=IFERROR(cbg_income,"")'),
+                ("Total expenses", '=IFERROR(cbg_expenses,"")'),
+                ("Net operating", '=IFERROR(cbg_netop,"")'),
+                ("Total surplus", '=IFERROR(cbg_surplus,"")')]
+        kcol = 2
+        for klabel, kformula in kpis:
+            lc = ws.cell(row=14, column=kcol, value=klabel.upper())
+            lc.font = Font(name="Calibri", size=9, bold=True, color=MUTED)
+            lc.fill = PatternFill(start_color=TINT, end_color=TINT, fill_type="solid")
+            lc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            vc = ws.cell(row=15, column=kcol, value=kformula)
+            vc.font = Font(name="Calibri", size=15, bold=True, color=NAVY)
+            vc.number_format = MONEY
+            vc.fill = PatternFill(start_color=TINT, end_color=TINT, fill_type="solid")
+            vc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            kcol += 1
+        ws.row_dimensions[14].height = 18
+        ws.row_dimensions[15].height = 30
+
+        # ── Building details ─────────────────────────────────────
+        info_pairs = [("Entity code", entity_code)]
+        try:
+            bi = BuildingInfo.query.filter_by(entity_code=entity_code).first()
+            if bi:
+                parts = []
+                if getattr(bi, "address", None): parts.append(bi.address)
+                if getattr(bi, "city", None): parts.append(bi.city)
+                if parts: info_pairs.append(("Address", ", ".join(parts)))
+                if getattr(bi, "building_type", None): info_pairs.append(("Type", bi.building_type))
         except Exception:
             pass
         info_pairs.append(("Status", status.replace("_", " ").title()))
-        info_pairs.append(("Generated", gen_stamp))
+        info_pairs.append(("Prepared", gen_stamp))
 
-        r = 15
+        ws.cell(row=17, column=2, value="BUILDING").font = Font(name="Calibri", size=9, bold=True, color=RED)
+        rr = 18
         for label, value in info_pairs:
-            lc = ws.cell(row=r, column=2, value=label.upper())
-            lc.font = FONT_LABEL
-            lc.alignment = Alignment(horizontal="left", vertical="center")
-            vc = ws.cell(row=r, column=3, value=value)
-            vc.font = FONT_VAL
-            vc.alignment = Alignment(horizontal="left", vertical="center")
-            # Thin gray underline
-            for c in range(2, 4):
-                ws.cell(row=r, column=c).border = Border(
-                    bottom=Side(border_style="thin", color="E5E0D5")
-                )
-            ws.row_dimensions[r].height = 22
-            r += 1
+            lc = ws.cell(row=rr, column=2, value=label.upper())
+            lc.font = Font(name="Calibri", size=9, bold=True, color=MUTED)
+            vc = ws.cell(row=rr, column=3, value=str(value))
+            vc.font = Font(name="Calibri", size=11, color=INK)
+            ws.merge_cells(start_row=rr, start_column=3, end_row=rr, end_column=6)
+            for c in range(2, 7):
+                ws.cell(row=rr, column=c).border = Border(bottom=Side(border_style="thin", color=RULE))
+            ws.row_dimensions[rr].height = 20
+            rr += 1
 
-        # Footer
-        ws.row_dimensions[r + 4].height = 12
-        footer = ws.cell(row=r + 5, column=2,
-                         value="Generated by Century Budget Manager.  All amounts reflect the live product database at the time of export.")
-        footer.font = FONT_FOOT
-        ws.merge_cells(start_row=r + 5, start_column=2, end_row=r + 5, end_column=3)
+        # ── Contents (hyperlinks to the always-present sheets) ───
+        rr += 1
+        ws.cell(row=rr, column=2, value="CONTENTS").font = Font(name="Calibri", size=9, bold=True, color=RED)
+        rr += 1
+        for nm in ["Budget Summary", "Income", "Payroll", "Energy", "Water & Sewer",
+                   "Repairs & Supplies", "Gen & Admin", "Capital"]:
+            hc = ws.cell(row=rr, column=2, value=f'=HYPERLINK("#\'{nm}\'!A1","{nm}")')
+            hc.font = Font(name="Calibri", size=11, color="185FA5", underline="single")
+            ws.merge_cells(start_row=rr, start_column=2, end_row=rr, end_column=4)
+            ws.row_dimensions[rr].height = 18
+            rr += 1
 
-        # Make cover the first/active sheet
-        ws.sheet_view.showGridLines = False
-        ws.sheet_view.zoomScale = 100
+        # ── How to read it (legend) ──────────────────────────────
+        rr += 1
+        ws.cell(row=rr, column=2, value="HOW TO READ THIS WORKBOOK").font = Font(name="Calibri", size=9, bold=True, color=RED)
+        rr += 1
+        legend = [("Editable input", "FFF7DA", "9A3412", "Type over these (Increase %, assumptions) and everything recalculates."),
+                  ("Calculated", "FFFFFF", "334155", "A live formula — recalculates from the inputs and raw data."),
+                  ("Subtotal / total", "E3EAEE", NAVY, "SUM and net formulas; no need to edit these directly."),
+                  ("Imported actuals", "FFFFFF", INK, "Prior-year, audited 2025, and approved budget — source figures.")]
+        for nm, fill, fontc, desc in legend:
+            sw = ws.cell(row=rr, column=2, value=nm)
+            sw.font = Font(name="Calibri", size=10, bold=True, color=fontc)
+            sw.fill = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
+            sw.alignment = Alignment(horizontal="center", vertical="center")
+            _b = Side(border_style="thin", color=RULE)
+            sw.border = Border(top=_b, bottom=_b, left=_b, right=_b)
+            dc = ws.cell(row=rr, column=3, value=desc)
+            dc.font = Font(name="Calibri", size=10, color=INK)
+            ws.merge_cells(start_row=rr, start_column=3, end_row=rr, end_column=6)
+            ws.row_dimensions[rr].height = 18
+            rr += 1
+
+        # ── Footnote ─────────────────────────────────────────────
+        rr += 1
+        fn = ws.cell(row=rr, column=2,
+                     value="Figures populate when opened in Excel or Google Sheets; a quick browser preview may show blanks until the file is opened. Generated by Century Budget Manager from the live database.")
+        fn.font = Font(name="Calibri", size=9, italic=True, color=MUTED)
+        fn.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.merge_cells(start_row=rr, start_column=2, end_row=rr + 2, end_column=6)
+
         ws.print_options.horizontalCentered = True
-        ws.print_options.verticalCentered = True
 
         if edit_log is not None:
-            edit_log.append({"sheet": ws.title, "action": "cover_rebuilt"})
+            edit_log.append({"sheet": ws.title, "action": "cover_rebuilt_branded"})
 
 
     def _export_apply_polish(wb, edit_log=None):
@@ -7158,8 +7343,10 @@ def create_workflow_blueprint(db):
         # fill from product data). RE Taxes + Insurance Schedule have
         # template structure but no product-populated values today; once
         # those data sources are wired (Phase 5) we'll remove from this list.
+        # "re taxes" is no longer force-hidden — _export_rewrite_re_taxes makes
+        # it visible (co-ops, live formulas) or hides it itself (non-co-ops).
         ALWAYS_HIDE = {"setup", "contents", "exp-pie",
-                       "re taxes", "insurance schedule"}
+                       "insurance schedule"}
 
         hidden = []
         kept = []
@@ -7209,7 +7396,9 @@ def create_workflow_blueprint(db):
                 # Print: landscape, fit-to-page width
                 ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
                 ws.page_setup.fitToWidth = 1
-                ws.page_setup.fitToHeight = 0
+                # Presentation pages (cover + dashboard) fit on ONE page so charts
+                # never split or clip; data sheets fit width and flow tall.
+                ws.page_setup.fitToHeight = 1 if name.lower().strip() in ("at a glance", "dashboard", "cover sheet") else 0
                 ws.sheet_properties.pageSetUpPr.fitToPage = True
                 ws.page_margins.left = 0.4
                 ws.page_margins.right = 0.4
@@ -7219,6 +7408,13 @@ def create_workflow_blueprint(db):
                 ws.page_margins.footer = 0.3
                 # Center horizontally
                 ws.print_options.horizontalCentered = True
+                # Footer + repeating header rows on print (skip the cover page)
+                low = name.lower().strip()
+                if low not in ("cover sheet", "cov", "cover"):
+                    ws.oddFooter.left.text = "&D"
+                    ws.oddFooter.center.text = "CONFIDENTIAL  —  Prepared for the Board"
+                    ws.oddFooter.right.text = "Page &P of &N"
+                    ws.print_title_rows = "1:5"
             except Exception:
                 continue
 
@@ -7247,16 +7443,16 @@ def create_workflow_blueprint(db):
         FA directive 2026-05-15 Phase 2 polish.
         """
         TAB_COLORS = [
-            ("budget summary", "5A4A3F"),    # brown — primary
-            ("yrlycomp",       "5A4A3F"),
-            ("summary",        "5A4A3F"),
-            ("cover sheet",    "5A4A3F"),
-            ("cov",            "5A4A3F"),
+            ("budget summary", "001721"),    # brown — primary
+            ("yrlycomp",       "001721"),
+            ("summary",        "001721"),
+            ("cover sheet",    "001721"),
+            ("cov",            "001721"),
             ("setup",          "8A7E72"),    # neutral
             ("contents",       "8A7E72"),
             ("income",         "16A34A"),    # green — income
             ("comm rent",      "16A34A"),
-            ("bud",            "5A4A3F"),
+            ("bud",            "001721"),
             ("payroll",        "9A3412"),    # orange — expense detail
             ("pyrl",           "9A3412"),
             ("energy",         "9A3412"),
@@ -7272,7 +7468,7 @@ def create_workflow_blueprint(db):
             ("insurance",      "9A3412"),
             ("mortgage",       "9A3412"),
             ("cap",            "1E40AF"),    # blue — capital
-            ("exp-pie",        "5A4A3F"),
+            ("exp-pie",        "001721"),
             ("vlookup",        "8A7E72"),
             ("yardi",          "8A7E72"),
             ("maint proof",    "8A7E72"),
@@ -7393,27 +7589,27 @@ def create_workflow_blueprint(db):
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
 
         # ── Style tokens (presentation quality) ──────────────────
-        FONT_TITLE = Font(name="Calibri", size=18, bold=True, color="5A4A3F")
+        FONT_TITLE = Font(name="Calibri", size=18, bold=True, color="001721")
         FONT_SUBTITLE = Font(name="Calibri", size=10, italic=True, color="8A7E72")
         FONT_HEADER = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
         FONT_BODY = Font(name="Calibri", size=10, color="1A1714")
         FONT_BODY_MUTED = Font(name="Calibri", size=9, color="8A7E72")
         FONT_SECTION = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-        FONT_SUBTOTAL = Font(name="Calibri", size=10, bold=True, color="064E3B")
+        FONT_SUBTOTAL = Font(name="Calibri", size=10, bold=True, color="001721")
         FONT_GRAND = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         FONT_INPUT = Font(name="Calibri", size=10, color="065F46", bold=True)
         FONT_FORMULA = Font(name="Calibri", size=10, color="334155")
 
-        FILL_HEADER = PatternFill(start_color="5A4A3F", end_color="5A4A3F", fill_type="solid")
+        FILL_HEADER = PatternFill(start_color="001721", end_color="001721", fill_type="solid")
         FILL_SECTION = PatternFill(start_color="8A7E72", end_color="8A7E72", fill_type="solid")
         FILL_ALT_ROW = PatternFill(start_color="FAFAF7", end_color="FAFAF7", fill_type="solid")
         FILL_INPUT = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")
-        FILL_SUBTOTAL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
-        FILL_GRAND = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+        FILL_SUBTOTAL = PatternFill(start_color="E3EAEE", end_color="E3EAEE", fill_type="solid")
+        FILL_GRAND = PatternFill(start_color="001721", end_color="001721", fill_type="solid")
 
         thin_gray = Side(border_style="thin", color="E5E0D5")
-        med_brown = Side(border_style="medium", color="5A4A3F")
-        thick_navy = Side(border_style="medium", color="1E3A5F")
+        med_brown = Side(border_style="medium", color="001721")
+        thick_navy = Side(border_style="medium", color="001721")
         ROW_BORDER = Border(bottom=thin_gray)
         HEADER_BORDER = Border(bottom=med_brown)
         SUBTOTAL_BORDER = Border(top=med_brown, bottom=med_brown)
@@ -7463,6 +7659,90 @@ def create_workflow_blueprint(db):
                                      vertical="center", wrap_text=True)
             c.border = HEADER_BORDER
         ws.row_dimensions[5].height = 36
+
+        # ── DRAFT banner (row 4, no row insert) when not yet board-approved.
+        #    Writing it here instead of insert_rows() keeps the live SUM
+        #    formulas below from being shifted out of alignment.
+        if not (budget and (budget.status or "").lower() == "approved"):
+            _d = ws.cell(row=4, column=1,
+                         value=f"DRAFT — not yet board-approved. Generated {datetime.utcnow().strftime('%b %d, %Y')}.")
+            _d.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+
+        # ── Live-formula scaffolding ──────────────────────────────
+        # Walk rows in order: accumulate the data rows since the last subtotal
+        # (_block) and remember each subtotal's Excel row by category (_subcell).
+        # Section totals = SUM of their block; Net Operating and Total Surplus
+        # reference the recorded subtotal cells. No static aggregate is written.
+        # Works for both the sectioned and flat summary layouts (no dependence
+        # on the `section` field).
+        _block = []
+        _subcell = {}
+        _exp_first = None   # first/last Excel row of the contiguous expense
+        _exp_last = None    # data block — used to anchor the charts
+
+        def _subtotal_cat(lbl):
+            s = (lbl or "").lower()
+            if "net operating" in s: return "netop"
+            if "surplus" in s or "deficit" in s: return "grand"
+            if "non" in s and "income" in s: return "noi"
+            if "non" in s and "expense" in s: return "noe"
+            if "income" in s: return "income"
+            if "expense" in s: return "expenses"
+            return None
+
+        def _subtotal_formula(col_letter, cat):
+            if cat == "netop":
+                inc, exp = _subcell.get("income"), _subcell.get("expenses")
+                return f"={col_letter}{inc}-{col_letter}{exp}" if (inc and exp) else None
+            if cat == "grand":
+                netop = _subcell.get("netop")
+                if netop:
+                    base = f"={col_letter}{netop}"
+                else:
+                    inc, exp = _subcell.get("income"), _subcell.get("expenses")
+                    base = f"={col_letter}{inc}-{col_letter}{exp}" if (inc and exp) else None
+                if base is None:
+                    return None
+                if _subcell.get("noi"): base += f"+{col_letter}{_subcell['noi']}"
+                if _subcell.get("noe"): base += f"-{col_letter}{_subcell['noe']}"
+                return base
+            if _block:
+                return "=SUM(" + ",".join(f"{col_letter}{rr}" for rr in _block) + ")"
+            return None
+
+        # GL head (4-digit) -> set of detail tab names holding it, so Summary
+        # rows SUMIFS over the DETAIL TABS (live, client-editable) by GL prefix.
+        _detail_tab_names = {"Income", "Payroll", "Energy", "Water & Sewer",
+                             "Repairs & Supplies", "Gen & Admin", "Capital", "Unmapped"}
+        _prefix_to_sheets = {}
+        try:
+            for _bl in (BudgetLine.query.filter_by(budget_id=budget.id).all() if budget else []):
+                _gc = (_bl.gl_code or "").strip()
+                _sn = (_bl.sheet_name or "").strip()
+                if not _gc or _sn not in _detail_tab_names:
+                    continue
+                _hd = _gc.split("-")[0][:4]
+                if _hd:
+                    _prefix_to_sheets.setdefault(_hd, set()).add(_sn)
+        except Exception:
+            _prefix_to_sheets = {}
+
+        # 2025 Actual (col2) is audit-sourced (not GL-summable, not stored on the
+        # row). Reuse the dashboard's exact computation (api_summary_get) so the
+        # workbook's 2025 column ties to the app. Also keep col3/4/5 as a static
+        # fallback for rows that have no detail-tab home. Heavy-ish but one call
+        # per export; failure degrades gracefully (col2 blank, col3-5 still live).
+        _pl_by_order = {}
+        try:
+            _resp = api_summary_get(entity_code)
+            _pl = _resp.get_json() if hasattr(_resp, "get_json") else None
+            if isinstance(_pl, dict):
+                for _pr in (_pl.get("rows") or []):
+                    _do = _pr.get("display_order")
+                    if _do is not None:
+                        _pl_by_order[_do] = _pr
+        except Exception:
+            _pl_by_order = {}
 
         # ── Data rows ────────────────────────────────────────────
         r = 6
@@ -7536,10 +7816,11 @@ def create_workflow_blueprint(db):
                     cell.fill = row_fill
                 cell.border = row_border
 
-            # Build SUMIFS formula by GL prefix list from product (e.g.,
-            # ["4030", "4040"] → sum yardi rows where gl_code starts with
-            # either prefix). For subtotal rows, sum the data rows above.
-            yardi = "'yardi_data (2)'"
+            # ── Numbers ──────────────────────────────────────────
+            # Data rows SUMIFS over the DETAIL TABS by GL prefix (their Proposed
+            # cells are the live, client-editable values, so a detail-tab edit
+            # flows up here). Subtotals SUM the section's data rows; Net Op /
+            # Total Surplus reference the recorded subtotal cells.
             prefixes = []
             if not is_subtotal and row.gl_prefixes_json:
                 try:
@@ -7548,74 +7829,112 @@ def create_workflow_blueprint(db):
                         prefixes = [str(p).strip() for p in parsed if p]
                 except Exception:
                     pass
-
-            # Fallback: some Budget Summary rows have no gl_prefixes_json on
-            # the DB record but DO have a clean 1:1 GL mapping in the building's
-            # yardi data. Map by label so the Excel stays formula-driven instead
-            # of falling back to a hard-coded value. Add new entries here as
-            # discovered. Rows legitimately not GL-driven (Prior Year Surplus,
-            # Flip Tax/Transfer Fees from audited financials, Commercial Rent
-            # Escalations from the Comm Rent feature) are intentionally omitted.
+            # Label-only fallback for rows with a clean 1:1 GL but no stored
+            # prefixes. Rows legitimately not GL-driven (Prior Year Surplus,
+            # Flip Tax, Commercial Escalations) are intentionally omitted and
+            # keep their stored value.
             LABEL_PREFIX_FALLBACK = {
                 "cable tv": ["4250-0010"],
             }
             if not is_subtotal and not prefixes:
-                key = (row_label or "").strip().lower()
-                if key in LABEL_PREFIX_FALLBACK:
-                    prefixes = LABEL_PREFIX_FALLBACK[key]
+                _k = (row_label or "").strip().lower()
+                if _k in LABEL_PREFIX_FALLBACK:
+                    prefixes = LABEL_PREFIX_FALLBACK[_k]
 
-            def prefix_sumifs(yardi_col):
-                """Build SUMIFS('yardi'!col, 'yardi'!A:A, "PREFIX*") + ... for each prefix."""
+            def detail_sumifs(detail_col):
+                """SUM of SUMIFS over each (detail tab, prefix). Returns None if
+                any prefix has no detail-tab home, so the caller keeps the stored
+                value (correct, just not a formula)."""
                 if not prefixes:
                     return None
-                parts = [
-                    f'SUMIFS({yardi}!${yardi_col}:${yardi_col},{yardi}!$A:$A,"{p}*")'
-                    for p in prefixes
-                ]
-                return "=" + "+".join(parts)
+                terms = []
+                for p in prefixes:
+                    hd = str(p).split("-")[0][:4]
+                    sheets = [s for s in (_prefix_to_sheets.get(hd) or set())
+                              if s in _detail_tab_names]
+                    if not sheets:
+                        # This one prefix has no detail-tab line (no data) — it
+                        # contributes 0, so SKIP it rather than dropping the
+                        # whole (often multi-prefix) row to blank.
+                        continue
+                    for s in sheets:
+                        terms.append(f"SUMIFS('{s}'!${detail_col}:${detail_col},'{s}'!$A:$A,\"{p}*\")")
+                return ("=" + "+".join(terms)) if terms else None
 
-            # C: col1_prior_actual — formula from yardi col E
+            def prefix_sumifs_yardi(yardi_col):
+                """Historical columns (Prior, Approved budget) come from the raw
+                yardi sheet by prefix. These aren't client-editable drivers, and
+                yardi holds EVERY line, so this stays live + complete even for
+                GLs that have no detail-tab home."""
+                if not prefixes:
+                    return None
+                yd = "'yardi_data (2)'"
+                return "=" + "+".join(
+                    f'SUMIFS({yd}!${yardi_col}:${yardi_col},{yd}!$A:$A,"{p}*")'
+                    for p in prefixes)
+
             if is_subtotal:
-                write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
+                _cat = _subtotal_cat(row_label)
+                # A subtotal is always computed → a SUM / Net / Surplus formula.
+                # Only the two true import columns (C 2024 actual, H approved
+                # budget) may fall back to their stored import value if the
+                # formula can't be built; every other column stays blank rather
+                # than a static computed number.
+                _IMPORT = {3: "col1_prior_actual", 8: "col6_approved_budget"}
+                for _ci, _cl in ((3, "C"), (4, "D"), (5, "E"), (6, "F"),
+                                 (7, "G"), (8, "H"), (9, "I")):
+                    _f = _subtotal_formula(_cl, _cat)
+                    if _f:
+                        write_num(_ci, _f, formula=True)
+                    elif _ci in _IMPORT:
+                        _sv = getattr(row, _IMPORT[_ci], None)
+                        write_num(_ci, float(_sv) if _sv is not None else None)
+                    else:
+                        write_num(_ci, None)
+                if _cat:
+                    _subcell[_cat] = r
             else:
-                formula = prefix_sumifs("E")
-                if formula:
-                    write_num(3, formula, formula=True)
+                _plr = _pl_by_order.get(row.display_order, {})
+                # C: 2024 prior actual ← yardi col E by prefix (historical, complete)
+                _f = prefix_sumifs_yardi("E")
+                if _f:
+                    write_num(3, _f, formula=True)
                 else:
                     write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
-
-            # D-G: col2-col5 (no product source on Summary; leave blank)
-            for col_i in [4, 5, 6, 7]:
-                cell = ws.cell(row=r, column=col_i)
-                cell.number_format = FMT_CURRENCY
-                cell.alignment = ALIGN_RIGHT
-                if row_fill: cell.fill = row_fill
-                cell.border = row_border
-
-            # H: col6_approved_budget — formula from yardi col J
-            if is_subtotal:
-                write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
-            else:
-                formula = prefix_sumifs("J")
-                if formula:
-                    write_num(8, formula, formula=True)
+                # D: 2025 Actual (col2) — audit-sourced static, matches the dashboard
+                _c2 = _plr.get("col2")
+                if _c2 is None and row.col2_override is not None:
+                    _c2 = row.col2_override
+                write_num(4, float(_c2) if _c2 is not None else None)
+                # E/F/G: 2026 YTD / Estimate / Forecast — live SUMIFS over the
+                # detail tabs (YTD col E, Remaining col I, Forecast col J). These
+                # are COMPUTED, so each is a formula or blank — never a static
+                # number. A row with no detail-tab GL home has no projection.
+                _fe, _ff, _fg = detail_sumifs("E"), detail_sumifs("I"), detail_sumifs("J")
+                write_num(5, _fe if _fe else None, formula=bool(_fe))
+                write_num(6, _ff if _ff else None, formula=bool(_ff))
+                write_num(7, _fg if _fg else None, formula=bool(_fg))
+                # H: approved/current budget ← yardi col J by prefix (historical)
+                _f = prefix_sumifs_yardi("J")
+                if _f:
+                    write_num(8, _f, formula=True)
                 else:
                     write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
-
-            # I: col7_proposed_budget — formula from yardi col L
-            #    Subtotals stay as stored values; data rows are live.
-            if is_subtotal:
-                write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
-                          is_input=False)
-            else:
-                formula = prefix_sumifs("L")
-                if formula:
-                    write_num(9, formula, formula=False, is_input=True)
+                # I: proposed ← detail col N (the live, client-editable Proposed cell)
+                _f = detail_sumifs("N")
+                if _f:
+                    write_num(9, _f, formula=True)
                 else:
                     write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
                               is_input=True)
+                _block.append(r)
+                _sec = (row.section or "").lower()
+                if "expense" in _sec and "non" not in _sec:
+                    if _exp_first is None:
+                        _exp_first = r
+                    _exp_last = r
 
-            # J: % variance formula
+            # J: % variance (Proposed vs Approved Budget)
             vc = ws.cell(row=r, column=10, value=f"=IFERROR((I{r}-H{r})/H{r},0)")
             vc.number_format = FMT_PERCENT
             vc.alignment = ALIGN_RIGHT
@@ -7626,6 +7945,8 @@ def create_workflow_blueprint(db):
             if is_subtotal:
                 ws.row_dimensions[r].height = 22
             r += 1
+            if is_subtotal:
+                _block = []
 
         # ── Column widths ────────────────────────────────────────
         ws.column_dimensions["A"].width = 14
@@ -7635,6 +7956,306 @@ def create_workflow_blueprint(db):
         ws.column_dimensions["J"].width = 11
 
         ws.freeze_panes = "C6"
+
+        # Defined names for the cover's live KPI cards. Workbook-scoped, so they
+        # resolve at open time regardless of sheet build order. Point at the
+        # grand-total + section-total Proposed cells (and Approved for variance).
+        try:
+            from openpyxl.workbook.defined_name import DefinedName
+            def _dn(nm, cell):
+                try:
+                    if nm in wb.defined_names:
+                        del wb.defined_names[nm]
+                except Exception:
+                    pass
+                wb.defined_names[nm] = DefinedName(nm, attr_text=f"'{new_title}'!{cell}")
+            if _subcell.get("income"):
+                _dn("cbg_income",      f"$I${_subcell['income']}")
+                _dn("cbg_income_appr", f"$H${_subcell['income']}")
+            if _subcell.get("expenses"):
+                _dn("cbg_expenses",      f"$I${_subcell['expenses']}")
+                _dn("cbg_expenses_appr", f"$H${_subcell['expenses']}")
+            if _subcell.get("netop"):
+                _dn("cbg_netop",      f"$I${_subcell['netop']}")
+                _dn("cbg_netop_appr", f"$H${_subcell['netop']}")
+            if _subcell.get("grand"):
+                _dn("cbg_surplus",      f"$I${_subcell['grand']}")
+                _dn("cbg_surplus_appr", f"$H${_subcell['grand']}")
+        except Exception:
+            pass
+
+        # ── Native charts (live: reference the summary cells, redraw on edit) ──
+        # Anchored to the right of the table over the contiguous expense block:
+        # a doughnut (proposed expense mix) + a prior-vs-proposed column chart.
+        try:
+            if _exp_first and _exp_last and _exp_last >= _exp_first + 1:
+                from openpyxl.chart import DoughnutChart, BarChart, Reference
+                cats = Reference(ws, min_col=2, min_row=_exp_first, max_row=_exp_last)
+                dough = DoughnutChart()
+                dough.title = f"{BUDGET_YEAR} proposed expense mix"
+                dough.add_data(Reference(ws, min_col=9, min_row=_exp_first, max_row=_exp_last),
+                               titles_from_data=False)
+                dough.set_categories(cats)
+                dough.height = 7.2
+                dough.width = 12.5
+                ws.add_chart(dough, "L2")
+                bar = BarChart()
+                bar.type = "col"
+                bar.title = "Prior actual vs proposed"
+                bar.add_data(Reference(ws, min_col=3, min_row=_exp_first, max_row=_exp_last),
+                             titles_from_data=False)
+                bar.add_data(Reference(ws, min_col=9, min_row=_exp_first, max_row=_exp_last),
+                             titles_from_data=False)
+                bar.set_categories(cats)
+                try:
+                    bar.series[0].graphicalProperties.solidFill = "9AA7AF"
+                    bar.series[1].graphicalProperties.solidFill = "001721"
+                    bar.x_axis.delete = False; bar.y_axis.delete = False
+                    bar.y_axis.majorGridlines = None
+                    bar.y_axis.numFmt = '"$"#,##0'
+                    bar.legend.position = "b"
+                except Exception:
+                    pass
+                bar.height = 7.2
+                bar.width = 12.5
+                ws.add_chart(bar, "L18")
+        except Exception as _ce:
+            if edit_log is not None:
+                edit_log.append({"sheet": new_title, "chart_error": str(_ce)[:120]})
+
+        # ── Variance data-bars on the Summary %Var column ────────
+        try:
+            from openpyxl.formatting.rule import DataBarRule
+            if r > 6:
+                ws.conditional_formatting.add(
+                    f"J6:J{r-1}",
+                    DataBarRule(start_type="min", end_type="max", color="001721"))
+        except Exception:
+            pass
+
+        # ── Four-year trend (helper table + column chart) on the Summary ─────
+        inc = _subcell.get("income"); exp = _subcell.get("expenses")
+        net = _subcell.get("netop") or _subcell.get("grand")
+        try:
+            from openpyxl.chart import BarChart, Reference
+            if inc and exp:
+                ht = 50
+                for j, yl in enumerate([BUDGET_YEAR-3, BUDGET_YEAR-2, BUDGET_YEAR-1, BUDGET_YEAR]):
+                    ws.cell(row=ht, column=13+j, value=str(yl)).font = Font(name="Calibri", size=9, color="7A8791")
+                for i, (lab, srow) in enumerate([("Revenue", inc), ("Expenses", exp), ("Net", net)]):
+                    if not srow:
+                        continue
+                    ws.cell(row=ht+1+i, column=12, value=lab).font = Font(name="Calibri", size=9, color="1A1714")
+                    for j, colL in enumerate(["C", "D", "H", "I"]):
+                        ws.cell(row=ht+1+i, column=13+j, value=f"=${colL}${srow}").number_format = FMT_CURRENCY
+                tr = BarChart(); tr.type = "col"
+                tr.title = f"Revenue · Expenses · Net  ({BUDGET_YEAR-3} → {BUDGET_YEAR})"
+                tr.add_data(Reference(ws, min_col=12, max_col=16, min_row=ht+1, max_row=ht+3),
+                            titles_from_data=True, from_rows=True)
+                tr.set_categories(Reference(ws, min_col=13, max_col=16, min_row=ht))
+                try:
+                    tr.series[0].graphicalProperties.solidFill = "001721"
+                    tr.series[1].graphicalProperties.solidFill = "9AA7AF"
+                    tr.series[2].graphicalProperties.solidFill = "DE1C23"
+                    tr.x_axis.delete = False; tr.y_axis.delete = False
+                    tr.y_axis.majorGridlines = None
+                    tr.y_axis.numFmt = '"$"#,##0'
+                    tr.legend.position = "b"
+                except Exception:
+                    pass
+                tr.height = 7.2; tr.width = 15
+                ws.add_chart(tr, "L34")
+        except Exception:
+            pass
+
+        # ── "At a Glance" executive tab (inserted right after the cover) ─────
+        try:
+            from openpyxl.chart import DoughnutChart, BarChart, Reference
+            from openpyxl.chart.label import DataLabelList
+            from pathlib import Path as _P2
+            NAVY = "001721"; RED = "DE1C23"; MUTED = "7A8791"; INKc = "1A1714"; CARDB = "DCE3E7"
+            MONEY = '_($* #,##0_);_($* (#,##0);_($* "-"??_);_(@_)'
+            for _n in list(wb.sheetnames):
+                if _n.lower().strip() in ("at a glance", "dashboard"):
+                    del wb[_n]
+            dws = wb.create_sheet("At a Glance", index=1)
+            dws.sheet_view.showGridLines = False
+            # Card columns B/D/F/H with thin spacers C/E/G
+            for col, w in {"A": 2, "B": 22, "C": 2, "D": 22, "E": 2, "F": 22, "G": 2, "H": 22, "I": 2}.items():
+                dws.column_dimensions[col].width = w
+
+            # ── Header band (rows 1-3) navy + light logo + title; red rule row 4
+            for rr0 in range(1, 4):
+                for c in range(1, 10):
+                    dws.cell(row=rr0, column=c).fill = PatternFill(start_color=NAVY, end_color=NAVY, fill_type="solid")
+            dws.row_dimensions[1].height = 8; dws.row_dimensions[2].height = 26; dws.row_dimensions[3].height = 14
+            try:
+                from openpyxl.drawing.image import Image as _XLImg
+                _lp = _P2(__file__).parent / "brand" / "century_logo_light.png"
+                if _lp.exists():
+                    _im = _XLImg(str(_lp))
+                    try:
+                        from PIL import Image as _PI
+                        with _PI.open(str(_lp)) as _p:
+                            _iw, _ih = _p.size
+                        _im.width = 150; _im.height = max(22, int(_ih * 150 / _iw))
+                    except Exception:
+                        _im.width = 150; _im.height = 30
+                    dws.add_image(_im, "B2")
+            except Exception:
+                pass
+            tt = dws.cell(row=2, column=8, value=building_name)
+            tt.font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+            tt.alignment = Alignment(horizontal="right", vertical="center")
+            dws.merge_cells(start_row=2, start_column=5, end_row=2, end_column=8)
+            tt2 = dws.cell(row=3, column=8, value=f"{BUDGET_YEAR} Operating Budget · At a Glance")
+            tt2.font = Font(name="Calibri", size=10, color="C4CCD1")
+            tt2.alignment = Alignment(horizontal="right", vertical="top")
+            dws.merge_cells(start_row=3, start_column=5, end_row=3, end_column=8)
+            for c in range(1, 10):
+                dws.cell(row=4, column=c).fill = PatternFill(start_color=RED, end_color=RED, fill_type="solid")
+            dws.row_dimensions[4].height = 3
+
+            # ── KPI cards (accent bar row 6, label 7, big number 8, delta 9) ──
+            up_good = '[Green]"▲ "0.0%;[Red]"▼ "0.0%'   # increase favorable
+            up_bad  = '[Red]"▲ "0.0%;[Green]"▼ "0.0%'   # increase unfavorable (expenses)
+            def _delta(cur, appr):
+                # % vs approved budget; blank when approved is ~0, and "n/m" when
+                # the swing is off-the-charts (a draft proposal not yet refined
+                # toward budget — avoids nonsense like ▼45057%).
+                return (f'=IF(ABS({appr})<100,"",IF(ABS(({cur}-{appr})/{appr})>5,'
+                        f'"n/m",({cur}-{appr})/{appr}))')
+            cards = [("TOTAL REVENUE",  '=IFERROR(cbg_income,"")',   _delta("cbg_income", "cbg_income_appr"),     NAVY, up_good),
+                     ("TOTAL EXPENSES", '=IFERROR(cbg_expenses,"")', _delta("cbg_expenses", "cbg_expenses_appr"), NAVY, up_bad),
+                     ("NET OPERATING",  '=IFERROR(cbg_netop,"")',    _delta("cbg_netop", "cbg_netop_appr"),       RED, up_good),
+                     ("TOTAL SURPLUS",  '=IFERROR(cbg_surplus,"")',  _delta("cbg_surplus", "cbg_surplus_appr"),   NAVY, up_good)]
+            dws.row_dimensions[6].height = 3
+            dws.row_dimensions[7].height = 15
+            dws.row_dimensions[8].height = 30
+            dws.row_dimensions[9].height = 16
+            for idx, (lab, vf, df, accent, dfmt) in enumerate(cards):
+                cc = 2 + idx * 2  # B, D, F, H
+                ab = dws.cell(row=6, column=cc)
+                ab.fill = PatternFill(start_color=accent, end_color=accent, fill_type="solid")
+                lc = dws.cell(row=7, column=cc, value=lab)
+                lc.font = Font(name="Calibri", size=9, bold=True, color=MUTED)
+                lc.alignment = Alignment(indent=1, vertical="center")
+                vc = dws.cell(row=8, column=cc, value=vf)
+                vc.font = Font(name="Calibri", size=16, bold=True, color=NAVY)
+                vc.number_format = MONEY
+                vc.alignment = Alignment(indent=1, vertical="center")
+                dc = dws.cell(row=9, column=cc, value=df)
+                dc.font = Font(name="Calibri", size=10, color=MUTED)
+                dc.number_format = dfmt
+                dc.alignment = Alignment(indent=1, vertical="center")
+                # card border (rows 6-9)
+                for rr1 in range(6, 10):
+                    cell = dws.cell(row=rr1, column=cc)
+                    cell.border = Border(
+                        left=Side(style="thin", color=CARDB),
+                        right=Side(style="thin", color=CARDB),
+                        top=(Side(style="thin", color=CARDB) if rr1 == 6 else None),
+                        bottom=(Side(style="thin", color=CARDB) if rr1 == 9 else None))
+
+            def _section(rrow, text):
+                s = dws.cell(row=rrow, column=2, value=text)
+                s.font = Font(name="Calibri", size=10, bold=True, color=NAVY)
+                for c in range(2, 9):
+                    dws.cell(row=rrow, column=c).border = Border(bottom=Side(style="medium", color=RED))
+
+            # ── Four-year trend (full-width column chart) ────────────
+            _section(11, "FOUR-YEAR TREND")
+            ht = 62  # helper table, parked low/right and out of the way
+            for j, yl in enumerate([BUDGET_YEAR-3, BUDGET_YEAR-2, BUDGET_YEAR-1, BUDGET_YEAR]):
+                dws.cell(row=ht, column=13+j, value=str(yl))
+            for i, (lab, srow) in enumerate([("Revenue", inc), ("Expenses", exp), ("Net", net)]):
+                if not srow:
+                    continue
+                dws.cell(row=ht+1+i, column=12, value=lab)
+                for j, colL in enumerate(["C", "D", "H", "I"]):
+                    dws.cell(row=ht+1+i, column=13+j, value=f"='{new_title}'!${colL}${srow}").number_format = '"$"#,##0'
+            if inc and exp:
+                tb = BarChart(); tb.type = "col"; tb.title = None
+                tb.add_data(Reference(dws, min_col=12, max_col=16, min_row=ht+1, max_row=ht+3),
+                            titles_from_data=True, from_rows=True)
+                tb.set_categories(Reference(dws, min_col=13, max_col=16, min_row=ht))
+                try:
+                    tb.series[0].graphicalProperties.solidFill = NAVY
+                    tb.series[1].graphicalProperties.solidFill = "9AA7AF"
+                    tb.series[2].graphicalProperties.solidFill = RED
+                    tb.x_axis.delete = False; tb.y_axis.delete = False
+                    tb.y_axis.majorGridlines = None
+                    tb.y_axis.numFmt = '"$"#,##0'
+                    tb.legend.position = "b"
+                except Exception:
+                    pass
+                tb.height = 7.5; tb.width = 19
+                dws.add_chart(tb, "B12")
+
+            # ── Expense mix doughnut (references the summary expense block) ──
+            _section(30, f"{BUDGET_YEAR} EXPENSE MIX")
+            if _exp_first and _exp_last and _exp_last >= _exp_first + 1:
+                dg = DoughnutChart(); dg.title = None
+                dg.add_data(Reference(ws, min_col=9, min_row=_exp_first, max_row=_exp_last), titles_from_data=False)
+                dg.set_categories(Reference(ws, min_col=2, min_row=_exp_first, max_row=_exp_last))
+                try:
+                    dg.holeSize = 62
+                    dg.legend.position = "r"
+                except Exception:
+                    pass
+                dg.height = 7.5; dg.width = 18
+                dws.add_chart(dg, "B31")
+
+            # ── Biggest changes vs approved (data-bar table) ─────────
+            movers = []
+            for _pr in _pl_by_order.values():
+                if _pr.get("row_type") != "data":
+                    continue
+                ch = (_pr.get("col7") or 0) - (_pr.get("col6") or 0)
+                if abs(ch) < 0.5:
+                    continue
+                _isinc = "income" in (_pr.get("section") or "").lower()
+                fav = (ch > 0) if _isinc else (ch < 0)
+                movers.append((_pr.get("label") or "", ch, fav))
+            movers.sort(key=lambda t: abs(t[1]), reverse=True)
+            _section(49, "BIGGEST CHANGES VS APPROVED BUDGET")
+            mr = 50
+            for lab, ch, fav in movers[:6]:
+                nm = dws.cell(row=mr, column=2, value=lab)
+                nm.font = Font(name="Calibri", size=11, color=INKc)
+                dws.merge_cells(start_row=mr, start_column=2, end_row=mr, end_column=3)
+                # magnitude column (F) drives the data bar; number itself hidden
+                mag = dws.cell(row=mr, column=6, value=float(abs(ch)))
+                mag.number_format = ';;;'
+                ac = dws.cell(row=mr, column=8, value=float(ch))
+                ac.number_format = MONEY
+                ac.font = Font(name="Calibri", size=11, bold=True, color=("15803D" if fav else "991B1B"))
+                ac.alignment = Alignment(horizontal="right")
+                for c in range(2, 9):
+                    dws.cell(row=mr, column=c).border = Border(bottom=Side(style="thin", color="EEF1F3"))
+                mr += 1
+            if mr > 50:
+                try:
+                    from openpyxl.formatting.rule import DataBarRule
+                    dws.conditional_formatting.add(
+                        f"F50:F{mr-1}",
+                        DataBarRule(start_type="min", end_type="max", color=RED))
+                except Exception:
+                    pass
+
+            ft = dws.cell(row=mr + 2, column=2,
+                          value="CONFIDENTIAL — Prepared for the Board · Generated by Century Budget Manager · Figures recalculate live in Excel.")
+            ft.font = Font(name="Calibri", size=9, italic=True, color=MUTED)
+            dws.merge_cells(start_row=mr + 2, start_column=2, end_row=mr + 2, end_column=8)
+            dws.print_options.horizontalCentered = True
+            # Print only the visible board area (cols A-I); the trend helper
+            # table lives out in cols L-P and must not print.
+            dws.print_area = "A1:I60"
+            if edit_log is not None:
+                edit_log.append({"sheet": "At a Glance", "movers": len(movers[:6])})
+        except Exception as _de:
+            if edit_log is not None:
+                edit_log.append({"sheet": "At a Glance", "error": str(_de)[:160]})
 
         if edit_log is not None:
             data_rows = sum(1 for x in rows if x.row_type == "data")
@@ -7686,7 +8307,7 @@ def create_workflow_blueprint(db):
         ).order_by(CommercialTenant.sort_order, CommercialTenant.id).all()
 
         # Styling tokens
-        TITLE_FONT = Font(name="Plus Jakarta Sans", size=14, bold=True, color="5A4A3F")
+        TITLE_FONT = Font(name="Plus Jakarta Sans", size=14, bold=True, color="001721")
         SECTION_FONT = Font(name="Plus Jakarta Sans", size=11, bold=True, color="9A3412")
         TENANT_FONT = Font(name="Plus Jakarta Sans", size=12, bold=True)
         HEADER_FONT = Font(name="Plus Jakarta Sans", size=10, bold=True, color="8A7E72")
@@ -7819,19 +8440,27 @@ def create_workflow_blueprint(db):
                     bc = ws.cell(row=r, column=5, value=float(base))
                     bc.number_format = "$#,##0"
                     stamp(bc)
-                # Escalation amount (server-computed snapshot — Pass 2 will
-                # author a real formula that references the relevant
-                # current-year RE Tax / OpEx cell elsewhere in the workbook)
-                computed = _commercial_compute_escalations(entity_code)
-                amt = next((e["amount"] for e in computed if e["tenant_id"] == t.id), 0)
-                ac = ws.cell(row=r, column=6, value=float(amt))
+                # Escalation Due — LIVE formula: share × max(0, current basis −
+                # base year). re_tax model → current RE tax (cbg_re_tax_net from
+                # the RE Taxes tab); opex model → total operating expenses
+                # (cbg_expenses from the Summary). Server snapshot only as a
+                # fallback when neither basis name resolves.
+                _emodel = (t.escalation_model or "").lower()
+                _ebasis = ("cbg_re_tax_net" if _emodel == "re_tax"
+                           else "cbg_expenses" if _emodel == "opex" else None)
+                if _ebasis:
+                    ac = ws.cell(row=r, column=6,
+                                 value=f"=MAX(0,IFERROR({_ebasis},0)-E{r})*D{r}")
+                else:
+                    computed = _commercial_compute_escalations(entity_code)
+                    amt = next((e["amount"] for e in computed if e["tenant_id"] == t.id), 0)
+                    ac = ws.cell(row=r, column=6, value=float(amt))
                 ac.number_format = "$#,##0"
                 ac.fill = TOTAL_FILL
                 ac.font = Font(bold=True)
                 ac.comment = Comment(
-                    f"Computed by Century Budget product: ({(t.escalation_model or 'none')}) "
-                    f"base = {base}, share = {t.tenant_share_pct}. "
-                    f"Pass 2 will replace this with a live Excel formula.",
+                    f"Escalation = share × max(0, current {(_emodel or 'basis')} − base year). "
+                    f"Live — recomputes if the basis or base year changes.",
                     "Century Product",
                 )
                 r += 1
@@ -7867,6 +8496,130 @@ def create_workflow_blueprint(db):
                 "tenants": len(tenants),
                 "with_escalation": len(active_escalation_tenants),
             })
+
+
+    def _export_rewrite_re_taxes(wb, entity_code, budget, edit_log=None):
+        """Build a LIVE Real Estate Taxes tab from compute_re_taxes (co-ops with
+        DOF data). Blue input cells (AVs, rates, exemptions, op-assessment %)
+        drive the formula cells (half-taxes, gross, net), so flexing an
+        assumption recomputes the net tax. Defines `cbg_re_tax_net` for the
+        Commercial escalation formula. Non-co-ops / no DOF: leave the tab hidden.
+        """
+        from openpyxl.styles import PatternFill, Font, Alignment
+        import json as _json
+        ws = None; idx = None
+        for i, nm in enumerate(wb.sheetnames):
+            if nm.lower().strip() in ("re taxes", "re tax", "real estate taxes"):
+                idx = i; ws = wb[nm]; break
+        try:
+            from dof_taxes import is_coop, compute_re_taxes
+        except ImportError:
+            from budget_app.dof_taxes import is_coop, compute_re_taxes
+        try:
+            _coop = is_coop(entity_code)
+        except Exception:
+            _coop = False
+        if not _coop:
+            if ws is not None:
+                ws.sheet_state = "hidden"
+            return
+        _ov = None
+        try:
+            if budget and budget.assumptions_json:
+                _ov = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
+        except Exception:
+            _ov = None
+        try:
+            rt = compute_re_taxes(entity_code, _ov or {})
+        except Exception as _e:
+            if edit_log is not None:
+                edit_log.append({"sheet": "RE Taxes", "error": str(_e)[:120]})
+            if ws is not None:
+                ws.sheet_state = "hidden"
+            return
+        if not rt or abs(float(rt.get("gross_tax") or 0)) < 1:
+            if ws is not None:
+                ws.sheet_state = "hidden"
+            return
+
+        name = ws.title if ws is not None else "RE Taxes"
+        if ws is not None:
+            del wb[name]
+        ws = wb.create_sheet(name, index=idx if idx is not None else None)
+        ws.sheet_state = "visible"
+        ws.sheet_view.showGridLines = False
+        NAVY = "001721"; RED = "DE1C23"; MUTED = "7A8791"
+        INPUT_FILL = "FFF7DA"; INPUT_FONT = "065F46"
+        MONEY = '_($* #,##0_);_($* (#,##0);_($* "-"??_);_(@_)'
+        PCT = "0.000%"
+        for col, w in {"A": 2, "B": 34, "C": 16, "D": 13, "E": 16}.items():
+            ws.column_dimensions[col].width = w
+
+        def lbl(row, text, col=2, size=10, bold=False, color="1A1714"):
+            c = ws.cell(row=row, column=col, value=text)
+            c.font = Font(name="Calibri", size=size, bold=bold, color=color)
+            return c
+
+        def inp(row, val, col=3, fmt=MONEY):
+            c = ws.cell(row=row, column=col, value=val)
+            c.number_format = fmt
+            c.font = Font(name="Calibri", size=11, bold=True, color=INPUT_FONT)
+            c.fill = PatternFill(start_color=INPUT_FILL, end_color=INPUT_FILL, fill_type="solid")
+            c.alignment = Alignment(horizontal="right")
+            return c
+
+        def fml(row, formula, col=3, fmt=MONEY, bold=False):
+            c = ws.cell(row=row, column=col, value=formula)
+            c.number_format = fmt
+            c.font = Font(name="Calibri", size=(12 if bold else 11), bold=bold,
+                          color=(NAVY if bold else "334155"))
+            c.alignment = Alignment(horizontal="right")
+            return c
+
+        ws.cell(row=1, column=2, value="Real Estate Taxes").font = Font(name="Calibri", size=16, bold=True, color=NAVY)
+        ws.cell(row=2, column=2,
+                value=f"{(budget.building_name if budget else entity_code) or entity_code} · Entity {entity_code} · FY {BUDGET_YEAR}"
+                ).font = Font(name="Calibri", size=10, italic=True, color=MUTED)
+        lbl(4, "FIRST HALF (Jul–Dec)", bold=True, size=9, color=RED)
+        lbl(5, "Assessed value (transitional)"); inp(5, round(float(rt.get("assessed_value") or 0)))
+        lbl(6, "Tax rate"); inp(6, float(rt.get("tax_rate") or 0), fmt=PCT)
+        lbl(7, "First-half tax", bold=True, size=11, color=NAVY); fml(7, "=C5*C6/2", bold=True)
+        lbl(9, "SECOND HALF (Jan–Jun)", bold=True, size=9, color=RED)
+        lbl(10, "Est. assessed value"); inp(10, round(float(rt.get("est_assessed_value") or 0)))
+        lbl(11, "Est. tax rate"); inp(11, float(rt.get("est_tax_rate") or 0), fmt=PCT)
+        lbl(12, "Second-half tax", bold=True, size=11, color=NAVY); fml(12, "=C10*C11/2", bold=True)
+        lbl(14, "Gross tax", bold=True, size=12, color=NAVY); fml(14, "=C7+C12", bold=True)
+        lbl(16, "EXEMPTIONS", bold=True, size=9, color=RED)
+        for _c, _t in ((3, "Current"), (4, "Growth"), (5, "Budget")):
+            ws.cell(row=16, column=_c, value=_t).font = Font(name="Calibri", size=9, bold=True, color=MUTED)
+        exns = rt.get("exemptions") or {}
+        ex_rows = []
+        er = 17
+        for key, disp in (("veteran", "Veteran"), ("sche", "SCHE"), ("star", "STAR"), ("coop_abatement", "Co-op abatement")):
+            ex = exns.get(key) or {}
+            lbl(er, disp)
+            inp(er, round(float(ex.get("current_year") or 0)), col=3)
+            inp(er, float(ex.get("growth_pct") or 0), col=4, fmt="0.0%")
+            fml(er, f"=C{er}*(1+D{er})", col=5)
+            ex_rows.append(er); er += 1
+        lbl(er, "Total exemptions", bold=True, size=11, color=NAVY)
+        fml(er, f"=SUM(E{ex_rows[0]}:E{ex_rows[-1]})", col=5, bold=True)
+        tot_ex_row = er; er += 2
+        lbl(er, "NET REAL ESTATE TAX", bold=True, size=12, color=NAVY)
+        fml(er, f"=C14-E{tot_ex_row}", bold=True)
+        net_row = er; er += 2
+        lbl(er, "Operating assessment %"); inp(er, float(rt.get("operating_assessment_pct") or 0.175), fmt="0.0%")
+        opct_row = er; er += 1
+        lbl(er, "Operating assessment"); fml(er, f"=C7*2*C{opct_row}")
+        try:
+            from openpyxl.workbook.defined_name import DefinedName
+            if "cbg_re_tax_net" in wb.defined_names:
+                del wb.defined_names["cbg_re_tax_net"]
+            wb.defined_names["cbg_re_tax_net"] = DefinedName("cbg_re_tax_net", attr_text=f"'{name}'!$C${net_row}")
+        except Exception:
+            pass
+        if edit_log is not None:
+            edit_log.append({"sheet": name, "action": "re_taxes_live", "net_row": net_row})
 
 
     # ─── Budget Summary API ──────────────────────────────────────────────
