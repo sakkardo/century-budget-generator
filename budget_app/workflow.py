@@ -26553,9 +26553,10 @@ function _payrollFlashCell(cellKey) {
 
 const PAYROLL_GL_GROUPS = [
   {key: 'wages', label: 'Wages', glPrefixes: ['5105']},
-  {key: 'payroll_taxes', label: 'Payroll Taxes', glPrefixes: ['5140','5145']},
+  // FA #23 (2026-06-13): PFL (5168) belongs under Payroll Taxes, not Other Payroll.
+  {key: 'payroll_taxes', label: 'Payroll Taxes', glPrefixes: ['5140','5145','5168']},
   {key: 'benefits', label: 'Benefits', glPrefixes: ['5150','5155','5160']},
-  {key: 'other_payroll', label: 'Other Payroll', glPrefixes: ['5162','5165','5166','5168','5172']}
+  {key: 'other_payroll', label: 'Other Payroll', glPrefixes: ['5162','5165','5166','5172']}
 ];
 
 // Maps GL codes to roster/assumption calc components. Mapped GLs have their
@@ -26572,7 +26573,9 @@ const PAYROLL_COMPONENT_MAP = {
   '5165-0000': 'workers_comp',     // Workers Comp Insurance
   '5166-0000': 'nys_disability',   // Disability Insurance
   '5168-0000': 'pfl',              // Paid Family Leave
-  '5155-0015': 'welfare',          // Health Insurance (welfare)
+  // FA #24 (2026-06-15): the union-welfare calc drives HEALTH FUND (5160-0015),
+  // not Health Insurance (5155-0015). 5155-0015 is now manual/unmapped.
+  '5160-0015': 'welfare',          // Health Fund (union welfare calc)
   '5160-0010': 'pension',          // Pension Fund
   '5160-0020': 'supp_retirement',  // Annuity Fund
   '5160-0025': 'legal_fund',       // Legal Fund
