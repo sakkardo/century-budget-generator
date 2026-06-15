@@ -8679,6 +8679,10 @@ def create_workflow_blueprint(db):
             "current_budget": 0.0,
             "proposed_budget": 0.0,
             "count": 0,
+            # FA #26 (2026-06-15): track contributing sheets so the Summary can
+            # pin R+M / Gen&Admin rows' proposed (col7) to col6 (row budget).
+            "_sheet_n": {},
+            "dominant_sheet": "",
         }
         for line in budget_lines_dicts:
             gl = line.get("gl_code", "")
@@ -8774,6 +8778,11 @@ def create_workflow_blueprint(db):
                         proposed = line_forecast * (1 + inc_pct)
             totals["proposed_budget"] += proposed
             totals["count"] += 1
+            _sh = line.get("sheet_name") or ""
+            if _sh:
+                totals["_sheet_n"][_sh] = totals["_sheet_n"].get(_sh, 0) + 1
+        if totals["_sheet_n"]:
+            totals["dominant_sheet"] = max(totals["_sheet_n"], key=totals["_sheet_n"].get)
         return totals
 
 
@@ -9444,9 +9453,19 @@ def create_workflow_blueprint(db):
                                         and abs(float(col6)) > 0.005):
                                     col7 = round(float(col6), 2)
                                 else:
-                                    _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
-                                    if abs(_agg_proposed) > 0.005:
-                                        col7 = _agg_proposed
+                                    # FA #26 (2026-06-15): an R+M / Gen&Admin row
+                                    # proposes the 2026 approved budget (col6),
+                                    # matching the FA's "proposed = current budget"
+                                    # (the displayed budget column), not the sum of
+                                    # sparse line budgets. Mirrors the income pin.
+                                    _dom = agg.get("dominant_sheet", "")
+                                    if (_dom in ("Repairs & Supplies", "Gen & Admin")
+                                            and col6 is not None and abs(float(col6)) > 0.005):
+                                        col7 = round(float(col6), 2)
+                                    else:
+                                        _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
+                                        if abs(_agg_proposed) > 0.005:
+                                            col7 = _agg_proposed
 
             # ── Fixed-forecast GL override ─────────────────────────────
             # Maintenance / Common Charges / Commercial Rent rows: pin
