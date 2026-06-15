@@ -8710,6 +8710,17 @@ def create_workflow_blueprint(db):
             else:
                 est = 0
 
+            # FA #21 (2026-06-13): honor the income-tab's per-line ESTIMATE
+            # override so a tab edit reaches the Summary. Mirrors
+            # faComputeEstimate (the override takes precedence). Capital keeps
+            # its pinned est=0 below.
+            est_ov = line.get("estimate_override")
+            if (not is_capital) and est_ov is not None:
+                try:
+                    est = float(est_ov)
+                except (TypeError, ValueError):
+                    pass
+
             # Capital forecast = ytd + accrual + unpaid, no estimate
             # (FA directive 2026-06-10 — supersedes 2026-05-05's minus sign,
             # which double-counted accruals that zero out YTD; mirrors the
@@ -8721,6 +8732,17 @@ def create_workflow_blueprint(db):
             else:
                 line_forecast = ytd_total + est
                 accrual_unpaid_contrib = accrual + unpaid
+                # FA #21: a per-line FORECAST override wins (mirrors
+                # faComputeForecast). Re-derive est so the col4 split stays
+                # consistent: col5 (= ytd_only + accrual_unpaid + estimate)
+                # then equals the overridden forecast.
+                fcst_ov = line.get("forecast_override")
+                if fcst_ov is not None:
+                    try:
+                        line_forecast = float(fcst_ov)
+                        est = line_forecast - ytd - accrual - unpaid
+                    except (TypeError, ValueError):
+                        pass
 
             totals["ytd_actual"] += ytd_total       # legacy
             totals["ytd_only"] += ytd               # col 3 source
@@ -9394,9 +9416,26 @@ def create_workflow_blueprint(db):
                                     and col6 is not None)
                             )
                             if not _pin_eligible:
-                                _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
-                                if abs(_agg_proposed) > 0.005:
-                                    col7 = _agg_proposed
+                                # FA #19 (2026-06-13): a non-fixed INCOME row
+                                # (all GL bases 4xxx) defaults its 2027 proposed
+                                # to the 2026 APPROVED BUDGET (col6), NOT the
+                                # YTD-annualized aggregate forecast — which
+                                # over-extrapolates seasonal income (829 Other
+                                # Income forecast $205K vs $63K budget). Mirrors
+                                # the fixed-forecast income pin. Only when col6 is
+                                # a meaningful (non-zero) budget; a zero/blank
+                                # budget still falls back to forecast so real
+                                # income (e.g. interest, budgeted $0) isn't zeroed.
+                                # Expenses (5xxx/6xxx) keep the forecast basis.
+                                _is_income_row = bool(_bases) and all(
+                                    str(b)[:1] == "4" for b in _bases)
+                                if (_is_income_row and col6 is not None
+                                        and abs(float(col6)) > 0.005):
+                                    col7 = round(float(col6), 2)
+                                else:
+                                    _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
+                                    if abs(_agg_proposed) > 0.005:
+                                        col7 = _agg_proposed
 
             # ── Fixed-forecast GL override ─────────────────────────────
             # Maintenance / Common Charges / Commercial Rent rows: pin
@@ -9461,6 +9500,16 @@ def create_workflow_blueprint(db):
                 col4 = round(float(row.col4_override), 2)
             if col5_overridden:
                 col5 = round(float(row.col5_override), 2)
+
+            # FA #17 (2026-06-13): 2026 Forecast (col5) = 2026 YTD (col3) +
+            # 2026 Estimate (col4). When the FA edits the estimate (or YTD)
+            # but has NOT separately pinned the forecast, re-derive col5 so the
+            # forecast reacts to the estimate edit (e.g. set commercial-rent
+            # estimate to 0 -> forecast drops from $42K). Strict no-op when
+            # nothing is overridden: col3+col4 already equals col5 on every
+            # untouched row, including the fixed-forecast pin (col4 = col6-col3).
+            if (not col5_overridden) and (col4_overridden or col3_overridden):
+                col5 = round((col3 or 0) + (col4 or 0), 2)
 
             # FA directive 2026-05-17: same override pattern for c1/c2/c6.
             # c1 source = col1_prior_actual (imported), c2 source = audit lookup,
@@ -23140,6 +23189,23 @@ function sumCellBlur(el) {
       }
     } catch(e) { typedFormula = null; }
   } else { el.dataset.raw = ''; }
+  // FA #17 (2026-06-13): editing the 2026 Estimate (c4) or YTD (c3) re-derives
+  // the 2026 Forecast (c5 = c3 + c4) LIVE, unless the forecast was separately
+  // overridden. The backend recomputes the same on reload (api_summary GET);
+  // this just reflects it immediately so the forecast reacts to the estimate.
+  (function(){
+    var _col = el.dataset.col, _tr = el.closest('tr');
+    if (!_tr || (_col !== 'c4' && _col !== 'c3')) return;
+    var c5 = _tr.querySelector('[data-col="c5"]');
+    if (!c5 || c5.dataset.overridden === '1') return;
+    var c3el = _tr.querySelector('[data-col="c3"]');
+    var c4el = _tr.querySelector('[data-col="c4"]');
+    var v3 = parseFloat(c3el && c3el.dataset.raw); if (isNaN(v3)) v3 = 0;
+    var v4 = parseFloat(c4el && c4el.dataset.raw); if (isNaN(v4)) v4 = 0;
+    var v5 = Math.round((v3 + v4) * 100) / 100;
+    c5.dataset.raw = v5;
+    c5.value = v5.toLocaleString('en-US', {maximumFractionDigits:0});
+  })();
   sumRecalcTotals();
   // Auto-save edits — col7 (proposed) goes to col7; c3/c4/c5 land in *_override
   // FA directive 2026-05-05: editable green cells.
