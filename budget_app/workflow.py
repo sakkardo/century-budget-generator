@@ -8758,9 +8758,20 @@ def create_workflow_blueprint(db):
                 proposed = 0
             else:
                 proposed = float(line.get("proposed_budget", 0) or 0)
-                if proposed == 0 and line_forecast > 0:
+                if proposed == 0:
                     inc_pct = float(line.get("increase_pct", 0) or 0)
-                    proposed = line_forecast * (1 + inc_pct)
+                    cb = float(line.get("current_budget", 0) or 0)
+                    sheet = line.get("sheet_name", "") or ""
+                    # FA #25 (2026-06-15): Payroll Processing (5172) = 2026
+                    # budget × 1.03. FA #26: R+M and Gen&Admin propose off the
+                    # 2026 budget, not the 12-mo forecast. Other expenses keep
+                    # the forecast basis (income col7 is pinned at the row level).
+                    if gl == "5172-0000":
+                        proposed = cb * 1.03
+                    elif sheet in ("Repairs & Supplies", "Gen & Admin"):
+                        proposed = cb * (1 + inc_pct)
+                    elif line_forecast > 0:
+                        proposed = line_forecast * (1 + inc_pct)
             totals["proposed_budget"] += proposed
             totals["count"] += 1
         return totals
@@ -19626,6 +19637,15 @@ function faGetFormulaTooltip(l, field) {
       return '=0';   // Capital -> no proposed budget
     }
     if (l.proposed_formula) return l.proposed_formula;
+    // FA #25 (2026-06-15): Payroll Processing (5172) = 2026 budget × 1.03.
+    if (l.gl_code === '5172-0000') {
+      return '=' + Math.round(l.current_budget || 0) + '*1.03';
+    }
+    // FA #26 (2026-06-15): R+M and Gen&Admin propose off the 2026 budget, not
+    // the 12-mo forecast.
+    if (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin') {
+      return '=' + Math.round(l.current_budget || 0) + '*(1+' + incPct.toFixed(4) + ')';
+    }
     const fcstExpr = ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + ((YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0') + ')';
     return '=(' + fcstExpr + ')*(1+' + incPct.toFixed(4) + ')';
   }
@@ -27299,12 +27319,21 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const estimate = faComputeEstimate(l);
     const forecast = faComputeForecast(l);
     const userFormula = l.proposed_formula || '';
+    // FA #26/#25 (2026-06-15): R+M and Gen&Admin propose off the 2026 budget,
+    // not the 12-mo forecast; Payroll Processing (5172) = 2026 budget × 1.03.
+    // Other expenses keep forecast×(1+incr). An explicit proposed_budget always
+    // wins (handled by the `l.proposed_budget ||` below).
+    const _budgetBasis = (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin');
+    const defaultProposed = (gl === '5172-0000')
+      ? (budget * 1.03)
+      : (_budgetBasis ? (budget * (1 + (l.increase_pct || 0)))
+                      : (forecast * (1 + (l.increase_pct || 0))));
     let proposed;
     if (userFormula) {
       const evalResult = safeEvalFormula(userFormula);
-      proposed = evalResult !== null ? evalResult : (l.proposed_budget || (forecast * (1 + (l.increase_pct || 0))));
+      proposed = evalResult !== null ? evalResult : (l.proposed_budget || defaultProposed);
     } else {
-      proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
+      proposed = l.proposed_budget || defaultProposed;
     }
     // FA rule (mirrors sumLines, _aggregate_by_prefix, and the Summary's capital
     // row): Capital lines have NO proposed budget. Force the line cell to 0 so it
