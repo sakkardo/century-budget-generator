@@ -19,6 +19,7 @@ import threading
 from decimal import Decimal
 import logging
 import os
+import re
 import base64
 import json
 import csv
@@ -591,10 +592,14 @@ def create_audited_financials_blueprint(db):
         return mapped, unmapped
 
 
-    def extract_from_pdf(pdf_path, building_name, entity_code=None):
+    def extract_from_pdf(pdf_path, building_name, entity_code=None, fiscal_year_end=None):
         """
         Extract Schedule of Expenses and Revenue from PDF using Claude API.
         Returns extracted data as dict or None on error.
+
+        fiscal_year_end: the audit's year (e.g. "2025" or "12/31/2025"). When
+        known, the prompt pins fiscal_years + demands [most_recent, prior]
+        column order everywhere so a 2024↔2025 swap can't reach the summary.
         """
         try:
             import anthropic
@@ -728,6 +733,48 @@ auditor's original line items and their individual amounts — even for 1:1
 matches. The user verifies and re-splits your grouping from source_lines.
 """
 
+            # Year anchor (829 fix 2026-06-15): pin fiscal_years and force a
+            # consistent [most_recent, prior] order in EVERY amounts array, plus
+            # a year-keyed verification block. The LLM otherwise extracts some
+            # sections most-recent-first and others prior-first (829: revenue
+            # 2025-first, expenses 2024-first), silently swapping the summary's
+            # "2025 Actual". Parse the year from fiscal_year_end, else filename.
+            _yr_src = f"{fiscal_year_end or ''} {os.path.basename(str(pdf_path))}"
+            _yr_hits = [int(y) for y in re.findall(r"((?:19|20)\d{2})", _yr_src)]
+            _Y = max(_yr_hits) if _yr_hits else None
+            if _Y:
+                _P = _Y - 1
+                year_directive = f"""
+
+KNOWN FISCAL YEARS — THIS IS THE FY{_Y} AUDIT, comparative across {_Y} (most
+recent) and {_P} (prior). Set "fiscal_years": [{_Y}, {_P}].
+
+COLUMN ORDER (CRITICAL): in EVERY "amounts" array — every revenue item, every
+expense item, every source_line, and every total — element [0] is the {_Y}
+value and element [1] is the {_P} value. Read each column's YEAR HEADING, not
+its left/right position: most auditors print {_Y} on the left, but some print
+it on the right. Whatever the layout, ALWAYS put the {_Y} number first.
+
+VERIFICATION (REQUIRED): add a "verification" object with each section's total
+read directly under its OWN year heading:
+  "verification": {{
+    "revenue_total": {{"{_Y}": <total operating revenue for {_Y}>, "{_P}": <total operating revenue for {_P}>}},
+    "expense_total": {{"{_Y}": <total operating expenses for {_Y}>, "{_P}": <total operating expenses for {_P}>}}
+  }}
+These year-keyed totals are the source of truth for verifying column order.
+"""
+            else:
+                year_directive = """
+
+COLUMN ORDER (CRITICAL): list the MOST RECENT fiscal year first in
+"fiscal_years" and as element [0] of EVERY "amounts" array (every item,
+source_line, and total) — read each column's YEAR HEADING, not its left/right
+position. Also add a "verification" object with each section total keyed by
+the explicit year:
+  "verification": {"revenue_total": {"<recent>": 0, "<prior>": 0},
+                   "expense_total": {"<recent>": 0, "<prior>": 0}}
+"""
+
             # FA dir 2026-05-22: tighten prompt to prevent prose responses
             # (entity 847 — Claude wrote "Looking at this audited financial
             # statement... However, I need budget categories to..." instead
@@ -779,6 +826,10 @@ Return ONLY valid JSON (no markdown, no code blocks) with this structure:
       ]}}]
     }},
     "total_expenses": [3050000, 2948000]
+  }},
+  "verification": {{
+    "revenue_total": {{"2025": 8860380, "2024": 8683595}},
+    "expense_total": {{"2025": 3050000, "2024": 2948000}}
   }}
 }}
 
@@ -788,6 +839,7 @@ RULES:
 - source_lines amounts must sum to the parent item's amounts
 - Be precise with numbers. Include all line items found.
 - Revenue total and expense total must equal the audited totals in the PDF.
+- EVERY "amounts" array is [most-recent-year, prior-year]; see COLUMN ORDER below.
 - The Schedule of Revenue is REQUIRED — even if it's a single line like
   "Maintenance charges," include it as one item in revenue.items.
 - The Schedule of Expenses is REQUIRED — extract every line item you see,
@@ -797,7 +849,7 @@ RULES:
 - If, after a thorough search, the PDF genuinely has no line-item detail,
   respond with a JSON object that has "_no_lines_found": true plus the totals.
   Do NOT respond with prose explaining this — respond with the JSON.
-
+{year_directive}
 YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end with a close brace. No other characters anywhere."""
 
             # FA dir 2026-05-22: rewrite the retry loop to cover three failure
@@ -950,6 +1002,171 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
         except Exception as e:
             logger.error(f"PDF extraction error: {e}", exc_info=True)
             raise  # Re-raise so caller can return the actual error message
+
+
+    # ─── AFS year-column alignment (829 fix, 2026-06-15) ────────────────────
+    # Root cause: the LLM does not reliably keep amounts[] in the same order as
+    # fiscal_years[]. On 41 Fifth Owners (829) it extracted REVENUE 2025-first
+    # but EVERY EXPENSE line + both totals 2024-first, so the summary's "2025
+    # Actual" (= year_totals[0]) silently pulled 2024 expense values (~$300K
+    # understatement). Positional arrays alone can't be trusted, so we orient
+    # deterministically using the model's year-keyed `verification` anchor and
+    # compute a per-section footing report the review screen can surface.
+    _AF_ALIGN_RE = re.compile(r"((?:19|20)\d{2})")
+
+    def _af_year_int(v):
+        m = _AF_ALIGN_RE.search(str(v or ""))
+        return int(m.group(1)) if m else None
+
+    def _af_top_items(extracted, section_key):
+        """Top-level item dicts (each carrying an 'amounts' list) for a section.
+        Handles revenue.items, expenses.categories as list-of-groups, and the
+        flat dict-of-numeric-keys expense format."""
+        node = extracted.get(section_key)
+        if not isinstance(node, dict):
+            return []
+        if section_key == "revenue":
+            return [it for it in (node.get("items") or []) if isinstance(it, dict)]
+        cats = node.get("categories")
+        out = []
+        if isinstance(cats, dict):
+            for v in cats.values():
+                if isinstance(v, list):
+                    out += [it for it in v if isinstance(it, dict)]
+                elif isinstance(v, dict) and "amounts" in v:
+                    out.append(v)
+        elif isinstance(cats, list):
+            for g in cats:
+                if isinstance(g, dict):
+                    out += [it for it in (g.get("items") or []) if isinstance(it, dict)]
+        return out
+
+    def _af_section_total(extracted, section_key):
+        node = extracted.get(section_key)
+        if not isinstance(node, dict):
+            return None
+        return node.get("total" if section_key == "revenue" else "total_expenses")
+
+    def _af_compute_footing(extracted, section_key):
+        """Per-column footing for a section: {"0": {items_sum,total,delta,ties},
+        "1": {...}}. Informational — contra/netted lines legitimately don't
+        tie, so this is shown to the FA, never used to auto-flip."""
+        total = _af_section_total(extracted, section_key)
+        out = {}
+        if not (isinstance(total, list) and len(total) == 2):
+            return out
+        sums = [0.0, 0.0]
+        for it in _af_top_items(extracted, section_key):
+            amts = it.get("amounts") or []
+            for c in (0, 1):
+                if len(amts) > c:
+                    try:
+                        sums[c] += float(amts[c])
+                    except Exception:
+                        pass
+        for c in (0, 1):
+            try:
+                tv = float(total[c])
+            except Exception:
+                continue
+            out[str(c)] = {
+                "items_sum": round(sums[c], 2),
+                "total": round(tv, 2),
+                "delta": round(sums[c] - tv, 2),
+                "ties": abs(sums[c] - tv) <= max(2.0, abs(tv) * 0.01),
+            }
+        return out
+
+    def _af_flip2(arr):
+        if isinstance(arr, list) and len(arr) == 2:
+            arr.reverse()
+        return arr
+
+    def _flip_extraction_section(extracted, section_key):
+        """Reverse the two year columns for an entire section: every item, its
+        source_lines, and the section total. Used by the deterministic
+        orienter AND the manual 'reverse years' endpoint."""
+        for it in _af_top_items(extracted, section_key):
+            _af_flip2(it.get("amounts"))
+            for sl in (it.get("source_lines") or []):
+                if isinstance(sl, dict):
+                    _af_flip2(sl.get("amounts"))
+        _af_flip2(_af_section_total(extracted, section_key))
+
+    def _orient_and_validate_extraction(extracted, fiscal_year_end=None):
+        """Deterministically orient every amounts array to [most_recent, prior]
+        and compute a per-section footing report. Mutates `extracted` in place,
+        stamps extracted['_alignment'], and returns that report. Safe no-op on
+        unexpected shapes.
+
+        Orientation rule: if the model's year-keyed `verification` total for the
+        most-recent year matches total[1] (not total[0]), that section's columns
+        are reversed → flip the whole section. Footing (Σitems vs total per
+        column) is recorded as an informational cross-check; it is NOT used to
+        flip (contra/netted lines legitimately don't foot)."""
+        if not isinstance(extracted, dict):
+            return None
+
+        def _num(x):
+            try:
+                return float(x)
+            except Exception:
+                return None
+
+        # Canonical [most_recent, prior] from fiscal_years + fiscal_year_end.
+        yr_candidates = []
+        fy = extracted.get("fiscal_years")
+        if isinstance(fy, list):
+            yr_candidates += [y for y in (_af_year_int(x) for x in fy) if y]
+        anchor_fye = _af_year_int(fiscal_year_end)
+        if anchor_fye:
+            yr_candidates.append(anchor_fye)
+        most_recent = max(yr_candidates) if yr_candidates else None
+        prior = (most_recent - 1) if most_recent else None
+        if most_recent:
+            extracted["fiscal_years"] = [most_recent, prior]
+
+        ver = extracted.get("verification") or {}
+        report = {"most_recent_year": most_recent, "prior_year": prior,
+                  "repaired": False, "sections": {}, "warnings": []}
+
+        for section_key, ver_key in (("revenue", "revenue_total"),
+                                     ("expenses", "expense_total")):
+            if not isinstance(extracted.get(section_key), dict):
+                continue
+            total = _af_section_total(extracted, section_key)
+            sec = {"flipped": False, "anchor_used": False, "footing": {}}
+
+            anchor = ver.get(ver_key) if isinstance(ver, dict) else None
+            if (isinstance(anchor, dict) and most_recent
+                    and isinstance(total, list) and len(total) == 2):
+                a_recent = _num(anchor.get(str(most_recent)))
+                a_prior = _num(anchor.get(str(prior)))
+                t0, t1 = _num(total[0]), _num(total[1])
+                if a_recent is not None and None not in (t0, t1):
+                    tol = max(2.0, abs(a_recent) * 0.005)
+                    as_is = abs(t0 - a_recent) <= tol
+                    flipped = abs(t1 - a_recent) <= tol
+                    if flipped and not as_is:
+                        _flip_extraction_section(extracted, section_key)
+                        total = _af_section_total(extracted, section_key)
+                        sec["flipped"] = True
+                        sec["anchor_used"] = True
+                        report["repaired"] = True
+                    elif as_is:
+                        sec["anchor_used"] = True
+                    else:
+                        report["warnings"].append(
+                            f"{section_key}: total[0]={t0:,.0f} matches neither "
+                            f"{most_recent}({a_recent:,.0f}) nor {prior}"
+                            f"({a_prior:,.0f})" if a_prior is not None else
+                            f"{section_key}: total[0] matches no anchor year")
+
+            sec["footing"] = _af_compute_footing(extracted, section_key)
+            report["sections"][section_key] = sec
+
+        extracted["_alignment"] = report
+        return report
 
 
     def get_confirmed_actuals(entity_code, year):
@@ -2894,8 +3111,22 @@ async function uploadAll() {
                 html += '<div style="background:#e8f0fe; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-weight:bold;">Fiscal Years: ' + years.join(', ') + '</div>';
             }
 
+            // ─── Year-column alignment banner (829 fix 2026-06-15) ───
+            html += _alignmentBannerHtml();
+
+            // Per-section "swap year columns" button (manual fallback for the
+            // 2024/2025 swap). Only meaningful for a 2-year comparative audit.
+            function _swapBtn(sec) {
+                if (years.length !== 2) return '';
+                return '<button type="button" onclick="reverseYearColumns(\\\'' + sec + '\\\')" '
+                    + 'title="Swap which year each column holds for this section — use if the columns show the wrong year vs the AFS" '
+                    + 'style="margin-left:10px;font-size:11px;font-weight:600;vertical-align:middle;'
+                    + 'border:1px solid var(--blue);background:#eff6ff;color:var(--blue);'
+                    + 'padding:2px 8px;border-radius:4px;cursor:pointer;">⇄ Swap ' + years[0] + ' / ' + years[1] + '</button>';
+            }
+
             if (rawExtraction.revenue && rawExtraction.revenue.items) {
-                html += '<h5 style="margin:15px 0 5px;">Revenue</h5>';
+                html += '<h5 style="margin:15px 0 5px;">Revenue' + _swapBtn('revenue') + '</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
                 for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th><th style="width:32px;"></th></tr>';
@@ -2931,7 +3162,7 @@ async function uploadAll() {
             }
 
             if (rawExtraction.expenses && rawExtraction.expenses.categories) {
-                html += '<h5 style="margin:15px 0 5px;">Expenses</h5>';
+                html += '<h5 style="margin:15px 0 5px;">Expenses' + _swapBtn('expenses') + '</h5>';
                 html += '<table style="width:100%; font-size:13px; border-collapse:collapse;"><tr><th style="text-align:left; padding:6px;">Line Item</th>';
                 for (let yi = 0; yi < years.length; yi++) { html += '<th style="text-align:right; padding:6px; width:100px;">' + years[yi] + (yi === 0 ? ' ✎' : '') + '</th>'; }
                 html += '<th style="text-align:left; padding:6px; width:180px;">Map To</th><th style="width:32px;"></th></tr>';
@@ -3010,11 +3241,65 @@ async function uploadAll() {
             try { updateAcceptState(); } catch (e) {}
         }
 
+        // Year-column alignment status banner (829 fix 2026-06-15). Reads the
+        // server-stamped rawExtraction._alignment to tell the FA whether the
+        // 2024/2025 columns were auto-aligned, manually reversed, or need a
+        // look, plus a per-column footing note. Empty for legacy audits that
+        // predate the orienter (no _alignment) — the Swap buttons still show.
+        function _alignmentBannerHtml() {
+            var al = rawExtraction._alignment;
+            if (!al) return '';
+            var mr = al.most_recent_year, pr = al.prior_year;
+            var secs = al.sections || {};
+            var warns = al.warnings || [];
+            var mflip = al._manual_flip || {};
+            var manualAny = Object.keys(mflip).some(function(k){ return mflip[k]; });
+            var footBad = ['revenue', 'expenses'].some(function(s){
+                var f = (secs[s] || {}).footing || {};
+                return (f['0'] && !f['0'].ties) || (f['1'] && !f['1'].ties);
+            });
+            var bad = (warns.length > 0) || footBad;
+            var bg = bad ? '#fef3c7' : '#dcfce7';
+            var bd = bad ? '#f59e0b' : '#16a34a';
+            var fg = bad ? '#92400e' : '#166534';
+            var msg = '';
+            if (mr != null) msg += '<b>Year columns: ' + mr + ' (editable) and ' + pr + '.</b> ';
+            if (al.repaired) msg += 'Auto-aligned to most-recent-year-first using the year-keyed totals read from the audit. ';
+            if (manualAny) msg += 'Columns were manually reversed by the reviewer. ';
+            if (warns.length > 0) msg += '&#9888; A section total did not match either year heading — verify the columns against the AFS. ';
+            else if (footBad) msg += '&#9888; In one column the line items do not sum to the reported total (often fine when the auditor nets "Less:" contra rows — please verify). ';
+            else if (!manualAny) msg += 'Verified against the year-keyed totals in the audit. ';
+            msg += 'If a column shows the wrong year versus the AFS, click <b>Swap</b> on that section.';
+            return '<div style="background:' + bg + ';border:1px solid ' + bd + ';color:' + fg + ';padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;line-height:1.5;">' + msg + '</div>';
+        }
+
+        // Manual fallback for the 2024/2025 swap: POST to the server to flip a
+        // section's year columns on raw_extraction, then reload (rebuilds the
+        // table from the corrected data — no fragile in-place DOM surgery).
+        function reverseYearColumns(section) {
+            var fy = (rawExtraction && rawExtraction.fiscal_years) || [];
+            var lbl = (fy.length === 2) ? (fy[0] + ' / ' + fy[1]) : 'the two year';
+            if (!confirm('Swap the ' + lbl + ' columns for ' + section + '?\\n\\nUse this when a section shows the wrong year versus the AFS (e.g. 2024 figures sitting under 2025). The page reloads with the columns swapped. Any unsaved manual edits will be reset.')) return;
+            fetch('/api/af/uploads/' + {{ upload_id }} + '/reverse-years', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ section: section })
+            }).then(function(r){ return r.json(); }).then(function(j){
+                if (j && j.success) { location.reload(); }
+                else { alert('Reverse failed: ' + ((j && j.error) || 'unknown')); }
+            }).catch(function(e){ alert('Reverse failed: ' + e); });
+        }
+
         // Add a new row to the mapping table — used when Claude missed a line.
         // section is 'revenue' or 'expense'; catIdx is the expense category
         // index (only relevant for expense — places the row at the end of
         // that category group).
         function addMappingRow(section, catIdx) {
+            // #12 (FA 2026-06-13): label the two amount inputs with the real
+            // fiscal years instead of generic "Year-0 / Year-1".
+            var _fyA = (rawExtraction && rawExtraction.fiscal_years) || [];
+            var _y0lbl = (_fyA[0] != null ? _fyA[0] : 'Year-0') + ' amount';
+            var _y1lbl = (_fyA[1] != null ? _fyA[1] : 'Year-1') + ' amount';
             const overlay = document.createElement('div');
             overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;';
             overlay.innerHTML =
@@ -3024,8 +3309,8 @@ async function uploadAll() {
                   '<div style="display:flex;flex-direction:column;gap:10px;">' +
                     '<label style="font-size:12px;font-weight:600;color:var(--gray-700);">Auditor description<input id="addRowDesc" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;" placeholder="e.g. Heat / Steam"></label>' +
                     '<div style="display:flex;gap:10px;">' +
-                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">Year-0 amount<input id="addRowAmt0" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
-                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">Year-1 amount<input id="addRowAmt1" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
+                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">' + _y0lbl + '<input id="addRowAmt0" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
+                      '<label style="flex:1;font-size:12px;font-weight:600;color:var(--gray-700);">' + _y1lbl + '<input id="addRowAmt1" type="text" style="display:block;width:100%;margin-top:4px;padding:7px 9px;font-size:13px;border:1px solid var(--gray-300);border-radius:6px;font-family:monospace;text-align:right;" placeholder="0"></label>' +
                     '</div>' +
                   '</div>' +
                   '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">' +
@@ -3046,7 +3331,7 @@ async function uploadAll() {
                 const a0 = parseFloat((document.getElementById('addRowAmt0').value || '0').replace(/[,$\s]/g, ''));
                 const a1 = parseFloat((document.getElementById('addRowAmt1').value || '0').replace(/[,$\s]/g, ''));
                 if (!desc) { alert('Description required'); return; }
-                if (isNaN(a0)) { alert('Year-0 amount must be a number'); return; }
+                if (isNaN(a0)) { alert(_y0lbl + ' must be a number'); return; }
                 close();
                 document.removeEventListener('keydown', escH);
 
@@ -4178,9 +4463,24 @@ async function uploadAll() {
                                               pdf_filename, upload_id, pdf_path)
                         db.session.rollback()  # SP helpers may read DB too
                     extracted = extract_from_pdf(str(pdf_path), building_name,
-                                                 entity_code=entity_code)
+                                                 entity_code=entity_code,
+                                                 fiscal_year_end=fiscal_year_end)
                     if not extracted:
                         raise RuntimeError("Claude returned no extractable data from the PDF")
+                    # Deterministically orient 2024↔2025 columns + stamp the
+                    # footing report BEFORE persisting (829 year-swap fix
+                    # 2026-06-15). Non-fatal: a bad shape must not block extract.
+                    try:
+                        _align = _orient_and_validate_extraction(extracted, fiscal_year_end)
+                        if _align and _align.get("repaired"):
+                            logger.info("[align] upload %s: reversed %s section(s) "
+                                        "to most-recent-first via verification anchor",
+                                        upload_id,
+                                        [k for k, v in _align.get("sections", {}).items()
+                                         if v.get("flipped")])
+                    except Exception as _ae:
+                        logger.warning("[align] orient/validate non-fatal for upload %s: %s",
+                                       upload_id, _ae)
                     u2 = AuditUpload.query.get(upload_id)
                     if not u2 or u2.status != "extracting":
                         db.session.rollback()
@@ -4474,6 +4774,59 @@ async function uploadAll() {
         upload.updated_at = datetime.utcnow()
         db.session.commit()
         return jsonify({"success": True})
+
+    @bp.route("/api/af/uploads/<int:upload_id>/reverse-years", methods=["POST"])
+    def api_reverse_years(upload_id):
+        """Manually swap the two year columns for a section ('revenue',
+        'expenses', or 'both') on the stored raw_extraction. The deterministic
+        orienter handles this automatically when the model returns a year-keyed
+        verification anchor; this is the FA's fallback for legacy audits (no
+        anchor) or when the anchor was wrong. The review page reloads after,
+        rebuilding the table from the corrected raw_extraction. Manual flips are
+        authoritative — this never re-runs anchor orientation."""
+        upload = AuditUpload.query.get(upload_id)
+        if not upload:
+            return jsonify({"success": False, "error": "Upload not found"}), 404
+        body = request.get_json(silent=True) or {}
+        section = (body.get("section") or "").strip()
+        if section not in ("revenue", "expenses", "both"):
+            return jsonify({"success": False,
+                            "error": "section must be 'revenue', 'expenses', or 'both'"}), 400
+        try:
+            extracted = json.loads(upload.raw_extraction) if upload.raw_extraction else {}
+            if not isinstance(extracted, dict):
+                return jsonify({"success": False,
+                                "error": "raw_extraction is not an object"}), 400
+            secs = ["revenue", "expenses"] if section == "both" else [section]
+            for s in secs:
+                _flip_extraction_section(extracted, s)
+            align = extracted.get("_alignment")
+            if not isinstance(align, dict):
+                align = {}
+            mf = align.get("_manual_flip")
+            if not isinstance(mf, dict):
+                mf = {}
+            sections_report = align.get("sections")
+            if not isinstance(sections_report, dict):
+                sections_report = {}
+            for s in secs:
+                mf[s] = not mf.get(s, False)
+                sec_rep = sections_report.get(s)
+                if not isinstance(sec_rep, dict):
+                    sec_rep = {}
+                sec_rep["footing"] = _af_compute_footing(extracted, s)
+                sections_report[s] = sec_rep
+            align["_manual_flip"] = mf
+            align["sections"] = sections_report
+            extracted["_alignment"] = align
+            upload.raw_extraction = json.dumps(extracted)
+            upload.updated_at = datetime.utcnow()
+            db.session.commit()
+            return jsonify({"success": True, "reversed": secs})
+        except Exception as e:
+            db.session.rollback()
+            logger.error("reverse-years failed for upload %s: %s", upload_id, e)
+            return jsonify({"success": False, "error": str(e)}), 400
 
     # ─── Phase 2: Per-line audit drill-down mutations ────────────────────────
     #
@@ -4928,6 +5281,12 @@ async function uploadAll() {
         "apply_mapping_rules": apply_mapping_rules,
         "extract_from_pdf": extract_from_pdf,
         "get_data_dir": get_data_dir,
+        # Exposed for the year-alignment fix (829, 2026-06-15): the deterministic
+        # orienter + per-section flip are pure (no DB/Flask), so a local harness
+        # can verify them against an audit's known year-keyed totals.
+        "orient_and_validate_extraction": _orient_and_validate_extraction,
+        "flip_extraction_section": _flip_extraction_section,
+        "compute_footing": _af_compute_footing,
     }
 
     return bp, models, helpers
