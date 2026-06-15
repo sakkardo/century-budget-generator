@@ -733,48 +733,6 @@ auditor's original line items and their individual amounts — even for 1:1
 matches. The user verifies and re-splits your grouping from source_lines.
 """
 
-            # Year anchor (829 fix 2026-06-15): pin fiscal_years and force a
-            # consistent [most_recent, prior] order in EVERY amounts array, plus
-            # a year-keyed verification block. The LLM otherwise extracts some
-            # sections most-recent-first and others prior-first (829: revenue
-            # 2025-first, expenses 2024-first), silently swapping the summary's
-            # "2025 Actual". Parse the year from fiscal_year_end, else filename.
-            _yr_src = f"{fiscal_year_end or ''} {os.path.basename(str(pdf_path))}"
-            _yr_hits = [int(y) for y in re.findall(r"((?:19|20)\d{2})", _yr_src)]
-            _Y = max(_yr_hits) if _yr_hits else None
-            if _Y:
-                _P = _Y - 1
-                year_directive = f"""
-
-KNOWN FISCAL YEARS — THIS IS THE FY{_Y} AUDIT, comparative across {_Y} (most
-recent) and {_P} (prior). Set "fiscal_years": [{_Y}, {_P}].
-
-COLUMN ORDER (CRITICAL): in EVERY "amounts" array — every revenue item, every
-expense item, every source_line, and every total — element [0] is the {_Y}
-value and element [1] is the {_P} value. Read each column's YEAR HEADING, not
-its left/right position: most auditors print {_Y} on the left, but some print
-it on the right. Whatever the layout, ALWAYS put the {_Y} number first.
-
-VERIFICATION (REQUIRED): add a "verification" object with each section's total
-read directly under its OWN year heading:
-  "verification": {{
-    "revenue_total": {{"{_Y}": <total operating revenue for {_Y}>, "{_P}": <total operating revenue for {_P}>}},
-    "expense_total": {{"{_Y}": <total operating expenses for {_Y}>, "{_P}": <total operating expenses for {_P}>}}
-  }}
-These year-keyed totals are the source of truth for verifying column order.
-"""
-            else:
-                year_directive = """
-
-COLUMN ORDER (CRITICAL): list the MOST RECENT fiscal year first in
-"fiscal_years" and as element [0] of EVERY "amounts" array (every item,
-source_line, and total) — read each column's YEAR HEADING, not its left/right
-position. Also add a "verification" object with each section total keyed by
-the explicit year:
-  "verification": {"revenue_total": {"<recent>": 0, "<prior>": 0},
-                   "expense_total": {"<recent>": 0, "<prior>": 0}}
-"""
-
             # FA dir 2026-05-22: tighten prompt to prevent prose responses
             # (entity 847 — Claude wrote "Looking at this audited financial
             # statement... However, I need budget categories to..." instead
@@ -826,10 +784,6 @@ Return ONLY valid JSON (no markdown, no code blocks) with this structure:
       ]}}]
     }},
     "total_expenses": [3050000, 2948000]
-  }},
-  "verification": {{
-    "revenue_total": {{"2025": 8860380, "2024": 8683595}},
-    "expense_total": {{"2025": 3050000, "2024": 2948000}}
   }}
 }}
 
@@ -839,7 +793,6 @@ RULES:
 - source_lines amounts must sum to the parent item's amounts
 - Be precise with numbers. Include all line items found.
 - Revenue total and expense total must equal the audited totals in the PDF.
-- EVERY "amounts" array is [most-recent-year, prior-year]; see COLUMN ORDER below.
 - The Schedule of Revenue is REQUIRED — even if it's a single line like
   "Maintenance charges," include it as one item in revenue.items.
 - The Schedule of Expenses is REQUIRED — extract every line item you see,
@@ -849,7 +802,7 @@ RULES:
 - If, after a thorough search, the PDF genuinely has no line-item detail,
   respond with a JSON object that has "_no_lines_found": true plus the totals.
   Do NOT respond with prose explaining this — respond with the JSON.
-{year_directive}
+
 YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end with a close brace. No other characters anywhere."""
 
             # FA dir 2026-05-22: rewrite the retry loop to cover three failure
@@ -1123,8 +1076,11 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
             yr_candidates.append(anchor_fye)
         most_recent = max(yr_candidates) if yr_candidates else None
         prior = (most_recent - 1) if most_recent else None
-        if most_recent:
-            extracted["fiscal_years"] = [most_recent, prior]
+        # NOTE: do NOT canonicalize fiscal_years yet. Without the year-keyed
+        # `verification` anchor we cannot know whether amounts are already
+        # most-recent-first, and forcing the order would mislabel data the model
+        # ordered correctly. fiscal_years is only rewritten at the end, and only
+        # when the anchor established orientation for a section.
 
         ver = extracted.get("verification") or {}
         report = {"most_recent_year": most_recent, "prior_year": prior,
@@ -1164,6 +1120,13 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
 
             sec["footing"] = _af_compute_footing(extracted, section_key)
             report["sections"][section_key] = sec
+
+        # Canonicalize fiscal_years to [most_recent, prior] ONLY when the anchor
+        # established orientation (a section flipped, or matched the anchor
+        # as-is). Otherwise leave fiscal_years exactly as the model produced it
+        # so headers stay consistent with the (untouched) amount columns.
+        if most_recent and any(s.get("anchor_used") for s in report["sections"].values()):
+            extracted["fiscal_years"] = [most_recent, prior]
 
         extracted["_alignment"] = report
         return report
