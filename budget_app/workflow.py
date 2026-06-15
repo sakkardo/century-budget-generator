@@ -3784,6 +3784,32 @@ def create_workflow_blueprint(db):
             _update_gl_line(budget.id, "6315-0020", -result["exemptions"]["star"]["budget_year"])
             _update_gl_line(budget.id, "6315-0025", -result["exemptions"]["veteran"]["budget_year"])
             _update_gl_line(budget.id, "6315-0035", -result["exemptions"]["sche"]["budget_year"])
+            # FA #29 (2026-06-15): pin the G&A 6315 lines' Estimate (col4, May-Dec)
+            # and Forecast (col5, 12-mo) to the RE-tax page values so Gen&Admin
+            # matches the RE-tax page (the authoritative source) instead of
+            # annualizing YTD. Mirrors the RE-tax Section-3 per-GL formulas:
+            # E = first_half_tax/2 (tax line), -(exemption base)/4 (exemptions),
+            # 0 (SCRIE/J-51), all 0 after 10/31; F = YTD + E. The summary
+            # aggregator + the G&A faComputeForecast both honor these overrides.
+            _after = bool(data.get("after_oct31") or data.get("afterOct31"))
+            _fh = float(result.get("first_half_tax") or 0)
+            _ex = result.get("exemptions") or {}
+            def _exbase(k):
+                return float((_ex.get(k) or {}).get("current_year") or 0)
+            _gl_est = {
+                "6315-0000": (0.0 if _after else _fh / 2),
+                "6315-0010": (0.0 if _after else -_exbase("coop_abatement") / 4),
+                "6315-0020": (0.0 if _after else -_exbase("star") / 4),
+                "6315-0025": (0.0 if _after else -_exbase("veteran") / 4),
+                "6315-0030": 0.0,
+                "6315-0035": (0.0 if _after else -_exbase("sche") / 4),
+                "6315-0040": 0.0,
+            }
+            for _gl, _est in _gl_est.items():
+                _ln = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=_gl).first()
+                if _ln:
+                    _ln.estimate_override = round(_est, 2)
+                    _ln.forecast_override = round(float(_ln.ytd_actual or 0) + _est, 2)
         except Exception as e:
             logger.warning(f"Failed to update Gen & Admin tax lines: {e}")
         db.session.commit()
