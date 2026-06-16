@@ -3753,8 +3753,110 @@ def create_workflow_blueprint(db):
             # FA dir 2026-05-19: After-10/31 toggle round-trip.
             if isinstance(overrides, dict):
                 result["after_oct31"] = bool(overrides.get("after_oct31"))
+            # FA #14 (2026-06-16): surface any custom RE-tax escalation /
+            # adjustment lines this building has — 6315-xxxx budget lines beyond
+            # the 7 fixed GLs — so the page renders them as extra Section-3 rows.
+            _RE_FIXED_GLS = {
+                "6315-0000", "6315-0010", "6315-0020", "6315-0025",
+                "6315-0030", "6315-0035", "6315-0040",
+            }
+            custom_rows = []
+            if budget:
+                _clines = BudgetLine.query.filter(
+                    BudgetLine.budget_id == budget.id,
+                    BudgetLine.gl_code.like("6315-%"),
+                ).order_by(BudgetLine.gl_code).all()
+                for _cl in _clines:
+                    _gl = (_cl.gl_code or "").strip()
+                    if _gl and _gl not in _RE_FIXED_GLS:
+                        custom_rows.append({"gl": _gl, "label": _cl.description or _gl})
+            result["custom_gl_rows"] = custom_rows
             return jsonify({"is_coop": True, "re_taxes": result})
         except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/re-taxes/<entity_code>/add-line", methods=["POST"])
+    def add_re_tax_line(entity_code):
+        """FA #14: add a custom RE-tax escalation / adjustment line.
+
+        Creates a new 6315-xxxx BudgetLine on this co-op's budget. The new line
+        then renders as an extra Section-3 row on the RE Taxes page (via the GET
+        endpoint's custom_gl_rows) AND rolls into Gen & Admin + the Summary
+        through the 6315 prefix aggregation. The 7 fixed GLs use suffixes
+        0000-0040; the next free 6315-00NN suffix is allocated for the new line.
+        """
+        try:
+            from dof_taxes import is_coop
+            import re as _re
+            if not is_coop(entity_code):
+                return jsonify({"error": "Not a co-op — RE taxes only apply to co-ops"}), 400
+            data = request.get_json(silent=True) or {}
+            label = str(data.get("label") or "").strip()
+            if not label:
+                return jsonify({"error": "A label is required"}), 400
+            try:
+                amount = float(data.get("amount") or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+
+            budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+            if not budget:
+                return jsonify({"error": "No %s budget for %s — build it first" % (BUDGET_YEAR, entity_code)}), 404
+
+            # Allocate the next free 6315-00NN suffix. Fixed GLs occupy 0000-0040;
+            # scan existing 6315-#### lines and take max(suffix, 40) + 5. Also grab
+            # a template line to copy sheet/category so the new line lands in the
+            # same tab + summary bucket as the building's other RE-tax lines.
+            existing = BudgetLine.query.filter(
+                BudgetLine.budget_id == budget.id,
+                BudgetLine.gl_code.like("6315-%"),
+            ).all()
+            max_suffix = 40
+            template = None
+            for _ln in existing:
+                m = _re.match(r"^6315-(\d{4})$", (_ln.gl_code or "").strip())
+                if m:
+                    max_suffix = max(max_suffix, int(m.group(1)))
+                if template is None:
+                    template = _ln
+            new_gl = "6315-%04d" % (max_suffix + 5)
+
+            sheet_name = (template.sheet_name if template and template.sheet_name else "Gen & Admin")
+            category = (template.category if template and template.category else "Real Estate Taxes")
+
+            max_row = db.session.query(db.func.max(BudgetLine.row_num)).filter(
+                BudgetLine.budget_id == budget.id
+            ).scalar() or 0
+
+            line = BudgetLine(
+                budget_id=budget.id,
+                gl_code=new_gl,
+                description=label,
+                category=category,
+                row_num=int(max_row) + 1,
+                sheet_name=sheet_name,
+                pm_editable=False,
+                prior_year=0,
+                ytd_actual=amount,
+                ytd_budget=0,
+                current_budget=amount,
+            )
+            db.session.add(line)
+            db.session.flush()
+            db.session.add(BudgetRevision(
+                budget_id=budget.id,
+                budget_line_id=line.id,
+                action="create",
+                field_name="gl_code",
+                old_value="",
+                new_value=new_gl,
+                source="re_tax_add_row",
+                notes="RE Taxes #14: custom line '%s' = %s" % (label, amount),
+            ))
+            db.session.commit()
+            return jsonify({"ok": True, "gl": new_gl, "label": label, "amount": amount})
+        except Exception as e:
+            db.session.rollback()
             return jsonify({"error": str(e)}), 500
 
     @bp.route("/api/re-taxes/<entity_code>", methods=["PUT"])
@@ -19779,6 +19881,13 @@ function renderRETaxesTab(contentDiv) {
   const entityCode = reTaxes.entity_code;
   window._reActiveEntity = entityCode;
   contentDiv.innerHTML = RE_TAXES_TAB_HTML;
+  // FA #14: rebuild GL_ROWS = the 7 fixed rows + this building's custom escalation
+  // / adjustment lines (from the backend). Must run BEFORE initReTaxesTab() so
+  // buildGlRows() + registerGlCellMeta() pick the custom rows up. Base case (no
+  // custom rows) leaves GL_ROWS exactly equal to FIXED_GL_ROWS.
+  GL_ROWS = FIXED_GL_ROWS.concat((reTaxes.custom_gl_rows || []).map(function (r) {
+    return { gl: r.gl, label: r.label, custom: true };
+  }));
   // Initialize the tab (builds GL rows, wires cell selection, loads from backend)
   try {
     initReTaxesTab();
@@ -19786,6 +19895,37 @@ function renderRETaxesTab(contentDiv) {
   } catch (err) {
     console.error('RE Taxes init error:', err);
     contentDiv.innerHTML = '<div style="padding:40px; text-align:center; color:#dc2626;">Failed to initialize RE Taxes tab: ' + err.message + '</div>';
+  }
+}
+
+// FA #14: add a custom RE-tax escalation / adjustment line. Prompts the FA for a
+// label + amount, creates a real 6315-xxxx budget line on the backend (so it also
+// flows into Gen & Admin + the Summary via the 6315 prefix), then reloads back
+// onto the RE Taxes tab so window._data refetches and the new row renders with
+// its value (YTD from the line; E/F/H compute; it rolls into the Section-3 totals).
+async function reTaxAddRow() {
+  const ec = window._reActiveEntity;
+  if (!ec) { alert('No active building loaded.'); return; }
+  const label = prompt('Label for the new RE-tax line (e.g. "Assessment Appeal Adjustment"):', '');
+  if (label === null) return;
+  if (!label.trim()) { alert('A label is required.'); return; }
+  const amtStr = prompt('Amount for "' + label.trim() + '" (annual $ — this is the YTD actual; E/F/H compute from it). Blank = 0:', '0');
+  if (amtStr === null) return;
+  const amount = parseDollar(amtStr);
+  const btn = document.getElementById('reAddRowBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  try {
+    const resp = await fetch('/api/re-taxes/' + ec + '/add-line', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: label.trim(), amount: amount }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) { throw new Error(data.error || ('HTTP ' + resp.status)); }
+    window.location.href = '/dashboard/' + ec + '?tab=' + encodeURIComponent('RE Taxes');
+  } catch (e) {
+    alert('Could not add row: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add Row'; }
   }
 }
 
@@ -20470,6 +20610,11 @@ const RE_TAXES_TAB_HTML = `<style>
             <!-- injected by JS -->
           </tbody>
         </table>
+        <!-- FA #14: add a custom RE-tax escalation / adjustment line -->
+        <div style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button type="button" id="reAddRowBtn" onclick="reTaxAddRow()" style="font-size:12px; font-weight:600; padding:6px 12px; border:1px solid var(--blue,#5a4a3f); background:#fff; color:var(--blue,#5a4a3f); border-radius:6px; cursor:pointer;">+ Add Row</button>
+          <span style="font-size:11px; color:var(--muted,#64748b);">Add a custom escalation / adjustment line (e.g. assessment appeal, prior-year true-up). It rolls into the totals below and into Gen&nbsp;&amp;&nbsp;Admin.</span>
+        </div>
       </div>
 
       <div class="card">
@@ -20565,7 +20710,7 @@ function bblUrl(bbl) {
 // Now: real per-entity data flows via window._data.lines; missing data
 // falls back to 0 cleanly. Net JS payload reduction: ~700 bytes per page.
 
-const GL_ROWS = [
+let GL_ROWS = [
   { gl: '6315-0000', label: 'Real Estate Tax' },
   { gl: '6315-0010', label: 'Real Estate Tax Abatement' },
   { gl: '6315-0020', label: 'STAR Exemption' },
@@ -20574,6 +20719,12 @@ const GL_ROWS = [
   { gl: '6315-0035', label: 'SCHE Credit' },
   { gl: '6315-0040', label: 'J-51 Credit' }
 ];
+// FA #14 (2026-06-16): the 7 GLs above are the fixed base case, identical for
+// every co-op. Any additional 6315-xxxx lines a building has (custom escalations
+// / adjustments added via the Section-3 "+ Add Row" button) are appended to
+// GL_ROWS at render time from the backend's custom_gl_rows (see renderRETaxesTab).
+// Buildings with no custom rows keep GL_ROWS exactly equal to these 7 — zero change.
+const FIXED_GL_ROWS = GL_ROWS.slice();
 
 // ─── INPUT PARSING ───────────────────────────────────────────────
 function parseDollar(s) {
@@ -20992,7 +21143,12 @@ function recalc() {
     const G = cellRaw('pb_'  + glKey);            // input (Prior Year Budget)
     CELL_STATE['ytd_' + glKey].value = D;
     CELL_STATE['pb_'  + glKey].value = G;
-    const H = computedOrOverride('h_' + glKey, glHFormulas[glKey]);    // computed first
+    // FA #14: custom escalation rows have no glHFormulas/glEFormulas entry.
+    // Default their current-year budget (H) to the YTD actual the FA enters, so
+    // an added line flows straight into Forecast/Budget/Total (E = H - D = 0,
+    // F = D + E = D). Fixed rows keep their tax-derived H formula unchanged.
+    const _hFormula = (glHFormulas[glKey] !== undefined) ? glHFormulas[glKey] : D;
+    const H = computedOrOverride('h_' + glKey, _hFormula);    // computed first
     // FA dir 2026-05-19: estimate now from Sections 1/2 (per glEFormulas)
     const eDefault = (glEFormulas[glKey] !== undefined) ? glEFormulas[glKey] : (H - D);
     const E = computedOrOverride('e_' + glKey, eDefault);
