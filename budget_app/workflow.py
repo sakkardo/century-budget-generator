@@ -6917,6 +6917,14 @@ def create_workflow_blueprint(db):
         ym_ref = "'yardi_data (2)'!$M$2"
         import budget_math
 
+        # FA 2026-06-16 (values-snapshot): the detail tabs now write computed
+        # VALUES, not =SUMIF/formula strings. The old formula-only export shipped
+        # un-evaluated (no cached result), so any viewer that didn't recalc on
+        # open showed blank columns. Values mirror budget_math exactly, so the
+        # file opens fully populated everywhere and ties to the app. _subtot
+        # accumulates each money column for the TOTAL row.
+        _subtot = {}
+
         r = 6
         for i, l in enumerate(visible_lines):
             alt = (i % 2 == 1)
@@ -6941,92 +6949,92 @@ def create_workflow_blueprint(db):
                 set_cell(3, l.notes, align=ALIGN_LEFT, font=FONT_BODY_MUTED)
             else:
                 set_cell(3, None, align=ALIGN_LEFT)
-            # D-K: SUMIF formulas pointing at yardi_data — the workbook
-            # becomes truly dynamic. Edit yardi_data and these recompute.
-            # GL Code is in our column A, so we match yardi_data column A.
-            yardi = "'yardi_data (2)'"
-            sumif = lambda yardi_col: f"=IFERROR(SUMIF({yardi}!$A:$A,$A{r},{yardi}!${yardi_col}:${yardi_col}),0)"
-            # D: prior_year ← yardi col E
-            set_cell(4, sumif("E"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # E: ytd_actual ← yardi col F
-            set_cell(5, sumif("F"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # F: accrual_adj ← yardi col G
-            set_cell(6, sumif("G"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # G: unpaid_bills ← yardi col H
-            set_cell(7, sumif("H"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # H: ytd_budget ← yardi col I
-            set_cell(8, sumif("I"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # I: Remaining Projection = (base)/ytd_months × remaining months,
-            #    mirroring budget_math.estimate. Base is YTD-only for Payroll,
-            #    else YTD+Accrual+Unpaid. FA-#7 anomaly cap: zero only when the
-            #    base is negative AND prior year (D) is >= 0 (a one-time refund);
-            #    recurring negatives (prior also < 0) keep extrapolating.
-            base_xpr = f"E{r}" if is_payroll else f"(E{r}+F{r}+G{r})"
+            # D-P: computed VALUES (snapshot), mirroring budget_math + the
+            # dashboard rules exactly. (Was =SUMIF/=IF formula strings that
+            # shipped un-evaluated → blank in non-recalc viewers.)
+            _prior  = float(l.prior_year or 0)
+            _ytd    = float(l.ytd_actual or 0)
+            _accr   = float(l.accrual_adj or 0)
+            _unpaid = float(l.unpaid_bills or 0)
+            _ytdbud = float(l.ytd_budget or 0)
+            _curbud = float(l.current_budget or 0)
+            # D: prior_year
+            set_cell(4, _prior, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # E: ytd_actual
+            set_cell(5, _ytd, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # F: accrual_adj
+            set_cell(6, _accr, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # G: unpaid_bills
+            set_cell(7, _unpaid, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # H: ytd_budget
+            set_cell(8, _ytdbud, fmt=FMT_CURRENCY, font=FONT_FORMULA)
             # Income fixed-forecast pin (Maintenance / Common Charges / Commercial
             # Rent — GL bases 4010/4020/4030/4040): forecast locks to the approved
-            # budget (K), estimate = budget − YTD, proposed = budget. Mirrors the
+            # budget, estimate = budget − YTD, proposed = budget. Mirrors the
             # dashboard's isFixedToBudgetLine rule so the workbook ties out.
             _glbase = (l.gl_code or "").split("-")[0].strip()
             _glfull = (l.gl_code or "").strip()
             is_fixed = (not is_capital) and (
                 _glbase in FIXED_FORECAST_GL_BASES or _glfull in FIXED_FORECAST_GL_FULL)
+            # I: Remaining Projection (budget_math.estimate; capital=0; fixed=budget−ytd)
             if is_capital:
-                set_cell(9, 0, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _remaining = 0.0
             elif is_fixed:
-                set_cell(9, f"=K{r}-E{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _remaining = _curbud - _ytd
             else:
-                set_cell(9, f"=IFERROR(IF(OR({base_xpr}>=0,D{r}<0),{base_xpr}/{ym_ref}*(12-{ym_ref}),0),0)",
-                         fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # J: 12-Month Forecast — fixed-forecast pins to budget (K), else base+remaining
+                _remaining = budget_math.estimate(_ytd, _accr, _unpaid, _prior, _ym, payroll=is_payroll)
+            set_cell(9, _remaining, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # J: 12-Month Forecast (fixed → budget; capital → ytd+accr+unpaid+remaining; else budget_math.forecast)
             if is_fixed:
-                set_cell(10, f"=K{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _fcst = _curbud
+            elif is_capital:
+                _fcst = _ytd + _accr + _unpaid + _remaining
             else:
-                set_cell(10, f"={base_xpr}+I{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # K: current_budget ← yardi col J
-            set_cell(11, sumif("J"), fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # L: Increase % — the LIVE driver. Seed it to the rate that
-            #    reproduces this line's stored proposal off its basis (the
-            #    approved budget for fixed-forecast income, else the 12-month
-            #    forecast). So the column ties to the app AND, when a client
-            #    types a new %, Proposed (N) moves. Override (M) is used only
-            #    when there is no basis to drive off (forecast ~ 0).
+                _fcst = budget_math.forecast(_ytd, _accr, _unpaid, _prior, _ym, payroll=is_payroll)
+            set_cell(10, _fcst, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # K: current_budget
+            set_cell(11, _curbud, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            # L: Increase % — back-solved from the stored proposal off its forecast
+            #    basis (so the displayed % ties to the app). M (override) only when
+            #    there is no forecast basis to drive off.
             incr_input = float(l.increase_pct or 0)
             override_val = None
             if is_fixed:
-                # Fixed-forecast income defaults to the approved budget (N = K),
-                # matching the app. Increase % starts at 0 and can still flex it
-                # (e.g. model a maintenance increase) without diverging at 0%.
                 incr_input = 0.0
             elif not is_capital:
                 try:
-                    _basis = budget_math.forecast(l.ytd_actual or 0, l.accrual_adj or 0,
-                                                  l.unpaid_bills or 0, l.prior_year or 0,
-                                                  _ym, payroll=is_payroll)
                     _stored = float(l.proposed_budget) if l.proposed_budget is not None else None
                     if _stored is not None and abs(_stored) > 0.005:
-                        if abs(_basis) > 0.005:
-                            incr_input = _stored / _basis - 1.0   # back-solve the %
+                        if abs(_fcst) > 0.005:
+                            incr_input = _stored / _fcst - 1.0
                         else:
-                            override_val = _stored                # no forecast basis → pin
+                            override_val = _stored
                 except Exception:
                     pass
             set_cell(12, incr_input, fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
-            # M: Proposed $ Override — blank for the normal %-driven case; carries
-            #    a value only when the line has no forecast basis to drive off.
+            # M: Proposed $ Override
             set_cell(13, override_val, fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
-            # N: Proposed — Capital pinned to 0; fixed-forecast income =
-            #    budget × (1 + increase %); everything else = forecast ×
-            #    (1 + increase %), or the override when one was needed.
+            # N: Proposed (capital=0; fixed=budget×(1+incr); else override or forecast×(1+incr))
             if is_capital:
-                set_cell(14, 0, fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _proposed = 0.0
             elif is_fixed:
-                set_cell(14, f"=K{r}*(1+L{r})", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _proposed = _curbud * (1 + incr_input)
+            elif override_val is not None:
+                _proposed = float(override_val)
             else:
-                set_cell(14, f'=IF(M{r}<>"",M{r},J{r}*(1+L{r}))', fmt=FMT_CURRENCY, font=FONT_FORMULA)
+                _proposed = _fcst * (1 + incr_input)
+            set_cell(14, _proposed, fmt=FMT_CURRENCY, font=FONT_FORMULA)
             # O: $ Var vs prior
-            set_cell(15, f"=N{r}-D{r}", fmt=FMT_CURRENCY, font=FONT_FORMULA)
+            _ovar = _proposed - _prior
+            set_cell(15, _ovar, fmt=FMT_CURRENCY, font=FONT_FORMULA)
             # P: % Change
-            set_cell(16, f"=IFERROR(N{r}/D{r}-1,0)", fmt=FMT_PERCENT, font=FONT_FORMULA)
+            set_cell(16, ((_proposed / _prior - 1) if abs(_prior) > 0.005 else 0),
+                     fmt=FMT_PERCENT, font=FONT_FORMULA)
+            # Accumulate money-column subtotals (written as values on TOTAL row)
+            for _cc, _vv in ((4, _prior), (5, _ytd), (6, _accr), (7, _unpaid),
+                             (8, _ytdbud), (9, _remaining), (10, _fcst),
+                             (11, _curbud), (14, _proposed), (15, _ovar)):
+                _subtot[_cc] = _subtot.get(_cc, 0.0) + _vv
 
             r += 1
 
@@ -7043,9 +7051,8 @@ def create_workflow_blueprint(db):
             ws.cell(row=r, column=3).fill = FILL_SUBTOTAL
             ws.cell(row=r, column=3).border = SUBTOTAL_BORDER
             for col_i in [4, 5, 6, 7, 8, 9, 10, 11, 14, 15]:
-                col_letter = chr(64 + col_i)
                 sc = ws.cell(row=r, column=col_i,
-                              value=f"=SUM({col_letter}{sub_start}:{col_letter}{sub_end})")
+                              value=round(_subtot.get(col_i, 0.0), 2))
                 sc.font = FONT_SUBTOTAL
                 sc.fill = FILL_SUBTOTAL
                 sc.alignment = ALIGN_RIGHT
@@ -7056,9 +7063,11 @@ def create_workflow_blueprint(db):
                 bc = ws.cell(row=r, column=_blank_col)
                 bc.fill = FILL_SUBTOTAL
                 bc.border = SUBTOTAL_BORDER
-            # P = Proposed/Prior - 1 for the subtotal
+            # P = Proposed/Prior - 1 for the subtotal (value)
+            _tot_prop = _subtot.get(14, 0.0)
+            _tot_prior = _subtot.get(4, 0.0)
             o_cell = ws.cell(row=r, column=16,
-                              value=f"=IFERROR(N{r}/D{r}-1,0)")
+                              value=((_tot_prop / _tot_prior - 1) if abs(_tot_prior) > 0.005 else 0))
             o_cell.font = FONT_SUBTOTAL
             o_cell.fill = FILL_SUBTOTAL
             o_cell.alignment = ALIGN_RIGHT
@@ -7848,6 +7857,14 @@ def create_workflow_blueprint(db):
         # on the `section` field).
         _block = []
         _subcell = {}
+        # FA 2026-06-16 (values-snapshot): write computed VALUES, not formulas.
+        # _blockcols accumulates data-row column sums for the current section
+        # (→ section subtotals as values, footing in both layouts). _subcat_vals
+        # records each subtotal's per-column value so Net Operating / Total
+        # Surplus are arithmetic on them. Data-row values come from the product's
+        # own /api/summary (_pl_by_order) so the workbook == the app exactly.
+        _blockcols = {}
+        _subcat_vals = {}
         _exp_first = None   # first/last Excel row of the contiguous expense
         _exp_last = None    # data block — used to anchor the charts
 
@@ -8046,58 +8063,63 @@ def create_workflow_blueprint(db):
 
             if is_subtotal:
                 _cat = _subtotal_cat(row_label)
-                # A subtotal is always computed → a SUM / Net / Surplus formula.
-                # Only the two true import columns (C 2024 actual, H approved
-                # budget) may fall back to their stored import value if the
-                # formula can't be built; every other column stays blank rather
-                # than a static computed number.
-                _IMPORT = {3: "col1_prior_actual", 8: "col6_approved_budget"}
-                for _ci, _cl in ((3, "C"), (4, "D"), (5, "E"), (6, "F"),
-                                 (7, "G"), (8, "H"), (9, "I")):
-                    _f = _subtotal_formula(_cl, _cat)
-                    if _f:
-                        write_num(_ci, _f, formula=True)
-                    elif _ci in _IMPORT:
-                        _sv = getattr(row, _IMPORT[_ci], None)
-                        write_num(_ci, float(_sv) if _sv is not None else None)
-                    else:
-                        write_num(_ci, None)
+                # Subtotals as VALUES: section totals = sum of the section's data
+                # rows (foots in both sectioned + flat layouts, avoiding the
+                # flat-format API subtotal quirk); Net Operating / Total Surplus =
+                # arithmetic on the recorded subtotal values.
+                _vals = {}
+                if _cat == "netop":
+                    inc = _subcat_vals.get("income", {}); exp = _subcat_vals.get("expenses", {})
+                    for _ci in (3, 4, 5, 6, 7, 8, 9):
+                        _vals[_ci] = round(inc.get(_ci, 0.0) - exp.get(_ci, 0.0), 2)
+                elif _cat == "grand":
+                    netop = _subcat_vals.get("netop")
+                    inc = _subcat_vals.get("income", {}); exp = _subcat_vals.get("expenses", {})
+                    noi = _subcat_vals.get("noi", {}); noe = _subcat_vals.get("noe", {})
+                    for _ci in (3, 4, 5, 6, 7, 8, 9):
+                        _b = netop.get(_ci, 0.0) if netop else (inc.get(_ci, 0.0) - exp.get(_ci, 0.0))
+                        _vals[_ci] = round(_b + noi.get(_ci, 0.0) - noe.get(_ci, 0.0), 2)
+                else:
+                    for _ci in (3, 4, 5, 6, 7, 8, 9):
+                        _vals[_ci] = round(_blockcols.get(_ci, 0.0), 2)
+                for _ci in (3, 4, 5, 6, 7, 8, 9):
+                    write_num(_ci, _vals[_ci])
+                _row_h, _row_i = _vals.get(8), _vals.get(9)
                 if _cat:
                     _subcell[_cat] = r
+                    _subcat_vals[_cat] = _vals
             else:
+                # Data row: write the product's own computed columns as VALUES so
+                # the workbook == the app (includes the row-level pins #18/#19/#26
+                # and op-assessment). Fall back to the stored row value per column.
                 _plr = _pl_by_order.get(row.display_order, {})
-                # C: 2024 prior actual ← yardi col E by prefix (historical, complete)
-                _f = prefix_sumifs_yardi("E")
-                if _f:
-                    write_num(3, _f, formula=True)
-                else:
-                    write_num(3, float(row.col1_prior_actual) if row.col1_prior_actual is not None else None)
-                # D: 2025 Actual (col2) — audit-sourced static, matches the dashboard
-                _c2 = _plr.get("col2")
-                if _c2 is None and row.col2_override is not None:
-                    _c2 = row.col2_override
-                write_num(4, float(_c2) if _c2 is not None else None)
-                # E/F/G: 2026 YTD / Estimate / Forecast — live SUMIFS over the
-                # detail tabs (YTD col E, Remaining col I, Forecast col J). These
-                # are COMPUTED, so each is a formula or blank — never a static
-                # number. A row with no detail-tab GL home has no projection.
-                _fe, _ff, _fg = detail_sumifs("E"), detail_sumifs("I"), detail_sumifs("J")
-                write_num(5, _fe if _fe else None, formula=bool(_fe))
-                write_num(6, _ff if _ff else None, formula=bool(_ff))
-                write_num(7, _fg if _fg else None, formula=bool(_fg))
-                # H: approved/current budget ← yardi col J by prefix (historical)
-                _f = prefix_sumifs_yardi("J")
-                if _f:
-                    write_num(8, _f, formula=True)
-                else:
-                    write_num(8, float(row.col6_approved_budget) if row.col6_approved_budget is not None else None)
-                # I: proposed ← detail col N (the live, client-editable Proposed cell)
-                _f = detail_sumifs("N")
-                if _f:
-                    write_num(9, _f, formula=True)
-                else:
-                    write_num(9, float(row.col7_proposed_budget) if row.col7_proposed_budget is not None else None,
-                              is_input=True)
+                def _pv(_k, _fallback=None):
+                    _v = _plr.get(_k)
+                    if _v is None:
+                        _v = _fallback
+                    try:
+                        return float(_v) if _v is not None else None
+                    except Exception:
+                        return None
+                _c1 = _pv("col1", row.col1_prior_actual)
+                _c2 = _pv("col2", row.col2_override)
+                _c3 = _pv("col3")
+                _c4 = _pv("col4")
+                _c5 = _pv("col5")
+                _c6 = _pv("col6", row.col6_approved_budget)
+                _c7 = _pv("col7", row.col7_proposed_budget)
+                write_num(3, _c1)
+                write_num(4, _c2)
+                write_num(5, _c3)
+                write_num(6, _c4)
+                write_num(7, _c5)
+                write_num(8, _c6)
+                write_num(9, _c7, is_input=True)
+                _row_h, _row_i = _c6, _c7
+                for _ci, _vv in ((3, _c1), (4, _c2), (5, _c3), (6, _c4),
+                                 (7, _c5), (8, _c6), (9, _c7)):
+                    if _vv is not None:
+                        _blockcols[_ci] = _blockcols.get(_ci, 0.0) + _vv
                 _block.append(r)
                 _sec = (row.section or "").lower()
                 if "expense" in _sec and "non" not in _sec:
@@ -8105,8 +8127,11 @@ def create_workflow_blueprint(db):
                         _exp_first = r
                     _exp_last = r
 
-            # J: % variance (Proposed vs Approved Budget)
-            vc = ws.cell(row=r, column=10, value=f"=IFERROR((I{r}-H{r})/H{r},0)")
+            # J: % variance (Proposed vs Approved Budget) — value
+            _jh = _row_h if (_row_h is not None) else 0.0
+            _ji = _row_i if (_row_i is not None) else 0.0
+            _jvar = ((_ji - _jh) / _jh) if abs(_jh) > 0.005 else 0
+            vc = ws.cell(row=r, column=10, value=_jvar)
             vc.number_format = FMT_PERCENT
             vc.alignment = ALIGN_RIGHT
             vc.font = FONT_GRAND if is_grand else (FONT_SUBTOTAL if is_subtotal else FONT_FORMULA)
@@ -8118,6 +8143,7 @@ def create_workflow_blueprint(db):
             r += 1
             if is_subtotal:
                 _block = []
+                _blockcols = {}
 
         # ── Column widths ────────────────────────────────────────
         ws.column_dimensions["A"].width = 14
