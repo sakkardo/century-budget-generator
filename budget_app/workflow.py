@@ -9708,6 +9708,29 @@ def create_workflow_blueprint(db):
                 if any(str(p).split("-")[0].strip() == "4200" for p in _oa_prefs):
                     col7 = _op_assess_proposed
 
+            # FA #18 (2026-06-16): the income "Tax Benefit Credits" row (GL bases
+            # all within the 4105-4125 abatement/STAR/veteran/SCHE credit range)
+            # proposes the NEGATIVE of the RE-tax page's 2026-27 exemptions
+            # total. Row-level (not agg-dependent) because the value comes from
+            # the RE-tax page, not the income budget lines — this row usually has
+            # no budget lines to aggregate (829: col6 blank, agg_count 0). Only
+            # when the FA hasn't typed an explicit Summary proposed (col7) override.
+            if (col7 is None and _re_tax_exemptions_budget is not None
+                    and row.row_type == "data" and row.gl_prefixes_json):
+                try:
+                    _tbc_prefs = _json.loads(row.gl_prefixes_json) or []
+                except Exception:
+                    _tbc_prefs = []
+                _tbc_bases = []
+                for _p in _tbc_prefs:
+                    try:
+                        _tbc_bases.append(int(str(_p).split("-")[0].strip()))
+                    except Exception:
+                        _tbc_bases = []
+                        break
+                if _tbc_bases and all(4105 <= _b <= 4125 for _b in _tbc_bases):
+                    col7 = round(-abs(float(_re_tax_exemptions_budget)), 2)
+
             # ── FA-set overrides (col3/col4/col5) take precedence over computed ──
             # FA directive 2026-05-05: editable green cells. Stash the computed
             # value in the response so the UI can show "click to revert to
