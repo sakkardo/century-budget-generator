@@ -9129,6 +9129,7 @@ def create_workflow_blueprint(db):
         # building-level RE tax. Computed ONCE here (DOF data is cached) and
         # applied to the 4200 row below when no explicit Summary override.
         _op_assess_proposed = None
+        _re_tax_exemptions_budget = None  # FA #18: RE-tax 2026-27 exemptions total (negated → income Tax Benefit Credits col7)
         try:
             from dof_taxes import is_coop as _is_coop, compute_re_taxes as _compute_re_taxes
             if _is_coop(entity_code):
@@ -9142,9 +9143,16 @@ def create_workflow_blueprint(db):
                 _val = _rt.get("operating_assessment_proposed")
                 if _val is not None and abs(float(_val)) > 0.005:
                     _op_assess_proposed = round(float(_val), 2)
+                # FA #18 (2026-06-16): capture the RE-tax 2026-27 exemptions
+                # total so the income "Tax Benefit Credits" row can pin its
+                # proposed (col7) to the NEGATIVE of it (see col7 cascade).
+                _exb = _rt.get("total_exemptions_budget")
+                if _exb is not None and abs(float(_exb)) > 0.005:
+                    _re_tax_exemptions_budget = round(float(_exb), 2)
         except Exception as _e:
             logger.warning(f"operating-assessment proposed compute failed for {entity_code}: {_e}")
             _op_assess_proposed = None
+            _re_tax_exemptions_budget = None
 
         # ── Col 2: 2025 Actual from confirmed audited financials ──────────
         # `warnings` is initialized HERE (was previously initialized later for
@@ -9601,12 +9609,27 @@ def create_workflow_blueprint(db):
                         if col7 is None:
                             _bases = {str(p).split("-")[0].strip()
                                       for p in (prefixes or [])}
+                            # FA #18 (2026-06-16): the income "Tax Benefit
+                            # Credits" row (GL bases all within the 4105-4125
+                            # abatement/STAR/veteran/SCHE credit range, stored
+                            # negative) proposes the NEGATIVE of the RE-tax
+                            # page's 2026-27 exemptions total. Takes priority
+                            # over the generic income→budget pin (#19) below.
+                            def _in_tbc_range(_b):
+                                try:
+                                    return 4105 <= int(_b) <= 4125
+                                except Exception:
+                                    return False
+                            if (_re_tax_exemptions_budget is not None
+                                    and _bases
+                                    and all(_in_tbc_range(b) for b in _bases)):
+                                col7 = round(-abs(float(_re_tax_exemptions_budget)), 2)
                             _pin_eligible = (
                                 bool(_bases & {"4200"})
                                 or (bool(_bases & {"4010", "4020", "4030", "4040"})
                                     and col6 is not None)
                             )
-                            if not _pin_eligible:
+                            if col7 is None and not _pin_eligible:
                                 # FA #19 (2026-06-13): a non-fixed INCOME row
                                 # (all GL bases 4xxx) defaults its 2027 proposed
                                 # to the 2026 APPROVED BUDGET (col6), NOT the
@@ -11176,9 +11199,28 @@ def create_workflow_blueprint(db):
         expense_rows = BudgetSummaryRow.query.filter_by(
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).all()
+        import json as _cj
         total_expense = 0
         for r in expense_rows:
-            if (r.section or "").lower() in ("expenses",) and r.row_type == "data":
+            if r.row_type != "data":
+                continue
+            _sect = (r.section or "").lower().strip()
+            _is_expense = (_sect == "expenses")
+            # FA #20 (2026-06-16): flat-format summaries (e.g. 829) leave
+            # `section` NULL, so the section-only filter found nothing and the
+            # opex basis came out $0 — the escalation silently never pulled to
+            # the Summary. Fall back to GL-prefix classification (5xxx / 6xxx =
+            # operating expense) when there's no section bucket. Sectioned
+            # buildings are unchanged.
+            if not _sect:
+                try:
+                    _prefs = _cj.loads(r.gl_prefixes_json or "[]")
+                except Exception:
+                    _prefs = []
+                _ebases = {str(p).split("-")[0].strip() for p in _prefs if p}
+                _is_expense = bool(_ebases) and all(
+                    b[:1] in ("5", "6") for b in _ebases)
+            if _is_expense:
                 if is_budget_year:
                     total_expense += (r.col7_proposed_budget
                                       or r.col6_approved_budget or 0)
@@ -16730,7 +16772,7 @@ async function renderCommercialTab(contentDiv) {
   // Empty state
   if (tenants.length === 0) {
     let msg = 'No commercial rent set up for this building yet.';
-    let sub = 'Phase 2 will add a "+ Add tenant" button so you can create one manually.';
+    let sub = 'Add the building\'s commercial units manually below.';
     if (impStatus === 'no_file') {
       msg = 'No approved 2026 budget Excel found in SharePoint.';
       sub = 'Upload one and re-import, or check the file name pattern.';
@@ -16742,7 +16784,8 @@ async function renderCommercialTab(contentDiv) {
       '<div style="padding:48px 24px; text-align:center; max-width:520px; margin:24px auto; background:#fff7ed; border:1px solid #fed7aa; border-radius:12px;">' +
         '<div style="font-size:36px; margin-bottom:8px;">🏢</div>' +
         '<h3 style="margin:0 0 4px; font-size:16px; color:#9a3412;">' + msg + '</h3>' +
-        '<p style="margin:4px 0 0; font-size:12px; color:var(--gray-500);">' + sub + '</p>' +
+        '<p style="margin:4px 0 12px; font-size:12px; color:var(--gray-500);">' + sub + '</p>' +
+        '<button onclick="commercialAddTenant()" style="font-size:13px; font-weight:600; padding:8px 16px; background:#9a3412; color:#fff; border:none; border-radius:6px; cursor:pointer;">+ Add Commercial Unit</button>' +
       '</div>';
     return;
   }
@@ -16772,6 +16815,7 @@ async function renderCommercialTab(contentDiv) {
   html += '<div style="display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap;">' +
     '<h2 style="font-size:18px; font-weight:700; margin:0;">Commercial Tenants</h2>' +
     '<span style="background:var(--blue-light); color:var(--blue); padding:3px 10px; border-radius:12px; font-size:11px; font-weight:600;">' + tenants.length + ' active</span>' +
+    '<button onclick="commercialAddTenant()" style="font-size:11px; font-weight:600; padding:3px 10px; background:#9a3412; color:#fff; border:none; border-radius:12px; cursor:pointer;">+ Add Unit</button>' +
     '<span style="font-size:11px; color:var(--gray-500);">Escalation:</span>' +
     '<span style="font-size:11px; font-weight:600; color:var(--gray-700);">' + (escLabels[escModel] || escModel) + '</span>' +
     '<div style="margin-left:auto; display:flex; align-items:center; gap:14px; font-size:11px;">' +
@@ -17063,9 +17107,10 @@ async function renderCommercialTab(contentDiv) {
   html += '</div>';  // end grid
 
   // Footer with status + actions
-  html += '<div style="margin-top:20px; padding:14px; background:#fafaf7; border:1px solid var(--gray-200); border-radius:8px; font-size:12px; color:var(--gray-600);">' +
-    '<strong>Phase 1 — Read-only viewer.</strong> Phase 2 (next ship) adds: editable tenant cards, rent-period add/delete, escalation engine UI, and Summary tab auto-feed (so changes here update rows 4040 / 4520 / 4250 / 4515-0010 on the Summary tab automatically). ' +
-    '<button onclick="commercialReimport()" style="margin-left:8px; padding:4px 10px; border:1px solid var(--gray-300); background:white; border-radius:4px; font-size:11px; cursor:pointer;">↻ Re-import from Excel</button>' +
+  html += '<div style="margin-top:20px; padding:14px; background:#fafaf7; border:1px solid var(--gray-200); border-radius:8px; font-size:12px; color:var(--gray-600); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' +
+    '<span>Edit tenant cards inline, add rent periods, and configure escalations — changes auto-feed the Summary rows (Commercial Rent 4040 / Escalations 4520).</span>' +
+    '<button onclick="commercialAddTenant()" style="margin-left:auto; padding:5px 12px; background:#9a3412; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">+ Add Commercial Unit</button>' +
+    '<button onclick="commercialReimport()" style="padding:4px 10px; border:1px solid var(--gray-300); background:white; border-radius:4px; font-size:11px; cursor:pointer;">↻ Re-import from Excel</button>' +
     '</div>';
 
   contentDiv.innerHTML = html;
@@ -17097,6 +17142,27 @@ async function commercialUpdateTenantField(tenantId, field, value) {
 }
 
 // ── Commercial CRUD handlers (Phase 2) ──
+
+// FA #30 (2026-06-16): add a new commercial unit / tenant. Prompts for a name,
+// POSTs to create it, then re-renders the tab so the FA can fill in rent
+// periods + escalation config on the new card.
+async function commercialAddTenant() {
+  const name = prompt('Name of the commercial unit / tenant (e.g. "Ground Floor Retail", "Garage"):', '');
+  if (name === null) return;
+  if (!name.trim()) { alert('A name is required.'); return; }
+  try {
+    const resp = await fetch('/api/commercial/' + entityCode + '/tenant', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tenant_name: name.trim()}),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) { alert('Could not add unit: ' + (data.error || resp.status)); return; }
+    renderCommercialTab(document.getElementById('sheetContent'));
+  } catch (e) {
+    alert('Could not add unit: ' + (e.message || e));
+  }
+}
 
 // Inline-edit a single field on a rent period. Called from onblur on the
 // editable inputs in the period table. Saves to DB, recomputes the
