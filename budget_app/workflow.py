@@ -1730,6 +1730,29 @@ def create_workflow_blueprint(db):
             import logging
             logging.getLogger(__name__).warning(f"RE Taxes fetch failed for {entity_code}: {e}")
 
+        # FA #14 (2026-06-16): attach this building's custom RE-tax escalation /
+        # adjustment lines (6315-xxxx beyond the 7 fixed GLs) so the RE Taxes tab
+        # renders them as extra Section-3 rows on initial load. The page-load
+        # bootstrap feeds window._reTaxesData directly, so the key must live here
+        # too (not only on GET /api/re-taxes).
+        if re_taxes_data:
+            try:
+                _RE_FIXED_GLS = {
+                    "6315-0000", "6315-0010", "6315-0020", "6315-0025",
+                    "6315-0030", "6315-0035", "6315-0040",
+                }
+                _custom = []
+                for _cl in BudgetLine.query.filter(
+                    BudgetLine.budget_id == budget.id,
+                    BudgetLine.gl_code.like("6315-%"),
+                ).order_by(BudgetLine.gl_code).all():
+                    _gl = (_cl.gl_code or "").strip()
+                    if _gl and _gl not in _RE_FIXED_GLS:
+                        _custom.append({"gl": _gl, "label": _cl.description or _gl})
+                re_taxes_data["custom_gl_rows"] = _custom
+            except Exception:
+                re_taxes_data.setdefault("custom_gl_rows", [])
+
         # FA directive 2026-05-05: audit-status chip on dashboard. Surface the
         # latest AuditUpload for this entity so the dashboard can render a
         # progression chip (Uploaded → Extracted → Mapped → Confirmed) without
@@ -3915,6 +3938,26 @@ def create_workflow_blueprint(db):
         except Exception as e:
             logger.warning(f"Failed to update Gen & Admin tax lines: {e}")
         db.session.commit()
+        # FA #14: keep custom escalation/adjustment rows attached on the save
+        # response so they don't vanish if the tab is re-rendered after an
+        # autosave (window._reTaxesData is refreshed from this payload).
+        try:
+            _RE_FIXED_GLS = {
+                "6315-0000", "6315-0010", "6315-0020", "6315-0025",
+                "6315-0030", "6315-0035", "6315-0040",
+            }
+            _custom = []
+            for _cl in BudgetLine.query.filter(
+                BudgetLine.budget_id == budget.id,
+                BudgetLine.gl_code.like("6315-%"),
+            ).order_by(BudgetLine.gl_code).all():
+                _gl = (_cl.gl_code or "").strip()
+                if _gl and _gl not in _RE_FIXED_GLS:
+                    _custom.append({"gl": _gl, "label": _cl.description or _gl})
+            if isinstance(result, dict):
+                result["custom_gl_rows"] = _custom
+        except Exception:
+            pass
         return jsonify({"status": "saved", "re_taxes": result})
 
     def _update_gl_line(budget_id, gl_code, value):
