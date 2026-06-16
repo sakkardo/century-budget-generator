@@ -20923,11 +20923,15 @@ function _reUpdatePeriodHeaders() {
 function registerGlCellMeta() {
   const lbl = _rePeriodLabels();
   GL_ROWS.forEach(r => {
+    // FA #14: custom escalation rows have no GL_EXCEL_FORMULAS entry — guard so
+    // their E/H Excel-formula meta is null (the live recalc still computes the
+    // values; the formula bar just shows no Excel string for those cells).
+    const _xl = GL_EXCEL_FORMULAS[r.gl] || {};
     CELL_META['ytd_' + r.gl] = { label: r.label + ' · ' + lbl.actual + ' (YSL)', type: 'input',    format: 'dollar', excel: null };
     CELL_META['pb_'  + r.gl] = { label: r.label + ' · Prior Year Budget',    type: 'input',    format: 'dollar', excel: null };
-    CELL_META['e_'   + r.gl] = { label: r.label + ' · ' + lbl.estimate,      type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].e };
+    CELL_META['e_'   + r.gl] = { label: r.label + ' · ' + lbl.estimate,      type: 'computed', format: 'dollar', excel: _xl.e || null };
     CELL_META['f_'   + r.gl] = { label: r.label + ' · 12 Month Forecast',    type: 'computed', format: 'dollar', excel: '=SUM(D:E)' };
-    CELL_META['h_'   + r.gl] = { label: r.label + ' · Current Year Budget',  type: 'computed', format: 'dollar', excel: GL_EXCEL_FORMULAS[r.gl].h };
+    CELL_META['h_'   + r.gl] = { label: r.label + ' · Current Year Budget',  type: 'computed', format: 'dollar', excel: _xl.h || null };
     ['ytd_','pb_','e_','f_','h_'].forEach(prefix => {
       const id = prefix + r.gl;
       if (!CELL_STATE[id]) CELL_STATE[id] = { value: 0, override: null };
