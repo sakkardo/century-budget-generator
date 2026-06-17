@@ -6873,7 +6873,7 @@ def create_workflow_blueprint(db):
             ("GL Code", "left"),
             ("Description", "left"),
             ("Notes", "left"),
-            (f"{BUDGET_YEAR-3}\nPrior Actual", "right"),
+            ("Prior Year\nActual", "right"),  # generic to match the product's "PRIOR YEAR" (holds the BY-3 prior_year actual; the explicit 2024/2025 years live on the Summary)
             (f"{BUDGET_YEAR-1}\nYTD Actual", "right"),
             ("Accrual\nAdj", "right"),
             ("Unpaid\nBills", "right"),
@@ -7242,7 +7242,7 @@ def create_workflow_blueprint(db):
 
         # Headers row 4
         headers = ["GL Code", "Description", "Sheet", "Category",
-                   f"{BUDGET_YEAR-3}\nPrior Actual",
+                   "Prior Year\nActual",
                    f"{BUDGET_YEAR-1}\nYTD Actual",
                    "Accrual\nAdj",
                    "Unpaid\nBills",
