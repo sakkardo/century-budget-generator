@@ -1942,6 +1942,10 @@ def create_workflow_blueprint(db):
                 # FA #18: Capital — never extrapolate, never auto-fill proposed
                 elif _is_cap:
                     estimate = 0
+                # 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) — no
+                # May-Dec estimate (posts at year-end, not monthly).
+                elif (line.gl_code or "")[:4] in ("4105", "4110", "4115", "4120", "4125"):
+                    estimate = 0
                 # FA #7 anomaly cap: don't extrapolate one-time refund/credit.
                 # Recurring negatives (tax abatements, where prior is also
                 # negative) keep extrapolating normally.
@@ -8901,6 +8905,10 @@ def create_workflow_blueprint(db):
             #   estimate = 0
             #   proposed = 0 always (overrides any FA-entered value)
             elif is_capital:
+                est = 0
+            # 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) posts at
+            # year-end, not monthly — no May-Dec estimate (forecast = YTD).
+            elif gl[:4] in ("4105", "4110", "4115", "4120", "4125"):
                 est = 0
             # FA #7 anomaly cap: negative YTD against non-negative prior
             # year is a one-time refund/credit; don't extrapolate.
@@ -19877,6 +19885,9 @@ function faComputeEstimate(l) {
   if (faIsOneTimeFeeBilled(l)) return 0;
   // FA #18 + 2026-05-05 directive: Capital — no estimate at all.
   if (faIsCapital(l)) return 0;
+  // 210 FA: RE-tax credit income (Abatement/STAR/Veteran/SCRIE/SCHE — GL
+  // 4105/4110/4115/4120/4125) posts at year-end, not monthly — no May-Dec estimate.
+  if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) return 0;
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
@@ -27976,6 +27987,11 @@ function computeForecast(l) {
   if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
     return ytdActual + accrualAdj + unpaidBills;
   }
+  // 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) — no extrapolation
+  // (forecast = YTD + accrual + unpaid; estimate 0).
+  if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) {
+    return ytdActual + accrualAdj + unpaidBills;
+  }
   // FA #7 anomaly cap: negative YTD against non-negative prior year is a
   // one-time refund/credit; don't extrapolate.
   const prior = l.prior_year || 0;
@@ -30566,6 +30582,8 @@ function computeEstimate(line) {
     if (isOneTimeFeeBilled(line)) return 0;
     // FA #18: Capital — no extrapolation
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') return 0;
+    // 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) — no May-Dec estimate.
+    if (['4105','4110','4115','4120','4125'].indexOf((line.gl_code||'').slice(0,4)) >= 0) return 0;
     const ytd = line.ytd_actual || 0;
     const accrual = line.accrual_adj || 0;
     const unpaid = line.unpaid_bills || 0;
@@ -33039,6 +33057,8 @@ function computeEstimate(l) {
   if (isOneTimeFeeBilled(l)) return 0;
   // FA #18: Capital — no extrapolation
   if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
+  // 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) — no May-Dec estimate.
+  if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) return 0;
   // Payroll tab uses a simplified base (no accrual/unpaid). Other tabs unchanged.
   const isPayroll = l.sheet_name === 'Payroll';
   const ytd = l.ytd_actual || 0;
