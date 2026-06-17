@@ -26,6 +26,29 @@ except ImportError:
     from budget_app.budget_status import derive_lifecycle_stage
 
 
+# FA 2026-06-17 (210 Budget Notes B1/B4): GL lines we never budget. Their
+# Proposed (2027 budget) is forced to $0 everywhere — Summary col7, the income
+# tab, the PM portal, the subtotal/formula bars — so "don't budget this" holds
+# across every surface from one place: BudgetLine.to_dict() stamps `no_budget`
+# and each proposed-math copy honors it (mirrors the capital → 0 rule).
+#   - GLOBAL: applies to every building.
+#   - BY_ENTITY: building-specific "don't budget" requests (per FA).
+# 4070 Prepaid Income = portfolio-wide. 210 also drops 4803 Dividend + 4911
+# Messenger. (When a per-line UI lands, this becomes the seed/default layer.)
+NONBUDGET_GL_BASES_GLOBAL = {"4070"}
+NONBUDGET_GL_BASES_BY_ENTITY = {"210": {"4803", "4911"}}
+
+
+def gl_is_non_budgeted(gl_code, entity_code=None):
+    """True when this GL should never carry a proposed budget (proposed = 0)."""
+    base = (gl_code or "")[:4]
+    if base in NONBUDGET_GL_BASES_GLOBAL:
+        return True
+    if entity_code is not None:
+        return base in NONBUDGET_GL_BASES_BY_ENTITY.get(str(entity_code), ())
+    return False
+
+
 def register_models(db):
     """Define the 18 models with the injected db and return them as a name->class dict."""
     def _parse_backup_json(raw):
@@ -287,6 +310,11 @@ def register_models(db):
                 # using `l.proposed_budget || 0` still work since null is falsy.
                 "proposed_budget": (float(self.proposed_budget) if self.proposed_budget is not None else None),
                 "proposed_formula": self.proposed_formula or "",
+                # FA 2026-06-17 (B1/B4): never-budgeted lines (prepaid portfolio-
+                # wide; dividend/messenger on 210) carry proposed = 0 everywhere.
+                "no_budget": gl_is_non_budgeted(
+                    self.gl_code,
+                    (self.budget.entity_code if self.budget is not None else None)),
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
                 # FA dir 2026-05-17: formula strings parallel to overrides

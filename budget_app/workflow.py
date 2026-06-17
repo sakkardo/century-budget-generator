@@ -8880,6 +8880,10 @@ def create_workflow_blueprint(db):
             "current_budget": 0.0,
             "proposed_budget": 0.0,
             "count": 0,
+            # FA 2026-06-17 (B1/B4): count of never-budgeted lines so the
+            # Summary cascade can pin col7 (2027 budget) to 0 for a row whose
+            # contributing GLs are ALL non-budgeted (prepaid / dividend / messenger).
+            "no_budget_n": 0,
             # FA #26 (2026-06-15): track contributing sheets so the Summary can
             # pin R+M / Gen&Admin rows' proposed (col7) to col6 (row budget).
             "_sheet_n": {},
@@ -8965,6 +8969,10 @@ def create_workflow_blueprint(db):
             # don't roll it up into the summary tab's COL 7.)
             if is_capital:
                 proposed = 0
+            # FA 2026-06-17 (B1/B4): never-budgeted income (prepaid / dividend /
+            # messenger) proposes $0 — overrides any derivation below.
+            elif line.get("no_budget"):
+                proposed = 0
             else:
                 proposed = float(line.get("proposed_budget", 0) or 0)
                 if proposed == 0:
@@ -8983,11 +8991,17 @@ def create_workflow_blueprint(db):
                         proposed = line_forecast * (1 + inc_pct)
             totals["proposed_budget"] += proposed
             totals["count"] += 1
+            if line.get("no_budget"):
+                totals["no_budget_n"] += 1
             _sh = line.get("sheet_name") or ""
             if _sh:
                 totals["_sheet_n"][_sh] = totals["_sheet_n"].get(_sh, 0) + 1
         if totals["_sheet_n"]:
             totals["dominant_sheet"] = max(totals["_sheet_n"], key=totals["_sheet_n"].get)
+        # FA 2026-06-17 (B1/B4): a row whose contributing GLs are ALL
+        # never-budgeted gets its 2027 budget (col7) pinned to 0 in the cascade.
+        totals["all_no_budget"] = (
+            totals["count"] > 0 and totals["no_budget_n"] == totals["count"])
         return totals
 
 
@@ -9643,6 +9657,12 @@ def create_workflow_blueprint(db):
                         if col7 is None:
                             _bases = {str(p).split("-")[0].strip()
                                       for p in (prefixes or [])}
+                            # FA 2026-06-17 (B1/B4): a row built entirely from
+                            # never-budgeted GLs (prepaid portfolio-wide;
+                            # dividend/messenger on 210) proposes $0. Wins over
+                            # the TBC (#18) and income→budget (#19) pins below.
+                            if agg.get("all_no_budget"):
+                                col7 = 0.0
                             # FA #18 (2026-06-16): the income "Tax Benefit
                             # Credits" row (GL bases all within the 4105-4125
                             # abatement/STAR/veteran/SCHE credit range, stored
@@ -16286,6 +16306,8 @@ function openBoardPresentation() {
     function getProposed(l) {
       // FA directive 2026-05-05: Capital — no proposed budget, ever.
       if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
+      // FA 2026-06-17 (B1/B4): never-budgeted income (prepaid / dividend / messenger).
+      if (l.no_budget) return 0;
       return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
     }
 
@@ -19949,6 +19971,7 @@ function faGetFormulaTooltip(l, field) {
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
   }
   if (field === 'proposed') {
+    if (l.no_budget) return '=0';   // FA 2026-06-17 (B1/B4): never-budgeted line
     if (faIsCapital(l)) {
       return '=0';   // Capital -> no proposed budget
     }
@@ -27716,6 +27739,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
       proposed = 0;
     }
+    // FA 2026-06-17 (B1/B4): never-budgeted income (prepaid / dividend /
+    // messenger) shows $0 proposed, matching the Summary + Sheet Total.
+    if (l.no_budget) {
+      proposed = 0;
+    }
     // FA dir 2026-06-05: $ Var / % Chg compare PROPOSED to Current Budget (the
     // change the FA is making to the budget), not the old Excel budget-vs-forecast
     // parity — that read as unrelated noise sitting next to the Proposed column.
@@ -27822,9 +27850,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       t.estimate += faComputeEstimate(l);
       t.forecast += faComputeForecast(l);
       t.budget += l.current_budget || 0;
-      // FA directive 2026-05-05: Capital — no proposed budget.
+      // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
+      // (B1/B4): never-budgeted income also contributes 0.
       const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-      t.proposed += isCap ? 0 : (l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0))));
+      t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0))));
     });
     return t;
   }
@@ -30617,6 +30646,8 @@ function computeProposed(line) {
     if (line.sheet_name === 'Capital' || (line.category || '').toLowerCase() === 'capital') {
         return 0;
     }
+    // FA 2026-06-17 (B1/B4): never-budgeted income (prepaid / dividend / messenger).
+    if (line.no_budget) return 0;
     // FA directive 2026-05-18: PM portal moved to single-entry — proposed_budget
     // is the source of truth when set. Null/undefined means PM hasn't entered;
     // 0 means PM explicitly zeroed. Both render as "blank" in the PM input but
@@ -33140,9 +33171,10 @@ function sumLines(lines) {
     t.estimate += computeEstimate(l);
     t.forecast += computeForecast(l);
     t.budget += l.current_budget || 0;
-    // FA directive 2026-05-05: Capital — no proposed budget.
+    // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
+    // (B1/B4): never-budgeted income also contributes 0.
     const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-    t.proposed += isCap ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))));
+    t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))));
   });
   return t;
 }
@@ -33185,10 +33217,11 @@ function _buildSumFormula(cellId) {
     return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
   }
   if (field === 'proposed') {
-    // FA directive 2026-05-05: Capital — no proposed budget.
+    // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
+    // (B1/B4): never-budgeted income also contributes 0.
     const vals = lines.map(l => {
       const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-      return Math.round(isCap ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
+      return Math.round((isCap || l.no_budget) ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
     });
     return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
   }
