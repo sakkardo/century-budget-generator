@@ -18826,6 +18826,7 @@ function formulaBarAccept() {
       if (badge) { badge.textContent = 'fx'; badge.style.background = '#dbeafe'; badge.style.color = 'var(--blue)'; badge.style.borderColor = 'var(--blue)'; }
       faAutoSave(gl, 'proposed_budget', rounded);
       faAutoSave(gl, 'proposed_formula', el.dataset.proposedFormula);
+      faRepaintVarPct(gl);   // FA #B6: refresh $ Var / % Chg immediately
       faUpdateSheetTotals();
     } else {
       const num = parseDollar(typed);
@@ -18838,6 +18839,7 @@ function formulaBarAccept() {
         if (badge) { badge.textContent = '✎'; badge.style.background = '#f97316'; badge.style.color = '#fff'; badge.style.borderColor = '#ea580c'; }
         faAutoSave(gl, 'proposed_budget', Math.round(num));
         faAutoSave(gl, 'proposed_formula', null);
+        faRepaintVarPct(gl);   // FA #B6: refresh $ Var / % Chg immediately
         faUpdateSheetTotals();
       }
     }
@@ -19046,6 +19048,37 @@ function pctCellBlur(el) {
 }
 
 // When an input field changes, recalculate computed cells in that row and save
+// FA 2026-06-17 (B6): repaint a row's $ Var + % Chg cells from the current
+// proposed + budget. faLineChanged already does this for estimate/forecast/%
+// edits, but a PROPOSED accept (formulaBarAccept) only touched the proposed
+// cell + sheet total, so $ Var / % Chg stayed stale until the page was
+// reopened. Calling this right after a proposed accept makes the whole row
+// reflect the change immediately.
+function faRepaintVarPct(gl) {
+  const propEl = document.getElementById('prop_' + gl);
+  if (!propEl) return;
+  const budEl = document.getElementById('bud_' + gl);
+  const proposed = parseFloat(propEl.dataset.raw) || 0;
+  const budget = budEl ? (parseFloat(budEl.dataset.raw) || 0) : 0;
+  const variance = proposed - budget;
+  const pctChange = budget ? ((proposed - budget) / budget) : 0;
+  const varEl = document.getElementById('var_' + gl);
+  if (varEl) {
+    varEl.value = fmt(variance);
+    varEl.dataset.raw = Math.round(variance);
+    varEl.dataset.formula = '= ' + fmt(proposed) + ' - ' + fmt(budget);
+    varEl.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+    const varTd = varEl.closest('td');
+    if (varTd) varTd.style.color = variance >= 0 ? 'var(--red)' : 'var(--green)';
+  }
+  const pctEl = document.getElementById('pct_' + gl);
+  if (pctEl) {
+    pctEl.value = (pctChange * 100).toFixed(1) + '%';
+    pctEl.dataset.raw = pctChange;
+    pctEl.dataset.formula = '= (' + fmt(proposed) + ' - ' + fmt(budget) + ') / ' + fmt(budget);
+  }
+}
+
 function faLineChanged(gl, field, value) {
   const getRaw = (id) => {
     const el = document.getElementById(id);
