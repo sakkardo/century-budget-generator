@@ -6957,6 +6957,12 @@ def create_workflow_blueprint(db):
             (f"{BUDGET_YEAR-1}\n12-Mo Forecast", "right"),
             (f"{BUDGET_YEAR-1}\nCurrent Budget", "right"),
             ("Increase\n%", "right"),
+            # FA 2026-06-17: the builder writes an editable Proposed-$ Override
+            # column (M) between Increase% and the computed Proposed. The header
+            # list had been missing it, so every column from Proposed rightward
+            # rendered one cell left of its label (proposed values showed under
+            # "$ Var"). Add the label so all 16 columns line up.
+            ("Proposed $\nOverride", "right"),
             (f"{BUDGET_YEAR}\nProposed", "right"),
             ("$ Var\nvs Prior", "right"),
             ("% Change", "right"),
