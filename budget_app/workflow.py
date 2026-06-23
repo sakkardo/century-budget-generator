@@ -6991,6 +6991,12 @@ def create_workflow_blueprint(db):
         # client editing that one cell re-annualizes every detail line.
         ym_ref = "'yardi_data (2)'!$M$2"
         import budget_math
+        # FA 2026-06-17: mirror the dashboard's no-budget rule (B1 prepaid /
+        # B4 dividend+messenger) in the export so proposed ships $0 too.
+        try:
+            from models import gl_is_non_budgeted as _gl_is_non_budgeted
+        except ImportError:
+            from budget_app.models import gl_is_non_budgeted as _gl_is_non_budgeted
 
         # FA 2026-06-16 (values-snapshot): the detail tabs now write computed
         # VALUES, not =SUMIF/formula strings. The old formula-only export shipped
@@ -7051,18 +7057,36 @@ def create_workflow_blueprint(db):
             _glfull = (l.gl_code or "").strip()
             is_fixed = (not is_capital) and (
                 _glbase in FIXED_FORECAST_GL_BASES or _glfull in FIXED_FORECAST_GL_FULL)
-            # I: Remaining Projection (budget_math.estimate; capital=0; fixed=budget−ytd)
+            # FA pins so the workbook ties to the product: manual estimate/
+            # forecast overrides win (the FA's "or manual" path), RE-tax credit
+            # income (4105-4125) posts at year-end → no May-Dec estimate (#B2),
+            # and prepaid/dividend/messenger are never budgeted → proposed 0
+            # (#B1/#B4). Without these the export re-extrapolated credits and
+            # budgeted prepaid, diverging from what the FA sees on the tabs.
+            _est_ovr = l.estimate_override
+            _fcst_ovr = l.forecast_override
+            _is_credit = (l.gl_code or "")[:4] in ("4105", "4110", "4115", "4120", "4125")
+            _no_budget = _gl_is_non_budgeted(l.gl_code, entity_code)
+            # I: Remaining Projection
             if is_capital:
                 _remaining = 0.0
+            elif _est_ovr is not None:
+                _remaining = float(_est_ovr)
             elif is_fixed:
                 _remaining = _curbud - _ytd
+            elif _is_credit:
+                _remaining = 0.0
             else:
                 _remaining = budget_math.estimate(_ytd, _accr, _unpaid, _prior, _ym, payroll=is_payroll)
             set_cell(9, _remaining, fmt=FMT_CURRENCY, font=FONT_FORMULA)
-            # J: 12-Month Forecast (fixed → budget; capital → ytd+accr+unpaid+remaining; else budget_math.forecast)
-            if is_fixed:
+            # J: 12-Month Forecast
+            if _fcst_ovr is not None:
+                _fcst = float(_fcst_ovr)
+            elif is_fixed:
                 _fcst = _curbud
             elif is_capital:
+                _fcst = _ytd + _accr + _unpaid + _remaining
+            elif _is_credit:
                 _fcst = _ytd + _accr + _unpaid + _remaining
             else:
                 _fcst = budget_math.forecast(_ytd, _accr, _unpaid, _prior, _ym, payroll=is_payroll)
@@ -7089,8 +7113,9 @@ def create_workflow_blueprint(db):
             set_cell(12, incr_input, fmt=FMT_PERCENT, fill=FILL_INPUT, font=FONT_INPUT)
             # M: Proposed $ Override
             set_cell(13, override_val, fmt=FMT_CURRENCY, fill=FILL_INPUT, font=FONT_INPUT)
-            # N: Proposed (capital=0; fixed=budget×(1+incr); else override or forecast×(1+incr))
-            if is_capital:
+            # N: Proposed (capital + never-budgeted = 0; fixed=budget×(1+incr);
+            #    else override or forecast×(1+incr))
+            if is_capital or _no_budget:
                 _proposed = 0.0
             elif is_fixed:
                 _proposed = _curbud * (1 + incr_input)
