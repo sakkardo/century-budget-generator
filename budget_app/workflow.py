@@ -4430,6 +4430,77 @@ def create_workflow_blueprint(db):
         return jsonify(line.to_dict())
 
 
+    # ── B7 (210 FA Notes, 2026-06-17): add an Unmapped GL line to a budget ──
+    # The FA's "6744 Parking shows nowhere; reclass doesn't add it to G&A"
+    # gap. Reclass only moves $ between two existing GLs; it never put an
+    # orphan onto a tab + into the budget. These two endpoints do: the picker
+    # lists the building's Summary lines, and map-to-summary appends the GL to
+    # the chosen row's prefixes (→ rolls into the budget total) AND moves the
+    # line onto that row's detail tab (source_tab) so it shows where expected.
+    @bp.route("/api/budget-summary-rows/<entity_code>", methods=["GET"])
+    def api_budget_summary_rows(entity_code):
+        """Minimal list of DATA Summary rows (mapping targets) for the B7
+        'add to budget' picker on the Unmapped tab."""
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(BudgetSummaryRow.display_order).all()
+        out = [{"id": r.id, "label": r.label, "section": r.section,
+                "source_tab": r.source_tab}
+               for r in rows if (r.row_type == "data") and r.label]
+        return jsonify({"rows": out})
+
+    @bp.route("/api/lines/<entity_code>/map-to-summary", methods=["PUT"])
+    def map_line_to_summary(entity_code):
+        """Map an Unmapped budget line into a Summary row: append the GL to that
+        row's gl_prefixes (so it rolls into the budget) and move the line onto
+        the row's detail tab. Idempotent on the prefix (dedupes)."""
+        import json as _json
+        data = request.get_json() or {}
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        gl_code = (data.get("gl_code") or "").strip()
+        row_id = data.get("summary_row_id")
+        line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl_code).first()
+        if not line:
+            return jsonify({"error": "Line not found"}), 404
+        srow = BudgetSummaryRow.query.filter_by(
+            id=row_id, entity_code=entity_code, budget_year=BUDGET_YEAR).first()
+        if not srow:
+            return jsonify({"error": "Summary row not found"}), 404
+        try:
+            try:
+                prefixes = _json.loads(srow.gl_prefixes_json) if srow.gl_prefixes_json else []
+                if not isinstance(prefixes, list):
+                    prefixes = []
+            except Exception:
+                prefixes = []
+            prefix_added = False
+            if gl_code not in prefixes:
+                prefixes.append(gl_code)
+                srow.gl_prefixes_json = _json.dumps(prefixes)
+                prefix_added = True
+            old_sheet = line.sheet_name
+            target_sheet = srow.source_tab or line.sheet_name
+            line.sheet_name = target_sheet
+            line.category = SHEET_TO_CATEGORY.get(target_sheet, line.category or "other")
+            db.session.add(BudgetRevision(
+                budget_id=budget.id, budget_line_id=line.id,
+                action="map_to_summary", field_name="sheet_name",
+                old_value=str(old_sheet), new_value=str(target_sheet),
+                notes="Mapped %s into summary line '%s' (tab %s)" % (
+                    gl_code, srow.label, target_sheet),
+                source="web", user_id=_read_fa_id_from_cookie(),
+            ))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "map failed: %s" % str(e)}), 500
+        return jsonify({"status": "ok", "gl_code": gl_code, "summary_row": srow.label,
+                        "target_sheet": target_sheet, "prefix_added": prefix_added,
+                        "line": line.to_dict()})
+
+
     @bp.route("/api/reclass/accept", methods=["POST"])
     def accept_pm_reclass():
         """FA accepts PM's invoice reclass — moves ytd_actual between GL lines."""
@@ -20080,6 +20151,78 @@ function renderSheet(sheetName, sheetLines, tabEl, opts) {
   // All sheets are editable for the FA — this is the budget workbench
   renderEditableSheet(sheetName, sheetLines, contentDiv);
   setTimeout(faUpdateZeroToggle, 50);
+  // FA #B7 (2026-06-17): on the Unmapped tab, inject a per-row "Add to budget"
+  // picker so an orphan GL can be mapped into a Summary line (→ tab + budget).
+  if (sheetName === 'Unmapped') setTimeout(faEnhanceUnmappedTab, 60);
+}
+
+// ── B7 (2026-06-17): "Add to budget" picker on the Unmapped tab ─────────
+// An Unmapped GL line has no Summary mapping, so it never reaches the budget
+// (the FA's 6744 Parking gripe). This injects a per-row picker of the
+// building's Summary lines; choosing one calls map-to-summary (appends the GL
+// to that row's prefixes + moves the line onto its detail tab), then reloads
+// so the change shows everywhere (tab + Summary + totals). Decoupled from the
+// render internals — runs after the Unmapped sheet paints.
+let _b7SummaryRows = null;
+
+async function faEnhanceUnmappedTab() {
+  const host = document.getElementById('sheetContent');
+  if (!host) return;
+  const rows = host.querySelectorAll('tr[data-gl]');
+  if (!rows.length) return;
+  if (_b7SummaryRows === null) {
+    try {
+      const r = await fetch('/api/budget-summary-rows/' + entityCode);
+      const d = await r.json();
+      _b7SummaryRows = (d && d.rows) ? d.rows : [];
+    } catch (e) { _b7SummaryRows = []; }
+  }
+  let optsHtml = '<option value="">➕ Add to budget…</option>';
+  _b7SummaryRows.forEach(function (r) {
+    const lab = (r.section ? (r.section + ' › ') : '') + r.label;
+    optsHtml += '<option value="' + r.id + '">' + lab.replace(/</g, '&lt;') + '</option>';
+  });
+  rows.forEach(function (tr) {
+    const gl = tr.getAttribute('data-gl');
+    if (!gl) return;
+    const descTd = tr.querySelector('td.frozen-desc') || tr.querySelector('td');
+    if (!descTd || descTd.querySelector('.b7-map')) return;
+    const sel = document.createElement('select');
+    sel.className = 'b7-map';
+    sel.dataset.gl = gl;
+    sel.title = 'Add this account to a budget (Summary) line — puts it on that tab and into the budget total';
+    sel.style.cssText = 'margin-left:8px; font-size:11px; max-width:220px; border:1px solid var(--blue); border-radius:4px; color:var(--blue); background:#eff6ff; cursor:pointer;';
+    sel.innerHTML = optsHtml;
+    sel.onchange = function () { faMapToBudget(this); };
+    descTd.appendChild(sel);
+  });
+}
+
+async function faMapToBudget(sel) {
+  const gl = sel.dataset.gl;
+  const rowId = sel.value;
+  if (!rowId) return;
+  const label = sel.options[sel.selectedIndex].text;
+  if (!confirm('Add account ' + gl + ' to budget line:\n\n  ' + label +
+               '\n\nThis puts it on that tab and rolls it into the budget total.')) {
+    sel.value = '';
+    return;
+  }
+  sel.disabled = true;
+  try {
+    const r = await fetch('/api/lines/' + entityCode + '/map-to-summary', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gl_code: gl, summary_row_id: parseInt(rowId, 10) })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    location.reload();
+  } catch (e) {
+    alert('Could not add to budget: ' + e.message);
+    sel.disabled = false;
+    sel.value = '';
+  }
 }
 
 // ── RE Taxes Tab — Custom Calculation Layout ──────────────────────────────
