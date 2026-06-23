@@ -9776,10 +9776,15 @@ def create_workflow_blueprint(db):
                                     return 4105 <= int(_b) <= 4125
                                 except Exception:
                                     return False
-                            if (_re_tax_exemptions_budget is not None
-                                    and _bases
-                                    and all(_in_tbc_range(b) for b in _bases)):
-                                col7 = round(-abs(float(_re_tax_exemptions_budget)), 2)
+                            # FA B5=A (2026-06-17): the income Tax Benefit
+                            # Credits row's 2027 proposed comes ONLY from the
+                            # RE-tax tab (negated exemptions) — $0 when not yet
+                            # entered. Fire for ANY TBC row (even with blank
+                            # exemptions) so it does NOT fall through to the #19
+                            # prior-approved-budget (col6) pin below. 829 (RET
+                            # entered) is unchanged; 210 (RET blank) → $0.
+                            if _bases and all(_in_tbc_range(b) for b in _bases):
+                                col7 = round(-abs(float(_re_tax_exemptions_budget or 0)), 2)
                             _pin_eligible = (
                                 bool(_bases & {"4200"})
                                 or (bool(_bases & {"4010", "4020", "4030", "4040"})
