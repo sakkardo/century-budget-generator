@@ -7620,7 +7620,10 @@ def create_workflow_blueprint(db):
         rr += 1
         for nm in ["Budget Summary", "Income", "Payroll", "Energy", "Water & Sewer",
                    "Repairs & Supplies", "Gen & Admin", "Capital"]:
-            hc = ws.cell(row=rr, column=2, value=f'=HYPERLINK("#\'{nm}\'!A1","{nm}")')
+            # E3 values-snapshot: visible text + a real internal hyperlink, not a
+            # =HYPERLINK() formula (which showed blank in non-recalc previews).
+            hc = ws.cell(row=rr, column=2, value=nm)
+            hc.hyperlink = f"#'{nm}'!A1"
             hc.font = Font(name="Calibri", size=11, color="185FA5", underline="single")
             ws.merge_cells(start_row=rr, start_column=2, end_row=rr, end_column=4)
             ws.row_dimensions[rr].height = 18
@@ -8390,12 +8393,30 @@ def create_workflow_blueprint(db):
                 ht = 50
                 for j, yl in enumerate([BUDGET_YEAR-3, BUDGET_YEAR-2, BUDGET_YEAR-1, BUDGET_YEAR]):
                     ws.cell(row=ht, column=13+j, value=str(yl)).font = Font(name="Calibri", size=9, color="7A8791")
+                # E3 values-snapshot: write each trend cell as the VALUE pulled
+                # from the summary's own subtotal rows (was a live =$C$srow ref
+                # that left the chart blank in non-recalc previews). Net falls
+                # back to Revenue-Expenses if its source cell is a formula; if a
+                # source value can't be resolved, keep the live ref.
+                _COLN = {"C": 3, "D": 4, "H": 8, "I": 9}
+                def _srcnum(_srow, _coln):
+                    _v = ws.cell(row=_srow, column=_coln).value
+                    return _v if isinstance(_v, (int, float)) else None
                 for i, (lab, srow) in enumerate([("Revenue", inc), ("Expenses", exp), ("Net", net)]):
                     if not srow:
                         continue
                     ws.cell(row=ht+1+i, column=12, value=lab).font = Font(name="Calibri", size=9, color="1A1714")
                     for j, colL in enumerate(["C", "D", "H", "I"]):
-                        ws.cell(row=ht+1+i, column=13+j, value=f"=${colL}${srow}").number_format = FMT_CURRENCY
+                        _cn = _COLN[colL]
+                        _val = _srcnum(srow, _cn)
+                        if _val is None and lab == "Net":
+                            _iv = _srcnum(inc, _cn) if inc else None
+                            _ev = _srcnum(exp, _cn) if exp else None
+                            _val = (_iv - _ev) if (_iv is not None and _ev is not None) else None
+                        tc2 = (ws.cell(row=ht+1+i, column=13+j, value=round(_val, 2))
+                               if _val is not None
+                               else ws.cell(row=ht+1+i, column=13+j, value=f"=${colL}${srow}"))
+                        tc2.number_format = FMT_CURRENCY
                 tr = BarChart(); tr.type = "col"
                 tr.title = f"Revenue · Expenses · Net  ({BUDGET_YEAR-3} → {BUDGET_YEAR})"
                 tr.add_data(Reference(ws, min_col=12, max_col=16, min_row=ht+1, max_row=ht+3),
@@ -8516,12 +8537,28 @@ def create_workflow_blueprint(db):
             ht = 62  # helper table, parked low/right and out of the way
             for j, yl in enumerate([BUDGET_YEAR-3, BUDGET_YEAR-2, BUDGET_YEAR-1, BUDGET_YEAR]):
                 dws.cell(row=ht, column=13+j, value=str(yl))
+            # E3 values-snapshot: pull VALUES from the main summary's subtotal
+            # rows (was a live ='Summary'!$C$srow ref → blank chart in previews).
+            _COLN2 = {"C": 3, "D": 4, "H": 8, "I": 9}
+            _mainws = wb[new_title]
+            def _srcnum2(_srow, _coln):
+                _v = _mainws.cell(row=_srow, column=_coln).value
+                return _v if isinstance(_v, (int, float)) else None
             for i, (lab, srow) in enumerate([("Revenue", inc), ("Expenses", exp), ("Net", net)]):
                 if not srow:
                     continue
                 dws.cell(row=ht+1+i, column=12, value=lab)
                 for j, colL in enumerate(["C", "D", "H", "I"]):
-                    dws.cell(row=ht+1+i, column=13+j, value=f"='{new_title}'!${colL}${srow}").number_format = '"$"#,##0'
+                    _cn = _COLN2[colL]
+                    _val = _srcnum2(srow, _cn)
+                    if _val is None and lab == "Net":
+                        _iv = _srcnum2(inc, _cn) if inc else None
+                        _ev = _srcnum2(exp, _cn) if exp else None
+                        _val = (_iv - _ev) if (_iv is not None and _ev is not None) else None
+                    dc2 = (dws.cell(row=ht+1+i, column=13+j, value=round(_val, 2))
+                           if _val is not None
+                           else dws.cell(row=ht+1+i, column=13+j, value=f"='{new_title}'!${colL}${srow}"))
+                    dc2.number_format = '"$"#,##0'
             if inc and exp:
                 tb = BarChart(); tb.type = "col"; tb.title = None
                 tb.add_data(Reference(dws, min_col=12, max_col=16, min_row=ht+1, max_row=ht+3),
@@ -8723,17 +8760,19 @@ def create_workflow_blueprint(db):
                 continue
             current_year = None
             year_start_row = None
+            year_sum = 0.0   # E3 values-snapshot: subtotal as a VALUE (no =SUM)
             for p in periods:
                 if p.year != current_year:
                     # Close previous year subtotal if any
                     if year_start_row is not None and year_start_row < r:
-                        sub_cell = ws.cell(row=r, column=6,
-                                           value=f"=SUM(F{year_start_row}:F{r-1})")
+                        sub_cell = ws.cell(row=r, column=6, value=round(year_sum, 2))
+                        sub_cell.number_format = "$#,##0"
                         sub_cell.font = Font(bold=True)
                         sub_cell.fill = TOTAL_FILL
                         ws.cell(row=r, column=2, value=f"  {current_year} total").font = Font(italic=True, color="8A7E72")
                         r += 1
                     current_year = p.year
+                    year_sum = 0.0
                     ws.cell(row=r, column=3, value=str(current_year)).font = Font(bold=True, color="8A7E72")
                     r += 1
                     year_start_row = r
@@ -8747,13 +8786,17 @@ def create_workflow_blueprint(db):
                 # Months count (FA-editable input)
                 months_cell = ws.cell(row=r, column=5, value=int(p.months_count or 0))
                 stamp(months_cell)
-                # Annualized = formula referencing the row's rent × months
-                ann_cell = ws.cell(row=r, column=6, value=f"=D{r}*E{r}")
+                # Annualized — computed VALUE (E3 values-snapshot; was =D*E, which
+                # opened blank in non-recalc previews like Quick Look / Drive).
+                _ann = round(float(p.monthly_rent or 0) * int(p.months_count or 0), 2)
+                year_sum += _ann
+                ann_cell = ws.cell(row=r, column=6, value=_ann)
                 ann_cell.number_format = "$#,##0"
                 r += 1
             # Close final year for this tenant
             if year_start_row is not None and year_start_row < r:
-                sub_cell = ws.cell(row=r, column=6, value=f"=SUM(F{year_start_row}:F{r-1})")
+                sub_cell = ws.cell(row=r, column=6, value=round(year_sum, 2))
+                sub_cell.number_format = "$#,##0"
                 sub_cell.font = Font(bold=True)
                 sub_cell.fill = TOTAL_FILL
                 ws.cell(row=r, column=2, value=f"  {current_year} total").font = Font(italic=True, color="8A7E72")
@@ -8794,21 +8837,19 @@ def create_workflow_blueprint(db):
                 # (cbg_expenses from the Summary). Server snapshot only as a
                 # fallback when neither basis name resolves.
                 _emodel = (t.escalation_model or "").lower()
-                _ebasis = ("cbg_re_tax_net" if _emodel == "re_tax"
-                           else "cbg_expenses" if _emodel == "opex" else None)
-                if _ebasis:
-                    ac = ws.cell(row=r, column=6,
-                                 value=f"=MAX(0,IFERROR({_ebasis},0)-E{r})*D{r}")
-                else:
-                    computed = _commercial_compute_escalations(entity_code)
-                    amt = next((e["amount"] for e in computed if e["tenant_id"] == t.id), 0)
-                    ac = ws.cell(row=r, column=6, value=float(amt))
+                # E3 values-snapshot: ship the computed escalation VALUE. Was a
+                # live =MAX(0,IFERROR(cbg_re_tax_net/cbg_expenses,0)-base)*share
+                # formula that opened BLANK in non-recalc previews. Same math the
+                # product + Summary escalation feed (4520) use.
+                _esc = _commercial_compute_escalations(entity_code)
+                amt = next((e["amount"] for e in _esc if e["tenant_id"] == t.id), 0)
+                ac = ws.cell(row=r, column=6, value=round(float(amt or 0), 2))
                 ac.number_format = "$#,##0"
                 ac.fill = TOTAL_FILL
                 ac.font = Font(bold=True)
                 ac.comment = Comment(
                     f"Escalation = share × max(0, current {(_emodel or 'basis')} − base year). "
-                    f"Live — recomputes if the basis or base year changes.",
+                    f"Snapshot of the product value at export time.",
                     "Century Product",
                 )
                 r += 1
