@@ -273,6 +273,12 @@ def register_models(db):
         proposed_budget = db.Column(db.Float, default=0.0)
         proposed_formula = db.Column(db.Text, nullable=True)  # e.g. "=3462.12*1.04*12"
 
+        # CAM allocation (condos, 2026-06-17): per-line split code for the
+        # Schedule A-1 matrix — "B" building-wide (× class share), a class name
+        # (100% to that class), or "R" (residential). Seeds the default split;
+        # individual cells are overridable in CamAllocationOverride.
+        cam_code = db.Column(db.String(40), nullable=True)
+
         # FA review of PM proposals
         fa_proposed_status = db.Column(db.String(20), nullable=True)  # null=pending, accepted, rejected, commented
         fa_proposed_note = db.Column(db.Text, default="")
@@ -315,6 +321,7 @@ def register_models(db):
                 "no_budget": gl_is_non_budgeted(
                     self.gl_code,
                     (self.budget.entity_code if self.budget is not None else None)),
+                "cam_code": self.cam_code,
                 "estimate_override": self.estimate_override,
                 "forecast_override": self.forecast_override,
                 # FA dir 2026-05-17: formula strings parallel to overrides
@@ -922,6 +929,66 @@ def register_models(db):
                 "updated_by": self.updated_by,
             }
 
+    class CamClass(db.Model):
+        """A condo unit class for CAM (common-area) cost allocation.
+
+        Each class carries a proportionate common-interest share (decimal,
+        summing to 1.0 across a building's classes) and names the Summary
+        income row it funds (e.g. "Common Charges - Residential"). The CAM
+        Allocation tab (Schedule A-1) splits each operating-expense GL across
+        these classes and drives the per-class common charges.
+        """
+        __tablename__ = "cam_classes"
+
+        id = db.Column(db.Integer, primary_key=True)
+        entity_code = db.Column(db.String(50), nullable=False, index=True)
+        budget_year = db.Column(db.Integer, nullable=False, default=BUDGET_YEAR)
+        name = db.Column(db.String(100), nullable=False)  # Residential / Retail / Garage / …
+        # Common-interest share as decimal: 0.765953 = 76.5953%. Σ over a
+        # building's classes must equal 1.0 (validated on save).
+        share_pct = db.Column(db.Float, nullable=False, default=0.0)
+        # Summary income row this class's common charges feed.
+        summary_row_label = db.Column(db.String(255), nullable=True)
+        sort_order = db.Column(db.Integer, default=0)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "entity_code": self.entity_code,
+                "budget_year": self.budget_year,
+                "name": self.name,
+                "share_pct": self.share_pct,
+                "summary_row_label": self.summary_row_label,
+                "sort_order": self.sort_order,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            }
+
+    class CamAllocationOverride(db.Model):
+        """A hand-tuned CAM cell: the $ amount of one expense GL allocated to
+        one unit class. Absent = use the line's cam_code default split
+        (B = building-wide × share; class name = 100% to that class)."""
+        __tablename__ = "cam_allocation_overrides"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False, index=True)
+        gl_code = db.Column(db.String(50), nullable=False)
+        cam_class_id = db.Column(db.Integer, db.ForeignKey("cam_classes.id"), nullable=False)
+        amount = db.Column(db.Float, nullable=True)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "budget_id": self.budget_id,
+                "gl_code": self.gl_code,
+                "cam_class_id": self.cam_class_id,
+                "amount": (float(self.amount) if self.amount is not None else None),
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            }
+
     return {
         "User": User,
         "BuildingAssignment": BuildingAssignment,
@@ -941,4 +1008,6 @@ def register_models(db):
         "CommercialTenantBillback": CommercialTenantBillback,
         "BudgetSummaryRow": BudgetSummaryRow,
         "BuildingInfo": BuildingInfo,
+        "CamClass": CamClass,
+        "CamAllocationOverride": CamAllocationOverride,
     }

@@ -726,6 +726,9 @@ with app.app_context():
             ("audit_uploads", "summary_overrides", "TEXT"),
             ("audit_uploads", "sharepoint_web_url", "TEXT"),
             ("building_info", "common_charges_history_json", "TEXT"),
+            # CAM allocation (condos, 2026-06-17)
+            ("budgets", "cam_enabled", "BOOLEAN DEFAULT FALSE"),
+            ("budget_lines", "cam_code", "VARCHAR(40)"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [
@@ -745,6 +748,26 @@ with app.app_context():
                 entity_code VARCHAR(50) NOT NULL,
                 budget_year INTEGER NOT NULL,
                 assumptions_json TEXT DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            # CAM allocation (condos, 2026-06-17): unit classes + per-cell overrides
+            """CREATE TABLE IF NOT EXISTS cam_classes (
+                id SERIAL PRIMARY KEY,
+                entity_code VARCHAR(50) NOT NULL,
+                budget_year INTEGER NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                share_pct FLOAT NOT NULL DEFAULT 0,
+                summary_row_label VARCHAR(255),
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS cam_allocation_overrides (
+                id SERIAL PRIMARY KEY,
+                budget_id INTEGER NOT NULL REFERENCES budgets(id),
+                gl_code VARCHAR(50) NOT NULL,
+                cam_class_id INTEGER NOT NULL REFERENCES cam_classes(id),
+                amount FLOAT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
         ]

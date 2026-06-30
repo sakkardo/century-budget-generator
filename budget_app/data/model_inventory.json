@@ -15,7 +15,7 @@
   "table": "budgets"
  },
  "BudgetLine": {
-  "columns": 34,
+  "columns": 35,
   "relationships": 1,
   "table": "budget_lines"
  },
@@ -43,6 +43,16 @@
   "columns": 6,
   "relationships": 0,
   "table": "building_visits"
+ },
+ "CamAllocationOverride": {
+  "columns": 6,
+  "relationships": 0,
+  "table": "cam_allocation_overrides"
+ },
+ "CamClass": {
+  "columns": 9,
+  "relationships": 0,
+  "table": "cam_classes"
  },
  "CommercialRentPeriod": {
   "columns": 8,
