@@ -11914,6 +11914,64 @@ def create_workflow_blueprint(db):
         result["reconciles"] = abs(col_sum - result["grand_total"]) < 1.0
         return result
 
+    def _cam_find_summary_row(entity_code, label, class_name=None):
+        """Find the Summary income row a CAM class funds. Prefer an exact match
+        on the class's summary_row_label; else a Common-Charges/Maintenance row
+        whose label contains the class name. Returns the row or None."""
+        want = (label or "").strip().lower()
+        cname = (class_name or "").strip().lower()
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).all()
+        if want:
+            for r in rows:
+                if (r.label or "").strip().lower() == want:
+                    return r
+        if cname:
+            for r in rows:
+                rl = (r.label or "").strip().lower()
+                if cname in rl and ("common charge" in rl or "maintenance" in rl):
+                    return r
+        return None
+
+    def _cam_recompute_summary(entity_code, write=True):
+        """Feed each class's allocated-expense column total into its Summary
+        common-charge income row (col7 = the common charges that class must
+        cover — like _commercial_recompute_summary feeds 4040/4520). A CAM-set
+        col7_proposed_budget is read first in the Summary cascade and survives
+        the income/fixed-forecast pins (both only fire when col7 is None), so it
+        displays exactly like commercial rent. NO-OP (no write) when CAM is
+        disabled, so non-CAM / disabled buildings are never touched (silo-safe).
+        write=False returns the same mapping WITHOUT committing (GET preview)."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget or not getattr(budget, "cam_enabled", False):
+            return {"enabled": False, "classes": []}
+        comp = _cam_compute(entity_code)
+        ct = comp["column_totals"]
+        out = []
+        touched = False
+        for c in comp["classes"]:
+            total = round(float(ct.get(c["id"], 0.0) or 0.0), 2)
+            new_col7 = total if abs(total) > 0.005 else None
+            row = _cam_find_summary_row(entity_code, c.get("summary_row_label"), c.get("name"))
+            out.append({
+                "class_id": c["id"], "class_name": c["name"],
+                "allocated_expense": total,
+                "row_id": row.id if row else None,
+                "label": (row.label if row else (c.get("summary_row_label") or c.get("name"))),
+                "old_col7": (row.col7_proposed_budget if row else None),
+                "new_col7": new_col7,
+                "matched": bool(row),
+            })
+            if row and write:
+                row.col7_proposed_budget = new_col7
+                row.updated_at = datetime.utcnow()
+                touched = True
+        if write and touched:
+            db.session.commit()
+        return {"enabled": True, "grand_total": comp["grand_total"],
+                "reconciles": comp["reconciles"], "shares_ok": comp["shares_ok"],
+                "classes": out}
+
     @bp.route("/api/cam/<entity_code>", methods=["GET"])
     def api_cam_get(entity_code):
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
@@ -11921,6 +11979,7 @@ def create_workflow_blueprint(db):
         data["entity_code"] = entity_code
         data["cam_enabled"] = bool(budget and getattr(budget, "cam_enabled", False))
         data["building_type"] = (budget.building_type if budget else "") or ""
+        data["summary_sync"] = _cam_recompute_summary(entity_code, write=False)  # read-only preview
         return jsonify(data)
 
     @bp.route("/api/cam/<entity_code>/enable", methods=["PUT"])
@@ -11931,7 +11990,9 @@ def create_workflow_blueprint(db):
         data = request.get_json() or {}
         budget.cam_enabled = bool(data.get("enabled", True))
         db.session.commit()
-        return jsonify({"status": "ok", "cam_enabled": bool(budget.cam_enabled)})
+        sync = _cam_recompute_summary(entity_code)
+        return jsonify({"status": "ok", "cam_enabled": bool(budget.cam_enabled),
+                        "summary_sync": sync})
 
     @bp.route("/api/cam/<entity_code>/class", methods=["POST"])
     def api_cam_class_create(entity_code):
@@ -11946,7 +12007,9 @@ def create_workflow_blueprint(db):
                      sort_order=int(data.get("sort_order") or n))
         db.session.add(c)
         db.session.commit()
-        return jsonify(c.to_dict())
+        result = c.to_dict()
+        result["summary_sync"] = _cam_recompute_summary(entity_code)
+        return jsonify(result)
 
     @bp.route("/api/cam/<entity_code>/class/<int:class_id>", methods=["PUT"])
     def api_cam_class_update(entity_code, class_id):
@@ -11970,7 +12033,9 @@ def create_workflow_blueprint(db):
             except (TypeError, ValueError):
                 pass
         db.session.commit()
-        return jsonify(c.to_dict())
+        result = c.to_dict()
+        result["summary_sync"] = _cam_recompute_summary(entity_code)
+        return jsonify(result)
 
     @bp.route("/api/cam/<entity_code>/class/<int:class_id>", methods=["DELETE"])
     def api_cam_class_delete(entity_code, class_id):
@@ -11981,7 +12046,8 @@ def create_workflow_blueprint(db):
         CamAllocationOverride.query.filter_by(cam_class_id=c.id).delete()
         db.session.delete(c)
         db.session.commit()
-        return jsonify({"status": "deleted", "id": class_id})
+        sync = _cam_recompute_summary(entity_code)
+        return jsonify({"status": "deleted", "id": class_id, "summary_sync": sync})
 
     @bp.route("/api/cam/<entity_code>/line-code", methods=["PUT"])
     def api_cam_line_code(entity_code):
@@ -11995,7 +12061,9 @@ def create_workflow_blueprint(db):
             return jsonify({"error": "line not found"}), 404
         line.cam_code = (data.get("cam_code") or None)
         db.session.commit()
-        return jsonify({"status": "ok", "gl_code": gl, "cam_code": line.cam_code})
+        sync = _cam_recompute_summary(entity_code)
+        return jsonify({"status": "ok", "gl_code": gl, "cam_code": line.cam_code,
+                        "summary_sync": sync})
 
     @bp.route("/api/cam/<entity_code>/cell", methods=["PUT"])
     def api_cam_cell(entity_code):
@@ -12022,7 +12090,8 @@ def create_workflow_blueprint(db):
                 db.session.add(CamAllocationOverride(
                     budget_id=budget.id, gl_code=gl, cam_class_id=cid, amount=amt))
         db.session.commit()
-        return jsonify({"status": "ok"})
+        sync = _cam_recompute_summary(entity_code)
+        return jsonify({"status": "ok", "summary_sync": sync})
 
 
     # ─── Presentation Routes ───────────────────────────────────────────────
@@ -17357,7 +17426,25 @@ async function renderCamTab(contentDiv) {
     (data.reconciles
       ? '✓ Reconciled — class columns sum to total operating expense (' + fmt0(data.grand_total) + ').'
       : '⚠ Columns don\'t reconcile to the line totals — check your overrides.') + '</div>';
-  html += '<p style="font-size:11px; color:var(--gray-400); margin-top:4px;">Per-class common charges + increase % feed the Summary once enabled (coming next).</p>';
+  // Summary feed indicator — each class's allocated expense → its common-charge
+  // income row on the Summary (only when CAM drives this budget).
+  const sync = data.summary_sync || {};
+  if (sync.enabled) {
+    html += '<div style="margin-top:14px; border-top:1px solid var(--gray-200); padding-top:10px;">';
+    html += '<div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#3730a3; margin-bottom:6px;">Summary feed — per-class common charges</div>';
+    (sync.classes || []).forEach(s => {
+      if (s.matched) {
+        html += '<div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:6px 10px; margin-bottom:6px; font-size:12px;">' +
+          '<span style="color:var(--green); font-weight:700;">✓</span> <strong>' + (s.class_name || '').replace(/</g,'&lt;') + '</strong> → Summary row "' + (s.label || '').replace(/</g,'&lt;') + '" 2027 = <strong>' + fmt0(s.new_col7) + '</strong></div>';
+      } else {
+        html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:6px 10px; margin-bottom:6px; font-size:12px; color:#92400e;">' +
+          '⚠ <strong>' + (s.class_name || '').replace(/</g,'&lt;') + '</strong> (' + fmt0(s.allocated_expense) + ') has no matching Summary common-charge row. Add a "Common Charges – ' + (s.class_name || '').replace(/</g,'&lt;') + '" row on the Summary tab (or name a class to match an existing row).</div>';
+      }
+    });
+    html += '</div>';
+  } else {
+    html += '<p style="font-size:11px; color:var(--gray-400); margin-top:6px;">Turn on <strong>“CAM drives this budget”</strong> (top right) to feed each class\'s common charges into the Summary.</p>';
+  }
 
   html += '</div>';
   contentDiv.innerHTML = html;
