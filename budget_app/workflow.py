@@ -267,6 +267,8 @@ def create_workflow_blueprint(db):
     CommercialTenantBillback = _wm_all["CommercialTenantBillback"]
     BudgetSummaryRow = _wm_all["BudgetSummaryRow"]
     BuildingInfo = _wm_all["BuildingInfo"]
+    CamClass = _wm_all["CamClass"]
+    CamAllocationOverride = _wm_all["CamAllocationOverride"]
 
 
 
@@ -11790,6 +11792,236 @@ def create_workflow_blueprint(db):
 
         result = _comm_rent_run_import(entity_code)
         return jsonify(result)
+
+
+    # ─── CAM Allocation (condos) — Schedule A-1 ─────────────────────────────
+    # Split operating-expense GLs across unit classes by proportionate share to
+    # drive per-class common charges. Mirrors the commercial-escalation cluster.
+    # Design + coverage: CAM_ALLOCATION_DESIGN_2026-06-17.md, CAM_COVERAGE_2026-06-17.md.
+    CAM_EXPENSE_SHEETS = ("Payroll", "Energy", "Water & Sewer",
+                          "Repairs & Supplies", "Gen & Admin")
+
+    def _cam_line_amount(l):
+        """The budgeted expense a CAM line allocates: proposed budget, falling
+        back to the approved (current) budget when proposed isn't set."""
+        try:
+            p = float(l.proposed_budget) if l.proposed_budget is not None else 0.0
+        except (TypeError, ValueError):
+            p = 0.0
+        if abs(p) > 0.005:
+            return p
+        try:
+            return float(l.current_budget or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _cam_compute(entity_code, year=None):
+        """Compute the CAM allocation matrix (Schedule A-1) for a building.
+
+        Per-(line,class) override wins; else the line's cam_code drives the
+        default split — 'B'/'S' = building-wide (x share), 'R'/<class-name> =
+        100% to that class, 'SUBSET:a|b' = split across the named classes by
+        their re-normalized shares. Rounding residual goes to the largest cell
+        so every row reconciles to its line total. Returns the matrix, per-class
+        column totals (allocated expense), the grand total, and reconciliation
+        flags. (Per-line % is entered client-side and persisted as $ cells.)
+        """
+        yr = year or BUDGET_YEAR
+        budget = Budget.query.filter_by(entity_code=entity_code, year=yr).first()
+        classes = (CamClass.query
+                   .filter_by(entity_code=entity_code, budget_year=yr)
+                   .order_by(CamClass.sort_order, CamClass.id).all())
+        result = {
+            "classes": [c.to_dict() for c in classes],
+            "lines": [],
+            "column_totals": {c.id: 0.0 for c in classes},
+            "grand_total": 0.0,
+            "reconciles": True,
+            "shares_ok": False,
+            "share_sum": 0.0,
+        }
+        share_sum = round(sum(float(c.share_pct or 0) for c in classes), 6)
+        result["share_sum"] = share_sum
+        result["shares_ok"] = bool(classes) and abs(share_sum - 1.0) < 0.0001
+        if not budget or not classes:
+            return result
+
+        cls_by_name = {(c.name or "").strip().lower(): c for c in classes}
+        ovr = {}
+        for o in CamAllocationOverride.query.filter_by(budget_id=budget.id).all():
+            if o.amount is not None:
+                ovr[(o.gl_code, o.cam_class_id)] = float(o.amount)
+
+        lines = (BudgetLine.query
+                 .filter_by(budget_id=budget.id)
+                 .filter(BudgetLine.sheet_name.in_(CAM_EXPENSE_SHEETS))
+                 .order_by(BudgetLine.sheet_name, BudgetLine.row_num).all())
+
+        for l in lines:
+            total = round(_cam_line_amount(l), 2)
+            if abs(total) < 0.005:
+                continue
+            code = (l.cam_code or "").strip()
+            cells = {}
+            line_ovr = {c.id: ovr[(l.gl_code, c.id)] for c in classes
+                        if (l.gl_code, c.id) in ovr}
+            if line_ovr:
+                # Hand-entered cells are authoritative (covers per-line %, subset,
+                # direct-charge + credit, income-side once income is in scope).
+                for c in classes:
+                    cells[c.id] = round(line_ovr.get(c.id, 0.0), 2)
+            else:
+                up = code.upper()
+                if up in ("B", "S", ""):
+                    target_ids = [c.id for c in classes]
+                elif up == "R":
+                    res = cls_by_name.get("residential")
+                    target_ids = [res.id] if res else [classes[0].id]
+                elif up.startswith("SUBSET:"):
+                    names = [n.strip().lower() for n in code.split(":", 1)[1].split("|")]
+                    target_ids = [c.id for c in classes
+                                  if (c.name or "").strip().lower() in names] \
+                                 or [c.id for c in classes]
+                elif code.strip().lower() in cls_by_name:
+                    target_ids = [cls_by_name[code.strip().lower()].id]
+                else:
+                    target_ids = [c.id for c in classes]
+                if len(target_ids) == 1:
+                    for c in classes:
+                        cells[c.id] = round(total, 2) if c.id == target_ids[0] else 0.0
+                else:
+                    sub = [c for c in classes if c.id in target_ids]
+                    ssum = sum(float(c.share_pct or 0) for c in sub) or 1.0
+                    for c in classes:
+                        cells[c.id] = (round(total * (float(c.share_pct or 0) / ssum), 2)
+                                       if c.id in target_ids else 0.0)
+            # Reconcile the row to its total (rounding residual → largest cell).
+            diff = round(total - sum(cells.values()), 2)
+            if abs(diff) >= 0.01:
+                touched = [c for c in classes if abs(cells.get(c.id, 0.0)) > 0.005] or classes
+                rc = max(touched, key=lambda c: abs(cells.get(c.id, 0.0)) or float(c.share_pct or 0))
+                cells[rc.id] = round(cells.get(rc.id, 0.0) + diff, 2)
+            for cid, amt in cells.items():
+                result["column_totals"][cid] = round(result["column_totals"][cid] + amt, 2)
+            result["grand_total"] = round(result["grand_total"] + total, 2)
+            result["lines"].append({
+                "gl_code": l.gl_code, "description": l.description,
+                "sheet_name": l.sheet_name, "total": total,
+                "cam_code": l.cam_code, "cells": cells,
+            })
+        col_sum = round(sum(result["column_totals"].values()), 2)
+        result["reconciles"] = abs(col_sum - result["grand_total"]) < 1.0
+        return result
+
+    @bp.route("/api/cam/<entity_code>", methods=["GET"])
+    def api_cam_get(entity_code):
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        data = _cam_compute(entity_code)
+        data["entity_code"] = entity_code
+        data["cam_enabled"] = bool(budget and getattr(budget, "cam_enabled", False))
+        data["building_type"] = (budget.building_type if budget else "") or ""
+        return jsonify(data)
+
+    @bp.route("/api/cam/<entity_code>/enable", methods=["PUT"])
+    def api_cam_enable(entity_code):
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        data = request.get_json() or {}
+        budget.cam_enabled = bool(data.get("enabled", True))
+        db.session.commit()
+        return jsonify({"status": "ok", "cam_enabled": bool(budget.cam_enabled)})
+
+    @bp.route("/api/cam/<entity_code>/class", methods=["POST"])
+    def api_cam_class_create(entity_code):
+        data = request.get_json() or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        n = CamClass.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).count()
+        c = CamClass(entity_code=entity_code, budget_year=BUDGET_YEAR, name=name,
+                     share_pct=float(data.get("share_pct") or 0),
+                     summary_row_label=data.get("summary_row_label"),
+                     sort_order=int(data.get("sort_order") or n))
+        db.session.add(c)
+        db.session.commit()
+        return jsonify(c.to_dict())
+
+    @bp.route("/api/cam/<entity_code>/class/<int:class_id>", methods=["PUT"])
+    def api_cam_class_update(entity_code, class_id):
+        c = CamClass.query.filter_by(id=class_id, entity_code=entity_code,
+                                     budget_year=BUDGET_YEAR).first()
+        if not c:
+            return jsonify({"error": "class not found"}), 404
+        data = request.get_json() or {}
+        if "name" in data:
+            c.name = (data["name"] or "").strip() or c.name
+        if "summary_row_label" in data:
+            c.summary_row_label = data["summary_row_label"]
+        if "share_pct" in data:
+            try:
+                c.share_pct = float(data["share_pct"] or 0)
+            except (TypeError, ValueError):
+                pass
+        if "sort_order" in data:
+            try:
+                c.sort_order = int(data["sort_order"])
+            except (TypeError, ValueError):
+                pass
+        db.session.commit()
+        return jsonify(c.to_dict())
+
+    @bp.route("/api/cam/<entity_code>/class/<int:class_id>", methods=["DELETE"])
+    def api_cam_class_delete(entity_code, class_id):
+        c = CamClass.query.filter_by(id=class_id, entity_code=entity_code,
+                                     budget_year=BUDGET_YEAR).first()
+        if not c:
+            return jsonify({"error": "class not found"}), 404
+        CamAllocationOverride.query.filter_by(cam_class_id=c.id).delete()
+        db.session.delete(c)
+        db.session.commit()
+        return jsonify({"status": "deleted", "id": class_id})
+
+    @bp.route("/api/cam/<entity_code>/line-code", methods=["PUT"])
+    def api_cam_line_code(entity_code):
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        data = request.get_json() or {}
+        gl = (data.get("gl_code") or "").strip()
+        line = BudgetLine.query.filter_by(budget_id=budget.id, gl_code=gl).first()
+        if not line:
+            return jsonify({"error": "line not found"}), 404
+        line.cam_code = (data.get("cam_code") or None)
+        db.session.commit()
+        return jsonify({"status": "ok", "gl_code": gl, "cam_code": line.cam_code})
+
+    @bp.route("/api/cam/<entity_code>/cell", methods=["PUT"])
+    def api_cam_cell(entity_code):
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        data = request.get_json() or {}
+        gl = (data.get("gl_code") or "").strip()
+        cid = data.get("cam_class_id")
+        amt = data.get("amount")
+        o = CamAllocationOverride.query.filter_by(
+            budget_id=budget.id, gl_code=gl, cam_class_id=cid).first()
+        if amt is None or amt == "":
+            if o:
+                db.session.delete(o)   # clear → revert to code default
+        else:
+            try:
+                amt = float(amt)
+            except (TypeError, ValueError):
+                return jsonify({"error": "bad amount"}), 400
+            if o:
+                o.amount = amt
+            else:
+                db.session.add(CamAllocationOverride(
+                    budget_id=budget.id, gl_code=gl, cam_class_id=cid, amount=amt))
+        db.session.commit()
+        return jsonify({"status": "ok"})
 
 
     # ─── Presentation Routes ───────────────────────────────────────────────
