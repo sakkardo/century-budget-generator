@@ -1787,6 +1787,7 @@ def create_workflow_blueprint(db):
 
         return jsonify({
             "budget": budget.to_dict(),
+            "building_type": (budget.building_type or ""),  # gates the CAM tab (condo/cond-op)
             "lines": [l.to_dict() for l in lines],
             "sheets": sheets,
             "sheet_order": [s for s in sheet_order if s in sheets or (s == "RE Taxes" and re_taxes_data)],
