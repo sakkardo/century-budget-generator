@@ -4500,6 +4500,40 @@ def create_workflow_blueprint(db):
                         "target_sheet": target_sheet, "prefix_added": prefix_added,
                         "line": line.to_dict()})
 
+    # ── B3 (210 FA Notes, 2026-06-17): interest income above/below the line ──
+    # The FA wants interest income (4800 family) positioned per building —
+    # operating (above the line) or non-operating (below). On the Summary that
+    # placement is the "Interest Income" row's `section`. This flips it.
+    @bp.route("/api/budget/<entity_code>/interest-placement", methods=["PUT"])
+    def set_interest_placement(entity_code):
+        data = request.get_json() or {}
+        placement = (data.get("placement") or "").strip().lower()
+        section = ("Non-Operating Income"
+                   if placement in ("non_operating", "non-operating", "below", "nonop")
+                   else "Income")
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).all()
+        target = None
+        for r in rows:
+            if r.row_type != "data":
+                continue
+            lab = (r.label or "").lower()
+            pf = r.gl_prefixes_json or ""
+            if "interest" in lab or "4800" in pf:
+                target = r
+                break
+        if not target:
+            return jsonify({"error": "Interest Income summary row not found"}), 404
+        try:
+            old = target.section
+            target.section = section
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "update failed: %s" % str(e)}), 500
+        return jsonify({"status": "ok", "label": target.label,
+                        "section": section, "old_section": old})
+
 
     @bp.route("/api/reclass/accept", methods=["POST"])
     def accept_pm_reclass():
@@ -20190,6 +20224,10 @@ function renderSheet(sheetName, sheetLines, tabEl, opts) {
   // FA #B7 (2026-06-17): on the Unmapped tab, inject a per-row "Add to budget"
   // picker so an orphan GL can be mapped into a Summary line (→ tab + budget).
   if (sheetName === 'Unmapped') setTimeout(faEnhanceUnmappedTab, 60);
+  // FA #B3 (2026-06-17): on the Income tab, add an above/below-the-line toggle
+  // to the interest-income (4800) row so each building can place it as
+  // operating or non-operating income.
+  if (sheetName === 'Income') setTimeout(faEnhanceInterestToggle, 60);
 }
 
 // ── B7 (2026-06-17): "Add to budget" picker on the Unmapped tab ─────────
@@ -20258,6 +20296,54 @@ async function faMapToBudget(sel) {
     alert('Could not add to budget: ' + e.message);
     sel.disabled = false;
     sel.value = '';
+  }
+}
+
+// ── B3 (2026-06-17): interest income above/below-the-line toggle ─────────
+// On the Income tab the interest-income (4800) row gets a toggle that flips
+// the Summary "Interest Income" row between operating (above the line) and
+// Non-Operating Income (below). Per-building placement, per FA B3.
+async function faEnhanceInterestToggle() {
+  const host = document.getElementById('sheetContent');
+  if (!host) return;
+  let tr = null;
+  host.querySelectorAll('tr[data-gl]').forEach(function (x) {
+    if ((x.getAttribute('data-gl') || '').indexOf('4800') === 0) tr = x;
+  });
+  if (!tr) return;
+  const descTd = tr.querySelector('td.frozen-desc') || tr.querySelector('td');
+  if (!descTd || descTd.querySelector('.b3-int')) return;
+  let section = '';
+  try {
+    const r = await fetch('/api/budget-summary-rows/' + entityCode);
+    const d = await r.json();
+    const ir = (d.rows || []).find(function (x) { return /interest/i.test(x.label || ''); });
+    section = (ir && ir.section) || '';
+  } catch (e) {}
+  const below = /non-?operating/i.test(section);
+  const btn = document.createElement('button');
+  btn.className = 'b3-int';
+  btn.textContent = below ? '↧ Below the line (Non-Op) — move above' : '↥ Above the line (Operating) — move below';
+  btn.title = 'Place interest income above (operating) or below (non-operating) the line on the Summary';
+  btn.style.cssText = 'margin-left:8px; font-size:11px; padding:1px 7px; border:1px solid var(--blue); border-radius:4px; color:var(--blue); background:#eff6ff; cursor:pointer;';
+  btn.onclick = function () { faToggleInterestPlacement(below ? 'operating' : 'non_operating'); };
+  descTd.appendChild(btn);
+}
+
+async function faToggleInterestPlacement(placement) {
+  const label = (placement === 'non_operating')
+    ? 'BELOW the line (Non-Operating Income)' : 'ABOVE the line (Operating Income)';
+  if (!confirm('Move Interest Income ' + label + ' on the Summary?')) return;
+  try {
+    const r = await fetch('/api/budget/' + entityCode + '/interest-placement', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ placement: placement })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    location.reload();
+  } catch (e) {
+    alert('Could not move interest income: ' + e.message);
   }
 }
 
