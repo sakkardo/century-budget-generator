@@ -6800,6 +6800,14 @@ def create_workflow_blueprint(db):
                 edit_log.append({"sheet": "Comm Rent & Escalations", "error": str(e)[:200]})
                 logger.warning(f"export-excel comm rent rewrite failed: {traceback.format_exc()[-500:]}")
             lap("rewrite_comm_rent")
+            # Condo CAM Allocation (Schedule A-1) — no-op unless cam_enabled, so
+            # non-CAM buildings' exports are unchanged. Ships computed VALUES.
+            try:
+                _export_rewrite_cam_allocation(wb, entity_code, edit_log)
+            except Exception as e:
+                edit_log.append({"sheet": "CAM Allocation", "error": str(e)[:200]})
+                logger.warning(f"export-excel cam allocation rewrite failed: {traceback.format_exc()[-500:]}")
+            lap("rewrite_cam_allocation")
 
             # Pass 3: rewrite detail tabs from BudgetLine. Each tab gets every
             # line matching its sheet_name filter. Drops dependence on the
@@ -8837,6 +8845,141 @@ def create_workflow_blueprint(db):
                 "with_escalation": len(active_escalation_tenants),
             })
 
+
+    def _export_rewrite_cam_allocation(wb, entity_code, edit_log=None):
+        """Pass 1a: write the condo CAM Allocation (Schedule A-1) sheet from
+        product data (_cam_compute). ONLY for CAM-enabled buildings with classes
+        — otherwise no sheet is touched (so every non-CAM building's export is
+        unchanged). Ships computed VALUES (matrix cells, line totals, per-class
+        column totals, grand total) — no formula strings — per the values-snapshot
+        rule, so it opens correctly in any viewer (Quick Look / Drive preview)."""
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.comments import Comment
+        from openpyxl.utils import get_column_letter
+
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget or not getattr(budget, "cam_enabled", False):
+            return
+        comp = _cam_compute(entity_code)
+        classes = comp.get("classes") or []
+        lines = comp.get("lines") or []
+        if not classes or not lines:
+            return
+
+        # Find/replace an existing CAM/Schedule-A-1 sheet, else create one.
+        old_index = None
+        old_name = None
+        for i, name in enumerate(wb.sheetnames):
+            n = name.lower().strip()
+            if "cam" in n or "schedule a-1" in n:
+                old_name = name
+                old_index = i
+                break
+        if old_name is not None:
+            del wb[old_name]
+        ws = wb.create_sheet(old_name or "CAM Allocation",
+                             index=old_index if old_index is not None else None)
+        target = ws.title
+
+        TITLE_FONT = Font(name="Plus Jakarta Sans", size=14, bold=True, color="001721")
+        SUB_FONT = Font(italic=True, color="8A7E72")
+        HEADER_FONT = Font(name="Plus Jakarta Sans", size=10, bold=True, color="3730A3")
+        SECTION_FONT = Font(name="Plus Jakarta Sans", size=10, bold=True, color="8A7E72")
+        TOTAL_FONT = Font(bold=True, color="3730A3")
+        TOTAL_FILL = PatternFill(start_color="EEF2FF", end_color="EEF2FF", fill_type="solid")
+        thin = Side(border_style="thin", color="E5E0D5")
+        BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        col_gl = 2
+        col_first = 3
+        ncls = len(classes)
+        col_total = col_first + ncls
+
+        r = 1
+        ws.cell(row=r, column=col_gl, value="CAM Allocation").font = TITLE_FONT
+        r += 1
+        ws.cell(row=r, column=col_gl, value="Schedule A-1").font = SUB_FONT
+        ws.cell(row=r, column=4, value=f"For Year Ending 12/31/{BUDGET_YEAR}").font = SUB_FONT
+        r += 1
+        ws.cell(row=r, column=col_gl,
+                value="Operating expenses allocated across unit classes by common-interest share.").font = SUB_FONT
+        r += 2
+
+        # Class/share legend
+        ws.cell(row=r, column=col_gl, value="Unit classes:").font = SECTION_FONT
+        for j, cl in enumerate(classes):
+            ws.cell(row=r, column=col_first + j,
+                    value=f"{cl['name']} ({round((cl.get('share_pct') or 0) * 100, 4)}%)").font = HEADER_FONT
+        r += 2
+
+        # Matrix header
+        ws.cell(row=r, column=col_gl, value="Expense Line").font = HEADER_FONT
+        for j, cl in enumerate(classes):
+            hc = ws.cell(row=r, column=col_first + j, value=cl["name"])
+            hc.font = HEADER_FONT
+            hc.alignment = Alignment(horizontal="right")
+        tc = ws.cell(row=r, column=col_total, value="Line Total")
+        tc.font = HEADER_FONT
+        tc.alignment = Alignment(horizontal="right")
+        r += 1
+
+        by_sheet = {}
+        for l in lines:
+            by_sheet.setdefault(l["sheet_name"], []).append(l)
+        for sn in ["Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin"]:
+            rows = by_sheet.get(sn)
+            if not rows:
+                continue
+            ws.cell(row=r, column=col_gl, value=sn).font = SECTION_FONT
+            r += 1
+            for l in rows:
+                ws.cell(row=r, column=col_gl,
+                        value=f"{l['gl_code']}  {l.get('description') or ''}")
+                cells = l.get("cells") or {}
+                for j, cl in enumerate(classes):
+                    v = round(float(cells.get(cl["id"], 0) or 0), 2)
+                    cell = ws.cell(row=r, column=col_first + j, value=v)  # VALUE, not formula
+                    cell.number_format = "$#,##0"
+                    cell.border = BORDER
+                tcell = ws.cell(row=r, column=col_total, value=round(float(l.get("total") or 0), 2))
+                tcell.number_format = "$#,##0"
+                r += 1
+
+        # Column totals (per-class allocated expense) — VALUES
+        ct = comp.get("column_totals") or {}
+        lc = ws.cell(row=r, column=col_gl, value="Allocated expense")
+        lc.font = TOTAL_FONT
+        lc.fill = TOTAL_FILL
+        for j, cl in enumerate(classes):
+            v = round(float(ct.get(cl["id"], 0) or 0), 2)
+            cell = ws.cell(row=r, column=col_first + j, value=v)
+            cell.number_format = "$#,##0"
+            cell.font = TOTAL_FONT
+            cell.fill = TOTAL_FILL
+        gc = ws.cell(row=r, column=col_total, value=round(float(comp.get("grand_total") or 0), 2))
+        gc.number_format = "$#,##0"
+        gc.font = TOTAL_FONT
+        gc.fill = TOTAL_FILL
+        r += 2
+
+        # Per-class common charges (each class funds its allocated expense)
+        ws.cell(row=r, column=col_gl,
+                value="Common charges by class (= allocated expense):").font = SECTION_FONT
+        r += 1
+        for cl in classes:
+            v = round(float(ct.get(cl["id"], 0) or 0), 2)
+            ws.cell(row=r, column=col_gl, value=f"  {cl['name']}")
+            vc = ws.cell(row=r, column=col_first, value=v)
+            vc.number_format = "$#,##0"
+            r += 1
+
+        ws.column_dimensions["B"].width = 36
+        for j in range(ncls + 1):
+            ws.column_dimensions[get_column_letter(col_first + j)].width = 15
+
+        if edit_log is not None:
+            edit_log.append({"sheet": target, "cam_classes": ncls,
+                             "cam_lines": len(lines), "grand_total": comp.get("grand_total")})
 
     def _export_rewrite_re_taxes(wb, entity_code, budget, edit_log=None):
         """Build a LIVE Real Estate Taxes tab from compute_re_taxes (co-ops with
