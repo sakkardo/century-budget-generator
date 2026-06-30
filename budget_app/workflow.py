@@ -16540,6 +16540,24 @@ function renderDetail(data) {
     };
     tabsDiv.appendChild(commTab);
 
+    // CAM Allocation tab (condos / cond-ops only) — Schedule A-1 per-class split.
+    // Gated on building_type so co-ops/rentals never see the noise.
+    const _camBt = (data.building_type || '').toLowerCase();
+    if (_camBt.indexOf('condo') !== -1 || _camBt.indexOf('cond-op') !== -1) {
+      const camTab = document.createElement('button');
+      camTab.textContent = '🏘 CAM';
+      camTab.className = 'sheet-tab';
+      camTab.dataset.sheet = '__cam__';
+      camTab.style.background = '#eef2ff';
+      camTab.style.color = '#3730a3';
+      camTab.onclick = () => {
+        document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+        camTab.classList.add('active');
+        renderCamTab(contentDiv);
+      };
+      tabsDiv.appendChild(camTab);
+    }
+
     // Add Assumptions tab
     const assumTab = document.createElement('button');
     assumTab.textContent = '\u2699 Assumptions';
@@ -16579,7 +16597,7 @@ function renderDetail(data) {
       if (targetTab) {
         // Trigger the tab's normal click flow but suppress the pushState
         // since the URL already has ?tab set.
-        if (_initTab === '__commercial__') {
+        if (_initTab === '__commercial__' || _initTab === '__cam__') {
           targetTab.click();
         } else {
           renderSheet(_initTab, sheets[_initTab] || null, targetTab, { skipPush: true });
@@ -17203,6 +17221,194 @@ function renderAssumptionsTab(assumptions, contentDiv) {
 // on first call. Renders: tenant cards (one per commercial tenant) with
 // rent periods + lease notes + escalation model badge.
 // Phase 2 will add: edit buttons, escalation engine UI, Summary feed.
+// ── CAM Allocation tab (condo Schedule A-1) ──────────────────────────────
+// Matrix: operating-expense GLs (rows) × unit classes (columns). Each cell is
+// the allocated $; the per-row code seeds the split (B/R/S/100%-class) and any
+// typed cell overrides it. The server (_cam_compute) is the single source of
+// the math, so every edit PUTs then re-fetches — the displayed matrix always
+// equals the reconciled server result (no client-side drift).
+async function renderCamTab(contentDiv) {
+  contentDiv.innerHTML =
+    '<div style="padding:40px 24px; text-align:center; color:var(--gray-500);">' +
+    '<div style="display:inline-block; width:32px; height:32px; border:3px solid var(--gray-200); border-top-color:#4f46e5; border-radius:50%; animation:spin 0.6s linear infinite;"></div>' +
+    '<p style="margin-top:12px; font-size:13px;">Loading CAM allocation&hellip;</p></div>';
+  let data;
+  try {
+    const resp = await fetch('/api/cam/' + entityCode);
+    data = await resp.json();
+  } catch (err) {
+    contentDiv.innerHTML = '<div style="padding:24px; color:var(--red);">Failed to load: ' + (err.message || err) + '</div>';
+    return;
+  }
+  window._camData = data;
+  const classes = data.classes || [];
+  const lines = data.lines || [];
+  const fmt0 = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const pct = (s) => (Math.round((s || 0) * 1000) / 10).toFixed(1) + '%';
+
+  let html = '<div style="padding:18px 24px;">';
+
+  // Header + share-sum badge + enable toggle
+  html += '<div style="display:flex; align-items:center; gap:14px; margin-bottom:6px; flex-wrap:wrap;">' +
+    '<h2 style="font-size:18px; font-weight:700; margin:0;">🏘 CAM Allocation <span style="font-weight:500; color:var(--gray-500); font-size:13px;">(Schedule A-1)</span></h2>';
+  const shareSum = data.share_sum || 0;
+  const sharesOk = !!data.shares_ok;
+  html += '<span style="background:' + (sharesOk ? '#dcfce7' : '#fef2f2') + '; color:' + (sharesOk ? '#166534' : '#991b1b') + '; padding:3px 10px; border-radius:12px; font-size:11px; font-weight:600;">Shares: ' + pct(shareSum) + (sharesOk ? ' ✓' : ' — must total 100%') + '</span>';
+  html += '<label style="margin-left:auto; font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer;">' +
+    '<input type="checkbox" ' + (data.cam_enabled ? 'checked' : '') + ' onchange="camEnable(this.checked)"> ' +
+    '<span style="font-weight:600; color:var(--gray-700);">CAM drives this budget</span></label></div>';
+  html += '<p style="font-size:11px; color:var(--gray-500); margin:0 0 14px;">Split each operating-expense GL across unit classes by common-interest share. The code seeds each row (B = building-wide, R = residential 100%, S = shared, or 100% to one class); type a dollar amount in any cell to override. Rows always reconcile to the line total.</p>';
+
+  // Classes editor
+  html += '<div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; padding:12px 14px; margin-bottom:16px;">';
+  html += '<div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#3730a3; margin-bottom:8px;">Unit Classes &amp; Common-Interest Shares</div>';
+  if (classes.length === 0) {
+    html += '<p style="font-size:12px; color:var(--gray-600); margin:0 0 8px;">No classes yet. Add the building\'s unit classes (shares must total 100%).</p>';
+  } else {
+    html += '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">';
+    classes.forEach(c => {
+      const shareDisp = Math.round((c.share_pct || 0) * 1000000) / 10000;
+      const safeName = (c.name || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+      html += '<div style="display:flex; align-items:center; gap:4px; background:#fff; border:1px solid #c7d2fe; border-radius:8px; padding:4px 6px;">' +
+        '<input type="text" value="' + (c.name || '').replace(/"/g,'&quot;') + '" onblur="camUpdateClass(' + c.id + ',\'name\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:120px; font-size:12px; font-weight:600; border:1px solid transparent; background:transparent; padding:2px 4px; border-radius:3px;">' +
+        '<input type="number" step="0.0001" value="' + shareDisp + '" onblur="camUpdateClass(' + c.id + ',\'share_pct\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:78px; font-size:12px; text-align:right; border:1px solid var(--gray-200); background:#fff; padding:2px 4px; border-radius:3px; font-variant-numeric:tabular-nums;">' +
+        '<span style="font-size:11px; color:var(--gray-500);">%</span>' +
+        '<button onclick="camDeleteClass(' + c.id + ',\'' + safeName + '\')" title="Delete class" style="border:none; background:transparent; color:var(--red); cursor:pointer; font-size:15px; line-height:1; padding:0 2px;">×</button>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+  html += '<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">';
+  html += '<span style="font-size:11px; color:var(--gray-500);">Quick add:</span>';
+  ['Residential','Retail','Garage','Inclusionary','Storage','Office','Commercial'].forEach(p => {
+    html += '<button onclick="camAddClass(\'' + p + '\')" style="font-size:11px; padding:2px 8px; background:#fff; border:1px solid #c7d2fe; border-radius:10px; cursor:pointer; color:#3730a3;">+ ' + p + '</button>';
+  });
+  html += '<button onclick="camAddClass(null)" style="font-size:11px; padding:2px 8px; background:#4f46e5; color:#fff; border:none; border-radius:10px; cursor:pointer;">+ Custom…</button>';
+  html += '</div></div>';
+
+  // Empty-state guards
+  if (classes.length === 0 || lines.length === 0) {
+    html += '<div style="padding:32px; text-align:center; color:var(--gray-500); font-size:13px; border:1px dashed var(--gray-200); border-radius:8px;">' +
+      (classes.length === 0 ? 'Add at least one unit class to build the allocation matrix.' : 'No operating-expense lines to allocate yet — build the budget first.') +
+      '</div></div>';
+    contentDiv.innerHTML = html;
+    return;
+  }
+
+  function codeOptions(sel) {
+    const s = (sel || '').toLowerCase();
+    let o = '<option value=""' + (!sel ? ' selected' : '') + '>B – building-wide</option>';
+    o += '<option value="R"' + (s === 'r' ? ' selected' : '') + '>R – residential 100%</option>';
+    o += '<option value="S"' + (s === 's' ? ' selected' : '') + '>S – shared</option>';
+    classes.forEach(c => {
+      o += '<option value="' + (c.name || '').replace(/"/g,'&quot;') + '"' + (s === (c.name || '').toLowerCase() ? ' selected' : '') + '>100% ' + (c.name || '').replace(/</g,'&lt;') + '</option>';
+    });
+    return o;
+  }
+
+  const bySheet = {};
+  lines.forEach(l => { (bySheet[l.sheet_name] = bySheet[l.sheet_name] || []).push(l); });
+  const sheetSeq = ['Payroll','Energy','Water & Sewer','Repairs & Supplies','Gen & Admin'];
+
+  html += '<div style="overflow-x:auto;">';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:12px; min-width:' + (540 + classes.length * 120) + 'px;">';
+  html += '<thead><tr style="border-bottom:2px solid var(--gray-300);">' +
+    '<th style="text-align:left; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Expense Line</th>' +
+    '<th style="text-align:center; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Code</th>';
+  classes.forEach(c => {
+    html += '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:#3730a3;">' + (c.name || '').replace(/</g,'&lt;') + '<br><span style="font-weight:400; color:var(--gray-400);">' + pct(c.share_pct) + '</span></th>';
+  });
+  html += '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Line Total</th>';
+  html += '</tr></thead><tbody>';
+
+  sheetSeq.forEach(sn => {
+    const rows = bySheet[sn];
+    if (!rows || !rows.length) return;
+    html += '<tr style="background:var(--gray-50);"><td colspan="' + (3 + classes.length) + '" style="padding:4px 8px; font-size:10px; font-weight:700; text-transform:uppercase; color:var(--gray-600);">' + sn + '</td></tr>';
+    rows.forEach(l => {
+      const cells = l.cells || {};
+      html += '<tr style="border-bottom:1px solid var(--gray-100);" data-gl="' + l.gl_code + '">' +
+        '<td style="padding:3px 8px;"><span style="font-family:monospace; color:var(--gray-400); font-size:10px;">' + l.gl_code + '</span> ' + (l.description || '').replace(/</g,'&lt;') + '</td>' +
+        '<td style="padding:3px 8px; text-align:center;"><select onchange="camSetLineCode(\'' + l.gl_code + '\',this.value)" style="font-size:11px; padding:1px 2px; border:1px solid var(--gray-200); border-radius:3px; max-width:160px;">' + codeOptions(l.cam_code) + '</select></td>';
+      classes.forEach(c => {
+        const amt = cells[c.id] || 0;
+        const share = l.total ? (amt / l.total) : 0;
+        html += '<td style="padding:3px 4px; text-align:right;">' +
+          '<input type="number" step="0.01" value="' + (Math.round(amt * 100) / 100) + '" ' +
+          'onblur="camSetCell(\'' + l.gl_code + '\',' + c.id + ',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+          'title="' + pct(share) + ' of line" ' +
+          'style="width:86px; padding:2px 4px; text-align:right; border:1px solid transparent; background:transparent; font-variant-numeric:tabular-nums; font-size:11px; border-radius:3px;"></td>';
+      });
+      html += '<td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-600);">' + fmt0(l.total) + '</td></tr>';
+    });
+  });
+
+  const ct = data.column_totals || {};
+  html += '<tr style="border-top:2px solid var(--gray-300); font-weight:700; background:#eef2ff;">' +
+    '<td style="padding:6px 8px;">Allocated expense</td><td></td>';
+  classes.forEach(c => {
+    html += '<td style="padding:6px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#3730a3;">' + fmt0(ct[c.id]) + '</td>';
+  });
+  html += '<td style="padding:6px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt0(data.grand_total) + '</td></tr>';
+  html += '</tbody></table></div>';
+
+  html += '<div style="margin-top:10px; font-size:12px; color:' + (data.reconciles ? 'var(--green)' : 'var(--red)') + ';">' +
+    (data.reconciles
+      ? '✓ Reconciled — class columns sum to total operating expense (' + fmt0(data.grand_total) + ').'
+      : '⚠ Columns don\'t reconcile to the line totals — check your overrides.') + '</div>';
+  html += '<p style="font-size:11px; color:var(--gray-400); margin-top:4px;">Per-class common charges + increase % feed the Summary once enabled (coming next).</p>';
+
+  html += '</div>';
+  contentDiv.innerHTML = html;
+}
+
+async function camRefresh() {
+  const cd = document.getElementById('sheetContent');
+  if (cd) await renderCamTab(cd);
+}
+async function _camFetch(path, body, method) {
+  return fetch('/api/cam/' + entityCode + path, {
+    method: method || 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: body ? JSON.stringify(body) : null,
+  });
+}
+async function camEnable(on) {
+  await _camFetch('/enable', {enabled: !!on});
+  showToast(on ? 'CAM now drives this budget' : 'CAM disabled', 'info');
+  await camRefresh();
+}
+async function camAddClass(preset) {
+  let name = preset;
+  if (!name) { name = prompt('Class name (e.g. Residential, Retail, Garage):'); if (!name) return; }
+  await _camFetch('/class', {name: name, share_pct: 0}, 'POST');
+  await camRefresh();
+}
+async function camUpdateClass(id, field, value) {
+  const body = {};
+  if (field === 'share_pct') {
+    let v = parseFloat(value); if (isNaN(v)) v = 0;
+    body.share_pct = v > 1 ? (v / 100) : v;   // accept "76.5953" (percent) or "0.765953"
+  } else { body[field] = value; }
+  await _camFetch('/class/' + id, body);
+  await camRefresh();
+}
+async function camDeleteClass(id, name) {
+  if (!confirm('Delete class "' + (name || '') + '"? Its override cells are removed too.')) return;
+  await _camFetch('/class/' + id, null, 'DELETE');
+  await camRefresh();
+}
+async function camSetLineCode(gl, code) {
+  await _camFetch('/line-code', {gl_code: gl, cam_code: code || null});
+  await camRefresh();
+}
+async function camSetCell(gl, classId, value) {
+  let amt = (value === '' || value === null || value === undefined) ? null : parseFloat(value);
+  if (amt !== null && isNaN(amt)) amt = null;
+  await _camFetch('/cell', {gl_code: gl, cam_class_id: classId, amount: amt});
+  await camRefresh();
+}
+
 async function renderCommercialTab(contentDiv) {
   contentDiv.innerHTML =
     '<div style="padding:40px 24px; text-align:center; color:var(--gray-500);">' +
