@@ -729,6 +729,9 @@ with app.app_context():
             # CAM allocation (condos, 2026-06-17)
             ("budgets", "cam_enabled", "BOOLEAN DEFAULT FALSE"),
             ("budget_lines", "cam_code", "VARCHAR(40)"),
+            # Board Presentation redesign (2026-07-01): frozen snapshot so a
+            # sent client link can't silently drift from a later budget edit.
+            ("presentation_sessions", "snapshot_data", "TEXT"),
         ]
         # Create payroll tables if they don't exist
         _payroll_tables = [
@@ -768,6 +771,18 @@ with app.app_context():
                 gl_code VARCHAR(50) NOT NULL,
                 cam_class_id INTEGER NOT NULL REFERENCES cam_classes(id),
                 amount FLOAT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            # Board Presentation redesign (2026-07-01): FA-reviewed client narrative
+            """CREATE TABLE IF NOT EXISTS budget_narratives (
+                id SERIAL PRIMARY KEY,
+                budget_id INTEGER NOT NULL UNIQUE REFERENCES budgets(id),
+                raw_narrative TEXT,
+                reviewed_narrative TEXT,
+                status VARCHAR(20) NOT NULL DEFAULT 'draft',
+                reviewed_by VARCHAR(120),
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
         ]

@@ -482,6 +482,12 @@ def register_models(db):
         expires_at = db.Column(db.DateTime, nullable=True)
         client_name = db.Column(db.String(255), default="")
         notes = db.Column(db.Text, default="")
+        # Board Presentation redesign (2026-07-01): a frozen snapshot of the
+        # numbers + reviewed narrative, captured once at link-generation time.
+        # The client route renders ONLY from this column, never from live
+        # BudgetLine/BudgetSummaryRow rows, so an FA editing the budget after
+        # sending a link cannot silently change what the client already saw.
+        snapshot_data = db.Column(db.Text, nullable=True)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
         budget = db.relationship("Budget")
@@ -515,6 +521,42 @@ def register_models(db):
                 "field_name": self.field_name,
                 "old_value": self.old_value, "new_value": self.new_value,
                 "edited_at": self.edited_at.isoformat() if self.edited_at else None
+            }
+
+    class BudgetNarrative(db.Model):
+        """The client-facing Board Presentation narrative for one budget.
+
+        Mirrors AuditUpload's review-gate shape (audited_financials.py): the
+        product drafts `raw_narrative` from real budget data; an FA reviews and
+        edits into `reviewed_narrative`; `status` progresses draft -> reviewed
+        -> published. A presentation link can only be generated once status is
+        at least 'reviewed' — no unreviewed, system-drafted narrative (which may
+        assert a "why" the system cannot actually verify) ever reaches a client.
+        """
+        __tablename__ = "budget_narratives"
+
+        id = db.Column(db.Integer, primary_key=True)
+        budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False, unique=True, index=True)
+        raw_narrative = db.Column(db.Text, nullable=True)       # system-drafted JSON sections
+        reviewed_narrative = db.Column(db.Text, nullable=True)  # FA-edited JSON; None = not yet reviewed
+        status = db.Column(db.String(20), nullable=False, default="draft")  # draft | reviewed | published
+        reviewed_by = db.Column(db.String(120), nullable=True)
+        reviewed_at = db.Column(db.DateTime, nullable=True)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        budget = db.relationship("Budget")
+
+        def to_dict(self):
+            return {
+                "id": self.id, "budget_id": self.budget_id,
+                "raw_narrative": self.raw_narrative,
+                "reviewed_narrative": self.reviewed_narrative,
+                "status": self.status,
+                "reviewed_by": self.reviewed_by,
+                "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+                "created_at": self.created_at.isoformat() if self.created_at else None,
+                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             }
 
     class ARHandoff(db.Model):
@@ -1007,6 +1049,7 @@ def register_models(db):
         "BuildingVisit": BuildingVisit,
         "PresentationSession": PresentationSession,
         "PresentationEdit": PresentationEdit,
+        "BudgetNarrative": BudgetNarrative,
         "ARHandoff": ARHandoff,
         "PayrollPosition": PayrollPosition,
         "PayrollAssumption": PayrollAssumption,

@@ -269,6 +269,7 @@ def create_workflow_blueprint(db):
     BuildingInfo = _wm_all["BuildingInfo"]
     CamClass = _wm_all["CamClass"]
     CamAllocationOverride = _wm_all["CamAllocationOverride"]
+    BudgetNarrative = _wm_all["BudgetNarrative"]
 
 
 

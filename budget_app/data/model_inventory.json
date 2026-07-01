@@ -19,6 +19,11 @@
   "relationships": 1,
   "table": "budget_lines"
  },
+ "BudgetNarrative": {
+  "columns": 9,
+  "relationships": 1,
+  "table": "budget_narratives"
+ },
  "BudgetRevision": {
   "columns": 11,
   "relationships": 1,
@@ -90,7 +95,7 @@
   "table": "presentation_edits"
  },
  "PresentationSession": {
-  "columns": 9,
+  "columns": 10,
   "relationships": 1,
   "table": "presentation_sessions"
  },
