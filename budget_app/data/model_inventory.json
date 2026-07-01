@@ -55,7 +55,7 @@
   "table": "cam_allocation_overrides"
  },
  "CamClass": {
-  "columns": 9,
+  "columns": 10,
   "relationships": 0,
   "table": "cam_classes"
  },

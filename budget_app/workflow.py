@@ -12421,16 +12421,36 @@ def create_workflow_blueprint(db):
         return jsonify({"status": "ok", "cam_enabled": bool(budget.cam_enabled),
                         "summary_sync": sync})
 
+    def _cam_shares_total_with(entity_code, exclude_class_id, candidate_share):
+        """What the Σ of all classes' share_pct would be if `exclude_class_id`
+        (or no class, for a new one) were set to `candidate_share`. Used to
+        hard-block a save that would push the total over 100% -- see the 343
+        incident (a 100x parsing bug let shares reach 112.91% live, unblocked).
+        Under-100% is allowed through (an FA building up classes one at a time
+        is a normal, expected intermediate state)."""
+        others = CamClass.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).all()
+        total = sum(float(c.share_pct or 0) for c in others if c.id != exclude_class_id)
+        return total + candidate_share
+
     @bp.route("/api/cam/<entity_code>/class", methods=["POST"])
     def api_cam_class_create(entity_code):
         data = request.get_json() or {}
         name = (data.get("name") or "").strip()
         if not name:
             return jsonify({"error": "name required"}), 400
+        try:
+            share_pct = float(data.get("share_pct") or 0)
+        except (TypeError, ValueError):
+            share_pct = 0.0
+        new_total = _cam_shares_total_with(entity_code, None, share_pct)
+        if new_total > 1.0 + 0.0001:
+            return jsonify({"error": "Classes would total %.4f%% -- cannot exceed 100%%."
+                                     % round(new_total * 100, 4)}), 409
         n = CamClass.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).count()
         c = CamClass(entity_code=entity_code, budget_year=BUDGET_YEAR, name=name,
-                     share_pct=float(data.get("share_pct") or 0),
+                     share_pct=share_pct,
                      summary_row_label=data.get("summary_row_label"),
+                     notes=data.get("notes"),
                      sort_order=int(data.get("sort_order") or n))
         db.session.add(c)
         db.session.commit()
@@ -12449,11 +12469,19 @@ def create_workflow_blueprint(db):
             c.name = (data["name"] or "").strip() or c.name
         if "summary_row_label" in data:
             c.summary_row_label = data["summary_row_label"]
+        if "notes" in data:
+            c.notes = data["notes"]
         if "share_pct" in data:
             try:
-                c.share_pct = float(data["share_pct"] or 0)
+                new_share = float(data["share_pct"] or 0)
             except (TypeError, ValueError):
-                pass
+                new_share = None
+            if new_share is not None:
+                new_total = _cam_shares_total_with(entity_code, c.id, new_share)
+                if new_total > 1.0 + 0.0001:
+                    return jsonify({"error": "Classes would total %.4f%% -- cannot exceed 100%%."
+                                             % round(new_total * 100, 4)}), 409
+                c.share_pct = new_share
         if "sort_order" in data:
             try:
                 c.sort_order = int(data["sort_order"])
@@ -17771,6 +17799,7 @@ async function renderCamTab(contentDiv) {
         '<input type="text" value="' + (c.name || '').replace(/"/g,'&quot;') + '" onblur="camUpdateClass(' + c.id + ',\'name\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:120px; font-size:12px; font-weight:600; border:1px solid transparent; background:transparent; padding:2px 4px; border-radius:3px;">' +
         '<input type="number" step="0.0001" value="' + shareDisp + '" onblur="camUpdateClass(' + c.id + ',\'share_pct\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:78px; font-size:12px; text-align:right; border:1px solid var(--gray-200); background:#fff; padding:2px 4px; border-radius:3px; font-variant-numeric:tabular-nums;">' +
         '<span style="font-size:11px; color:var(--gray-500);">%</span>' +
+        '<button onclick="camEditNotes(' + c.id + ',\'' + safeName + '\')" title="' + (c.notes ? 'Edit note: ' + (c.notes || '').replace(/"/g,'&quot;') : 'Add a note (e.g. cite the offering plan)') + '" style="border:none; background:transparent; color:' + (c.notes ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">📝</button>' +
         '<button onclick="camDeleteClass(' + c.id + ',\'' + safeName + '\')" title="Delete class" style="border:none; background:transparent; color:var(--red); cursor:pointer; font-size:15px; line-height:1; padding:0 2px;">×</button>' +
       '</div>';
     });
@@ -17903,11 +17932,36 @@ async function camAddClass(preset) {
 async function camUpdateClass(id, field, value) {
   const body = {};
   if (field === 'share_pct') {
+    // The field always shows/accepts a PERCENT NUMBER (e.g. "76.5953" for
+    // 76.5953%, "0.1304" for 0.1304%) -- always divide by 100, no guessing.
+    // A "v > 1 ? /100 : v" heuristic here silently corrupted any legitimate
+    // sub-1% entry (0.1304% got stored as 13.04%) -- see 343 incident.
     let v = parseFloat(value); if (isNaN(v)) v = 0;
-    body.share_pct = v > 1 ? (v / 100) : v;   // accept "76.5953" (percent) or "0.765953"
+    body.share_pct = v / 100;
+    // Immediate client-side check (server enforces this too) -- catch the
+    // over-100% case before a round trip instead of silently reverting.
+    const others = ((window._camData || {}).classes || []).filter(c => c.id !== id);
+    const prospective = others.reduce((s, c) => s + (c.share_pct || 0), 0) + body.share_pct;
+    if (prospective > 1.0001) {
+      alert('Classes would total ' + (Math.round(prospective * 10000) / 100).toFixed(2) +
+            '% -- cannot exceed 100%.');
+      await camRefresh();
+      return;
+    }
   } else { body[field] = value; }
-  await _camFetch('/class/' + id, body);
+  const resp = await _camFetch('/class/' + id, body);
+  if (!resp.ok) {
+    const d = await resp.json().catch(() => ({}));
+    alert(d.error || ('Save failed (' + resp.status + ')'));
+  }
   await camRefresh();
+}
+async function camEditNotes(id, name) {
+  const c = ((window._camData || {}).classes || []).find(x => x.id === id);
+  const current = (c && c.notes) || '';
+  const next = prompt('Note for "' + (name || '') + '" (e.g. cite the offering plan section this share came from):', current);
+  if (next === null) return;  // cancelled
+  await camUpdateClass(id, 'notes', next);
 }
 async function camDeleteClass(id, name) {
   if (!confirm('Delete class "' + (name || '') + '"? Its override cells are removed too.')) return;

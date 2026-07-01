@@ -729,6 +729,9 @@ with app.app_context():
             # CAM allocation (condos, 2026-06-17)
             ("budgets", "cam_enabled", "BOOLEAN DEFAULT FALSE"),
             ("budget_lines", "cam_code", "VARCHAR(40)"),
+            # CAM FA-feedback fix (2026-07-01): free-text citation for where a
+            # class's share came from (e.g. the offering plan).
+            ("cam_classes", "notes", "TEXT"),
             # Board Presentation redesign (2026-07-01): frozen snapshot so a
             # sent client link can't silently drift from a later budget edit.
             ("presentation_sessions", "snapshot_data", "TEXT"),

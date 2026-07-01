@@ -998,6 +998,9 @@ def register_models(db):
         share_pct = db.Column(db.Float, nullable=False, default=0.0)
         # Summary income row this class's common charges feed.
         summary_row_label = db.Column(db.String(255), nullable=True)
+        # Free-text citation for where this share came from (e.g. "Per offering
+        # plan Schedule A, Sec. 3.2" or a note on a manually-tuned override).
+        notes = db.Column(db.Text, nullable=True)
         sort_order = db.Column(db.Integer, default=0)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1010,6 +1013,7 @@ def register_models(db):
                 "name": self.name,
                 "share_pct": self.share_pct,
                 "summary_row_label": self.summary_row_label,
+                "notes": self.notes,
                 "sort_order": self.sort_order,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
