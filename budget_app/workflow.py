@@ -12000,6 +12000,233 @@ def create_workflow_blueprint(db):
         except (TypeError, ValueError):
             return 0.0
 
+    def _cam_parse_excel(workbook):
+        """Parse a condo's CAM Allocation / Schedule A-1 sheet into unit
+        classes + their proportionate common-interest shares.
+
+        Grounded in the confirmed 347 layout (a HEADER ROW of class names —
+        "Total Expenses | Residential | Retail | Garage | Total" — with the
+        matching % shares in the row directly below — "2026 Budget | 76.5953%
+        | 16.6464% | 6.7583% | 100.0000%" — repeated as the column header
+        down the whole GL matrix). Falls back to a VERTICAL layout (class name
+        in one column, its share in the next, one row per class) for
+        buildings that lay it out that way (see coverage review,
+        CAM_COVERAGE_2026-06-17.md — cond-ops and a few non-standard condos).
+
+        Never guesses: only returns a block whose shares reconcile to ~100%
+        (0.90-1.10 tolerance for OCR/rounding slop, then re-normalized to
+        exactly 1.0). Returns [{"name", "share_pct"}] or None if nothing
+        reconciling was found.
+        """
+        EXCLUDE = {
+            "total", "total expenses", "total operating expenses", "totals",
+            "g/l code", "gl code", "g/l", "code", "description", "amount",
+            "for year ending", "cam allocation", "schedule a-1", "a-1",
+            "proportionate share", "% common interest", "common interest",
+            "unit type", "category", "r/b", "r/b flag", "flag", "notes", "note",
+            "2026 budget", "2027 budget", "budget", "current budget", "approved",
+            "prior year", "increase", "variance", "%", "share", "class",
+        }
+
+        def find_sheet():
+            for name in workbook.sheetnames:
+                n = name.lower().strip()
+                if "cam" in n or "schedule a-1" in n or n == "a-1":
+                    return workbook[name]
+            for name in workbook.sheetnames:
+                ws = workbook[name]
+                for r in range(1, min((ws.max_row or 0) + 1, 8)):
+                    for c in range(1, min((ws.max_column or 0) + 1, 12)):
+                        v = ws.cell(row=r, column=c).value
+                        if isinstance(v, str) and (
+                                "cam allocation" in v.lower() or "schedule a-1" in v.lower()):
+                            return ws
+            return None
+
+        sheet = find_sheet()
+        if not sheet:
+            return None
+
+        def norm_share(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                f = float(v)
+            elif isinstance(v, str):
+                s = v.strip().rstrip("%").replace(",", "")
+                if not s:
+                    return None
+                try:
+                    f = float(s)
+                except ValueError:
+                    return None
+                if "%" in v:
+                    f = f / 100.0
+            else:
+                return None
+            if f > 1.5:      # a raw 76.59 is a percent number, not a fraction
+                f = f / 100.0
+            return f
+
+        def is_class_label(v):
+            if not isinstance(v, str):
+                return False
+            s = v.strip()
+            if not s or len(s) > 40:
+                return False
+            if s.lower() in EXCLUDE:
+                return False
+            if any(ch.isdigit() for ch in s) and len(s) <= 3:
+                return False   # bare GL-code-looking fragments
+            return True
+
+        max_r = min((sheet.max_row or 0), 80)
+        max_c = min((sheet.max_column or 0), 30)
+
+        def cell(r, c):
+            try:
+                return sheet.cell(row=r, column=c).value
+            except Exception:
+                return None
+
+        # ── Horizontal scan: a row of class-name labels + an adjacent row
+        # (below OR above, same columns) of matching % shares. ────────────
+        best = None
+        for r in range(1, max_r + 1):
+            label_cols = [c for c in range(1, max_c + 1) if is_class_label(cell(r, c))]
+            if len(label_cols) < 2:
+                continue
+            for other_r in (r + 1, r - 1):
+                if other_r < 1 or other_r > max_r:
+                    continue
+                pairs = []
+                for c in label_cols:
+                    share = norm_share(cell(other_r, c))
+                    if share is not None and 0 < share <= 1.0001:
+                        pairs.append((str(cell(r, c)).strip(), share))
+                if len(pairs) < 2:
+                    continue
+                total = sum(s for _, s in pairs)
+                if 0.90 <= total <= 1.10:
+                    score = (abs(total - 1.0), -len(pairs))
+                    if best is None or score < best[0]:
+                        best = (score, pairs)
+        if best:
+            pairs = best[1]
+            total = sum(s for _, s in pairs)
+            return [{"name": n, "share_pct": round(s / total, 6)} for n, s in pairs]
+
+        # ── Vertical fallback: label in one column, share in an adjacent
+        # column, one row per class, a tight contiguous run. ──────────────
+        for label_col in range(1, max_c + 1):
+            run = []
+            for r in range(1, max_r + 1):
+                v = cell(r, label_col)
+                if not is_class_label(v):
+                    continue
+                share = None
+                for share_col in (label_col + 1, label_col + 2, label_col - 1):
+                    if 1 <= share_col <= max_c:
+                        s = norm_share(cell(r, share_col))
+                        if s is not None and 0 < s <= 1.0001:
+                            share = s
+                            break
+                if share is not None:
+                    run.append((str(v).strip(), share, r))
+            if len(run) < 2:
+                continue
+            run.sort(key=lambda x: x[2])
+            groups, cur = [], [run[0]]
+            for item in run[1:]:
+                if item[2] - cur[-1][2] <= 3:
+                    cur.append(item)
+                else:
+                    groups.append(cur)
+                    cur = [item]
+            groups.append(cur)
+            for g in groups:
+                if len(g) < 2:
+                    continue
+                total = sum(s for _, s, _ in g)
+                if 0.90 <= total <= 1.10:
+                    return [{"name": n, "share_pct": round(s / total, 6)} for n, s, _ in g]
+
+        return None
+
+    def _cam_run_import(entity_code, force=False):
+        """One-time importer: parse the building's approved Excel Schedule A-1
+        and create CamClass rows (name + share_pct). Idempotent unless
+        force=True. force=True replaces the FULL class set for the year (and,
+        since overrides key on cam_class_id, drops any per-cell overrides tied
+        to the replaced classes — same trade-off as Commercial Rent's force
+        re-import). Mirrors _comm_rent_run_import's file-discovery path.
+        """
+        existing = CamClass.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).count()
+        if existing > 0 and not force:
+            return {"status": "exists", "imported": 0, "class_count": existing}
+
+        import tempfile
+        try:
+            import openpyxl
+        except Exception as e:
+            return {"status": "error", "error": f"openpyxl not available: {e!r}"}
+
+        try:
+            import app as _app_mod  # type: ignore
+            files = _app_mod._sharepoint_list_approved_budgets(entity_code)
+        except Exception as e:
+            return {"status": "error", "error": f"sharepoint list failed: {str(e)[:200]}"}
+
+        if not files:
+            return {"status": "no_file", "error": "no approved budget file"}
+
+        files.sort(key=lambda f: f.get("last_modified", ""), reverse=True)
+        target = files[0]
+        item_id = target.get("item_id")
+        if not item_id:
+            return {"status": "error", "error": "no item_id on file"}
+
+        try:
+            _name, file_bytes = _app_mod._sharepoint_download_item(item_id)
+        except Exception as e:
+            return {"status": "error", "error": f"download failed: {str(e)[:200]}"}
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            wb = openpyxl.load_workbook(tmp_path, data_only=True)
+            parsed = _cam_parse_excel(wb)
+        except Exception as e:
+            return {"status": "error", "error": f"parse failed: {str(e)[:200]}"}
+        finally:
+            if tmp_path:
+                try:
+                    import os as _os
+                    _os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        if not parsed:
+            return {"status": "not_found",
+                    "error": "no reconciling CAM class/share block found in the Excel",
+                    "file_name": target.get("name")}
+
+        if force and existing > 0:
+            CamClass.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR).delete()
+            db.session.flush()
+
+        for i, c in enumerate(parsed):
+            db.session.add(CamClass(
+                entity_code=entity_code, budget_year=BUDGET_YEAR,
+                name=c["name"][:80], share_pct=c["share_pct"], sort_order=i,
+            ))
+        db.session.commit()
+        return {"status": "imported", "imported": len(parsed), "file_name": target.get("name")}
+
     def _cam_compute(entity_code, year=None):
         """Compute the CAM allocation matrix (Schedule A-1) for a building.
 
@@ -12167,6 +12394,19 @@ def create_workflow_blueprint(db):
         data["building_type"] = (budget.building_type if budget else "") or ""
         data["summary_sync"] = _cam_recompute_summary(entity_code, write=False)  # read-only preview
         return jsonify(data)
+
+    @bp.route("/api/cam/<entity_code>/import", methods=["POST"])
+    def api_cam_import(entity_code):
+        """Manual-trigger import of unit classes + shares from the building's
+        approved SharePoint Excel (Schedule A-1). Unlike Commercial Rent's
+        import (which auto-fires on GET), this is button-only — CAM writes
+        stay explicit until the parser is validated across the portfolio.
+        ?force=1 wipes + re-imports (like /api/commercial/<ec>/import)."""
+        force = request.args.get("force", "0") == "1"
+        result = _cam_run_import(entity_code, force=force)
+        if result.get("status") == "imported":
+            result["summary_sync"] = _cam_recompute_summary(entity_code)
+        return jsonify(result)
 
     @bp.route("/api/cam/<entity_code>/enable", methods=["PUT"])
     def api_cam_enable(entity_code):
@@ -17519,7 +17759,8 @@ async function renderCamTab(contentDiv) {
   html += '<div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; padding:12px 14px; margin-bottom:16px;">';
   html += '<div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#3730a3; margin-bottom:8px;">Unit Classes &amp; Common-Interest Shares</div>';
   if (classes.length === 0) {
-    html += '<p style="font-size:12px; color:var(--gray-600); margin:0 0 8px;">No classes yet. Add the building\'s unit classes (shares must total 100%).</p>';
+    html += '<p style="font-size:12px; color:var(--gray-600); margin:0 0 8px;">No classes yet. Import them from the building\'s Schedule A-1 (SharePoint), or add manually below.</p>';
+    html += '<button onclick="camImportFromExcel()" id="camImportBtn" style="font-size:12px; font-weight:600; padding:5px 12px; background:#4f46e5; color:#fff; border:none; border-radius:6px; cursor:pointer; margin-bottom:8px;">⇩ Import from SharePoint (Schedule A-1)</button>';
   } else {
     html += '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">';
     classes.forEach(c => {
@@ -17681,6 +17922,34 @@ async function camSetCell(gl, classId, value) {
   if (amt !== null && isNaN(amt)) amt = null;
   await _camFetch('/cell', {gl_code: gl, cam_class_id: classId, amount: amt});
   await camRefresh();
+}
+async function camImportFromExcel(force) {
+  const btn = document.getElementById('camImportBtn');
+  if (btn) { btn.textContent = 'Importing…'; btn.disabled = true; }
+  try {
+    const resp = await _camFetch('/import' + (force ? '?force=1' : ''), null, 'POST');
+    const d = await resp.json();
+    if (d.status === 'imported') {
+      showToast('Imported ' + (d.imported || 0) + ' unit classes from "' + (d.file_name || 'Excel') + '"', 'success');
+      await camRefresh();
+    } else if (d.status === 'exists') {
+      showToast('Classes already exist — use Re-import to overwrite from Excel', 'info');
+    } else if (d.status === 'no_file') {
+      alert('No approved budget Excel found in SharePoint for this building.');
+    } else if (d.status === 'not_found') {
+      alert('Could not find a CAM Allocation / Schedule A-1 sheet in the Excel. Add classes manually instead.');
+    } else {
+      alert('Import failed: ' + (d.error || d.status));
+    }
+  } catch (e) {
+    alert('Import error: ' + (e.message || e));
+  } finally {
+    if (btn) { btn.textContent = '⇩ Import from SharePoint (Schedule A-1)'; btn.disabled = false; }
+  }
+}
+async function camReimport() {
+  if (!confirm('Re-import overwrites all current classes + shares for this building with what is in the Excel. Per-cell overrides and per-line codes are kept (they key on GL + class id). Continue?')) return;
+  await camImportFromExcel(true);
 }
 
 async function renderCommercialTab(contentDiv) {
