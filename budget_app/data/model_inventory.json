@@ -10,7 +10,7 @@
   "table": "audit_sync_runs"
  },
  "Budget": {
-  "columns": 28,
+  "columns": 29,
   "relationships": 1,
   "table": "budgets"
  },

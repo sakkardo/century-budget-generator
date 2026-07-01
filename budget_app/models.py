@@ -140,6 +140,12 @@ def register_models(db):
         # Building type (coop, condo, rental) for charge mapping
         building_type = db.Column(db.String(50), default="")
 
+        # CAM allocation (condo Schedule A-1) — off by default; when on, the CAM
+        # tab's per-class allocated expense drives the Summary common-charge rows.
+        # (Column added by _run_idempotent_migrations; MUST be a mapped column here
+        # or writes silently no-op — see P6 bug 2026-07-01.)
+        cam_enabled = db.Column(db.Boolean, default=False, nullable=True)
+
         # Versioning
         version = db.Column(db.Integer, default=1)
 
@@ -190,6 +196,7 @@ def register_models(db):
                 "ar_notes": self.ar_notes or "",
                 "version": self.version or 1,
                 "building_type": self.building_type or "",
+                "cam_enabled": bool(getattr(self, "cam_enabled", False)),
                 "wizard_step": self.wizard_step or 0,
                 "wizard_completed_at": self.wizard_completed_at.isoformat() if self.wizard_completed_at else None,
                 "pm_sent_at": self.pm_sent_at.isoformat() if self.pm_sent_at else None,

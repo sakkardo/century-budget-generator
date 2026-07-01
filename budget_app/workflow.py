@@ -12047,44 +12047,46 @@ def create_workflow_blueprint(db):
             if abs(total) < 0.005:
                 continue
             code = (l.cam_code or "").strip()
-            cells = {}
-            line_ovr = {c.id: ovr[(l.gl_code, c.id)] for c in classes
-                        if (l.gl_code, c.id) in ovr}
-            if line_ovr:
-                # Hand-entered cells are authoritative (covers per-line %, subset,
-                # direct-charge + credit, income-side once income is in scope).
-                for c in classes:
-                    cells[c.id] = round(line_ovr.get(c.id, 0.0), 2)
+            # The code decides which classes RECEIVE the split (B/S = all;
+            # R = residential; <class-name> = that class; SUBSET:a|b = those).
+            up = code.upper()
+            if up in ("B", "S", ""):
+                target_ids = [c.id for c in classes]
+            elif up == "R":
+                res = cls_by_name.get("residential")
+                target_ids = [res.id] if res else [classes[0].id]
+            elif up.startswith("SUBSET:"):
+                names = [n.strip().lower() for n in code.split(":", 1)[1].split("|")]
+                target_ids = [c.id for c in classes
+                              if (c.name or "").strip().lower() in names] \
+                             or [c.id for c in classes]
+            elif code.strip().lower() in cls_by_name:
+                target_ids = [cls_by_name[code.strip().lower()].id]
             else:
-                up = code.upper()
-                if up in ("B", "S", ""):
-                    target_ids = [c.id for c in classes]
-                elif up == "R":
-                    res = cls_by_name.get("residential")
-                    target_ids = [res.id] if res else [classes[0].id]
-                elif up.startswith("SUBSET:"):
-                    names = [n.strip().lower() for n in code.split(":", 1)[1].split("|")]
-                    target_ids = [c.id for c in classes
-                                  if (c.name or "").strip().lower() in names] \
-                                 or [c.id for c in classes]
-                elif code.strip().lower() in cls_by_name:
-                    target_ids = [cls_by_name[code.strip().lower()].id]
-                else:
-                    target_ids = [c.id for c in classes]
-                if len(target_ids) == 1:
-                    for c in classes:
-                        cells[c.id] = round(total, 2) if c.id == target_ids[0] else 0.0
-                else:
-                    sub = [c for c in classes if c.id in target_ids]
-                    ssum = sum(float(c.share_pct or 0) for c in sub) or 1.0
-                    for c in classes:
-                        cells[c.id] = (round(total * (float(c.share_pct or 0) / ssum), 2)
-                                       if c.id in target_ids else 0.0)
-            # Reconcile the row to its total (rounding residual → largest cell).
+                target_ids = [c.id for c in classes]
+
+            # Per-(line,class) overrides are FIXED; the code then splits the
+            # REMAINING amount across the non-overridden target classes by their
+            # relative share. So a single-cell override (e.g. a small Garage
+            # portion on an R line) leaves the rest on Residential — matching the
+            # Excel's mixed lines (HVAC 3,730 Res / 270 Garage). A full set of
+            # overrides just reconciles to the cent. (P6 fix 2026-07-01: a partial
+            # override used to zero the other classes + dump the residual.)
+            line_ovr = {c.id: round(ovr[(l.gl_code, c.id)], 2) for c in classes
+                        if (l.gl_code, c.id) in ovr}
+            cells = {c.id: line_ovr.get(c.id, 0.0) for c in classes}
+            recv = [c for c in classes if c.id in target_ids and c.id not in line_ovr]
+            remainder = round(total - sum(line_ovr.values()), 2)
+            if recv and abs(remainder) > 0.005:
+                ssum = sum(float(c.share_pct or 0) for c in recv) or 1.0
+                for c in recv:
+                    cells[c.id] = round(remainder * (float(c.share_pct or 0) / ssum), 2)
+            # Reconcile the row to its total (rounding residual → largest receiver,
+            # else the largest touched cell).
             diff = round(total - sum(cells.values()), 2)
             if abs(diff) >= 0.01:
-                touched = [c for c in classes if abs(cells.get(c.id, 0.0)) > 0.005] or classes
-                rc = max(touched, key=lambda c: abs(cells.get(c.id, 0.0)) or float(c.share_pct or 0))
+                pool = recv or [c for c in classes if abs(cells.get(c.id, 0.0)) > 0.005] or classes
+                rc = max(pool, key=lambda c: abs(cells.get(c.id, 0.0)) or float(c.share_pct or 0))
                 cells[rc.id] = round(cells.get(rc.id, 0.0) + diff, 2)
             for cid, amt in cells.items():
                 result["column_totals"][cid] = round(result["column_totals"][cid] + amt, 2)
