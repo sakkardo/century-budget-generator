@@ -101,6 +101,7 @@
  "/api/cam/<entity_code>/enable",
  "/api/cam/<entity_code>/import",
  "/api/cam/<entity_code>/line-code",
+ "/api/cam/<entity_code>/required-increase",
  "/api/commercial/<entity_code>",
  "/api/commercial/<entity_code>/import",
  "/api/commercial/<entity_code>/project-year",

@@ -9014,6 +9014,43 @@ def create_workflow_blueprint(db):
             vc = ws.cell(row=r, column=col_first, value=v)
             vc.number_format = "$#,##0"
             r += 1
+        r += 1
+
+        # Required increase (plan: "CAM Allocation -- FA feedback on 343",
+        # Cluster C): back out other income, compare to current common
+        # charges. Values, not formulas -- same discipline as the rest of
+        # this sheet.
+        req = _cam_compute_required_increase(entity_code)
+        if not req.get("error"):
+            ws.cell(row=r, column=col_gl, value="Required increase:").font = SECTION_FONT
+            r += 1
+            oi = ws.cell(row=r, column=col_gl, value="  Less: other income")
+            oc = ws.cell(row=r, column=col_first, value=-round(float(req.get("other_income") or 0), 2))
+            oc.number_format = "$#,##0"
+            r += 1
+            cc = ws.cell(row=r, column=col_gl, value="  Amount to be covered by common charges")
+            ccv = ws.cell(row=r, column=col_first, value=round(float(req.get("amount_to_be_covered") or 0), 2))
+            ccv.number_format = "$#,##0"
+            ccv.font = TOTAL_FONT
+            r += 1
+            hdr_cur = ws.cell(row=r, column=col_gl, value="  Class")
+            hdr_cur.font = HEADER_FONT
+            ws.cell(row=r, column=col_first, value="Current").font = HEADER_FONT
+            ws.cell(row=r, column=col_first + 1, value="Required").font = HEADER_FONT
+            ws.cell(row=r, column=col_first + 2, value="Increase $").font = HEADER_FONT
+            ws.cell(row=r, column=col_first + 3, value="Increase %").font = HEADER_FONT
+            r += 1
+            for rc in req.get("classes") or []:
+                ws.cell(row=r, column=col_gl, value=f"  {rc.get('class_name')}")
+                c1 = ws.cell(row=r, column=col_first, value=round(float(rc.get("current_common_charges") or 0), 2))
+                c1.number_format = "$#,##0"
+                c2 = ws.cell(row=r, column=col_first + 1, value=round(float(rc.get("required_common_charges") or 0), 2))
+                c2.number_format = "$#,##0"
+                c3 = ws.cell(row=r, column=col_first + 2, value=round(float(rc.get("increase_dollar") or 0), 2))
+                c3.number_format = "$#,##0"
+                c4 = ws.cell(row=r, column=col_first + 3, value=round(float(rc.get("increase_pct") or 0), 2) / 100)
+                c4.number_format = "0.00%"
+                r += 1
 
         ws.column_dimensions["B"].width = 36
         for j in range(ncls + 1):
@@ -12385,6 +12422,78 @@ def create_workflow_blueprint(db):
         return {"enabled": True, "grand_total": comp["grand_total"],
                 "reconciles": comp["reconciles"], "shares_ok": comp["shares_ok"],
                 "classes": out}
+
+    def _cam_compute_required_increase(entity_code):
+        """The FA's actual worksheet math (plan: "CAM Allocation -- FA
+        feedback on 343", Cluster C): back out non-common-charge income from
+        total allocated expense, split what's left by class share, and
+        compare to each class's CURRENT common charges to get the $ / %
+        increase needed to balance the budget. Read-only -- never written
+        anywhere automatically; an FA reviews these numbers like every other
+        CAM figure before they mean anything downstream."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return {"error": "Budget not found"}
+        comp = _cam_compute(entity_code)
+        classes = comp.get("classes") or []
+        grand_total = float(comp.get("grand_total") or 0)
+
+        # Match each class to the Summary row carrying its CURRENT common
+        # charges -- the same lookup _cam_recompute_summary already uses to
+        # feed col7, so "current" and "proposed" always agree on which row
+        # is whose.
+        matched_rows = {}
+        cc_gl_prefixes = set()
+        for c in classes:
+            row = _cam_find_summary_row(entity_code, c.get("summary_row_label"), c.get("name"))
+            matched_rows[c["id"]] = row
+            if row and row.gl_prefixes_json:
+                try:
+                    for p in json.loads(row.gl_prefixes_json):
+                        cc_gl_prefixes.add(str(p).split("-")[0].strip())
+                except Exception:
+                    pass
+
+        # Other income = every Income-sheet line whose GL prefix ISN'T one of
+        # the matched common-charge rows' own prefixes -- not a hardcoded
+        # 4020/4030 guess, so this holds for condos with different GL numbering.
+        income_lines = BudgetLine.query.filter_by(budget_id=budget.id, sheet_name="Income").all()
+        other_income = 0.0
+        for l in income_lines:
+            prefix = (l.gl_code or "").split("-")[0].strip()
+            if prefix in cc_gl_prefixes:
+                continue
+            other_income += _cam_line_amount(l)
+        other_income = round(other_income, 2)
+
+        to_be_covered = round(grand_total - other_income, 2)
+
+        out_classes = []
+        for c in classes:
+            row = matched_rows.get(c["id"])
+            current_cc = round(float(row.col6_approved_budget or 0), 2) if row else 0.0
+            required_cc = round(to_be_covered * float(c.get("share_pct") or 0), 2)
+            increase_dollar = round(required_cc - current_cc, 2)
+            increase_pct = round((increase_dollar / abs(current_cc) * 100) if abs(current_cc) > 0.01 else 0.0, 2)
+            out_classes.append({
+                "class_id": c["id"], "class_name": c["name"],
+                "current_common_charges": current_cc,
+                "required_common_charges": required_cc,
+                "increase_dollar": increase_dollar,
+                "increase_pct": increase_pct,
+                "matched_row_label": row.label if row else None,
+            })
+
+        return {
+            "grand_total_expense": round(grand_total, 2),
+            "other_income": other_income,
+            "amount_to_be_covered": to_be_covered,
+            "classes": out_classes,
+        }
+
+    @bp.route("/api/cam/<entity_code>/required-increase", methods=["GET"])
+    def api_cam_required_increase(entity_code):
+        return jsonify(_cam_compute_required_increase(entity_code))
 
     @bp.route("/api/admin/cam-audit", methods=["GET"])
     def api_cam_audit():
@@ -17796,6 +17905,14 @@ async function renderCamTab(contentDiv) {
     return;
   }
   window._camData = data;
+  // Required-increase is a separate, secondary calculation -- if it fails,
+  // the main allocation matrix should still render.
+  let reqIncrease = null;
+  try {
+    const riResp = await fetch('/api/cam/' + entityCode + '/required-increase');
+    reqIncrease = await riResp.json();
+    if (reqIncrease && reqIncrease.error) reqIncrease = null;
+  } catch (err) { reqIncrease = null; }
   const classes = data.classes || [];
   const lines = data.lines || [];
   const fmt0 = (n) => '$' + Math.round(n || 0).toLocaleString();
@@ -17830,6 +17947,7 @@ async function renderCamTab(contentDiv) {
         '<input type="number" step="0.0001" value="' + shareDisp + '" onblur="camUpdateClass(' + c.id + ',\'share_pct\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:78px; font-size:12px; text-align:right; border:1px solid var(--gray-200); background:#fff; padding:2px 4px; border-radius:3px; font-variant-numeric:tabular-nums;">' +
         '<span style="font-size:11px; color:var(--gray-500);">%</span>' +
         '<button onclick="camEditNotes(' + c.id + ',\'' + safeName + '\')" title="' + (c.notes ? 'Edit note: ' + (c.notes || '').replace(/"/g,'&quot;') : 'Add a note (e.g. cite the offering plan)') + '" style="border:none; background:transparent; color:' + (c.notes ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">📝</button>' +
+        '<button onclick="camEditSummaryLink(' + c.id + ',\'' + safeName + '\')" title="' + (c.summary_row_label ? 'Linked to Summary row: ' + (c.summary_row_label || '').replace(/"/g,'&quot;') : 'Link to a specific Summary row if this class isn\\'t auto-matching one (needed for the required-increase calc)') + '" style="border:none; background:transparent; color:' + (c.summary_row_label ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">🔗</button>' +
         '<button onclick="camDeleteClass(' + c.id + ',\'' + safeName + '\')" title="Delete class" style="border:none; background:transparent; color:var(--red); cursor:pointer; font-size:15px; line-height:1; padding:0 2px;">×</button>' +
       '</div>';
     });
@@ -17950,6 +18068,40 @@ async function renderCamTab(contentDiv) {
     html += '<p style="font-size:11px; color:var(--gray-400); margin-top:6px;">Turn on <strong>“CAM drives this budget”</strong> (top right) to feed each class\'s common charges into the Summary.</p>';
   }
 
+  // Required increase -- the FA's actual worksheet math: back out other
+  // income, split what's left by share, compare to current common charges.
+  html += '<div style="margin-top:18px; border-top:2px solid var(--gray-200); padding-top:14px;">';
+  html += '<div style="font-size:13px; font-weight:700; color:var(--gray-800); margin-bottom:8px;">Required increase</div>';
+  if (!reqIncrease) {
+    html += '<p style="font-size:11px; color:var(--gray-400);">Could not compute the required increase for this building.</p>';
+  } else {
+    html += '<div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:10px; font-size:12px;">' +
+      '<div>Total allocated expense: <strong>' + fmt0(reqIncrease.grand_total_expense) + '</strong></div>' +
+      '<div>Less: other income: <strong style="color:var(--green);">−' + fmt0(reqIncrease.other_income) + '</strong></div>' +
+      '<div>Amount to be covered by common charges: <strong>' + fmt0(reqIncrease.amount_to_be_covered) + '</strong></div>' +
+      '</div>';
+    html += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px;">';
+    html += '<thead><tr style="border-bottom:2px solid var(--gray-300);">' +
+      '<th style="text-align:left; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Class</th>' +
+      '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Current Common Charges</th>' +
+      '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Required Common Charges</th>' +
+      '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Increase</th></tr></thead><tbody>';
+    (reqIncrease.classes || []).forEach(rc => {
+      const upOrDown = rc.increase_dollar >= 0 ? '+' : '';
+      const warn = rc.matched_row_label ? '' :
+        ' <span title="No matching Summary common-charge row found -- current common charges shown as $0 until one is matched." style="color:#d97706; cursor:help;">⚠</span>';
+      html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
+        '<td style="padding:5px 8px;">' + (rc.class_name || '').replace(/</g,'&lt;') + warn + '</td>' +
+        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt0(rc.current_common_charges) + '</td>' +
+        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt0(rc.required_common_charges) + '</td>' +
+        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums; color:' + (rc.increase_dollar >= 0 ? 'var(--red)' : 'var(--green)') + ';">' +
+        upOrDown + fmt0(rc.increase_dollar) + ' (' + upOrDown + rc.increase_pct.toFixed(2) + '%)</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<p style="font-size:10.5px; color:var(--gray-400); margin-top:6px;">"Current" comes from the Summary row matched to each class (via its name or Summary Row Label, below). "Other income" is every Income-sheet line except those matched common-charge rows.</p>';
+  }
+  html += '</div>';
+
   html += '</div>';
   contentDiv.innerHTML = html;
 }
@@ -18009,6 +18161,15 @@ async function camEditNotes(id, name) {
   const next = prompt('Note for "' + (name || '') + '" (e.g. cite the offering plan section this share came from):', current);
   if (next === null) return;  // cancelled
   await camUpdateClass(id, 'notes', next);
+}
+async function camEditSummaryLink(id, name) {
+  const c = ((window._camData || {}).classes || []).find(x => x.id === id);
+  const current = (c && c.summary_row_label) || '';
+  const next = prompt('Summary row label for "' + (name || '') + '" (type the EXACT label from the Summary tab, ' +
+                      'e.g. "Common Charges - Residential") -- only needed if the Required Increase table below ' +
+                      'shows a ⚠ warning for this class:', current);
+  if (next === null) return;  // cancelled
+  await camUpdateClass(id, 'summary_row_label', next);
 }
 async function camDeleteClass(id, name) {
   if (!confirm('Delete class "' + (name || '') + '"? Its override cells are removed too.')) return;
