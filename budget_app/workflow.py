@@ -12386,6 +12386,36 @@ def create_workflow_blueprint(db):
                 "reconciles": comp["reconciles"], "shares_ok": comp["shares_ok"],
                 "classes": out}
 
+    @bp.route("/api/admin/cam-audit", methods=["GET"])
+    def api_cam_audit():
+        """Portfolio-wide CAM data-integrity check: flags any building whose
+        CamClass shares don't sum to ~100% -- the pattern behind the 343
+        %-parsing incident (2026-07-01). Read-only; added specifically to
+        give a definitive answer on whether that bug affected buildings
+        beyond the one an FA happened to report, not just the handful
+        touched during that session's verification work."""
+        from collections import defaultdict
+        all_classes = CamClass.query.filter_by(budget_year=BUDGET_YEAR).all()
+        by_entity = defaultdict(list)
+        for c in all_classes:
+            by_entity[c.entity_code].append(c)
+        results = []
+        for ec, classes in by_entity.items():
+            total = sum(float(c.share_pct or 0) for c in classes)
+            results.append({
+                "entity_code": ec,
+                "class_count": len(classes),
+                "share_sum_pct": round(total * 100, 4),
+                "ok": abs(total - 1.0) < 0.0005,
+                "classes": [{"id": c.id, "name": c.name, "share_pct": c.share_pct} for c in classes],
+            })
+        results.sort(key=lambda r: r["ok"])  # flagged (not ok) ones first
+        return jsonify({
+            "total_entities_with_cam_classes": len(results),
+            "flagged_count": sum(1 for r in results if not r["ok"]),
+            "results": results,
+        })
+
     @bp.route("/api/cam/<entity_code>", methods=["GET"])
     def api_cam_get(entity_code):
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
@@ -17811,6 +17841,7 @@ async function renderCamTab(contentDiv) {
     html += '<button onclick="camAddClass(\'' + p + '\')" style="font-size:11px; padding:2px 8px; background:#fff; border:1px solid #c7d2fe; border-radius:10px; cursor:pointer; color:#3730a3;">+ ' + p + '</button>';
   });
   html += '<button onclick="camAddClass(null)" style="font-size:11px; padding:2px 8px; background:#4f46e5; color:#fff; border:none; border-radius:10px; cursor:pointer;">+ Custom…</button>';
+  html += '<span style="font-size:10.5px; color:var(--gray-400); margin-left:4px;">Need more than one, e.g. two retail units? Add the same preset twice and rename each (\'Commercial 1\', \'Commercial 2\').</span>';
   html += '</div></div>';
 
   // Empty-state guards
@@ -17824,12 +17855,21 @@ async function renderCamTab(contentDiv) {
 
   function codeOptions(sel) {
     const s = (sel || '').toLowerCase();
+    const isSubset = s.startsWith('subset:');
     let o = '<option value=""' + (!sel ? ' selected' : '') + '>B – building-wide</option>';
     o += '<option value="R"' + (s === 'r' ? ' selected' : '') + '>R – residential 100%</option>';
     o += '<option value="S"' + (s === 's' ? ' selected' : '') + '>S – shared</option>';
     classes.forEach(c => {
       o += '<option value="' + (c.name || '').replace(/"/g,'&quot;') + '"' + (s === (c.name || '').toLowerCase() ? ' selected' : '') + '>100% ' + (c.name || '').replace(/</g,'&lt;') + '</option>';
     });
+    if (isSubset) {
+      // Show the CURRENT subset as its own selected option (e.g. "Subset:
+      // Residential, Garage") so re-opening the dropdown doesn't look like
+      // it silently reverted to B.
+      const names = (sel.split(':')[1] || '').split('|').join(', ');
+      o += '<option value="' + sel.replace(/"/g,'&quot;') + '" selected>Subset: ' + names.replace(/</g,'&lt;') + '</option>';
+    }
+    o += '<option value="__subset__">Subset (2+ classes)…</option>';
     return o;
   }
 
@@ -17860,11 +17900,18 @@ async function renderCamTab(contentDiv) {
       classes.forEach(c => {
         const amt = cells[c.id] || 0;
         const share = l.total ? (amt / l.total) : 0;
+        const sharePctDisp = Math.round(share * 100000) / 1000;
         html += '<td style="padding:3px 4px; text-align:right;">' +
           '<input type="number" step="0.01" value="' + (Math.round(amt * 100) / 100) + '" ' +
           'onblur="camSetCell(\'' + l.gl_code + '\',' + c.id + ',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" ' +
-          'title="' + pct(share) + ' of line" ' +
-          'style="width:86px; padding:2px 4px; text-align:right; border:1px solid transparent; background:transparent; font-variant-numeric:tabular-nums; font-size:11px; border-radius:3px;"></td>';
+          'title="Dollar amount allocated to this class" ' +
+          'style="width:86px; padding:2px 4px; text-align:right; border:1px solid transparent; background:transparent; font-variant-numeric:tabular-nums; font-size:11px; border-radius:3px;">' +
+          '<div style="display:flex; align-items:center; justify-content:flex-end; gap:1px;">' +
+          '<input type="number" step="0.001" value="' + sharePctDisp + '" ' +
+          'onblur="camSetCellPct(\'' + l.gl_code + '\',' + c.id + ',this.value,' + (l.total || 0) + ')" onkeydown="if(event.key===\'Enter\')this.blur()" ' +
+          'title="% of this line allocated to this class -- edit here instead of the $ amount if that\\'s easier" ' +
+          'style="width:60px; padding:1px 3px; text-align:right; border:1px solid transparent; background:transparent; font-variant-numeric:tabular-nums; font-size:9px; color:var(--gray-500); border-radius:3px;">' +
+          '<span style="font-size:9px; color:var(--gray-400);">%</span></div></td>';
       });
       html += '<td style="padding:3px 8px; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-600);">' + fmt0(l.total) + '</td></tr>';
     });
@@ -17969,6 +18016,26 @@ async function camDeleteClass(id, name) {
   await camRefresh();
 }
 async function camSetLineCode(gl, code) {
+  if (code === '__subset__') {
+    const known = ((window._camData || {}).classes || []).map(c => c.name);
+    const picked = prompt('Which classes share this line? Type the names separated by commas (from: ' +
+                          known.join(', ') + '):');
+    if (!picked) { await camRefresh(); return; }  // cancelled -- revert the dropdown
+    const parts = picked.split(',').map(s => s.trim()).filter(Boolean);
+    const knownLower = known.map(n => n.toLowerCase());
+    const bad = parts.filter(p => !knownLower.includes(p.toLowerCase()));
+    if (bad.length) {
+      alert('Not a recognized class name: ' + bad.join(', ') + '. Use the exact names shown: ' + known.join(', '));
+      await camRefresh();
+      return;
+    }
+    if (parts.length < 2) {
+      alert('Pick at least 2 classes for a subset split -- for a single class, choose it directly from the dropdown instead.');
+      await camRefresh();
+      return;
+    }
+    code = 'SUBSET:' + parts.join('|');
+  }
   await _camFetch('/line-code', {gl_code: gl, cam_code: code || null});
   await camRefresh();
 }
@@ -17977,6 +18044,19 @@ async function camSetCell(gl, classId, value) {
   if (amt !== null && isNaN(amt)) amt = null;
   await _camFetch('/cell', {gl_code: gl, cam_class_id: classId, amount: amt});
   await camRefresh();
+}
+async function camSetCellPct(gl, classId, value, lineTotal) {
+  // Lets an FA think in % instead of $ for a per-line override (e.g. "17% of
+  // elevator repairs to Residential" instead of computing the dollar figure
+  // by hand) -- converts to the same $ override the backend already expects.
+  if (value === '' || value === null || value === undefined) {
+    await camSetCell(gl, classId, '');
+    return;
+  }
+  const pctVal = parseFloat(value);
+  if (isNaN(pctVal)) { await camRefresh(); return; }
+  const amt = Math.round((pctVal / 100) * (lineTotal || 0) * 100) / 100;
+  await camSetCell(gl, classId, String(amt));
 }
 async function camImportFromExcel(force) {
   const btn = document.getElementById('camImportBtn');

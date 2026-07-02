@@ -18,6 +18,7 @@
  "/api/admin/build-failures",
  "/api/admin/build-failures/<int:fid>/resolve",
  "/api/admin/bulk-flag-no-prior-budget",
+ "/api/admin/cam-audit",
  "/api/admin/clear-source",
  "/api/admin/commit-2026-imports",
  "/api/admin/delete-summary-row",
