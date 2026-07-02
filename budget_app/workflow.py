@@ -12443,23 +12443,15 @@ def create_workflow_blueprint(db):
         # feed col7, so "current" and "proposed" always agree on which row
         # is whose.
         matched_rows = {}
-        cc_gl_prefixes = set()
         for c in classes:
-            row = _cam_find_summary_row(entity_code, c.get("summary_row_label"), c.get("name"))
-            matched_rows[c["id"]] = row
-            if row and row.gl_prefixes_json:
-                try:
-                    for p in json.loads(row.gl_prefixes_json):
-                        cc_gl_prefixes.add(str(p).split("-")[0].strip())
-                except Exception:
-                    pass
+            matched_rows[c["id"]] = _cam_find_summary_row(entity_code, c.get("summary_row_label"), c.get("name"))
 
         if classes and not any(matched_rows.values()):
-            # Without knowing which GL(s) are common-charge income for AT
-            # LEAST one class, "other income" can't be reliably backed out --
-            # every Income line (including the real common charges) would
-            # get counted as "other," producing confidently-wrong negative
-            # numbers instead of an honest "can't compute this yet."
+            # Without a matched row for AT LEAST one class, there's no
+            # reliable "current common charges" figure to anchor "other
+            # income" against -- every Income line would get counted as
+            # "other," producing confidently-wrong negative numbers instead
+            # of an honest "can't compute this yet."
             return {
                 "grand_total_expense": round(grand_total, 2),
                 "other_income": None,
@@ -12473,17 +12465,22 @@ def create_workflow_blueprint(db):
                             "matched_row_label": None} for c in classes],
             }
 
-        # Other income = every Income-sheet line whose GL prefix ISN'T one of
-        # the matched common-charge rows' own prefixes -- not a hardcoded
-        # 4020/4030 guess, so this holds for condos with different GL numbering.
+        # Other income = every Income-sheet line's CURRENT budget, minus the
+        # CURRENT common charges recorded directly on the matched Summary
+        # row(s) -- anchored on col6 (this year's approved figure, never
+        # touched by CAM) rather than trying to trace individual GL lines
+        # back to a row via gl_prefixes_json, which is frequently empty even
+        # on rows that DID match by name/label (confirmed on 347: both
+        # matched "Common Charges" rows carry gl_prefixes_json == [], which
+        # silently left every income line -- including the real common
+        # charges -- counted as "other," producing a negative
+        # amount-to-be-covered). col7 is deliberately NOT used here: CAM
+        # itself writes col7 with the allocated expense, so reading it back
+        # would make "current vs. required" circular.
+        total_current_cc = sum(float(r.col6_approved_budget or 0) for r in matched_rows.values() if r)
         income_lines = BudgetLine.query.filter_by(budget_id=budget.id, sheet_name="Income").all()
-        other_income = 0.0
-        for l in income_lines:
-            prefix = (l.gl_code or "").split("-")[0].strip()
-            if prefix in cc_gl_prefixes:
-                continue
-            other_income += _cam_line_amount(l)
-        other_income = round(other_income, 2)
+        total_income_current = sum(float(l.current_budget or 0) for l in income_lines)
+        other_income = round(total_income_current - total_current_cc, 2)
 
         to_be_covered = round(grand_total - other_income, 2)
 
