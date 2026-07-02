@@ -12454,6 +12454,25 @@ def create_workflow_blueprint(db):
                 except Exception:
                     pass
 
+        if classes and not any(matched_rows.values()):
+            # Without knowing which GL(s) are common-charge income for AT
+            # LEAST one class, "other income" can't be reliably backed out --
+            # every Income line (including the real common charges) would
+            # get counted as "other," producing confidently-wrong negative
+            # numbers instead of an honest "can't compute this yet."
+            return {
+                "grand_total_expense": round(grand_total, 2),
+                "other_income": None,
+                "amount_to_be_covered": None,
+                "warning": ("No CAM class matched a Summary common-charge row, so \"other income\" "
+                           "can't be reliably identified. Link at least one class to its Summary row "
+                           "(the link icon in the class editor) before these figures mean anything."),
+                "classes": [{"class_id": c["id"], "class_name": c["name"],
+                            "current_common_charges": 0.0, "required_common_charges": None,
+                            "increase_dollar": None, "increase_pct": None,
+                            "matched_row_label": None} for c in classes],
+            }
+
         # Other income = every Income-sheet line whose GL prefix ISN'T one of
         # the matched common-charge rows' own prefixes -- not a hardcoded
         # 4020/4030 guess, so this holds for condos with different GL numbering.
@@ -18075,11 +18094,18 @@ async function renderCamTab(contentDiv) {
   if (!reqIncrease) {
     html += '<p style="font-size:11px; color:var(--gray-400);">Could not compute the required increase for this building.</p>';
   } else {
-    html += '<div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:10px; font-size:12px;">' +
-      '<div>Total allocated expense: <strong>' + fmt0(reqIncrease.grand_total_expense) + '</strong></div>' +
-      '<div>Less: other income: <strong style="color:var(--green);">−' + fmt0(reqIncrease.other_income) + '</strong></div>' +
-      '<div>Amount to be covered by common charges: <strong>' + fmt0(reqIncrease.amount_to_be_covered) + '</strong></div>' +
-      '</div>';
+    if (reqIncrease.warning) {
+      html += '<div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:10px 12px; margin-bottom:10px; font-size:12px; color:#92400e;">⚠ ' +
+        reqIncrease.warning.replace(/</g,'&lt;') + '</div>';
+    }
+    const hasTotals = reqIncrease.other_income !== null && reqIncrease.other_income !== undefined;
+    if (hasTotals) {
+      html += '<div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:10px; font-size:12px;">' +
+        '<div>Total allocated expense: <strong>' + fmt0(reqIncrease.grand_total_expense) + '</strong></div>' +
+        '<div>Less: other income: <strong style="color:var(--green);">−' + fmt0(reqIncrease.other_income) + '</strong></div>' +
+        '<div>Amount to be covered by common charges: <strong>' + fmt0(reqIncrease.amount_to_be_covered) + '</strong></div>' +
+        '</div>';
+    }
     html += '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12px;">';
     html += '<thead><tr style="border-bottom:2px solid var(--gray-300);">' +
       '<th style="text-align:left; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Class</th>' +
@@ -18087,15 +18113,18 @@ async function renderCamTab(contentDiv) {
       '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Required Common Charges</th>' +
       '<th style="text-align:right; padding:6px 8px; font-size:10px; text-transform:uppercase; color:var(--gray-500);">Increase</th></tr></thead><tbody>';
     (reqIncrease.classes || []).forEach(rc => {
-      const upOrDown = rc.increase_dollar >= 0 ? '+' : '';
       const warn = rc.matched_row_label ? '' :
         ' <span title="No matching Summary common-charge row found -- current common charges shown as $0 until one is matched." style="color:#d97706; cursor:help;">⚠</span>';
+      const noData = rc.increase_dollar === null || rc.increase_dollar === undefined;
+      const upOrDown = noData ? '' : (rc.increase_dollar >= 0 ? '+' : '');
+      const increaseCell = noData ? '—' :
+        upOrDown + fmt0(rc.increase_dollar) + ' (' + upOrDown + rc.increase_pct.toFixed(2) + '%)';
       html += '<tr style="border-bottom:1px solid var(--gray-100);">' +
         '<td style="padding:5px 8px;">' + (rc.class_name || '').replace(/</g,'&lt;') + warn + '</td>' +
         '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt0(rc.current_common_charges) + '</td>' +
-        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + fmt0(rc.required_common_charges) + '</td>' +
-        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums; color:' + (rc.increase_dollar >= 0 ? 'var(--red)' : 'var(--green)') + ';">' +
-        upOrDown + fmt0(rc.increase_dollar) + ' (' + upOrDown + rc.increase_pct.toFixed(2) + '%)</td></tr>';
+        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums;">' + (noData ? '—' : fmt0(rc.required_common_charges)) + '</td>' +
+        '<td style="padding:5px 8px; text-align:right; font-variant-numeric:tabular-nums; color:' + (noData ? 'var(--gray-400)' : (rc.increase_dollar >= 0 ? 'var(--red)' : 'var(--green)')) + ';">' +
+        increaseCell + '</td></tr>';
     });
     html += '</tbody></table></div>';
     html += '<p style="font-size:10.5px; color:var(--gray-400); margin-top:6px;">"Current" comes from the Summary row matched to each class (via its name or Summary Row Label, below). "Other income" is every Income-sheet line except those matched common-charge rows.</p>';
