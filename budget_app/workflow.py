@@ -29040,6 +29040,10 @@ let _prPushSaveTimer = null;
 function pushRosterToGL() {
   const comps = window._payrollComponents;
   if (!comps || !Array.isArray(_payrollGLLines)) return;
+  // No roster -> no push. An empty roster computes $0 for every component;
+  // pushing those zeros overwrites stored GL proposals with 0 / -100% the
+  // moment the tab renders (wiped 9 lines on 437, 2026-07-03 QA).
+  if (!Array.isArray(_payrollPositions) || _payrollPositions.length === 0) return;
 
   const savePayload = [];
   let changed = false;
