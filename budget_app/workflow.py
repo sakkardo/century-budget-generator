@@ -12830,16 +12830,27 @@ def create_workflow_blueprint(db):
 
     CLIENT_DETAIL_SHEETS = ("Income",) + NARRATIVE_EXPENSE_SHEETS
 
-    def _client_safe_line(l):
-        """Allowlist a BudgetLine down to what a client may see: description,
-        category, current/proposed amounts, and the variance derived from
-        them. Never GL codes, formulas, notes, or FA/PM review-state fields."""
+    def _client_safe_line(l, ytd_months=2):
+        """Allowlist a BudgetLine down to what a client may see: the full
+        numeric trail (prior-year actual, YTD actual, current budget,
+        forecast, proposed) plus the variance derived from current→proposed.
+        Never GL codes, formulas, notes, or FA/PM review-state fields.
+        Jacob directive 2026-07-03 (Concept C): every budget number belongs
+        in the presentation's backup detail, not just the two-year compare."""
         cur, prop = _narrative_line_amounts(l)
         variance = round(prop - cur, 2)
+        try:
+            fcst = compute_forecast(l.ytd_actual or 0, l.accrual_adj or 0,
+                                    l.unpaid_bills or 0, l.prior_year or 0, ytd_months)
+        except Exception:
+            fcst = 0.0
         return {
             "description": l.description or l.category or "",
             "category": l.category or "",
+            "prior_actual": round(float(l.prior_year or 0), 2),
+            "ytd_actual": round(float(l.ytd_actual or 0), 2),
             "current": round(cur, 2),
+            "forecast": round(float(fcst or 0), 2),
             "proposed": round(prop, 2),
             "variance": variance,
             "variance_pct": round((variance / abs(cur) * 100) if abs(cur) > 0.01 else 0.0, 1),
@@ -12865,12 +12876,24 @@ def create_workflow_blueprint(db):
         entity_code = budget.entity_code
         lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
 
+        # How many months of actuals are in YTD -- same "budget_period"
+        # assumption ("8/12" style) the rest of the app reads; the client
+        # footnote and forecast math both depend on it.
+        ytd_months = 2
+        try:
+            if budget.assumptions_json:
+                bp_val = json.loads(budget.assumptions_json).get("budget_period", "")
+                if "/" in str(bp_val):
+                    ytd_months = int(str(bp_val).split("/")[0])
+        except Exception:
+            pass
+
         by_sheet = {}
         for l in lines:
             sn = l.sheet_name or "Other"
             if sn not in CLIENT_DETAIL_SHEETS:
                 continue
-            by_sheet.setdefault(sn, []).append(_client_safe_line(l))
+            by_sheet.setdefault(sn, []).append(_client_safe_line(l, ytd_months))
 
         tabs = []
         for sn in CLIENT_DETAIL_SHEETS:
@@ -12939,6 +12962,9 @@ def create_workflow_blueprint(db):
                     comm_rows.append({
                         "description": t.tenant_name + (f" ({t.unit_label})" if t.unit_label else ""),
                         "category": "Commercial",
+                        # Tenant-based rows have no GL prior/YTD/forecast trail --
+                        # None renders as an em-dash client-side, never a fake 0.
+                        "prior_actual": None, "ytd_actual": None, "forecast": None,
                         "current": round(cur_rent, 2), "proposed": round(prop_rent, 2),
                         "variance": variance,
                         "variance_pct": round((variance / abs(cur_rent) * 100) if abs(cur_rent) > 0.01 else 0.0, 1),
@@ -12993,7 +13019,8 @@ def create_workflow_blueprint(db):
                   "bar_pct": round(abs(r["variance"]) / movers_max * 100, 1) if movers_max else 0.0}
                  for r in top_movers]
 
-        return {"tabs": tabs, "chart_data": {"donut": donut_slices, "bars": bars, "movers": movers}}
+        return {"tabs": tabs, "chart_data": {"donut": donut_slices, "bars": bars, "movers": movers},
+                "meta": {"ytd_months": ytd_months}}
 
     @bp.route("/api/board-notice/<entity_code>", methods=["GET"])
     def api_board_notice_get(entity_code):
@@ -34736,384 +34763,349 @@ BOARD_NOTICE_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ snapshot.budget.building_name }} — {{ snapshot.budget.year }} Budget Notice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 :root {
-  --nc-navy: #001721; --nc-red: #DE1C23; --nc-cream: #f4f1eb;
-  --nc-line: #e5e0d5; --nc-muted: #8a7e72;
+  --canvas: #eef0f2; --card: #ffffff; --ink: #14181c; --muted: #5f6b76; --faint: #8b959e;
+  --navy: #001721; --line: #e2e6ea; --line-2: #cdd4da;
+  --red: #b42324; --green: #1e6f4c; --gold: #b98a4a; --chipbg-up: #faecec; --chipbg-dn: #e9f4ee;
 }
-* { box-sizing: border-box; }
-body { margin: 0; background: #f6f5f2; }
-.vb { max-width: 780px; margin: 0 auto; background: #fff; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1a1a1a; min-height: 100vh; }
-.vb-letterhead { background: var(--nc-navy); color: #fff; padding: 26px 40px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; row-gap: 12px; }
-.vb-letterhead .lh1 { font-size: 15px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-.vb-letterhead .lh2 { font-size: 12px; color: #9fb0b6; margin-top: 4px; letter-spacing: 0.04em; }
-.vb-print { background: none; border: 1px solid rgba(255,255,255,0.4); color: #cfd8da; font-size: 12px; font-family: inherit; padding: 10px 16px; min-height: 40px; border-radius: 2px; cursor: pointer; }
-.vb-print:hover, .vb-print:focus-visible { border-color: #fff; color: #fff; }
-.vb-print:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-.vb-wrap { max-width: 700px; margin: 0 auto; padding: 40px 40px 64px; }
-.vb-meta { display: grid; grid-template-columns: 100px 1fr; row-gap: 6px; font-size: 13px; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #ddd; }
-.vb-meta dt { color: #666; font-weight: 600; } .vb-meta dd { margin: 0; }
-.vb p { font-size: 15px; line-height: 1.75; margin: 0 0 18px; color: #222; }
-.vb strong { color: var(--nc-navy); }
-.vb-stat { background: var(--nc-cream); border-radius: 4px; padding: 22px 24px; margin: 24px 0; }
-.vb-stat-num { font-size: 40px; font-weight: 800; color: var(--nc-navy); line-height: 1; font-variant-numeric: tabular-nums; }
-.vb-stat-cap { font-size: 12.5px; color: var(--nc-muted); font-weight: 600; margin-top: 4px; }
-.vb-table-wrap { overflow-x: auto; margin: 24px 0; }
-.vb-table { width: 100%; min-width: 420px; border-collapse: collapse; font-size: 13.5px; }
-.vb-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #666; padding: 8px 10px; border-bottom: 2px solid #ccc; white-space: nowrap; }
-.vb-table th.num, .vb-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.vb-table td { padding: 9px 10px; border-bottom: 1px solid #eee; }
-.vb-table tr.total td { font-weight: 700; background: var(--nc-cream); color: var(--nc-navy); border-top: 2px solid #ccc; border-bottom: 2px solid #ccc; }
-.vb-table tr.neg td.num { color: #166534; }
-.vb-detail-toggle { display: flex; align-items: center; gap: 8px; background: #f8f8f6; border: 1px solid #ddd; color: var(--nc-navy); font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 12px 16px; border-radius: 3px; width: 100%; text-align: left; }
-.vb-detail-toggle:hover, .vb-detail-toggle:focus-visible { background: #f0efec; }
-.vb-detail-toggle:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: 2px; }
-.vb-detail-toggle .car { transition: transform 0.15s; display: inline-block; }
-.vb-detail-toggle.open .car { transform: rotate(90deg); }
-.vb-detail-body { display: none; margin: 10px 0 8px; }
-.vb-detail-body.open { display: block; }
-.vb-faq { margin: 32px 0; border: 1px solid #ddd; border-radius: 3px; overflow: hidden; }
-.vb-faq-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: #666; background: #f8f8f6; padding: 10px 16px; border-bottom: 1px solid #ddd; }
-.vb-faq-item { border-bottom: 1px solid #eee; } .vb-faq-item:last-child { border-bottom: none; }
-.vb-faq-q { width: 100%; text-align: left; background: none; border: none; font-family: inherit; font-size: 14px; font-weight: 600; color: #1a1a1a; padding: 14px 16px; min-height: 44px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.vb-faq-q:active { background: #f8f8f6; }
-.vb-faq-q:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
-.vb-faq-q .car { color: var(--nc-muted); transition: transform 0.15s; flex-shrink: 0; }
-.vb-faq-item.open .vb-faq-q .car { transform: rotate(90deg); }
-.vb-faq-a { display: none; padding: 0 16px 16px; font-size: 13.5px; line-height: 1.7; color: #444; white-space: pre-wrap; }
-.vb-faq-item.open .vb-faq-a { display: block; }
-.vb-sig { display: flex; align-items: center; gap: 16px; margin: 36px 0 28px; padding-top: 24px; border-top: 1px solid #ddd; }
-.vb-seal { width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--nc-navy); display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: var(--nc-navy); text-align: center; letter-spacing: 0.02em; flex-shrink: 0; }
-.vb-sig-text .n1 { font-size: 14px; font-weight: 700; color: var(--nc-navy); }
-.vb-sig-text .n2 { font-size: 12.5px; color: #666; }
-.vb-ftr { font-size: 11px; color: #999; text-align: center; padding: 18px; border-top: 1px solid #eee; }
+* { box-sizing: border-box; margin: 0; }
+body { background: var(--canvas); color: var(--ink); font-family: 'IBM Plex Sans', sans-serif; font-size: 14.5px; line-height: 1.6; }
 
-/* -- Sticky wayfinding sub-nav (sharpening pass 2026-07-02) -- */
-.vb-subnav { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid var(--nc-line); display: flex; gap: 4px; padding: 0 40px; overflow-x: auto; scrollbar-width: none; }
-.vb-subnav::-webkit-scrollbar { display: none; }
-.vb-subnav-link { flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--nc-muted); text-decoration: none; padding: 14px 12px; border-bottom: 2px solid transparent; white-space: nowrap; min-height: 44px; display: flex; align-items: center; }
-.vb-subnav-link:hover { color: var(--nc-navy); }
-.vb-subnav-link.active { color: var(--nc-navy); border-bottom-color: var(--nc-navy); }
-.vb-subnav-link:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
+.mast { background: var(--navy); color: #fff; }
+.mast-in { max-width: 1180px; margin: 0 auto; padding: 26px 32px 30px; display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.mast .firm { font-size: 11px; font-weight: 700; letter-spacing: 0.3em; text-transform: uppercase; color: var(--gold); }
+.mast h1 { font-family: 'IBM Plex Serif', serif; font-weight: 500; font-size: 27px; margin-top: 8px; }
+.mast .sub { color: rgba(255,255,255,0.62); font-size: 13px; margin-top: 3px; }
+.mast .right { text-align: right; font-size: 12px; color: rgba(255,255,255,0.62); }
+.mast .right b { display: block; color: #fff; font-weight: 600; font-size: 13px; }
+.statusline { border-top: 1px solid rgba(255,255,255,0.14); }
+.statusline .in { max-width: 1180px; margin: 0 auto; padding: 10px 32px; display: flex; gap: 26px; align-items: center; font-size: 12px; color: rgba(255,255,255,0.72); flex-wrap: wrap; }
+.statusline b { color: #fff; font-weight: 600; }
+.badge { display: inline-block; background: var(--gold); color: var(--navy); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-radius: 3px; padding: 2px 8px; }
+.printbtn { margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.35); color: rgba(255,255,255,0.85); font-family: inherit; font-size: 11.5px; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
+.printbtn:hover, .printbtn:focus-visible { border-color: #fff; color: #fff; }
 
-/* -- Key Dates block (sharpening pass 2026-07-02) -- */
-.vb-dates { display: flex; flex-wrap: wrap; background: var(--nc-cream); border: 1px solid var(--nc-line); border-radius: 4px; padding: 14px 20px; margin-bottom: 24px; }
-.vb-dates-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--nc-muted); font-weight: 700; width: 100%; margin-bottom: 10px; }
-.vb-date-item { padding-right: 20px; margin-right: 20px; border-right: 1px solid var(--nc-line); }
-.vb-date-item:last-child { border-right: none; margin-right: 0; padding-right: 0; }
-.vb-date-label { display: block; font-size: 11px; color: var(--nc-muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.vb-date-val { display: block; font-size: 16px; font-weight: 700; color: var(--nc-navy); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.wrap { max-width: 1180px; margin: 26px auto 90px; padding: 0 32px; display: grid; grid-template-columns: 208px 1fr; gap: 30px; align-items: start; }
+@media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } .rail { display: none; } }
+.rail { position: sticky; top: 22px; }
+.rail a { display: block; font-size: 13px; color: var(--muted); text-decoration: none; padding: 9px 14px; border-left: 2px solid var(--line-2); }
+.rail a:hover { color: var(--ink); }
+.rail a.on { color: var(--navy); font-weight: 600; border-left-color: var(--navy); background: #fff; }
+.rail .cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); padding: 0 14px 10px; }
 
-/* -- Metrics row + biggest-changes movers (richness pass 2026-07-02) -- */
-.vb-metrics-row { display: flex; gap: 12px; flex-wrap: wrap; margin: -8px 0 24px; }
-.vb-metric-card { flex: 1; min-width: 150px; background: #fff; border: 1px solid var(--nc-line); border-radius: 4px; padding: 12px 16px; }
-.vb-metric-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--nc-muted); font-weight: 700; margin-bottom: 4px; }
-.vb-metric-val { font-size: 19px; font-weight: 700; color: var(--nc-navy); font-variant-numeric: tabular-nums; }
-.vb-metric-sub { font-size: 11px; color: var(--nc-muted); margin-top: 2px; }
-.vb-movers { margin-bottom: 28px; }
-.vb-movers-title { font-size: 13px; font-weight: 700; color: var(--nc-navy); margin-bottom: 4px; }
-.vb-movers-sub { font-size: 11.5px; color: var(--nc-muted); margin-bottom: 14px; }
-.vb-mover-row { display: grid; grid-template-columns: 150px 1fr 90px; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12.5px; }
-.vb-mover-label { color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vb-mover-bar-track { background: #f0efec; border-radius: 2px; height: 14px; overflow: hidden; }
-.vb-mover-bar-fill { height: 100%; border-radius: 2px; }
-.vb-mover-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.main { min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 26px 30px; margin-bottom: 22px; box-shadow: 0 1px 2px rgba(20,24,28,0.04); }
+.card h2 { font-family: 'IBM Plex Serif', serif; font-weight: 500; font-size: 20px; color: var(--navy); }
+.card .sub { font-size: 12.5px; color: var(--muted); margin: 4px 0 0; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bottom: 20px; flex-wrap: wrap; }
 
-/* ── Full Budget Detail (plan: "Board Presentation — Full Budget Detail") ── */
-.vb-detail2 { margin: 40px 0; padding-top: 32px; border-top: 1px solid #ddd; }
-.vb-detail-heading { font-size: 18px; font-weight: 700; color: var(--nc-navy); margin-bottom: 6px; }
-.vb-detail-sub { font-size: 13px; color: var(--nc-muted); margin: 0 0 24px; }
-.vb-chartrow { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; margin-bottom: 28px; }
-.vb-donut { width: 140px; height: 140px; border-radius: 50%; flex-shrink: 0; }
-.vb-donut-legend { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; min-width: 180px; }
-.vb-legend-item { display: flex; align-items: center; gap: 8px; }
-.vb-legend-item .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
-.vb-legend-item b { margin-left: auto; font-variant-numeric: tabular-nums; }
-.vb-bars { margin-bottom: 28px; }
-.vb-bar-row { display: grid; grid-template-columns: 130px 1fr 1fr; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
-.vb-bar-label { color: #444; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vb-bar-track { background: #eee; border-radius: 2px; height: 10px; overflow: hidden; }
-.vb-bar-fill { height: 100%; border-radius: 2px; }
-.vb-bar-fill.cur { background: var(--nc-muted); }
-.vb-bar-fill.prop { background: var(--nc-navy); }
-.vb-bar-legend { font-size: 11px; color: #666; margin-top: 4px; }
-.vb-bar-legend .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
-.vb-bar-legend .sw.cur { background: var(--nc-muted); } .vb-bar-legend .sw.prop { background: var(--nc-navy); margin-left: 14px; }
-.vb-tabbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #ddd; padding-bottom: 2px; }
-.vb-tab-btn { background: none; border: none; font-family: inherit; font-size: 12.5px; font-weight: 600; color: #666; padding: 8px 12px; cursor: pointer; border-radius: 3px 3px 0 0; min-height: 36px; }
-.vb-tab-btn:hover { background: #f8f8f6; color: var(--nc-navy); }
-.vb-tab-btn.active { color: var(--nc-navy); background: var(--nc-cream); box-shadow: inset 0 -2px 0 var(--nc-navy); }
-.vb-tab-btn:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
-.vb-tabpanel { display: none; }
-.vb-tabpanel.active { display: block; }
-.vb-tabpanel-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #999; margin-bottom: 8px; display: none; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 14px; margin-bottom: 22px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(20,24,28,0.04); }
+.kpi .k { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+.kpi .v { font-family: 'IBM Plex Serif', serif; font-size: 27px; color: var(--navy); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.kpi.hero { background: var(--navy); border-color: var(--navy); }
+.kpi.hero .k { color: var(--gold); }
+.kpi.hero .v { color: #fff; font-size: 33px; }
+.kpi.hero .s { color: rgba(255,255,255,0.65); }
 
-@media (max-width: 480px) {
-  .vb-letterhead { padding: 20px 20px; } .vb-wrap { padding: 24px 18px 48px; } .vb-stat { padding: 18px 16px; }
-  .vb-bar-row { grid-template-columns: 84px 1fr 1fr; font-size: 10.5px; }
-  .vb-donut { width: 108px; height: 108px; } .vb-chartrow { gap: 18px; }
-  .vb-subnav { padding: 0 18px; }
-  .vb-date-item { padding-right: 14px; margin-right: 14px; }
-  .vb-date-val { font-size: 14px; }
-  .vb-mover-row { grid-template-columns: 96px 1fr 76px; font-size: 11px; }
-  .vb-metric-card { min-width: 100%; }
-}
+.chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 100px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip.up { background: var(--chipbg-up); color: var(--red); }
+.chip.dn { background: var(--chipbg-dn); color: var(--green); }
+.chip.flat { background: #f0f2f4; color: var(--faint); font-weight: 500; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); text-align: left; padding: 9px 12px; border-bottom: 1.5px solid var(--line-2); white-space: nowrap; }
+th.n, td.n { text-align: right; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+td.n { font-family: 'IBM Plex Mono', monospace; font-size: 12.8px; }
+tr:hover td { background: #fafbfc; }
+tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var(--line-2); color: var(--navy); }
+.tbl-note { font-size: 11.5px; color: var(--faint); margin-top: 10px; }
+
+.mixgrid { display: grid; grid-template-columns: 240px 1fr; gap: 34px; align-items: center; }
+@media (max-width: 700px) { .mixgrid { grid-template-columns: 1fr; } }
+.donut { width: 220px; height: 220px; border-radius: 50%; position: relative; margin: 0 auto; }
+.donut .hole { position: absolute; inset: 36px; background: var(--card); border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.donut .hole .t { font-family: 'IBM Plex Serif', serif; font-size: 21px; color: var(--navy); font-variant-numeric: tabular-nums; }
+.donut .hole .c { font-size: 9.5px; letter-spacing: 0.15em; color: var(--faint); margin-top: 3px; }
+.leg { font-size: 13px; }
+.leg-r { display: grid; grid-template-columns: 12px 1fr 56px 100px 1fr; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.leg-r .sw { width: 10px; height: 10px; border-radius: 2px; }
+.leg-r .pc { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.leg-r .am { text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
+.leg-r .bar { height: 6px; background: #f0f2f4; border-radius: 3px; overflow: hidden; }
+.leg-r .bar i { display: block; height: 100%; border-radius: 3px; }
+
+.mv { display: grid; grid-template-columns: minmax(170px, 230px) 1fr 110px; gap: 16px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.mv .tr2 { height: 16px; background: #f0f2f4; border-radius: 3px; overflow: hidden; }
+.mv .tr2 i { display: block; height: 100%; }
+.mv .v { text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12.8px; font-weight: 500; }
+
+.pills { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+.pill { font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--line-2); background: #fff; color: var(--muted); cursor: pointer; }
+.pill:hover { border-color: var(--navy); color: var(--navy); }
+.pill.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+.pill:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+.tpanel { display: none; } .tpanel.on { display: block; }
+.tpanel-name { display: none; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin: 0 0 8px; }
+.tbl-scroll { overflow-x: auto; }
+
+.daterow { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.datebox { border: 1px solid var(--line); border-left: 3px solid var(--gold); border-radius: 8px; padding: 14px 18px; }
+.datebox .d { font-family: 'IBM Plex Serif', serif; font-size: 18px; color: var(--navy); }
+.datebox .l { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin-top: 3px; }
+
+.acc { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+.acc summary { list-style: none; cursor: pointer; padding: 14px 18px; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.acc summary::-webkit-details-marker { display: none; }
+.acc summary::after { content: "+"; font-size: 18px; color: var(--faint); flex-shrink: 0; }
+.acc[open] summary::after { content: "–"; }
+.acc[open] summary { border-bottom: 1px solid var(--line); }
+.acc .a { padding: 14px 18px; color: var(--muted); font-size: 13.5px; white-space: pre-wrap; }
+
+.sig { text-align: center; padding: 34px 0 8px; color: var(--muted); font-size: 12.5px; }
+.sig b { display: block; font-family: 'IBM Plex Serif', serif; font-size: 16px; color: var(--navy); font-weight: 500; margin-bottom: 3px; }
+
 @media print {
-  .vb-print { display: none !important; }
-  .vb-subnav { display: none !important; }
-  .vb-table td, .vb-mover-bar-fill, .vb-metric-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .vb-detail-body, .vb-faq-a { display: block !important; }
-  .vb-detail-toggle .car, .vb-faq-q .car { display: none !important; }
-  .vb-letterhead, .vb-table tr.total td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .vb-table, .vb-faq-item, .vb-sig, .vb-stat { break-inside: avoid; }
-  .vb-tabbar { display: none !important; }
-  .vb-tabpanel { display: block !important; margin-bottom: 24px; break-inside: avoid; }
-  .vb-tabpanel-title { display: block !important; }
-  .vb-donut { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { background: #fff; }
+  .rail, .pills, .printbtn { display: none !important; }
+  .wrap { display: block; margin: 0; padding: 0; max-width: none; }
+  .card, .kpi { box-shadow: none; break-inside: avoid; }
+  .tpanel { display: block !important; margin-bottom: 18px; }
+  .tpanel-name { display: block !important; }
+  .acc .a { display: block; }
+  .mast, .statusline, .kpi.hero, .chip, .donut, .leg-r .bar i, .mv .tr2 i, .datebox { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 </style>
 </head>
 <body>
-<div class="vb">
-  <div class="vb-letterhead">
+{% set words = snapshot.narrative.building_type_words or {} %}
+{% set hd = snapshot.narrative.headline %}
+{% set tl = snapshot.narrative.timeline or {} %}
+{% set Y = snapshot.budget.year %}
+
+<div class="mast">
+  <div class="mast-in">
     <div>
-      <div class="lh1">Century Management</div>
-      <div class="lh2">Official Budget Notice &mdash; {{ snapshot.budget.year }}</div>
+      <div class="firm">Century Management</div>
+      <h1>{{ snapshot.budget.building_name }}</h1>
+      <div class="sub">Proposed Operating Budget · Fiscal Year {{ Y }}</div>
     </div>
-    <button class="vb-print" onclick="window.print()">Print / Save as PDF</button>
+    <div class="right">Prepared for<b>The Board of {{ 'Managers' if words.is_condo else 'Directors' }}</b></div>
   </div>
-  <nav class="vb-subnav" id="vbSubnav" aria-label="Document sections">
-    <a href="#sec-overview" class="vb-subnav-link active" data-target="sec-overview">Overview</a>
-    <a href="#sec-categories" class="vb-subnav-link" data-target="sec-categories">Category Detail</a>
-    <a href="#sec-faq" class="vb-subnav-link" data-target="sec-faq">Questions</a>
-    <a href="#sec-fulldetail" class="vb-subnav-link" data-target="sec-fulldetail">Full Budget Detail</a>
+  <div class="statusline"><div class="in">
+    <span><span class="badge">Proposed budget</span></span>
+    {% if tl.board_vote_by %}<span>Board vote by <b>{{ tl.board_vote_by }}</b></span>{% endif %}
+    <span>Prepared by <b>Century Management Finance Team</b></span>
+    <button class="printbtn" onclick="window.print()">Print / Save as PDF</button>
+  </div></div>
+</div>
+
+<div class="wrap">
+  <nav class="rail" id="rail" aria-label="Report sections">
+    <div class="cap">This report</div>
+    <a href="#s-sum" class="on">Summary</a>
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.chart_data.donut %}<a href="#s-mix">Expense composition</a>{% endif %}
+    <a href="#s-drv">Category changes</a>
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.chart_data.movers %}<a href="#s-mov">Largest movements</a>{% endif %}
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}<a href="#s-det">Full budget detail</a>{% endif %}
+    {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}<a href="#s-dates">Key dates</a>{% endif %}
+    {% if snapshot.narrative.faq %}<a href="#s-faq">Questions &amp; answers</a>{% endif %}
   </nav>
-  <div class="vb-wrap">
-    <div id="sec-overview"></div>
-    <div class="vb-meta">
-      <dt>Re:</dt><dd>{{ snapshot.budget.building_name }} &mdash; Proposed {{ snapshot.budget.year }} Operating Budget</dd>
-      <dt>Prepared by:</dt><dd>Century Management Finance Team</dd>
-    </div>
 
-    {% set tl = snapshot.narrative.timeline or {} %}
-    {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}
-    <div class="vb-dates">
-      <div class="vb-dates-title">Key Dates</div>
-      {% if tl.board_review_through %}<div class="vb-date-item"><span class="vb-date-label">Review by</span><span class="vb-date-val">{{ tl.board_review_through }}</span></div>{% endif %}
-      {% if tl.board_vote_by %}<div class="vb-date-item"><span class="vb-date-label">Board vote by</span><span class="vb-date-val">{{ tl.board_vote_by }}</span></div>{% endif %}
-      {% if tl.effective_date %}<div class="vb-date-item"><span class="vb-date-label">New charges effective</span><span class="vb-date-val">{{ tl.effective_date }}</span></div>{% endif %}
-    </div>
-    {% endif %}
+  <div class="main">
 
-    <p>{{ snapshot.narrative.opening }}</p>
-
-    <div class="vb-stat">
-      <div class="vb-stat-num">{{ "%+.1f"|format(snapshot.narrative.headline.pct_change) }}%</div>
-      <div class="vb-stat-cap">Proposed {{ snapshot.budget.year }} operating expense change</div>
-    </div>
-
-    <div class="vb-metrics-row">
-      <div class="vb-metric-card">
-        <div class="vb-metric-label">Total operating expense</div>
-        <div class="vb-metric-val">{{ fmt(snapshot.narrative.headline.exp_proposed) }}</div>
-        <div class="vb-metric-sub">from {{ fmt(snapshot.narrative.headline.exp_current) }}</div>
-      </div>
+    <div class="kpis" id="s-sum">
+      <div class="kpi hero"><div class="k">Proposed change</div><div class="v">{{ '%+.1f'|format(hd.pct_change) }}%</div><div class="s">in operating expense vs. {{ Y - 1 }}</div></div>
+      <div class="kpi"><div class="k">{{ Y }} Operating expense</div><div class="v">{{ fmt(hd.exp_proposed) }}</div><div class="s">from {{ fmt(hd.exp_current) }} in {{ Y - 1 }}</div></div>
       {% if snapshot.narrative.income %}
-      <div class="vb-metric-card">
-        <div class="vb-metric-label">Total income</div>
-        <div class="vb-metric-val">{{ fmt(snapshot.narrative.income.proposed) }}</div>
-        <div class="vb-metric-sub">from {{ fmt(snapshot.narrative.income.current) }}</div>
-      </div>
+      <div class="kpi"><div class="k">{{ Y }} Total income</div><div class="v">{{ fmt(snapshot.narrative.income.proposed) }}</div><div class="s">from {{ fmt(snapshot.narrative.income.current) }} in {{ Y - 1 }}</div></div>
       {% endif %}
-      <div class="vb-metric-card">
-        <div class="vb-metric-label">Net change</div>
-        <div class="vb-metric-val">{{ '+' if snapshot.narrative.headline.net_change >= 0 else '' }}{{ fmt(snapshot.narrative.headline.net_change) }}</div>
-        <div class="vb-metric-sub">{{ '+' if snapshot.narrative.headline.pct_change >= 0 else '' }}{{ snapshot.narrative.headline.pct_change }}% vs. current budget</div>
-      </div>
+      <div class="kpi"><div class="k">Net change</div><div class="v">{{ '+' if hd.net_change >= 0 else '' }}{{ fmt(hd.net_change) }}</div><div class="s">to be funded by {{ words.charge_word or 'common charge' }}s</div></div>
     </div>
 
-    <p>{{ snapshot.narrative.driver_summary }}</p>
-    {% if snapshot.narrative.additional_notes %}<p>{{ snapshot.narrative.additional_notes }}</p>{% endif %}
+    <div class="card">
+      <p style="font-size:15.5px; color:var(--ink);">{{ snapshot.narrative.opening }}</p>
+      <p style="font-size:14px; color:var(--muted); margin-top:12px;">{{ snapshot.narrative.driver_summary }}</p>
+      {% if snapshot.narrative.additional_notes %}<p style="font-size:14px; color:var(--muted); margin-top:12px;">{{ snapshot.narrative.additional_notes }}</p>{% endif %}
+    </div>
 
-    <div class="vb-table-wrap">
-      <table class="vb-table">
-        <thead><tr><th>Category</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
-        <tbody>
-          {% for d in snapshot.narrative.drivers %}
-          <tr><td>{{ d.category }}</td><td class="num">{{ fmt(d.current) }}</td><td class="num">{{ fmt(d.proposed) }}</td><td class="num">+{{ fmt(d.change) }}</td></tr>
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.chart_data.donut %}
+    {% set donut = snapshot.detail_tabs.chart_data.donut %}
+    {% set bars = snapshot.detail_tabs.chart_data.bars %}
+    <div class="card" id="s-mix">
+      <div class="card-head"><div><h2>Expense composition</h2><div class="sub">Every dollar of the proposed {{ Y }} budget, by category</div></div></div>
+      <div class="mixgrid">
+        <div class="donut" style="background: conic-gradient({% for s in donut %}{{ s.color }} {{ s.start }}% {{ s.start + s.pct }}%{% if not loop.last %}, {% endif %}{% endfor %});">
+          <div class="hole"><div class="t">{{ fmt(hd.exp_proposed) }}</div><div class="c">{{ Y }} EXPENSE</div></div>
+        </div>
+        <div class="leg">
+          {% set maxprop = bars | map(attribute='proposed') | max if bars else 1 %}
+          {% for s in donut %}
+          {% set b = bars[loop.index0] if bars and loop.index0 < (bars | length) else None %}
+          <div class="leg-r"><span class="sw" style="background:{{ s.color }}"></span><span>{{ s.name }}</span><span class="pc">{{ s.pct }}%</span><span class="am">{{ fmt(b.proposed) if b else '' }}</span><span class="bar"><i style="width:{{ (b.proposed / maxprop * 100) | round(1) if b and maxprop else 0 }}%; background:{{ s.color }}"></i></span></div>
           {% endfor %}
-          {% if snapshot.narrative.savings and snapshot.narrative.savings|length > 0 %}
-          <tr class="neg"><td>All other categories (net savings)</td><td class="num"></td><td class="num"></td><td class="num">&minus;{{ fmt(snapshot.narrative.savings_total) }}</td></tr>
-          {% endif %}
-          <tr class="total"><td>Net change</td><td class="num">{{ fmt(snapshot.narrative.headline.exp_current) }}</td><td class="num">{{ fmt(snapshot.narrative.headline.exp_proposed) }}</td><td class="num">{{ fmt(snapshot.narrative.headline.net_change) }} &middot; {{ "%+.1f"|format(snapshot.narrative.headline.pct_change) }}%</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    {% if snapshot.narrative.categories %}
-    <div id="sec-categories"></div>
-    <button class="vb-detail-toggle" id="detailToggle" onclick="toggleDetail()"><span class="car">&#9656;</span> View full expense detail by category</button>
-    <div class="vb-detail-body" id="detailBody">
-      <div class="vb-table-wrap">
-        <table class="vb-table">
-          <thead><tr><th>Sheet</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
-          <tbody>
-            {% for c in snapshot.narrative.categories %}
-            <tr{% if c.proposed < c.current %} class="neg"{% endif %}><td>{{ c.sheet }}</td><td class="num">{{ fmt(c.current) }}</td><td class="num">{{ fmt(c.proposed) }}</td><td class="num">{{ '+' if c.proposed >= c.current else '' }}{{ fmt(c.proposed - c.current) }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        </div>
       </div>
     </div>
     {% endif %}
 
-    {% if snapshot.narrative.faq %}
-    <div id="sec-faq"></div>
-    <div class="vb-faq">
-      <div class="vb-faq-title">Anticipated questions</div>
-      {% for item in snapshot.narrative.faq %}
-      <div class="vb-faq-item">
-        <button class="vb-faq-q" onclick="toggleFaq(this)"><span>{{ item.q }}</span><span class="car">&#9656;</span></button>
-        <div class="vb-faq-a">{{ item.a }}</div>
-      </div>
+    <div class="card" id="s-drv">
+      <div class="card-head"><div><h2>Category changes</h2><div class="sub">{{ Y - 1 }} budget vs. {{ Y }} proposed</div></div></div>
+      <div class="tbl-scroll"><table>
+        <thead><tr><th>Category</th><th class="n">{{ Y - 1 }} Budget</th><th class="n">{{ Y }} Proposed</th><th class="n">Change</th><th class="n">%</th></tr></thead>
+        <tbody>
+          {% for c in snapshot.narrative.categories %}
+          {% set d = c.proposed - c.current %}
+          <tr><td>{{ c.sheet }}</td><td class="n">{{ fmt(c.current) }}</td><td class="n">{{ fmt(c.proposed) }}</td>
+            <td class="n">{% if d == 0 %}<span class="chip flat">no change</span>{% else %}<span class="chip {{ 'dn' if d < 0 else 'up' }}">{{ '+' if d > 0 else '−' }}{{ fmt(d) | replace('-$', '$') | replace('−$', '$') }}</span>{% endif %}</td>
+            <td class="n" style="color:var(--muted)">{% if d == 0 or not c.current %}—{% else %}{{ '%+.1f'|format(d / c.current * 100) }}%{% endif %}</td></tr>
+          {% endfor %}
+          {% set td = hd.exp_proposed - hd.exp_current %}
+          <tr class="total"><td>Total operating expense</td><td class="n">{{ fmt(hd.exp_current) }}</td><td class="n">{{ fmt(hd.exp_proposed) }}</td>
+            <td class="n">{% if td == 0 %}<span class="chip flat">no change</span>{% else %}<span class="chip {{ 'dn' if td < 0 else 'up' }}">{{ '+' if td > 0 else '−' }}{{ fmt(td) | replace('-$', '$') | replace('−$', '$') }}</span>{% endif %}</td>
+            <td class="n">{{ '%+.1f'|format(hd.pct_change) }}%</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.chart_data.movers %}
+    <div class="card" id="s-mov">
+      <div class="card-head"><div><h2>Largest movements</h2><div class="sub">The individual budget lines driving the change, ranked by dollar impact</div></div></div>
+      {% for mv in snapshot.detail_tabs.chart_data.movers %}
+      <div class="mv"><div>{{ mv.label }}</div>
+        <div class="tr2"><i style="width:{{ mv.bar_pct }}%; background:{{ 'var(--green)' if mv.favorable else 'var(--red)' }}"></i></div>
+        <div class="v" style="color:{{ 'var(--green)' if mv.favorable else 'var(--red)' }}">{{ '+' if mv.change > 0 else '−' }}{{ fmt(mv.change) | replace('-$', '$') | replace('−$', '$') }}</div></div>
       {% endfor %}
     </div>
     {% endif %}
 
     {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}
-    <div id="sec-fulldetail"></div>
-    <div class="vb-detail2" id="fullDetailSection">
-      <div class="vb-detail-heading">Full Budget Detail</div>
-      <p class="vb-detail-sub">Every category in the proposed {{ snapshot.budget.year }} budget, in full — the same
-        numbers behind the summary above.</p>
-
-      {% if snapshot.detail_tabs.chart_data.donut %}
-      <div class="vb-chartrow">
-        <div class="vb-donut" style="background: conic-gradient({% for s in snapshot.detail_tabs.chart_data.donut %}{{ s.color }} {{ s.start }}% {{ s.start + s.pct }}%{% if not loop.last %}, {% endif %}{% endfor %});"></div>
-        <div class="vb-donut-legend">
-          {% for s in snapshot.detail_tabs.chart_data.donut %}
-          <div class="vb-legend-item"><span class="sw" style="background:{{ s.color }}"></span>{{ s.name }}<b>{{ s.pct }}%</b></div>
-          {% endfor %}
-        </div>
-      </div>
-      {% endif %}
-
-      {% if snapshot.detail_tabs.chart_data.bars %}
-      <div class="vb-bars">
-        {% for b in snapshot.detail_tabs.chart_data.bars %}
-        <div class="vb-bar-row">
-          <div class="vb-bar-label">{{ b.name }}</div>
-          <div class="vb-bar-track"><div class="vb-bar-fill cur" style="width:{{ b.current_pct }}%"></div></div>
-          <div class="vb-bar-track"><div class="vb-bar-fill prop" style="width:{{ b.proposed_pct }}%"></div></div>
-        </div>
-        {% endfor %}
-        <div class="vb-bar-legend"><span class="sw cur"></span>{{ snapshot.budget.year - 1 }} Budget<span class="sw prop"></span>{{ snapshot.budget.year }} Proposed</div>
-      </div>
-      {% endif %}
-
-      {% if snapshot.detail_tabs.chart_data.movers %}
-      <div class="vb-movers">
-        <div class="vb-movers-title">Biggest changes vs. current budget</div>
-        <div class="vb-movers-sub">The individual expense lines driving the {{ snapshot.budget.year }} proposal, ranked by dollar impact.</div>
-        {% for mv in snapshot.detail_tabs.chart_data.movers %}
-        <div class="vb-mover-row">
-          <div class="vb-mover-label">{{ mv.label }}</div>
-          <div class="vb-mover-bar-track"><div class="vb-mover-bar-fill" style="width:{{ mv.bar_pct }}%; background:{{ '#166534' if mv.favorable else 'var(--nc-red)' }};"></div></div>
-          <div class="vb-mover-val" style="color:{{ '#166534' if mv.favorable else 'var(--nc-red)' }};">{{ '+' if mv.change >= 0 else '' }}{{ fmt(mv.change) }}</div>
-        </div>
-        {% endfor %}
-      </div>
-      {% endif %}
-
-      <div class="vb-tabbar" role="tablist">
+    {% set ytdm = snapshot.detail_tabs.meta.ytd_months if snapshot.detail_tabs.meta else None %}
+    <div class="card" id="s-det">
+      <div class="card-head"><div><h2>Full budget detail</h2><div class="sub">Every line of the proposed budget — the same numbers behind the summary above</div></div></div>
+      <div class="pills" role="tablist">
         {% for t in snapshot.detail_tabs.tabs %}
-        <button class="vb-tab-btn{% if loop.first %} active{% endif %}" onclick="showDetailTab({{ loop.index0 }})" data-tab="{{ loop.index0 }}">{{ t.name }}</button>
+        <button class="pill{% if loop.first %} on{% endif %}" onclick="showTab({{ loop.index0 }})" data-i="{{ loop.index0 }}">{{ t.name }}</button>
         {% endfor %}
       </div>
-
       {% for t in snapshot.detail_tabs.tabs %}
-      <div class="vb-tabpanel{% if loop.first %} active{% endif %}" data-panel="{{ loop.index0 }}">
-        <div class="vb-tabpanel-title">{{ t.name }}</div>
+      <div class="tpanel{% if loop.first %} on{% endif %}" data-i="{{ loop.index0 }}">
+        <div class="tpanel-name">{{ t.name }}</div>
         {% if t.lines is defined %}
-        <div class="vb-table-wrap">
-          <table class="vb-table">
-            <thead><tr><th>Description</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
-            <tbody>
-              {% for l in t.lines %}
-              <tr{% if l.variance < 0 %} class="neg"{% endif %}><td>{{ l.description }}</td><td class="num">{{ fmt(l.current) }}</td><td class="num">{{ fmt(l.proposed) }}</td><td class="num" style="background: linear-gradient(to right, {{ '#DBEFE1' if l.favorable else '#FBE1E0' }} 0%, {{ '#DBEFE1' if l.favorable else '#FBE1E0' }} {{ l.bar_pct or 0 }}%, transparent {{ l.bar_pct or 0 }}%); color: {{ '#166534' if l.favorable else 'var(--nc-red)' }};">{{ '+' if l.variance >= 0 else '' }}{{ fmt(l.variance) }}</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        {% set ns = namespace(pa=0, yt=0, cu=0, fc=0, pr=0, gaps=false) %}
+        <div class="tbl-scroll"><table>
+          <thead><tr><th>Description</th><th class="n">{{ Y - 2 }} Actual</th><th class="n">{{ Y - 1 }} YTD</th><th class="n">{{ Y - 1 }} Budget</th><th class="n">{{ Y - 1 }} Forecast</th><th class="n">{{ Y }} Proposed</th><th class="n">Change</th><th class="n">%</th></tr></thead>
+          <tbody>
+            {% for l in t.lines %}
+            {% if l.prior_actual is none %}{% set ns.gaps = true %}{% else %}{% set ns.pa = ns.pa + l.prior_actual %}{% set ns.yt = ns.yt + (l.ytd_actual or 0) %}{% set ns.fc = ns.fc + (l.forecast or 0) %}{% endif %}
+            {% set ns.cu = ns.cu + l.current %}{% set ns.pr = ns.pr + l.proposed %}
+            <tr><td>{{ l.description }}</td>
+              <td class="n">{{ fmt(l.prior_actual) if l.prior_actual is not none else '—' }}</td>
+              <td class="n">{{ fmt(l.ytd_actual) if l.ytd_actual is not none else '—' }}</td>
+              <td class="n">{{ fmt(l.current) }}</td>
+              <td class="n">{{ fmt(l.forecast) if l.forecast is not none else '—' }}</td>
+              <td class="n">{{ fmt(l.proposed) }}</td>
+              <td class="n">{% if l.variance == 0 %}<span class="chip flat">no change</span>{% else %}<span class="chip {{ 'dn' if l.variance < 0 else 'up' }}">{{ '+' if l.variance > 0 else '−' }}{{ fmt(l.variance) | replace('-$', '$') | replace('−$', '$') }}</span>{% endif %}</td>
+              <td class="n" style="color:var(--faint)">{% if l.variance == 0 %}—{% else %}{{ '%+.1f'|format(l.variance_pct) }}%{% endif %}</td></tr>
+            {% endfor %}
+            {% set dt = ns.pr - ns.cu %}
+            <tr class="total"><td>Total {{ t.name | lower }}</td>
+              <td class="n">{{ fmt(ns.pa) if not ns.gaps else '—' }}</td>
+              <td class="n">{{ fmt(ns.yt) if not ns.gaps else '—' }}</td>
+              <td class="n">{{ fmt(ns.cu) }}</td>
+              <td class="n">{{ fmt(ns.fc) if not ns.gaps else '—' }}</td>
+              <td class="n">{{ fmt(ns.pr) }}</td>
+              <td class="n">{% if dt == 0 %}<span class="chip flat">no change</span>{% else %}<span class="chip {{ 'dn' if dt < 0 else 'up' }}">{{ '+' if dt > 0 else '−' }}{{ fmt(dt) | replace('-$', '$') | replace('−$', '$') }}</span>{% endif %}</td>
+              <td class="n">{% if dt == 0 or not ns.cu %}—{% else %}{{ '%+.1f'|format(dt / ns.cu * 100) }}%{% endif %}</td></tr>
+          </tbody>
+        </table></div>
         {% elif t.rows is defined %}
-        <div class="vb-table-wrap">
-          <table class="vb-table">
-            <thead><tr><th>Line</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th></tr></thead>
-            <tbody>
-              {% for r in t.rows %}
-              <tr><td>{{ r.label }}</td><td class="num">{{ fmt(r.col6_approved_budget) }}</td><td class="num">{{ fmt(r.col7_proposed_budget) }}</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        <div class="tbl-scroll"><table>
+          <thead><tr><th>Line</th><th class="n">{{ Y - 2 }} Actual</th><th class="n">{{ Y - 1 }} Budget</th><th class="n">{{ Y }} Proposed</th></tr></thead>
+          <tbody>
+            {% for r in t.rows %}
+            <tr><td>{{ r.label }}</td><td class="n">{{ fmt(r.col1_prior_actual) if r.col1_prior_actual is not none else '—' }}</td><td class="n">{{ fmt(r.col6_approved_budget) }}</td><td class="n">{{ fmt(r.col7_proposed_budget) }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
         {% elif t.re_taxes is defined %}
-        <div class="vb-table-wrap">
-          <table class="vb-table">
-            <tbody>
-              <tr><td>Gross real estate tax</td><td class="num">{{ fmt(t.re_taxes.gross_tax) }}</td></tr>
-              <tr><td>First-half installment</td><td class="num">{{ fmt(t.re_taxes.first_half_tax) }}</td></tr>
-              <tr><td>Second-half installment</td><td class="num">{{ fmt(t.re_taxes.second_half_tax) }}</td></tr>
-              <tr class="total"><td>Net real estate tax</td><td class="num">{{ fmt(t.re_taxes.net_tax) }}</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="tbl-scroll"><table>
+          <tbody>
+            <tr><td>Gross real estate tax</td><td class="n">{{ fmt(t.re_taxes.gross_tax) }}</td></tr>
+            <tr><td>First-half installment</td><td class="n">{{ fmt(t.re_taxes.first_half_tax) }}</td></tr>
+            <tr><td>Second-half installment</td><td class="n">{{ fmt(t.re_taxes.second_half_tax) }}</td></tr>
+            <tr class="total"><td>Net real estate tax</td><td class="n">{{ fmt(t.re_taxes.net_tax) }}</td></tr>
+          </tbody>
+        </table></div>
         {% endif %}
       </div>
+      {% endfor %}
+      <p class="tbl-note">{% if ytdm %}YTD reflects {{ ytdm }} month{{ 's' if ytdm != 1 else '' }} of {{ Y - 1 }} actuals · {% endif %}Forecast = YTD actuals + projected remaining months · Change compares the {{ Y }} proposal to the {{ Y - 1 }} budget.</p>
+    </div>
+    {% endif %}
+
+    {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}
+    <div class="card" id="s-dates">
+      <div class="card-head"><div><h2>Key dates</h2></div></div>
+      <div class="daterow">
+        {% if tl.board_review_through %}<div class="datebox"><div class="d">{{ tl.board_review_through }}</div><div class="l">Review by</div></div>{% endif %}
+        {% if tl.board_vote_by %}<div class="datebox"><div class="d">{{ tl.board_vote_by }}</div><div class="l">Board vote by</div></div>{% endif %}
+        {% if tl.effective_date %}<div class="datebox"><div class="d">{{ tl.effective_date }}</div><div class="l">New {{ words.charge_word or 'common charge' }}s effective</div></div>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if snapshot.narrative.faq %}
+    <div class="card" id="s-faq">
+      <div class="card-head"><div><h2>Questions &amp; answers</h2><div class="sub">Prepared answers to the questions boards ask most</div></div></div>
+      {% for item in snapshot.narrative.faq %}
+      <details class="acc"{% if loop.first %} open{% endif %}><summary>{{ item.q }}</summary><div class="a">{{ item.a }}</div></details>
       {% endfor %}
     </div>
     {% endif %}
 
-    <div class="vb-sig">
-      <div class="vb-seal">CENTURY<br>MGMT</div>
-      <div class="vb-sig-text"><div class="n1">Century Management Finance Team</div><div class="n2">On behalf of {{ snapshot.budget.building_name }}</div></div>
-    </div>
+    <div class="sig"><b>Century Management Finance Team</b>On behalf of {{ snapshot.budget.building_name }} · Confidential — prepared for the Board</div>
   </div>
-  <div class="vb-ftr">Century Management &middot; Confidential &mdash; prepared for {{ snapshot.budget.building_name }} Board of Directors</div>
 </div>
+
 <script>
-function toggleDetail() {
-  document.getElementById('detailToggle').classList.toggle('open');
-  document.getElementById('detailBody').classList.toggle('open');
-}
-function toggleFaq(btn) { btn.parentElement.classList.toggle('open'); }
-function showDetailTab(i) {
-  document.querySelectorAll('.vb-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab == i));
-  document.querySelectorAll('.vb-tabpanel').forEach(p => p.classList.toggle('active', p.dataset.panel == i));
+function showTab(i) {
+  document.querySelectorAll('.pill').forEach(b => b.classList.toggle('on', b.dataset.i == i));
+  document.querySelectorAll('.tpanel').forEach(p => p.classList.toggle('on', p.dataset.i == i));
 }
 (function () {
-  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var links = {};
-  document.querySelectorAll('.vb-subnav-link').forEach(function (l) {
-    links[l.dataset.target] = l;
-    l.addEventListener('click', function (e) {
-      e.preventDefault();
-      var el = document.getElementById(l.dataset.target);
-      if (el) el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
-    });
-  });
-  var sections = Object.keys(links).map(function (id) { return document.getElementById(id); }).filter(Boolean);
-  if ('IntersectionObserver' in window && sections.length) {
-    var observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          Object.values(links).forEach(function (l) { l.classList.remove('active'); });
-          if (links[entry.target.id]) links[entry.target.id].classList.add('active');
-        }
-      });
-    }, { rootMargin: '-15% 0px -70% 0px' });
-    sections.forEach(function (s) { observer.observe(s); });
+  const links = Array.from(document.querySelectorAll('#rail a'));
+  if (!links.length) return;
+  const secs = links.map(l => document.querySelector(l.getAttribute('href'))).filter(Boolean);
+  const byId = {};
+  links.forEach(l => byId[l.getAttribute('href').slice(1)] = l);
+  let animId = null;
+  function animateTo(top, ms) {
+    const se = document.scrollingElement;
+    const from = se.scrollTop, dist = top - from, t0 = performance.now();
+    if (animId) cancelAnimationFrame(animId);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { se.scrollTop = top; return; }
+    (function step(now) {
+      const p = Math.min(1, (now - t0) / ms);
+      const e2 = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+      se.scrollTop = from + dist * e2;
+      if (p < 1) animId = requestAnimationFrame(step);
+    })(t0);
   }
+  const obs = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { links.forEach(l => l.classList.remove('on')); (byId[e.target.id] || links[0]).classList.add('on'); }
+  }), { rootMargin: '-20% 0px -65% 0px' });
+  secs.forEach(s => obs.observe(s));
+  links.forEach(l => l.addEventListener('click', e => {
+    e.preventDefault();
+    const el = document.querySelector(l.getAttribute('href'));
+    animateTo(el.getBoundingClientRect().top + document.scrollingElement.scrollTop - 16, 450);
+  }));
 })();
 </script>
 </body>
