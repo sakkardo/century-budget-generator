@@ -4328,6 +4328,11 @@ def create_workflow_blueprint(db):
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
 
+        # QA fix 2 (2026-07-03): stamp every revision from this request with one
+        # batch id so "Undo last" reverts the whole edit, never half of it.
+        import uuid as _uuid
+        _batch_id = _uuid.uuid4().hex
+
         for line_data in data.get("lines", []):
             line = BudgetLine.query.filter_by(
                 budget_id=budget.id, gl_code=line_data.get("gl_code")
@@ -4402,6 +4407,7 @@ def create_workflow_blueprint(db):
                     action="update", field_name=field,
                     old_value=old_v, new_value=new_v, source="web",
                     user_id=_read_fa_id_from_cookie(),
+                    batch_id=_batch_id,
                 ))
 
         try:
@@ -5238,6 +5244,14 @@ def create_workflow_blueprint(db):
                 return jsonify({"changes": [], "entity_code": entity_code, "sheet": sheet_filter})
             q = q.filter(BudgetRevision.budget_line_id.in_(line_ids_on_sheet))
         revisions = q.order_by(BudgetRevision.id.desc()).limit(limit).all()
+        # QA fix 2: batch sizes so the UI can say "this edit changed N fields"
+        _batch_counts = {}
+        _bids = {r.batch_id for r in revisions if getattr(r, "batch_id", None)}
+        if _bids:
+            for _bid, _cnt in (db.session.query(BudgetRevision.batch_id, db.func.count(BudgetRevision.id))
+                               .filter(BudgetRevision.batch_id.in_(_bids))
+                               .group_by(BudgetRevision.batch_id).all()):
+                _batch_counts[_bid] = _cnt
         # Build GL lookup for any line_ids referenced
         line_ids = {r.budget_line_id for r in revisions if r.budget_line_id}
         gl_lookup = {}
@@ -5281,6 +5295,8 @@ def create_workflow_blueprint(db):
                 "summary_label": sum_label,  # for UI to show even when desc is generic
                 "is_summary": is_summary,
                 "undoable": undoable,
+                "batch_id": getattr(r, "batch_id", None),
+                "batch_size": _batch_counts.get(getattr(r, "batch_id", None), 1),
             })
         return jsonify({"changes": out, "entity_code": entity_code})
 
@@ -5303,109 +5319,125 @@ def create_workflow_blueprint(db):
         if not budget or budget.entity_code != entity_code:
             return jsonify({"error": "Revision does not belong to this entity"}), 400
 
-        # FA dir 2026-05-19: route summary edits to a different undo path.
-        # Summary revisions have action="summary_edit" + field_name in the
-        # form "col3_override:Maintenance" (no budget_line_id).
-        if rev.action == "summary_edit":
-            try:
-                sum_col, _, sum_label = (rev.field_name or "").partition(":")
-            except Exception:
-                sum_col, sum_label = "", ""
-            if sum_col not in _SUMMARY_UNDOABLE_FIELDS:
-                return jsonify({"error": f"Summary column '{sum_col}' not undoable."}), 400
-            db_attr = _SUMMARY_UNDOABLE_FIELDS[sum_col]
-            # Locate the row by label within this budget's summary rows
-            srow = (
-                BudgetSummaryRow.query
-                .filter_by(entity_code=entity_code, budget_year=budget.year, label=sum_label)
-                .first()
-            )
-            if not srow:
-                return jsonify({"error": f"Summary row '{sum_label}' not found."}), 404
-            # Coerce old_value back to float / None
-            raw_old = rev.old_value
-            if raw_old in (None, "", "None", "null"):
-                new_value = None
-            else:
+        # Batch undo (QA fix 2, 2026-07-03): one FA edit can write several
+        # revisions in a single request (e.g. an INC% edit writes increase_pct
+        # AND proposed_budget). Reverting only the newest field left rows
+        # half-undone, so undo now reverts every revision sharing batch_id.
+        # Old revisions (batch_id NULL) keep single-revision behavior.
+        import uuid as _uuid
+        if getattr(rev, "batch_id", None):
+            batch_revs = (BudgetRevision.query
+                          .filter_by(budget_id=budget.id, batch_id=rev.batch_id)
+                          .order_by(BudgetRevision.id.desc()).all())
+        else:
+            batch_revs = [rev]
+        undo_batch_id = _uuid.uuid4().hex
+
+        reverted = []
+        skipped = []
+        for r in batch_revs:
+            if r.action == "summary_edit":
+                sum_col, _, sum_label = (r.field_name or "").partition(":")
+                if sum_col not in _SUMMARY_UNDOABLE_FIELDS:
+                    skipped.append({"revision_id": r.id, "reason": f"Summary column '{sum_col}' not undoable."})
+                    continue
+                db_attr = _SUMMARY_UNDOABLE_FIELDS[sum_col]
+                srow = (
+                    BudgetSummaryRow.query
+                    .filter_by(entity_code=entity_code, budget_year=budget.year, label=sum_label)
+                    .first()
+                )
+                if not srow:
+                    skipped.append({"revision_id": r.id, "reason": f"Summary row '{sum_label}' not found."})
+                    continue
+                raw_old = r.old_value
+                if raw_old in (None, "", "None", "null"):
+                    new_value = None
+                else:
+                    try:
+                        new_value = float(raw_old)
+                    except Exception:
+                        skipped.append({"revision_id": r.id, "reason": f"Cannot parse old value '{raw_old}' as number."})
+                        continue
+                previous_current = getattr(srow, db_attr, None)
                 try:
-                    new_value = float(raw_old)
-                except Exception:
-                    return jsonify({"error": f"Cannot parse old value '{raw_old}' as number."}), 400
-            previous_current = getattr(srow, db_attr, None)
+                    setattr(srow, db_attr, new_value)
+                except Exception as e:
+                    skipped.append({"revision_id": r.id, "reason": f"Cannot set {db_attr}: {e}"})
+                    continue
+                db.session.add(BudgetRevision(
+                    budget_id=budget.id,
+                    action="summary_edit",
+                    field_name=r.field_name,  # keep "col3_override:Maintenance" shape
+                    old_value=str(previous_current) if previous_current is not None else "",
+                    new_value=str(new_value) if new_value is not None else "",
+                    notes=f"Undo of revision #{r.id}",
+                    source="web",
+                    batch_id=undo_batch_id,
+                    user_id=_read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
+                ))
+                reverted.append({"revision_id": r.id, "field": sum_col,
+                                 "summary_label": sum_label, "new_value": new_value})
+                continue
+
+            # Line-level revision
+            if r.field_name not in _UNDOABLE_FIELDS:
+                skipped.append({"revision_id": r.id, "reason": f"Field '{r.field_name}' is not undoable from this UI."})
+                continue
+            if not r.budget_line_id:
+                skipped.append({"revision_id": r.id, "reason": "Revision has no line attached"})
+                continue
+            line = BudgetLine.query.get(r.budget_line_id)
+            if not line:
+                skipped.append({"revision_id": r.id, "reason": "Budget line missing"})
+                continue
+            kind = _UNDOABLE_FIELDS[r.field_name]
+            new_value_for_line = _parse_undo_value(r.old_value, kind)
+            previous_current = getattr(line, r.field_name, None)
             try:
-                setattr(srow, db_attr, new_value)
+                setattr(line, r.field_name, new_value_for_line)
             except Exception as e:
-                return jsonify({"error": f"Cannot set {db_attr}: {e}"}), 500
-            # Audit the undo (re-uses summary_edit action so it shows up in the
-            # Summary tab's history feed too, with field_name carrying both
-            # column + label like the original).
-            undo_rev = BudgetRevision(
+                skipped.append({"revision_id": r.id, "reason": f"Cannot set {r.field_name}: {e}"})
+                continue
+            db.session.add(BudgetRevision(
                 budget_id=budget.id,
-                action="summary_edit",
-                field_name=rev.field_name,  # keep "col3_override:Maintenance" shape
+                budget_line_id=line.id,
+                action="undo",
+                field_name=r.field_name,
                 old_value=str(previous_current) if previous_current is not None else "",
-                new_value=str(new_value) if new_value is not None else "",
-                notes=f"Undo of revision #{rev.id}",
+                new_value=str(new_value_for_line) if new_value_for_line is not None else "",
+                notes=f"Undo of revision #{r.id}",
                 source="web",
+                batch_id=undo_batch_id,
                 user_id=_read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
-            )
-            db.session.add(undo_rev)
-            try:
-                db.session.commit()
-            except Exception as e:
-                db.session.rollback()
-                return jsonify({"error": str(e)[:200]}), 500
-            return jsonify({
-                "ok": True,
-                "reverted_field": sum_col,
-                "summary_label": sum_label,
-                "new_value": new_value,
-                "undo_revision_id": undo_rev.id,
-            })
+            ))
+            reverted.append({"revision_id": r.id, "field": r.field_name,
+                             "gl_code": line.gl_code,
+                             "description": line.description or "",
+                             "new_value": new_value_for_line})
 
-        # Line-level undo path (existing behavior)
-        if rev.field_name not in _UNDOABLE_FIELDS:
-            return jsonify({"error": f"Field '{rev.field_name}' is not undoable from this UI."}), 400
-        if not rev.budget_line_id:
-            return jsonify({"error": "Revision has no line attached"}), 400
-
-        line = BudgetLine.query.get(rev.budget_line_id)
-        if not line:
-            return jsonify({"error": "Budget line missing — can't undo"}), 404
-
-        kind = _UNDOABLE_FIELDS[rev.field_name]
-        new_value_for_line = _parse_undo_value(rev.old_value, kind)
-        previous_current = getattr(line, rev.field_name, None)
-        try:
-            setattr(line, rev.field_name, new_value_for_line)
-        except Exception as e:
-            return jsonify({"error": f"Cannot set {rev.field_name}: {e}"}), 500
-
-        # Audit the undo so it's itself reversible
-        undo_rev = BudgetRevision(
-            budget_id=budget.id,
-            budget_line_id=line.id,
-            action="undo",
-            field_name=rev.field_name,
-            old_value=str(previous_current) if previous_current is not None else "",
-            new_value=str(new_value_for_line) if new_value_for_line is not None else "",
-            notes=f"Undo of revision #{rev.id}",
-            source="web",
-            user_id=_read_fa_id_from_cookie() if "_read_fa_id_from_cookie" in dir() else None,
-        )
-        db.session.add(undo_rev)
+        if not reverted:
+            db.session.rollback()
+            first_reason = skipped[0]["reason"] if skipped else "Nothing undoable in this batch."
+            return jsonify({"error": first_reason, "skipped": skipped}), 400
         try:
             db.session.commit()
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": str(e)[:200]}), 500
+        first = reverted[0]
         return jsonify({
             "ok": True,
-            "reverted_field": rev.field_name,
-            "new_value": new_value_for_line,
-            "gl_code": line.gl_code,
-            "description": line.description or "",
-            "undo_revision_id": undo_rev.id,
+            "reverted_count": len(reverted),
+            "reverted": reverted,
+            "skipped": skipped,
+            # Back-compat keys read by existing callers
+            "reverted_field": first.get("field"),
+            "new_value": first.get("new_value"),
+            "gl_code": first.get("gl_code", ""),
+            "description": first.get("description", ""),
+            "summary_label": first.get("summary_label", ""),
+            "undo_batch_id": undo_batch_id,
         })
 
 
@@ -7032,6 +7064,12 @@ def create_workflow_blueprint(db):
                         l.proposed_budget])
         visible_lines = [l for l in lines if line_has_data(l)]
         skipped_count = len(lines) - len(visible_lines)
+        # QA fix 12 (2026-07-03): the row-3 subtitle counted pre-filter lines
+        # ("7 general ledger line(s)" over a 3-row table). Count what ships.
+        _subtitle = f"{len(visible_lines)} general ledger line(s)"
+        if skipped_count:
+            _subtitle += f" ({skipped_count} zero-value line(s) omitted)"
+        ws.cell(row=3, column=1, value=_subtitle).font = FONT_SUBTITLE
 
         # Per-tab calculation flavor: Capital does NOT extrapolate or propose;
         # Payroll annualizes on YTD only (accrual/unpaid excluded). These mirror
@@ -11064,6 +11102,8 @@ def create_workflow_blueprint(db):
                           "col4_formula", "col5_formula", "col6_formula", "col7_formula")
 
         updated = 0
+        import uuid as _uuid
+        _batch_id = _uuid.uuid4().hex  # QA fix 2: batch undo
         for edit in data["edits"]:
             display_order = edit.get("display_order")
             if display_order is None:
@@ -11101,6 +11141,7 @@ def create_workflow_blueprint(db):
                         old_value=str(old_val) if old_val is not None else "",
                         new_value=str(coerced) if coerced is not None else "",
                         source="web",
+                        batch_id=_batch_id,
                     ))
             # FA dir 2026-05-17: persist typed-formula strings in cell_formulas_json.
             # Edit shape:
@@ -12902,13 +12943,34 @@ def create_workflow_blueprint(db):
                 _add_line_bars(rows, is_income=(sn == "Income"))
                 tabs.append({"name": sn, "lines": rows})
 
-        # Summary — BudgetSummaryRow.to_dict() already excludes overrides and
-        # cell_formulas_json, so it's client-safe as-is (no reshaping).
-        summary_rows = BudgetSummaryRow.query.filter_by(
-            entity_code=entity_code, budget_year=BUDGET_YEAR
-        ).order_by(BudgetSummaryRow.display_order).all()
-        if summary_rows:
-            tabs.append({"name": "Summary", "rows": [r.to_dict() for r in summary_rows]})
+        # Summary — QA fix 11 (2026-07-03): subtotal/total rows persist col7=0
+        # and are computed at render time, so raw to_dict() rows shipped $0
+        # totals into the client document. Use the SAME computed view the FA
+        # sees (api_summary_get runs the col7 cascade + total-row math; it is
+        # a pure read, no commits), mapped onto the template's stored-row
+        # keys. Falls back to raw rows if the computed view errors.
+        summary_tab_rows = []
+        try:
+            _resp = api_summary_get(entity_code)
+            _payload = _resp[0] if isinstance(_resp, tuple) else _resp
+            _sdata = _payload.get_json(silent=True) or {}
+            for _r in (_sdata.get("rows") or []):
+                summary_tab_rows.append({
+                    "label": _r.get("label"),
+                    "row_type": _r.get("row_type"),
+                    "col1_prior_actual": _r.get("col1"),
+                    "col6_approved_budget": _r.get("col6"),
+                    "col7_proposed_budget": _r.get("col7"),
+                })
+        except Exception:
+            summary_tab_rows = []
+        if not summary_tab_rows:
+            summary_rows = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR
+            ).order_by(BudgetSummaryRow.display_order).all()
+            summary_tab_rows = [r.to_dict() for r in summary_rows]
+        if summary_tab_rows:
+            tabs.append({"name": "Summary", "rows": summary_tab_rows})
 
         # RE Taxes — coop-only, numbers only (no exemption-formula mechanics).
         # Mirrors the overrides-extraction + safe-fallback pattern used by
@@ -20070,6 +20132,20 @@ function _gridTabNavigate(e) {
 }
 document.addEventListener('keydown', _gridTabNavigate, true);
 
+// QA fix 7 (2026-07-03): Excel muscle memory - Enter commits the cell edit
+// (blur triggers the existing save path). Blur-only commits silently lost
+// edits when users pressed Enter and navigated away.
+function _gridEnterCommits(e) {
+  if (e.key !== 'Enter') return;
+  const t = e.target;
+  if (!t || !t.matches) return;
+  if (!t.matches('input.cell, input.cell-pct, input.cell-notes, input.num-input')) return;
+  if (t.classList.contains('cell-fx') || t.readOnly || t.disabled) return;
+  e.preventDefault();
+  t.blur();
+}
+document.addEventListener('keydown', _gridEnterCommits, true);
+
 // Track the currently selected formula cell
 let _activeFxCell = null;
 let _formulaBarOriginal = '';  // track original value to detect changes
@@ -20399,6 +20475,27 @@ function formulaBarPreview() {
     preview.style.color = 'var(--red)';
   }
   preview.style.display = 'inline-block';
+
+  // QA fix 6 (2026-07-03): a Proposed cell can DISPLAY a stored value while
+  // the bar previews the would-be formula (two different derivations).
+  // Accepting would silently change the number - warn before it happens.
+  var divergeEl = document.getElementById('faFxDivergeWarn');
+  var showDiverge = false;
+  if (_activeFxCell && _activeFxCell.dataset.field === 'proposed_budget' && !isChanged) {
+    var rawStored = parseFloat(_activeFxCell.dataset.raw);
+    if (result !== null && isFinite(rawStored) && Math.abs(result - rawStored) > 0.5) {
+      if (!divergeEl) {
+        divergeEl = document.createElement('span');
+        divergeEl.id = 'faFxDivergeWarn';
+        divergeEl.style.cssText = 'margin-left:10px;font-size:11px;font-weight:600;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;padding:2px 8px;';
+        preview.parentNode.insertBefore(divergeEl, preview.nextSibling);
+      }
+      divergeEl.textContent = 'Cell shows stored ' + fmt(rawStored) + '; Accept applies this formula = ' + fmt(result);
+      divergeEl.style.display = 'inline-block';
+      showDiverge = true;
+    }
+  }
+  if (divergeEl && !showDiverge) divergeEl.style.display = 'none';
 
   const hasStoredFormula = !!_activeFxCell.dataset.proposedFormula;
   _showFormulaButtons(true, hasStoredFormula || isChanged);
@@ -20882,36 +20979,47 @@ function faUpdateSheetTotals() {
 
 let _faSavePending = {};
 let _faSaveTimer = null;
+// QA fix 4 (2026-07-03): the debounce body is now a named, awaitable flush so
+// tab switches can flush pending edits BEFORE refetching (no lost-edit race),
+// and every successful save marks the bootstrap cache dirty.
+async function _faFlushSave() {
+  clearTimeout(_faSaveTimer);
+  _faSaveTimer = null;
+  const entries = Object.entries(_faSavePending);
+  if (!entries.length) return;
+  const lines = entries.map(function(entry) {
+    var obj = {gl_code: entry[0]};
+    var fields = entry[1];
+    for (var k in fields) { if (fields.hasOwnProperty(k)) obj[k] = fields[k]; }
+    return obj;
+  });
+  _faSavePending = {};
+  const indicator = document.getElementById('faSaveIndicator');
+  if (indicator) indicator.textContent = 'Saving...';
+  try {
+    const resp = await fetch('/api/fa-lines/' + entityCode, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: lines})
+    });
+    if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+    window._faDataDirty = true;
+    if (indicator) indicator.textContent = 'Saved';
+  } catch(e) {
+    if (indicator) {
+      indicator.textContent = 'Save failed!';
+      indicator.style.color = '#dc2626';
+      setTimeout(function() { indicator.style.color = ''; }, 3000);
+    }
+    console.error('FA save error:', e);
+  }
+  setTimeout(function() { if (indicator) indicator.textContent = ''; }, 2000);
+}
 function faAutoSave(gl, field, value) {
   if (!_faSavePending[gl]) _faSavePending[gl] = {};
   _faSavePending[gl][field] = value;
   clearTimeout(_faSaveTimer);
-  _faSaveTimer = setTimeout(async () => {
-    const lines = Object.entries(_faSavePending).map(function(entry) {
-      var obj = {gl_code: entry[0]};
-      var fields = entry[1];
-      for (var k in fields) { if (fields.hasOwnProperty(k)) obj[k] = fields[k]; }
-      return obj;
-    });
-    _faSavePending = {};
-    const indicator = document.getElementById('faSaveIndicator');
-    indicator.textContent = 'Saving...';
-    try {
-      const resp = await fetch('/api/fa-lines/' + entityCode, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({lines: lines})
-      });
-      if (!resp.ok) throw new Error('Save failed: ' + resp.status);
-      indicator.textContent = 'Saved';
-    } catch(e) {
-      indicator.textContent = 'Save failed!';
-      indicator.style.color = '#dc2626';
-      console.error('FA save error:', e);
-      setTimeout(function() { indicator.style.color = ''; }, 3000);
-    }
-    setTimeout(function() { indicator.textContent = ''; }, 2000);
-  }, 800);
+  _faSaveTimer = setTimeout(function() { _faFlushSave(); }, 800);
 }
 
 // ── Ancillary Charges Backup Worksheet ───────────────────────────────
@@ -21658,6 +21766,13 @@ function renderSheet(sheetName, sheetLines, tabEl, opts) {
   // FA dir 2026-05-19: track active sheet so the per-tab Undo bar knows
   // which sheet's changes to load.
   window._activeFaSheet = sheetName;
+  // QA fix 4 (2026-07-03): the tab buttons capture the bootstrap sheets
+  // object in their onclick closures, so re-renders showed pre-edit numbers
+  // (the edit looked lost while the server had it). Always re-resolve the
+  // lines from the live allSheets cache instead of the closure argument.
+  if (sheetName !== 'Summary' && typeof allSheets !== 'undefined' && allSheets && allSheets[sheetName]) {
+    sheetLines = allSheets[sheetName];
+  }
   // FA dir 2026-05-24: push the tab name to URL so browser-back returns to
   // the previous tab instead of exiting the building to /dashboard. opts.skipPush
   // is set on the initial Summary render + popstate-driven re-renders to avoid
@@ -21672,6 +21787,43 @@ function renderSheet(sheetName, sheetLines, tabEl, opts) {
         window.history.pushState({ tab: sheetName }, '', url.toString());
       }
     } catch (e) {}
+  }
+
+  // QA fix 4 (2026-07-03): a committed edit marks the bootstrap cache dirty.
+  // Flush any pending debounced save, re-pull /api/dashboard, swap the cache,
+  // then re-enter. Tab switches can never show pre-edit numbers again.
+  if (window._faDataDirty && !opts._refetched) {
+    window._faDataDirty = false;
+    var _flushP = (typeof _faFlushSave === 'function') ? _faFlushSave() : Promise.resolve();
+    Promise.resolve(_flushP).then(function() {
+      return fetch('/api/dashboard/' + entityCode);
+    }).then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
+      if (d && d.sheets) {
+        allSheets = d.sheets;
+        window._data = d;
+        if (d.re_taxes) window._reTaxesData = d.re_taxes;
+        // QA fix 8: repaint pending-review rows from the fresh lines so the
+        // review queue can never offer stale amounts after an edit elsewhere.
+        try {
+          var _all = [];
+          Object.keys(allSheets || {}).forEach(function(k) { _all = _all.concat(allSheets[k] || []); });
+          document.querySelectorAll('tr[id^="pendprop_"]').forEach(function(trEl) {
+            var g = trEl.id.replace('pendprop_', '');
+            var ln = _all.find(function(x) { return x.gl_code === g; });
+            if (!ln || trEl.children.length < 5) return;
+            var cur = ln.current_budget || 0, prop = ln.proposed_budget || 0, ch = prop - cur;
+            var pc = cur !== 0 ? ((ch / cur) * 100).toFixed(1) : '0.0';
+            trEl.children[2].textContent = fmt(cur);
+            trEl.children[3].textContent = fmt(prop);
+            trEl.children[4].textContent = (ch >= 0 ? '+' : '') + fmt(ch) + ' (' + pc + '%)';
+          });
+        } catch (e) {}
+      }
+      renderSheet(sheetName, null, tabEl, Object.assign({}, opts, {skipPush: true, _refetched: true}));
+    }).catch(function() {
+      renderSheet(sheetName, null, tabEl, Object.assign({}, opts, {skipPush: true, _refetched: true}));
+    });
+    return;
   }
 
   const contentDiv = document.getElementById('sheetContent');
@@ -24104,7 +24256,7 @@ async function renderBudgetSummary(contentDiv) {
     '<th style="'+thS+'min-width:120px;color:var(--gray-400);font-style:italic;"><span style="font-size:10px;display:block;">Col 5</span>'+BY1+' Forecast</th>' +
     '<th style="'+thS+'min-width:120px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 6</span>'+BY1+' Budget</th>' +
     '<th style="'+thS+'min-width:130px;background:#fffbeb;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 7 \u270e</span>'+BY+' Budget</th>' +
-    '<th style="'+thS+'min-width:80px;"><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% Var</th>' +
+    '<th style="'+thS+'min-width:80px;" title="Col 8 compares Col 7 Proposed to the Col 5 12-month Forecast. The Excel export % Var column compares to the Col 6 Budget instead."><span style="font-size:10px;color:var(--gray-500);display:block;">Col 8</span>% vs Fcst</th>' +
     '<th style="text-align:left;padding:10px;min-width:170px;border-bottom:2px solid var(--gray-300);background:var(--gray-100);">Notes</th>' +
     '</tr></thead><tbody id="sumBody">';
 
@@ -25585,9 +25737,11 @@ async function sumTabUndoLast() {
     }
     const fieldLabel = target.field || 'cell';
     const lbl = target.summary_label || target.description || '';
+    const batchNote = (target.batch_size && target.batch_size > 1)
+      ? ('\n\nThis edit changed ' + target.batch_size + ' fields; they revert together.') : '';
     if (!confirm('Undo the most recent change on the Summary tab?\n\n' +
                   (lbl ? lbl + ' · ' : '') + fieldLabel + ': ' +
-                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)'))) return;
+                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)') + batchNote)) return;
     const undoResp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -29089,6 +29243,7 @@ function pushRosterToGL() {
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({lines: savePayload})
         });
+        window._faDataDirty = true;  // QA fix 4
       } catch(e) { console.error('Failed to save roster-linked GL values:', e); }
     }, 800);
   }
@@ -29551,7 +29706,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
         ' onblur="cellBlur(this)">';
     }
     // Formula cell: shows $1,234, clicking opens formula in the formula bar at top
-    function fxCell(id, field, val, formula, isOverride, proposedFormula, pinned) {
+    function fxCell(id, field, val, formula, isOverride, proposedFormula, pinned, infoTitle) {
       const hasUserFormula = field === 'proposed_budget' && proposedFormula;
       const overrideAttr = (isOverride || hasUserFormula) ? 'true' : 'false';
       let badge;
@@ -29565,8 +29720,13 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       const pfAttr = proposedFormula ? ' data-proposed-formula="' + proposedFormula.replace(/"/g, '&quot;') + '"' : '';
       // Task #99: tint + explain forecast cells pinned to budget (fully collectible income)
       const pinBg = pinned ? 'background:#ecfdf5;' : '';
-      const pinTtl = pinned ? ' title="Forecast pinned to approved budget — fully collectible income (ties to the Summary tab)"' : '';
-      return '<td class="num"' + pinTtl + ' style="position:relative; cursor:pointer;' + pinBg + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge +
+      const pinTtl = pinned ? ' title="Forecast pinned to approved budget — fully collectible income (ties to the Summary tab)"'
+                    : (infoTitle ? ' title="' + infoTitle + '"' : '');
+      // QA fix 9 (2026-07-03): visible marker for cells whose edits feed the
+      // export/board detail but NOT the Summary row (income truth flows
+      // Summary -> tab, not tab -> Summary).
+      const infoIcon = (!pinned && infoTitle) ? '<span style="position:absolute; top:1px; right:3px; font-size:9px; color:#b45309; cursor:help;">ⓘ</span>' : '';
+      return '<td class="num"' + pinTtl + ' style="position:relative; cursor:pointer;' + pinBg + '" onclick="fxCellFocus(document.getElementById(\'' + id + '\'))">' + badge + infoIcon +
         '<input id="' + id + '" class="cell cell-fx" type="text" readonly' +
         ' value="' + fmt(val) + '"' +
         ' data-raw="' + Math.round(val) + '"' +
@@ -29596,7 +29756,8 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined, undefined, faIsIncomePinned(l)) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
       '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
-      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula) +
+      fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula, false,
+             (sheetName === 'Income' ? 'Income note: the Summary tab sets the income rows independently. This line feeds the Excel export and the board document detail, not the Summary income row.' : '')) +
       '<td class="num" style="position:relative; cursor:pointer; color:'+varColor+';" onclick="fxCellFocus(document.getElementById(\'var_'+gl+'\'))">' +
         '<span class="fa-fx">fx</span>' +
         '<input id="var_'+gl+'" class="cell cell-fx" type="text" readonly' +
@@ -29940,10 +30101,12 @@ async function faTabUndoLast() {
       return;
     }
     const fieldLabel = target.field || target.action || 'change';
+    const batchNote = (target.batch_size && target.batch_size > 1)
+      ? ('\\n\\nThis edit changed ' + target.batch_size + ' fields; they revert together.') : '';
     if (!confirm('Undo the most recent change on ' + sheet + '?\\n\\n' +
                   (target.gl_code ? target.gl_code + ' · ' : '') +
                   fieldLabel + ': ' +
-                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)'))) return;
+                  (target.old_value || '(empty)') + ' ← ' + (target.new_value || '(empty)') + batchNote)) return;
     const undoResp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) + '/undo', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -29954,7 +30117,9 @@ async function faTabUndoLast() {
       alert('Undo failed: ' + err.slice(0, 200));
       return;
     }
-    // Re-render the current sheet so the change shows
+    // Re-render the current sheet so the change shows (QA fix 4: mark the
+    // bootstrap cache dirty first so the re-render pulls fresh data).
+    window._faDataDirty = true;
     const tab = document.querySelector('.sheet-tab[data-sheet="' + sheet.replace(/"/g,'\\"') + '"]');
     if (tab) tab.click();
   } catch (e) {

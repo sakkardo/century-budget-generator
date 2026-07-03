@@ -419,6 +419,10 @@ def register_models(db):
         new_value = db.Column(db.Text, default="")
         notes = db.Column(db.Text, default="")
         source = db.Column(db.String(30), default="web")  # web, presentation, api, system
+        # QA fix 2 (2026-07-03): one FA edit can write several revisions in a
+        # single request (INC%% edit = increase_pct + proposed_budget). batch_id
+        # groups them so undo reverts the whole edit, never half of it.
+        batch_id = db.Column(db.String(36), nullable=True)
         created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
         budget = db.relationship("Budget", backref=db.backref("revisions", cascade="all, delete-orphan"))
@@ -430,6 +434,7 @@ def register_models(db):
                 "action": self.action, "field_name": self.field_name,
                 "old_value": self.old_value, "new_value": self.new_value,
                 "notes": self.notes, "source": self.source,
+                "batch_id": self.batch_id,
                 "created_at": self.created_at.isoformat() if self.created_at else None
             }
 

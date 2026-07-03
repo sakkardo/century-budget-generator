@@ -185,6 +185,8 @@ def _run_idempotent_migrations():
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col3_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col4_override DOUBLE PRECISION",
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col5_override DOUBLE PRECISION",
+        # QA fix 2 (2026-07-03): batch undo — groups multi-field writes from one request
+        "ALTER TABLE budget_revisions ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         # FA directive 2026-05-17: make c1/c2/c6 editable too. Same pattern —
         # non-NULL override beats the imported / computed value; NULL falls back.
         "ALTER TABLE budget_summary_rows ADD COLUMN IF NOT EXISTS col1_override DOUBLE PRECISION",

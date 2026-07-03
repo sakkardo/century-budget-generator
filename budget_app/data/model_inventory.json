@@ -25,7 +25,7 @@
   "table": "budget_narratives"
  },
  "BudgetRevision": {
-  "columns": 11,
+  "columns": 12,
   "relationships": 1,
   "table": "budget_revisions"
  },
