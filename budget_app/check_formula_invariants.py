@@ -10,6 +10,13 @@ so this canary BLOCKS any deploy that reverts one of the fixes below.
 If you change one of these on purpose, update the matching check in the SAME
 commit — don't just delete the check.
 
+2026-07-01: removed the "_buildSumFormula" check — that helper (and its only
+call site) lived entirely inside the orphaned PRESENTATION_TEMPLATE, deleted
+this commit as part of retiring the legacy Board Presentation surfaces (see
+the "Client Board Presentation" plan). It never guarded the live PM portal;
+the actual PM-portal invariants are the "_pmCatGLs" and Summary
+"dataset._fxeq" checks below, both untouched.
+
 Usage:
     check_formula_invariants.py [path/to/workflow.py] [path/to/expense_distribution.py]
 Exit 0 = all invariants hold; exit 1 = a fix regressed (prints which).
@@ -57,10 +64,6 @@ CHECKS = [
      "'sum of N lines' collapse", "wf",
      ["dataset._fxeq"],
      ["'= sum of ' + vals.length"]),
-
-    ("PM portal summary shows every GL number; no 'SUM of N GL lines' collapse", "wf",
-     ["_buildSumFormula"],
-     ["SUM of ' + vals.length + ' GL lines"]),
 
     ("ExpDist parser guards short rows (no 'tuple index out of range')", "ed",
      ["def _cell(row, i)"],

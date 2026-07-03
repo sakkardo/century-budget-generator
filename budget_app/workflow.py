@@ -12704,66 +12704,408 @@ def create_workflow_blueprint(db):
         return jsonify({"status": "ok", "summary_sync": sync})
 
 
-    # ─── Presentation Routes ───────────────────────────────────────────────
+    # ─── Board Presentation (client narrative) ─────────────────────────────
+    # Board Presentation redesign (2026-07-01, plan: "Client Board Presentation").
+    # Replaces two dead surfaces (openBoardPresentation() overlay + the orphaned
+    # /presentation/<token> route) with a system-drafted, FA-reviewed narrative
+    # that only becomes client-visible after explicit FA sign-off. Mirrors
+    # AuditUpload's draft -> reviewed -> confirmed review-gate pattern.
 
-    @bp.route("/api/presentation/generate/<entity_code>", methods=["POST"])
-    def generate_presentation_link(entity_code):
-        """Generate a shareable presentation token for a budget."""
+    NARRATIVE_EXPENSE_SHEETS = ("Payroll", "Energy", "Water & Sewer",
+                                "Repairs & Supplies", "Gen & Admin", "Capital")
+
+    def _narrative_line_amounts(l):
+        """(current, proposed) for one BudgetLine, mirroring _cam_line_amount's
+        proposed-falls-back-to-current rule so a not-yet-budgeted line doesn't
+        read as a $0 cliff in the narrative."""
+        try:
+            cur = float(l.current_budget or 0)
+        except (TypeError, ValueError):
+            cur = 0.0
+        try:
+            p = float(l.proposed_budget) if l.proposed_budget is not None else 0.0
+        except (TypeError, ValueError):
+            p = 0.0
+        return cur, (p if abs(p) > 0.005 else cur)
+
+    def _generate_client_narrative(budget):
+        """Draft the client-facing Board Presentation narrative from real
+        budget data. Every dollar figure is computed directly from BudgetLine;
+        every "why" is a neutral, factual statement of WHAT changed, never an
+        invented external cause (no fabricated "due to a new contract" claims)
+        — an FA adds that color explicitly during review (BudgetNarrative
+        .reviewed_narrative), it is never auto-asserted as fact.
+        """
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        bt = (budget.building_type or "").strip().lower()
+        is_condo = bt in ("condo", "condominium", "cond-op")
+        charge_word = "common charge" if is_condo else "maintenance"
+
+        by_sheet = {}
+        for l in lines:
+            sn = l.sheet_name or "Other"
+            if sn != "Income" and sn not in NARRATIVE_EXPENSE_SHEETS:
+                continue
+            cur, prop = _narrative_line_amounts(l)
+            d = by_sheet.setdefault(sn, {"current": 0.0, "proposed": 0.0})
+            d["current"] += cur
+            d["proposed"] += prop
+
+        income = by_sheet.get("Income", {"current": 0.0, "proposed": 0.0})
+        exp_current = sum(d["current"] for sn, d in by_sheet.items() if sn in NARRATIVE_EXPENSE_SHEETS)
+        exp_proposed = sum(d["proposed"] for sn, d in by_sheet.items() if sn in NARRATIVE_EXPENSE_SHEETS)
+        net_change = round(exp_proposed - exp_current, 2)
+        pct_change = round((net_change / abs(exp_current) * 100) if abs(exp_current) > 0.01 else 0.0, 1)
+
+        movers = []
+        for sn in NARRATIVE_EXPENSE_SHEETS:
+            d = by_sheet.get(sn)
+            if not d:
+                continue
+            chg = round(d["proposed"] - d["current"], 2)
+            if abs(chg) < 0.5:
+                continue
+            movers.append({
+                "category": sn, "current": round(d["current"], 2),
+                "proposed": round(d["proposed"], 2), "change": chg,
+                "pct": round((chg / abs(d["current"]) * 100) if abs(d["current"]) > 0.01 else 0.0, 1),
+            })
+        movers.sort(key=lambda m: -m["change"])
+        increases = [m for m in movers if m["change"] > 0]
+        decreases = [m for m in movers if m["change"] < 0]
+        savings_total = round(-sum(m["change"] for m in decreases), 2)
+        drivers_text = " and ".join(m["category"] for m in increases[:2]) or "operating cost changes"
+
+        owner_word = "unit owner" if is_condo else "shareholder"
+        gov_doc = "bylaws" if is_condo else "proprietary lease"
+        entity_word = "condominium association" if is_condo else "cooperative"
+
+        faq = [
+            {"q": f"Why can't these increases be absorbed without raising {charge_word}s?",
+             "a": (f"As a not-for-profit {entity_word}, {budget.building_name} has no operating "
+                   f"margin to absorb rising costs. {charge_word.capitalize()}s are the sole funding "
+                   f"source for building operations, and expenses are passed through to "
+                   f"{owner_word}s directly under the building's {gov_doc}.")},
+            {"q": "Is this increase specific to this building, or happening everywhere?",
+             "a": ("[FA: note here whether specific drivers reflect portfolio-wide trends "
+                   "(e.g. insurance market conditions) versus something specific to this building.]")},
+            {"q": "What happens if the Board does not approve this budget?",
+             "a": (f"The building would continue operating under the {budget.year - 1} budget, "
+                   f"which may not fund the cost changes described above. The Board would need to "
+                   f"either draw down reserves to cover any shortfall or work with Century on a "
+                   f"revised proposal.")},
+            {"q": f"When would the new {charge_word}s take effect?",
+             "a": (f"If approved as proposed, the new {charge_word} schedule takes effect "
+                   f"{budget.effective_date}." if budget.effective_date else
+                   f"[FA: enter the proposed effective date once set.]")},
+        ]
+
+        return {
+            "building_type_words": {"charge_word": charge_word, "owner_word": owner_word,
+                                    "entity_word": entity_word, "gov_doc": gov_doc, "is_condo": is_condo},
+            "opening": (f"Century Management has completed its analysis of the proposed "
+                       f"{budget.year} operating budget for {budget.building_name}, submitted "
+                       f"herewith for the Board's review ahead of your scheduled budget call."),
+            "headline": {"pct_change": pct_change, "net_change": net_change,
+                        "exp_current": round(exp_current, 2), "exp_proposed": round(exp_proposed, 2)},
+            "driver_summary": (
+                f"The proposed budget reflects a {pct_change:+.1f}% change in operating expense, "
+                f"driven primarily by {drivers_text}." if increases else
+                f"The proposed budget reflects a {pct_change:+.1f}% change in operating expense."),
+            "drivers": increases[:4],
+            "savings": decreases,
+            "savings_total": savings_total,
+            "income": {"current": round(income["current"], 2), "proposed": round(income["proposed"], 2)},
+            "categories": [{"sheet": sn, **d} for sn, d in by_sheet.items() if sn in NARRATIVE_EXPENSE_SHEETS],
+            "faq": faq,
+            "timeline": {"effective_date": budget.effective_date or "",
+                        "board_review_through": "", "board_vote_by": ""},  # FA fills in during review
+            "additional_notes": "",  # e.g. reserve-fund status — FA-authored, not derivable from BudgetLine
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    # ── Full Budget Detail (plan: "Board Presentation — Full Budget Detail",
+    # 2026-07-01) — every tab an FA sees, read-only, numbers only, behind the
+    # narrative memo above. CAM excluded until it clears its own review gate.
+
+    CLIENT_DETAIL_SHEETS = ("Income",) + NARRATIVE_EXPENSE_SHEETS
+
+    def _client_safe_line(l):
+        """Allowlist a BudgetLine down to what a client may see: description,
+        category, current/proposed amounts, and the variance derived from
+        them. Never GL codes, formulas, notes, or FA/PM review-state fields."""
+        cur, prop = _narrative_line_amounts(l)
+        variance = round(prop - cur, 2)
+        return {
+            "description": l.description or l.category or "",
+            "category": l.category or "",
+            "current": round(cur, 2),
+            "proposed": round(prop, 2),
+            "variance": variance,
+            "variance_pct": round((variance / abs(cur) * 100) if abs(cur) > 0.01 else 0.0, 1),
+        }
+
+    def _add_line_bars(rows, is_income):
+        """Mutates each line dict in place: favorable (income up / expense
+        down = good) and bar_pct (magnitude relative to this tab's own
+        biggest variance, 0 when every line is unchanged) -- an HTML port
+        of the Excel At-a-Glance DataBarRule pattern (~8625-8628:
+        start_type=min, end_type=max) rather than a new visual language."""
+        tab_max = max((abs(r["variance"]) for r in rows), default=0)
+        for r in rows:
+            r["favorable"] = (r["variance"] >= 0) if is_income else (r["variance"] <= 0)
+            r["bar_pct"] = round(abs(r["variance"]) / tab_max * 100, 1) if tab_max else 0.0
+        return rows
+
+    def _generate_client_detail_tabs(budget):
+        """Full-tab, read-only, numbers-only detail behind the narrative memo.
+        Snapshot-isolation invariant: computed ONCE at publish time and frozen
+        into PresentationSession.snapshot_data — the client route never calls
+        this (or any compute it wires in) live. See check_client_narrative_publish.py."""
+        entity_code = budget.entity_code
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+
+        by_sheet = {}
+        for l in lines:
+            sn = l.sheet_name or "Other"
+            if sn not in CLIENT_DETAIL_SHEETS:
+                continue
+            by_sheet.setdefault(sn, []).append(_client_safe_line(l))
+
+        tabs = []
+        for sn in CLIENT_DETAIL_SHEETS:
+            rows = by_sheet.get(sn)
+            if rows:
+                _add_line_bars(rows, is_income=(sn == "Income"))
+                tabs.append({"name": sn, "lines": rows})
+
+        # Summary — BudgetSummaryRow.to_dict() already excludes overrides and
+        # cell_formulas_json, so it's client-safe as-is (no reshaping).
+        summary_rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(BudgetSummaryRow.display_order).all()
+        if summary_rows:
+            tabs.append({"name": "Summary", "rows": [r.to_dict() for r in summary_rows]})
+
+        # RE Taxes — coop-only, numbers only (no exemption-formula mechanics).
+        # Mirrors the overrides-extraction + safe-fallback pattern used by
+        # _export_rewrite_re_taxes (~9026) — a failed/slow DOF lookup skips
+        # this tab rather than blocking the whole publish.
+        try:
+            try:
+                from dof_taxes import is_coop, compute_re_taxes
+            except ImportError:
+                from budget_app.dof_taxes import is_coop, compute_re_taxes
+            if is_coop(entity_code):
+                overrides = None
+                try:
+                    if budget.assumptions_json:
+                        overrides = json.loads(budget.assumptions_json).get("re_taxes_overrides")
+                except Exception:
+                    overrides = None
+                rt = compute_re_taxes(entity_code, overrides or {})
+                if rt and abs(float(rt.get("gross_tax") or 0)) > 0.5:
+                    tabs.append({"name": "RE Taxes", "re_taxes": {
+                        "gross_tax": round(float(rt.get("gross_tax") or 0), 2),
+                        "net_tax": round(float(rt.get("net_tax") or 0), 2),
+                        "first_half_tax": round(float(rt.get("first_half_tax") or 0), 2),
+                        "second_half_tax": round(float(rt.get("second_half_tax") or 0), 2),
+                    }})
+        except Exception:
+            pass  # RE-tax detail is supplementary; never block publish on it.
+
+        # Commercial — tenant-based (not GL-based), so "current/proposed" is
+        # keyed by tenant, not by line description. Read-only: calls
+        # _commercial_compute_escalations directly, never
+        # _commercial_recompute_summary (that one writes to the DB).
+        try:
+            tenants = CommercialTenant.query.filter_by(
+                entity_code=entity_code, budget_year=BUDGET_YEAR
+            ).order_by(CommercialTenant.sort_order, CommercialTenant.id).all()
+            if tenants:
+                escalations = {e["tenant_id"]: e for e in
+                               _commercial_compute_escalations(entity_code, BUDGET_YEAR)}
+                comm_rows = []
+                for t in tenants:
+                    periods = CommercialRentPeriod.query.filter_by(tenant_id=t.id).all()
+                    cur_rent = sum(p.annualized() for p in periods if p.year == BUDGET_YEAR - 1)
+                    next_periods = [p for p in periods if p.year == BUDGET_YEAR]
+                    if next_periods:
+                        prop_rent = sum(p.annualized() for p in next_periods)
+                    else:
+                        esc = escalations.get(t.id, {}).get("amount") or 0.0
+                        prop_rent = cur_rent + float(esc)
+                    variance = round(prop_rent - cur_rent, 2)
+                    comm_rows.append({
+                        "description": t.tenant_name + (f" ({t.unit_label})" if t.unit_label else ""),
+                        "category": "Commercial",
+                        "current": round(cur_rent, 2), "proposed": round(prop_rent, 2),
+                        "variance": variance,
+                        "variance_pct": round((variance / abs(cur_rent) * 100) if abs(cur_rent) > 0.01 else 0.0, 1),
+                    })
+                if comm_rows:
+                    _add_line_bars(comm_rows, is_income=True)
+                    tabs.append({"name": "Commercial", "lines": comm_rows})
+        except Exception:
+            pass  # Commercial detail is supplementary; never block publish on it.
+
+        # Overview chart data, pre-computed server-side (simpler/more robust
+        # than doing this math in Jinja or JS). Donut = expense mix by the 6
+        # narrative categories; bars = current vs proposed per category.
+        cat_totals = []
+        for sn in NARRATIVE_EXPENSE_SHEETS:
+            rows = by_sheet.get(sn)
+            if not rows:
+                continue
+            cat_totals.append({"name": sn, "current": sum(r["current"] for r in rows),
+                               "proposed": sum(r["proposed"] for r in rows)})
+        total_proposed = sum(c["proposed"] for c in cat_totals) or 1.0
+        max_amt = max([c["current"] for c in cat_totals] + [c["proposed"] for c in cat_totals] + [1.0])
+        DONUT_COLORS = ["#001721", "#DE1C23", "#8a7e72", "#5b7a8c", "#a8763e", "#4d5d53"]
+        cum = 0.0
+        donut_slices = []
+        for i, c in enumerate(cat_totals):
+            pct = round(c["proposed"] / total_proposed * 100, 1) if total_proposed else 0.0
+            donut_slices.append({"name": c["name"], "pct": pct, "start": round(cum, 1),
+                                 "color": DONUT_COLORS[i % len(DONUT_COLORS)]})
+            cum += pct
+        bars = [{"name": c["name"],
+                "current_pct": round(c["current"] / max_amt * 100, 1),
+                "proposed_pct": round(c["proposed"] / max_amt * 100, 1),
+                "current": round(c["current"], 2), "proposed": round(c["proposed"], 2)}
+               for c in cat_totals]
+
+        # "Biggest changes" -- top individual EXPENSE-line movers across
+        # every sheet (Income/Commercial excluded: the hero stat + driver
+        # summary already tell the category-level income story; this is
+        # the line-level "what's actually costing more" drill-down).
+        # Mirrors the Excel "Biggest Changes vs Approved Budget" list
+        # (~8607-8630) rather than a new concept.
+        expense_lines = []
+        for sn in NARRATIVE_EXPENSE_SHEETS:
+            for r in (by_sheet.get(sn) or []):
+                if abs(r["variance"]) > 0.5:
+                    expense_lines.append(r)
+        expense_lines.sort(key=lambda r: abs(r["variance"]), reverse=True)
+        top_movers = expense_lines[:6]
+        movers_max = max((abs(r["variance"]) for r in top_movers), default=0)
+        movers = [{"label": r["description"], "change": r["variance"], "favorable": r["favorable"],
+                  "bar_pct": round(abs(r["variance"]) / movers_max * 100, 1) if movers_max else 0.0}
+                 for r in top_movers]
+
+        return {"tabs": tabs, "chart_data": {"donut": donut_slices, "bars": bars, "movers": movers}}
+
+    @bp.route("/api/board-notice/<entity_code>", methods=["GET"])
+    def api_board_notice_get(entity_code):
+        """Fetch (auto-drafting on first call) the Board Presentation narrative
+        for FA review. Never regenerates over an existing reviewed/published
+        narrative — regeneration is an explicit action (?regenerate=1)."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        narrative = BudgetNarrative.query.filter_by(budget_id=budget.id).first()
+        regenerate = request.args.get("regenerate", "0") == "1"
+        if not narrative:
+            narrative = BudgetNarrative(budget_id=budget.id)
+            db.session.add(narrative)
+        if not narrative.raw_narrative or regenerate:
+            narrative.raw_narrative = json.dumps(_generate_client_narrative(budget))
+            if regenerate and narrative.status != "draft":
+                # Regenerating after review/publish starts a fresh review cycle —
+                # never let a stale reviewed_narrative silently persist alongside
+                # newly regenerated numbers.
+                narrative.reviewed_narrative = None
+                narrative.status = "draft"
+        db.session.commit()
+        result = narrative.to_dict()
+        result["active"] = json.loads(narrative.reviewed_narrative) if narrative.reviewed_narrative else json.loads(narrative.raw_narrative)
+        return jsonify(result)
+
+    @bp.route("/api/board-notice/<entity_code>", methods=["PUT"])
+    def api_board_notice_save(entity_code):
+        """FA saves edits to the narrative. mark_reviewed=true additionally
+        stamps reviewed_by/reviewed_at and advances status to 'reviewed' — the
+        gate that must pass before /publish will create a client link."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return jsonify({"error": "Budget not found"}), 404
+        narrative = BudgetNarrative.query.filter_by(budget_id=budget.id).first()
+        if not narrative:
+            return jsonify({"error": "No draft narrative — GET /api/board-notice first"}), 404
+        data = request.get_json(silent=True) or {}
+        if "narrative" in data:
+            narrative.reviewed_narrative = json.dumps(data["narrative"])
+        if data.get("mark_reviewed"):
+            narrative.status = "reviewed"
+            narrative.reviewed_by = (data.get("reviewed_by") or "")[:120]
+            narrative.reviewed_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify(narrative.to_dict())
+
+    @bp.route("/api/board-notice/<entity_code>/publish", methods=["POST"])
+    def api_board_notice_publish(entity_code):
+        """Create the client-facing link. Requires the narrative to already be
+        'reviewed' (an explicit FA sign-off, per plan decision #1/#4) — a
+        'draft' narrative can never be published directly. Snapshots the
+        current BudgetLine/BudgetSummaryRow + the reviewed narrative into
+        PresentationSession.snapshot_data so a later budget edit can't
+        silently change what the client already received."""
         import secrets
         budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
         if not budget:
             return jsonify({"error": "Budget not found"}), 404
+        narrative = BudgetNarrative.query.filter_by(budget_id=budget.id).first()
+        if not narrative or narrative.status not in ("reviewed", "published") or not narrative.reviewed_narrative:
+            return jsonify({"error": "Narrative must be reviewed and saved before it can be published. "
+                                     "Save your edits with mark_reviewed=true first."}), 409
 
-        # Generate or reuse token
-        if not budget.presentation_token:
-            budget.presentation_token = secrets.token_urlsafe(32)
-            db.session.commit()
+        lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        summary_rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).order_by(BudgetSummaryRow.display_order).all()
+        snapshot = {
+            "budget": {"building_name": budget.building_name, "entity_code": budget.entity_code,
+                      "year": budget.year, "building_type": budget.building_type},
+            "narrative": json.loads(narrative.reviewed_narrative),
+            "lines": [l.to_dict() for l in lines],
+            "summary_rows": [r.to_dict() for r in summary_rows],
+            "detail_tabs": _generate_client_detail_tabs(budget),
+            "snapshot_at": datetime.utcnow().isoformat(),
+        }
 
-        url = request.host_url.rstrip("/") + "/presentation/" + budget.presentation_token
-        return jsonify({"token": budget.presentation_token, "url": url})
+        session_row = PresentationSession.query.filter_by(budget_id=budget.id, is_active=True).first()
+        if not session_row:
+            session_row = PresentationSession(
+                budget_id=budget.id, token=secrets.token_urlsafe(32), created_by=None)
+            db.session.add(session_row)
+        session_row.snapshot_data = json.dumps(snapshot)
+        session_row.is_active = True
+        narrative.status = "published"
+        db.session.commit()
 
+        url = request.host_url.rstrip("/") + "/board-notice/" + session_row.token
+        return jsonify({"status": "ok", "token": session_row.token, "url": url})
 
-    @bp.route("/presentation/<token>", methods=["GET"])
-    def presentation_view(token):
-        """Client-facing read-only budget presentation."""
-        import json as _json
-        budget = Budget.query.filter_by(presentation_token=token).first()
-        if not budget:
+    @bp.route("/board-notice/<token>", methods=["GET"])
+    def board_notice_view(token):
+        """Client-facing Board Presentation. Renders ONLY from the frozen
+        snapshot captured at publish time — never a live BudgetLine/
+        BudgetSummaryRow query — so this page cannot change underneath a
+        board member after they've been sent the link."""
+        session_row = PresentationSession.query.filter_by(token=token, is_active=True).first()
+        if not session_row or not session_row.snapshot_data:
             return "<h1>Presentation not found</h1><p>This link may have expired or is invalid.</p>", 404
+        if session_row.expires_at and session_row.expires_at < datetime.utcnow():
+            return "<h1>This link has expired</h1><p>Please contact your Century Financial Analyst for an updated link.</p>", 410
+        snapshot = json.loads(session_row.snapshot_data)
 
-        lines = BudgetLine.query.filter_by(budget_id=budget.id).order_by(BudgetLine.sheet_name, BudgetLine.row_num).all()
+        def _fmt_money(n):
+            try:
+                n = float(n)
+            except (TypeError, ValueError):
+                return "$0"
+            return ("-$" if n < 0 else "$") + f"{abs(n):,.0f}"
 
-        # Group by sheet
-        sheets = {}
-        for l in lines:
-            sn = l.sheet_name or "Other"
-            if sn not in sheets:
-                sheets[sn] = []
-            sheets[sn].append(l.to_dict())
-
-        sheet_order = ["Income", "Payroll", "Energy", "Water & Sewer", "Repairs & Supplies", "Gen & Admin", "Capital"]
-        ordered = [s for s in sheet_order if s in sheets]
-
-        # Parse assumptions for YTD months
-        ytd_months = 2
-        try:
-            assumptions = _json.loads(budget.assumptions_json) if budget.assumptions_json else {}
-            bp_val = assumptions.get("budget_period", "")
-            if "/" in str(bp_val):
-                ytd_months = int(str(bp_val).split("/")[0])
-        except Exception:
-            pass
-
-        return render_template_string(
-            PRESENTATION_TEMPLATE,
-            building_name=budget.building_name,
-            entity_code=budget.entity_code,
-            year=budget.year,
-            sheets_json=_json.dumps(sheets),
-            sheet_order_json=_json.dumps(ordered),
-            ytd_months=ytd_months,
-            remaining_months=12 - ytd_months,
-        )
+        return render_template_string(BOARD_NOTICE_TEMPLATE, snapshot=snapshot, fmt=_fmt_money)
 
 
     # ─── HTML Templates ─────────────────────────────────────────────────────
@@ -15420,7 +15762,7 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <div class="workbook-header">
       <h2>Budget Workbook</h2>
       <div style="display:flex; gap:8px;">
-        <button onclick="openBoardPresentation()" id="presLinkBtn" class="btn" style="background:#1e293b; color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px;">📊 Board Presentation</button>
+        <button onclick="openBoardNoticeReview()" id="presLinkBtn" class="btn" style="background:#1e293b; color:white; border:none; font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px;">📊 Board Presentation</button>
         <button onclick="openBuildingInfo()" id="buildingInfoBtn" class="btn" style="background:#fef9ef; color:var(--blue); border:1px solid var(--blue); font-size:13px; padding:8px 16px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:6px;">🏢 Building Info</button>
         <a href="" id="downloadExcelBtn" class="btn" style="background:var(--green); color:white; text-decoration:none; font-size:13px; padding:8px 16px; border-radius:6px;">Download Excel</a>
       </div>
@@ -17305,404 +17647,153 @@ window.addEventListener('popstate', function () {
 });
 
 // ── Checklist Action Helpers ──
-async function generatePresentationLink() {
-  const btn = document.getElementById('presLinkBtn');
-  btn.textContent = 'Generating...';
-  btn.disabled = true;
-  try {
-    const resp = await fetch('/api/presentation/generate/' + entityCode, {method:'POST'});
-    const data = await resp.json();
-    if (data.url) {
-      // Show a modal with the link
-      const modal = document.createElement('div');
-      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
-      modal.innerHTML = '<div style="background:white;border-radius:12px;padding:32px;max-width:500px;width:90%;">' +
-        '<h3 style="margin-bottom:12px;">Board Presentation Link</h3>' +
-        '<p style="font-size:13px;color:#64748b;margin-bottom:16px;">Share this link with board members. It provides a read-only view of the budget.</p>' +
-        '<input type="text" value="' + data.url + '" readonly style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;margin-bottom:12px;" onclick="this.select()">' +
-        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
-        '<button onclick="navigator.clipboard.writeText(\'' + data.url + '\');this.textContent=\'Copied!\'" style="padding:8px 16px;background:var(--primary);color:white;border:none;border-radius:6px;cursor:pointer;">Copy Link</button>' +
-        '<button onclick="window.open(\'' + data.url + '\',\'_blank\')" style="padding:8px 16px;background:var(--green);color:white;border:none;border-radius:6px;cursor:pointer;">Open</button>' +
-        '<button onclick="this.closest(\'div\').parentElement.remove()" style="padding:8px 16px;background:var(--gray-200);border:none;border-radius:6px;cursor:pointer;">Close</button>' +
-        '</div></div>';
-      document.body.appendChild(modal);
-      modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-    }
-  } catch(err) { showToast('Error generating link: ' + err.message, 'error'); }
-  btn.textContent = 'Board Presentation';
-  btn.disabled = false;
-}
-
-// ── Board Presentation Overlay (v2 — charts, exec summary, notes) ─────
-function openBoardPresentation() {
-  const data = window._data;
-  if (!data || !data.budget) { showToast('Budget data not loaded yet', 'error'); return; }
-
-  // Load Chart.js from CDN if not present
-  function loadChartJs() {
-    return new Promise(resolve => {
-      if (typeof Chart !== 'undefined') return resolve();
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
-      s.onload = resolve;
-      s.onerror = () => { console.warn('Chart.js failed to load'); resolve(); };
-      document.head.appendChild(s);
-    });
-  }
-
-  // Remove existing overlay if any
-  const existing = document.getElementById('boardPresOverlay');
+// ── Board Presentation: FA Review & Publish (2026-07-01) ──────────────
+// Repurposes the Board Presentation button (was openBoardPresentation(), an
+// internal-only overlay with no persistence — retired). The product drafts a
+// client narrative from real budget data (_generate_client_narrative in
+// workflow.py); an FA reviews/edits it here and must explicitly mark it
+// reviewed before a client link can be published — mirrors the audit-review
+// draft -> confirmed pattern already used elsewhere in this app.
+async function openBoardNoticeReview() {
+  const existing = document.getElementById('boardNoticeOverlay');
   if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'boardNoticeOverlay';
+  overlay.style.cssText = 'position:fixed; inset:0; z-index:9999; overflow-y:auto; background:#f6f5f2;';
+  overlay.innerHTML = '<div style="padding:60px; text-align:center; color:#8a7e72;">Loading draft…</div>';
+  document.body.appendChild(overlay);
 
-  loadChartJs().then(() => buildPresentation());
-
-  function buildPresentation() {
-    const b = data.budget;
-    const sheets = allSheets;
-    const sheetOrder = data.sheet_order || Object.keys(sheets);
-
-    // Status
-    const statusMap = {draft:'DRAFT', pm_pending:'PM REVIEW', pm_in_progress:'PM REVIEW', fa_review:'FA REVIEW', approved:'APPROVED'};
-    const statusLabel = statusMap[b.status] || (b.status || 'DRAFT').toUpperCase();
-    const statusColor = b.status === 'approved' ? '#16a34a' : b.status === 'fa_review' ? '#3b82f6' : '#d97706';
-
-    // Helpers
-    function sumF(lines, fn) { return lines.reduce((s, l) => s + (fn(l) || 0), 0); }
-    function pFmt(n) { return '$' + Math.abs(Math.round(n)).toLocaleString(); }
-    function pPct(n) { return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'; }
-    function chgCls(val, isExp) {
-      if (Math.abs(val) < 0.05) return '';
-      return (isExp ? val > 0 : val < 0) ? 'bp-chg-bad' : 'bp-chg-good';
-    }
-    function getProposed(l) {
-      // FA directive 2026-05-05: Capital — no proposed budget, ever.
-      if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
-      // FA 2026-06-17 (B1/B4): never-budgeted income (prepaid / dividend / messenger).
-      if (l.no_budget) return 0;
-      return l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)));
-    }
-
-    // Category defs for expandable detail. Gen & Admin sub-categorization
-    // historically used row_num ranges (which match the original approved-2026
-    // Excel template layout). GLs imported from YSL that weren't in that
-    // template get row_num=0 and fall outside all ranges. FA dir 2026-05-17
-    // adds a GL-prefix fallback via _gaSubForGl() so 6145 (Errors & Omissions
-    // Insurance) lands in "Insurance" and 6315-001x (RE Tax credits) land in
-    // "Taxes", regardless of whether they came from the Excel template.
-    const CATS = {
-      'Repairs & Supplies': [{label:'Supplies', match: l => l.category === 'supplies'}, {label:'Repairs', match: l => l.category === 'repairs'}, {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}],
-      'Gen & Admin': [
-        {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
-        {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
-        {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
-        {label:'Taxes',                 match: l => !(l.gl_code || '').startsWith('6315') && ((l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes'))},
-        {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
-      ]
-    };
-
-    // Sheet totals
-    const stotals = {};
-    const expSheets = sheetOrder.filter(s => s !== 'Income');
-    sheetOrder.forEach(s => {
-      const ln = sheets[s] || [];
-      stotals[s] = { prior: sumF(ln, l => l.prior_year), forecast: sumF(ln, l => computeForecast(l)), budget: sumF(ln, l => l.current_budget), proposed: sumF(ln, l => getProposed(l)) };
-    });
-    const incT = stotals['Income'] || {prior:0, forecast:0, budget:0, proposed:0};
-    let expT = {prior:0, forecast:0, budget:0, proposed:0};
-    expSheets.forEach(s => { const t = stotals[s] || {prior:0,forecast:0,budget:0,proposed:0}; expT.prior += t.prior; expT.forecast += t.forecast; expT.budget += t.budget; expT.proposed += t.proposed; });
-    const noiBudget = incT.budget - expT.budget, noiProposed = incT.proposed - expT.proposed;
-    const budgetIncPct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
-
-    // Top movers
-    const movers = expSheets.map(s => { const t = stotals[s]; const chg = t.proposed - t.budget; return { label: s, chg, pct: t.budget ? (chg / Math.abs(t.budget)) * 100 : 0 }; }).sort((a, b) => Math.abs(b.chg) - Math.abs(a.chg));
-    const top3Up = movers.filter(m => m.chg > 0).slice(0, 3);
-
-    // Exec summary
-    const drivers = top3Up.slice(0, 2).map(m => m.label).join(' and ') || 'operational adjustments';
-    const expDir = budgetIncPct > 0 ? 'increase' : 'decrease';
-    const execSummary = 'The proposed ' + b.year + ' operating budget reflects a net expense ' + expDir + ' of ' + pPct(budgetIncPct) + ' (' + pFmt(Math.abs(expT.proposed - expT.budget)) + '), primarily driven by ' + drivers + '. ' +
-      (incT.proposed > incT.budget ? 'Income is projected to grow ' + pPct(incT.budget ? ((incT.proposed - incT.budget) / Math.abs(incT.budget)) * 100 : 0) + ' to help offset the change. ' : '') +
-      'Net Operating Income is projected at ' + pFmt(noiProposed) + ', a ' + (noiProposed >= noiBudget ? 'gain' : 'reduction') + ' of ' + pFmt(Math.abs(noiProposed - noiBudget)) + ' from the current budget.';
-
-    // In-memory notes store
-    const bpNotes = {};
-
-    // Overlay
-    const overlay = document.createElement('div');
-    overlay.id = 'boardPresOverlay';
-    const today = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
-    const displayTabs = ['summary'].concat(sheetOrder);
-    const _savedScrollY = window.scrollY;
-
-    // Escape handler
-    const escH = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', escH); overlay.remove(); document.body.style.overflow=''; document.documentElement.style.overflow=''; window.scrollTo(0, _savedScrollY || 0); } };
-    document.addEventListener('keydown', escH);
-
-    overlay.innerHTML = `<style>
-#boardPresOverlay { position:fixed; inset:0; z-index:9999; overflow-y:auto; background:white; font-family:'Plus Jakarta Sans',-apple-system,sans-serif; }
-#boardPresOverlay * { box-sizing:border-box; }
-.bp2-hdr { background:linear-gradient(135deg,#1e293b,#0f172a); padding:28px 48px 22px; display:flex; justify-content:space-between; align-items:flex-start; position:relative; }
-.bp2-hdr h1 { font-size:26px; font-weight:300; color:#f8fafc; margin:0; }
-.bp2-hdr .sub { font-size:12px; color:#94a3b8; margin-top:5px; text-transform:uppercase; letter-spacing:1.5px; font-weight:500; }
-.bp2-badge { display:inline-block; padding:3px 10px; border-radius:10px; font-size:10px; font-weight:700; letter-spacing:.5px; margin-left:10px; vertical-align:middle; }
-.bp2-close { position:absolute; top:14px; right:18px; background:rgba(255,255,255,.1); border:none; color:#94a3b8; width:34px; height:34px; border-radius:50%; font-size:18px; cursor:pointer; }
-.bp2-close:hover { background:rgba(255,255,255,.2); color:#fff; }
-.bp2-right { text-align:right; font-size:13px; color:#94a3b8; }
-.bp2-tabs { background:#f8fafc; border-bottom:1px solid #e2e8f0; padding:0 48px; display:flex; gap:0; overflow-x:auto; }
-.bp2-tab { padding:13px 20px; font-size:13px; font-weight:500; color:#64748b; border-bottom:2px solid transparent; cursor:pointer; white-space:nowrap; background:none; border-top:none; border-left:none; border-right:none; }
-.bp2-tab:hover { color:#1e293b; }
-.bp2-tab.active { color:#1e293b; font-weight:600; border-bottom-color:#1e293b; }
-.bp2-body { max-width:1400px; padding:0 48px 32px; }
-.bp2-exec { background:#eff6ff; border:1px solid #bfdbfe; border-left:4px solid #3b82f6; border-radius:6px; padding:16px 20px; margin:24px 0; font-size:14px; line-height:1.7; color:#1e40af; }
-.bp2-exec b { font-weight:700; }
-.bp2-cards { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:20px 0; }
-.bp2-card { border:1px solid #e2e8f0; border-radius:10px; padding:18px 22px; position:relative; overflow:hidden; background:#fff; }
-.bp2-card-lbl { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#64748b; font-weight:600; margin-bottom:6px; }
-.bp2-card-val { font-size:24px; font-weight:700; color:#0f172a; font-variant-numeric:tabular-nums; }
-.bp2-card-sub { font-size:12px; font-weight:600; margin-top:5px; }
-.bp2-card-bar { position:absolute; bottom:0; left:0; right:0; height:3px; }
-.bp2-card-hl { background:linear-gradient(135deg,#fefce8,#fef9c3); border-color:#fbbf24; }
-.bp2-good { color:#16a34a; } .bp2-bad { color:#dc2626; } .bp2-muted { color:#64748b; }
-.bp2-top3 { background:#fef3c7; border:1px solid #fcd34d; border-left:4px solid #f59e0b; border-radius:6px; padding:16px 20px; margin:20px 0; }
-.bp2-top3 h4 { font-size:13px; font-weight:700; color:#92400e; margin:0 0 12px; }
-.bp2-top3-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-.bp2-top3-item { background:#fff; border:1px solid #fde68a; border-radius:6px; padding:14px; }
-.bp2-top3-item .cat { font-size:11px; color:#64748b; text-transform:uppercase; font-weight:600; }
-.bp2-top3-item .amt { font-size:18px; font-weight:700; color:#dc2626; margin:4px 0 2px; font-variant-numeric:tabular-nums; }
-.bp2-top3-item .pc { font-size:11px; color:#64748b; }
-.bp2-charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:20px 0; }
-.bp2-chart-box { border:1px solid #e2e8f0; border-radius:10px; padding:20px; position:relative; }
-.bp2-chart-box h4 { font-size:13px; font-weight:700; color:#334155; margin:0 0 12px; }
-.bp2-chart-box canvas { width:100% !important; height:100% !important; max-height:260px; }
-.bp2-tbl-title { font-size:14px; font-weight:700; color:#0f172a; margin:24px 0 10px; }
-.bp2-chip { font-size:10px; font-weight:600; background:#dbeafe; color:#1d4ed8; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.5px; margin-left:8px; }
-table.bp2-tbl { width:100%; border-collapse:collapse; }
-table.bp2-tbl thead th { text-align:left; padding:9px 12px; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:#64748b; font-weight:600; border-bottom:2px solid #e2e8f0; background:#f8fafc; }
-table.bp2-tbl thead th.num { text-align:right; }
-table.bp2-tbl tbody td { padding:9px 12px; font-size:13px; color:#334155; border-bottom:1px solid #f1f5f9; }
-table.bp2-tbl tbody td.num { text-align:right; font-variant-numeric:tabular-nums; font-weight:500; }
-table.bp2-tbl tbody tr:hover { background:#f8fafc; }
-table.bp2-tbl tbody tr.clickable { cursor:pointer; }
-table.bp2-tbl tbody tr.clickable:hover { background:#eff6ff; }
-.bp2-inc td { color:#166534; }
-.bp2-sub td { font-weight:700; color:#0f172a; border-top:2px solid #e2e8f0; border-bottom:2px solid #e2e8f0; background:#f8fafc; }
-.bp2-noi td { font-weight:800; color:#0f172a; font-size:14px; border-top:3px double #1e293b; border-bottom:3px double #1e293b; background:#fefce8; }
-.bp2-chg-bad { color:#dc2626 !important; font-weight:600; }
-.bp2-chg-good { color:#16a34a !important; font-weight:600; }
-.bp2-exp td:first-child::before { content:'▶'; font-size:10px; margin-right:8px; color:#94a3b8; display:inline-block; transition:transform .15s; }
-.bp2-exp.open td:first-child::before { transform:rotate(90deg); }
-.bp2-child td { padding-left:44px !important; font-size:12px; color:#64748b; background:#fafafa; }
-.bp2-child td.num { color:#64748b; font-weight:400; }
-.bp2-notes { margin:20px 0; padding:16px 20px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; }
-.bp2-notes label { font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.5px; display:block; margin-bottom:6px; }
-.bp2-notes textarea { width:100%; padding:10px; border:1px solid #e2e8f0; border-radius:6px; font:13px/1.5 inherit; resize:vertical; min-height:60px; }
-.bp2-ftr { border-top:1px solid #e2e8f0; padding:14px 48px; font-size:11px; color:#94a3b8; display:flex; justify-content:space-between; }
-.bp2-detail-cards { display:flex; gap:14px; margin:20px 0; }
-.bp2-detail-cards .bp2-card { flex:1; }
-@media print {
-  .bp2-close,.bp2-tabs,.bp2-notes { display:none !important; }
-  .bp2-hdr { background:#fff !important; border-bottom:2px solid #1e293b; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
-  .bp2-hdr h1 { color:#0f172a !important; } .bp2-hdr .sub { color:#334155 !important; }
-  .bp2-card-hl,.bp2-noi td { background:#fefce8 !important; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
-  .bp2-ftr { position:fixed; bottom:0; left:0; right:0; }
-  @page { margin:.5in; size:landscape; }
-}
-</style>
-<div class="bp2-hdr">
-  <div><h1>${b.building_name} <span class="bp2-badge" style="background:${statusColor}20;color:${statusColor};border:1px solid ${statusColor}">${statusLabel}</span></h1>
-  <div class="sub">${b.year} Operating Budget</div></div>
-  <div class="bp2-right"><div style="font-weight:600">Century Management</div><div style="font-size:12px;color:#64748b;margin-top:3px">${today}</div></div>
-  <button class="bp2-close" title="Close (Esc)">✕</button>
-</div>
-<div class="bp2-tabs" id="bp2Tabs"></div>
-<div class="bp2-body" id="bp2Body"></div>
-<div class="bp2-ftr"><span>Prepared by Century Management · Confidential</span><span>Generated ${today}</span></div>`;
-
-    // Lock body scroll and reset overlay position
-    document.body.style.overflow = 'hidden';
-    document.documentElement.style.overflow = 'hidden';
-    window.scrollTo(0, 0);
-    document.body.appendChild(overlay);
-    overlay.scrollTop = 0;
-    overlay.querySelector('.bp2-close').onclick = () => {
-      document.removeEventListener('keydown', escH);
-      overlay.remove();
-      document.body.style.overflow = '';
-      document.documentElement.style.overflow = '';
-      window.scrollTo(0, _savedScrollY);
-    };
-
-    // Build tabs
-    const tabsEl = overlay.querySelector('#bp2Tabs');
-    displayTabs.forEach(tn => {
-      const btn = document.createElement('button');
-      btn.className = 'bp2-tab' + (tn === 'summary' ? ' active' : '');
-      btn.dataset.tab = tn;
-      btn.textContent = tn === 'summary' ? 'Summary' : tn;
-      btn.onclick = () => renderTab(tn);
-      tabsEl.appendChild(btn);
-    });
-
-    function renderTab(tn) {
-      overlay.querySelectorAll('.bp2-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tn));
-      if (tn === 'summary') renderSummary(); else renderDetail(tn);
-      overlay.scrollTop = 0;
-    }
-
-    // ── Summary Tab ──
-    function renderSummary() {
-      const body = overlay.querySelector('#bp2Body');
-      const incPct = incT.budget ? ((incT.proposed - incT.budget) / Math.abs(incT.budget)) * 100 : 0;
-      const expPct = expT.budget ? ((expT.proposed - expT.budget) / Math.abs(expT.budget)) * 100 : 0;
-      const noiDelta = noiProposed - noiBudget;
-      const noiPctV = noiBudget ? (noiDelta / Math.abs(noiBudget)) * 100 : 0;
-
-      let h = '';
-
-      // Executive Summary
-      h += '<div class="bp2-exec">📋 <b>Executive Summary</b> — ' + execSummary + '</div>';
-
-      // Hero Cards
-      h += '<div class="bp2-cards">';
-      h += '<div class="bp2-card"><div class="bp2-card-lbl">Total Income</div><div class="bp2-card-val">' + pFmt(incT.proposed) + '</div><div class="bp2-card-sub ' + (incPct >= 0 ? 'bp2-good' : 'bp2-bad') + '">' + pPct(incPct) + ' vs current</div><div class="bp2-card-bar" style="background:#16a34a"></div></div>';
-      h += '<div class="bp2-card"><div class="bp2-card-lbl">Total Expenses</div><div class="bp2-card-val">' + pFmt(expT.proposed) + '</div><div class="bp2-card-sub ' + (expPct > 0 ? 'bp2-bad' : 'bp2-good') + '">' + pPct(expPct) + ' vs current</div><div class="bp2-card-bar" style="background:#dc2626"></div></div>';
-      h += '<div class="bp2-card"><div class="bp2-card-lbl">Net Operating Income</div><div class="bp2-card-val">' + pFmt(noiProposed) + '</div><div class="bp2-card-sub ' + (noiDelta >= 0 ? 'bp2-good' : 'bp2-bad') + '">' + (noiDelta >= 0 ? '+' : '-') + pFmt(Math.abs(noiDelta)) + ' vs current</div><div class="bp2-card-bar" style="background:#3b82f6"></div></div>';
-      h += '<div class="bp2-card bp2-card-hl"><div class="bp2-card-lbl">Budget Increase</div><div class="bp2-card-val" style="color:#b45309">' + pPct(budgetIncPct) + '</div><div class="bp2-card-sub bp2-muted">' + pFmt(expT.budget) + ' → ' + pFmt(expT.proposed) + '</div><div class="bp2-card-bar" style="background:#f59e0b"></div></div>';
-      h += '</div>';
-
-      // Top 3 Increases
-      if (top3Up.length > 0) {
-        h += '<div class="bp2-top3"><h4>⚡ Top ' + top3Up.length + ' Budget Increases</h4><div class="bp2-top3-grid">';
-        top3Up.forEach((m, i) => {
-          h += '<div class="bp2-top3-item"><div class="cat">#' + (i + 1) + ' ' + m.label + '</div><div class="amt">+' + pFmt(m.chg) + '</div><div class="pc">' + pPct(m.pct) + '</div></div>';
-        });
-        h += '</div></div>';
-      }
-
-      // Charts
-      h += '<div class="bp2-charts">';
-      h += '<div class="bp2-chart-box"><h4>Expense Breakdown (Proposed)</h4><div style="position:relative;height:260px;max-height:260px;overflow:hidden;"><canvas id="bp2Donut"></canvas></div></div>';
-      h += '<div class="bp2-chart-box"><h4>Current Budget vs Proposed</h4><div style="position:relative;height:260px;max-height:260px;overflow:hidden;"><canvas id="bp2Bar"></canvas></div></div>';
-      h += '</div>';
-
-      // Summary Table
-      h += '<div class="bp2-tbl-title">Operating Budget Summary <span class="bp2-chip">Current Budget → Proposed</span></div>';
-      h += '<table class="bp2-tbl"><thead><tr><th style="width:26%">Category</th><th class="num">Prior Year</th><th class="num">Forecast</th><th class="num">Current Budget</th><th class="num">Proposed</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
-
-      // Income row (clickable)
-      if (stotals['Income']) {
-        const t = stotals['Income'], c = t.proposed - t.budget, p = t.budget ? (c / Math.abs(t.budget)) * 100 : 0;
-        h += '<tr class="bp2-inc clickable" data-nav="Income"><td style="font-weight:600">Income</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(c, false) + '">' + (c >= 0 ? '+' : '-') + pFmt(Math.abs(c)) + '</td><td class="num ' + chgCls(p, false) + '">' + pPct(p) + '</td></tr>';
-      }
-      h += '<tr><td colspan="7" style="height:5px;border:none"></td></tr>';
-
-      expSheets.forEach(s => {
-        const t = stotals[s]; if (!t) return;
-        const c = t.proposed - t.budget, p = t.budget ? (c / Math.abs(t.budget)) * 100 : 0;
-        h += '<tr class="clickable" data-nav="' + s + '"><td style="font-weight:600">' + s + '</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(c, true) + '">' + (c >= 0 ? '+' : '-') + pFmt(Math.abs(c)) + '</td><td class="num ' + chgCls(p, true) + '">' + pPct(p) + '</td></tr>';
-      });
-
-      // Total Expenses
-      const ec = expT.proposed - expT.budget, ep = expT.budget ? (ec / Math.abs(expT.budget)) * 100 : 0;
-      h += '<tr class="bp2-sub"><td>TOTAL EXPENSES</td><td class="num">' + pFmt(expT.prior) + '</td><td class="num">' + pFmt(expT.forecast) + '</td><td class="num">' + pFmt(expT.budget) + '</td><td class="num">' + pFmt(expT.proposed) + '</td><td class="num ' + chgCls(ec, true) + '">' + (ec >= 0 ? '+' : '-') + pFmt(Math.abs(ec)) + '</td><td class="num ' + chgCls(ep, true) + '">' + pPct(ep) + '</td></tr>';
-      h += '<tr><td colspan="7" style="height:3px;border:none"></td></tr>';
-
-      // NOI
-      h += '<tr class="bp2-noi"><td>NET OPERATING INCOME</td><td class="num">' + pFmt(incT.prior - expT.prior) + '</td><td class="num">' + pFmt(incT.forecast - expT.forecast) + '</td><td class="num">' + pFmt(noiBudget) + '</td><td class="num">' + pFmt(noiProposed) + '</td><td class="num ' + chgCls(noiDelta, false) + '">' + (noiDelta >= 0 ? '+' : '-') + pFmt(Math.abs(noiDelta)) + '</td><td class="num ' + chgCls(noiPctV, false) + '">' + pPct(noiPctV) + '</td></tr>';
-      h += '</tbody></table>';
-
-      // Notes
-      h += '<div class="bp2-notes"><label>📝 Presentation Notes <span style="font-weight:400;text-transform:none;letter-spacing:0">(FA talking points — not saved)</span></label><textarea placeholder="Add notes for the board meeting...">' + (bpNotes['_general'] || '') + '</textarea></div>';
-
-      body.innerHTML = h;
-
-      // Wire clickable rows
-      body.querySelectorAll('tr.clickable').forEach(r => { r.onclick = () => renderTab(r.dataset.nav); });
-
-      // Save notes on change
-      const ta = body.querySelector('.bp2-notes textarea');
-      if (ta) ta.oninput = () => { bpNotes['_general'] = ta.value; };
-
-      // Render charts
-      if (typeof Chart !== 'undefined') {
-        setTimeout(() => {
-          // Donut
-          const donutData = expSheets.filter(s => (stotals[s]||{}).proposed > 0);
-          const donutColors = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#ec4899','#06b6d4','#64748b'];
-          const dc = body.querySelector('#bp2Donut');
-          if (dc) new Chart(dc, { type:'doughnut', data:{ labels:donutData.map(s=>s), datasets:[{ data:donutData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:donutColors.slice(0,donutData.length), borderWidth:0, hoverOffset:6 }] }, options:{ responsive:true, maintainAspectRatio:false, animation:{duration:0}, cutout:'60%', plugins:{ legend:{ position:'right', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>{ const tot=ctx.dataset.data.reduce((a,b)=>a+b,0); return ctx.label+': '+pFmt(ctx.parsed)+' ('+(ctx.parsed/tot*100).toFixed(1)+'%)'; } } } } } });
-
-          // Bar
-          const barData = expSheets.filter(s => (stotals[s]||{}).budget > 0 || (stotals[s]||{}).proposed > 0);
-          const bc = body.querySelector('#bp2Bar');
-          if (bc) new Chart(bc, { type:'bar', data:{ labels:barData.map(s=>s), datasets:[ { label:'Current Budget', data:barData.map(s=>Math.round(stotals[s].budget)), backgroundColor:'#cbd5e1', borderRadius:3 }, { label:'Proposed', data:barData.map(s=>Math.round(stotals[s].proposed)), backgroundColor:barData.map(s=>stotals[s].proposed>stotals[s].budget?'#fbbf24':'#4ade80'), borderRadius:3 } ] }, options:{ responsive:true, maintainAspectRatio:false, animation:{duration:0}, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:12, font:{size:11} } }, tooltip:{ callbacks:{ label:ctx=>ctx.dataset.label+': '+pFmt(ctx.parsed.y) } } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'K', font:{size:10} }, grid:{color:'#f1f5f9'} }, x:{ ticks:{font:{size:10},maxRotation:25}, grid:{display:false} } } } });
-          // Kill scroll repeatedly to beat any async Chart.js resizes
-          overlay.scrollTop = 0;
-          setTimeout(() => { overlay.scrollTop = 0; }, 100);
-          setTimeout(() => { overlay.scrollTop = 0; }, 300);
-        }, 50);
-      }
-    }
-
-    // ── Detail Tab ──
-    function bpIsZero(l) { return !l.prior_year && !l.ytd_actual && !l.accrual_adj && !l.unpaid_bills && !l.current_budget && !l.increase_pct; }
-    function renderDetail(sheetName) {
-      const body = overlay.querySelector('#bp2Body');
-      const lines = sheets[sheetName] || [];
-      const t = stotals[sheetName] || {prior:0,forecast:0,budget:0,proposed:0};
-      const chg = t.proposed - t.budget, pc = t.budget ? (chg / Math.abs(t.budget)) * 100 : 0;
-      const isExp = sheetName !== 'Income';
-
-      let h = '<div class="bp2-detail-cards">';
-      h += '<div class="bp2-card"><div class="bp2-card-lbl">Current Budget</div><div class="bp2-card-val" style="font-size:22px">' + pFmt(t.budget) + '</div></div>';
-      h += '<div class="bp2-card"><div class="bp2-card-lbl">Proposed Budget</div><div class="bp2-card-val" style="font-size:22px">' + pFmt(t.proposed) + '</div></div>';
-      h += '<div class="bp2-card bp2-card-hl"><div class="bp2-card-lbl">Change</div><div class="bp2-card-val" style="font-size:22px;color:#b45309">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + ' (' + pPct(pc) + ')</div></div>';
-      h += '</div>';
-
-      h += '<table class="bp2-tbl"><thead><tr><th style="width:32%">Description</th><th class="num">Prior Year</th><th class="num">Forecast</th><th class="num">Current Budget</th><th class="num">Proposed</th><th class="num">$ Change</th><th class="num">% Change</th></tr></thead><tbody>';
-
-      const cats = CATS[sheetName];
-      if (cats) {
-        cats.forEach((cat, ci) => {
-          const cl = lines.filter(cat.match); if (!cl.length) return;
-          const ct = { prior:sumF(cl,l=>l.prior_year), forecast:sumF(cl,l=>computeForecast(l)), budget:sumF(cl,l=>l.current_budget), proposed:sumF(cl,l=>getProposed(l)) };
-          const cc = ct.proposed - ct.budget, cp = ct.budget ? (cc / Math.abs(ct.budget)) * 100 : 0;
-          const cid = 'bp2c_' + sheetName.replace(/\W/g,'') + ci;
-          h += '<tr class="bp2-exp" onclick="document.querySelectorAll(\'.' + cid + '\').forEach(r=>{r.style.display=r.style.display===\'none\'?\'\':\'none\'});this.classList.toggle(\'open\')" style="cursor:pointer"><td style="font-weight:600;padding-left:22px">' + cat.label + '</td><td class="num" style="font-weight:600">' + pFmt(ct.prior) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.forecast) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.budget) + '</td><td class="num" style="font-weight:600">' + pFmt(ct.proposed) + '</td><td class="num ' + chgCls(cc,isExp) + '" style="font-weight:600">' + (cc >= 0 ? '+' : '-') + pFmt(Math.abs(cc)) + '</td><td class="num ' + chgCls(cp,isExp) + '" style="font-weight:600">' + pPct(cp) + '</td></tr>';
-          cl.forEach(l => {
-            if (bpIsZero(l)) return;
-            const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
-            h += '<tr class="bp2-child ' + cid + '" style="display:none"><td>' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num">' + pPct(lpc) + '</td></tr>';
-          });
-        });
-        // Uncategorized
-        const matched = new Set(); cats.forEach(c => lines.filter(c.match).forEach(l => matched.add(l.id)));
-        lines.filter(l => !matched.has(l.id) && !bpIsZero(l)).forEach(l => {
-          const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
-          h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
-        });
-      } else {
-        lines.forEach(l => {
-          if (bpIsZero(l)) return;
-          const lf = computeForecast(l), lp = getProposed(l), lc = lp - (l.current_budget||0), lpc = (l.current_budget||0) ? (lc / Math.abs(l.current_budget)) * 100 : 0;
-          h += '<tr><td style="padding-left:22px">' + (l.gl_code||'') + ' · ' + (l.description||'') + '</td><td class="num">' + pFmt(l.prior_year||0) + '</td><td class="num">' + pFmt(lf) + '</td><td class="num">' + pFmt(l.current_budget||0) + '</td><td class="num">' + pFmt(lp) + '</td><td class="num ' + chgCls(lc,isExp) + '">' + (lc >= 0 ? '+' : '-') + pFmt(Math.abs(lc)) + '</td><td class="num ' + chgCls(lpc,isExp) + '">' + pPct(lpc) + '</td></tr>';
-        });
-      }
-
-      // Total
-      h += '<tr class="bp2-sub"><td>TOTAL ' + sheetName.toUpperCase() + '</td><td class="num">' + pFmt(t.prior) + '</td><td class="num">' + pFmt(t.forecast) + '</td><td class="num">' + pFmt(t.budget) + '</td><td class="num">' + pFmt(t.proposed) + '</td><td class="num ' + chgCls(chg,isExp) + '">' + (chg >= 0 ? '+' : '-') + pFmt(Math.abs(chg)) + '</td><td class="num ' + chgCls(pc,isExp) + '">' + pPct(pc) + '</td></tr>';
-      h += '</tbody></table>';
-
-      // Notes
-      h += '<div class="bp2-notes"><label>📝 Notes — ' + sheetName + '</label><textarea placeholder="Add talking points for ' + sheetName + '...">' + (bpNotes[sheetName] || '') + '</textarea></div>';
-
-      body.innerHTML = h;
-      const ta = body.querySelector('.bp2-notes textarea');
-      if (ta) ta.oninput = () => { bpNotes[sheetName] = ta.value; };
-    }
-
-    renderSummary();
+  let data;
+  try {
+    const resp = await fetch('/api/board-notice/' + entityCode);
+    data = await resp.json();
+  } catch (e) {
+    overlay.innerHTML = '<div style="padding:40px; color:#DE1C23;">Failed to load: ' + e.message + '</div>';
+    return;
   }
+  window._boardNoticeActive = data.active;
+  renderBoardNoticeReview(overlay, data);
+}
+
+function renderBoardNoticeReview(overlay, data) {
+  const n = data.active || {};
+  const statusLabel = {draft: 'Draft — not yet reviewed', reviewed: 'Reviewed — ready to publish', published: 'Published — client link is live'}[data.status] || data.status;
+  const statusColor = {draft: '#d97706', reviewed: '#3b82f6', published: '#16a34a'}[data.status] || '#666';
+
+  let html = '<div style="max-width:760px; margin:0 auto; padding:32px 24px 80px; font-family:\'Plus Jakarta Sans\',-apple-system,sans-serif;">';
+  html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">' +
+    '<h2 style="margin:0; font-size:20px; color:#001721;">Board Presentation — Review &amp; Publish</h2>' +
+    '<button onclick="document.getElementById(\'boardNoticeOverlay\').remove()" style="border:none; background:none; font-size:22px; cursor:pointer; color:#8a7e72;">&times;</button></div>';
+  html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:20px; flex-wrap:wrap;"><span style="width:8px; height:8px; border-radius:50%; background:' + statusColor + ';"></span><span style="font-size:13px; font-weight:600; color:' + statusColor + ';">' + statusLabel + '</span>' +
+    '<button onclick="boardNoticeRegenerate()" style="margin-left:auto; font-size:12px; padding:4px 10px; background:none; border:1px solid #ddd; border-radius:4px; cursor:pointer; color:#666;">Regenerate draft from current numbers</button></div>';
+
+  html += '<p style="font-size:12px; color:#8a7e72; margin:0 0 20px;">The system drafted the sections below from the current budget — every dollar figure is real, but the "why" is only ever what you confirm or add here. Review each section, edit anything that needs a human touch (especially bracketed [FA: …] notes), then mark it reviewed. A client link can only be created after that.</p>';
+
+  function field(label, key, value, rows) {
+    return '<div style="margin-bottom:18px;">' +
+      '<label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#666; margin-bottom:6px;">' + label + '</label>' +
+      '<textarea data-key="' + key + '" rows="' + (rows || 3) + '" style="width:100%; font-family:inherit; font-size:14px; padding:10px 12px; border:1px solid #ddd; border-radius:4px; resize:vertical; box-sizing:border-box;">' + (value || '').replace(/</g,'&lt;') + '</textarea></div>';
+  }
+
+  html += field('Opening', 'opening', n.opening, 3);
+  html += field('Driver summary', 'driver_summary', n.driver_summary, 2);
+  html += field('Additional notes (e.g. reserve fund status — optional)', 'additional_notes', n.additional_notes, 2);
+
+  function dateField(label, key, value) {
+    return '<div style="margin-bottom:10px; display:inline-block; width:31%; min-width:150px; margin-right:2%; vertical-align:top;">' +
+      '<label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#666; margin-bottom:6px;">' + label + '</label>' +
+      '<input type="text" data-timeline="' + key + '" placeholder="e.g. February 5, 2027" value="' + (value || '').replace(/"/g,'&quot;') + '" style="width:100%; font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box;"></div>';
+  }
+  const tl = n.timeline || {};
+  html += '<div style="margin-bottom:18px;"><div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#666; margin-bottom:6px;">Key dates for the board</div>' +
+    dateField('Review by', 'board_review_through', tl.board_review_through) +
+    dateField('Board vote by', 'board_vote_by', tl.board_vote_by) +
+    dateField('New charges effective', 'effective_date', tl.effective_date) +
+    '</div>';
+
+  html += '<div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#666; margin:24px 0 10px;">Anticipated questions</div>';
+  (n.faq || []).forEach((item, i) => {
+    html += '<div style="margin-bottom:14px; padding:12px 14px; background:#f8f8f6; border-radius:6px;">' +
+      '<div style="font-size:13px; font-weight:600; margin-bottom:6px;">' + item.q.replace(/</g,'&lt;') + '</div>' +
+      '<textarea data-faq="' + i + '" rows="2" style="width:100%; font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid #ddd; border-radius:4px; resize:vertical; box-sizing:border-box;">' + (item.a || '').replace(/</g,'&lt;') + '</textarea></div>';
+  });
+
+  html += '<div style="display:flex; gap:10px; margin-top:28px; padding-top:20px; border-top:1px solid #eee; flex-wrap:wrap;">' +
+    '<button onclick="boardNoticeSave(false)" style="padding:10px 18px; border:1px solid #001721; background:#fff; color:#001721; border-radius:4px; font-weight:600; cursor:pointer;">Save draft</button>' +
+    '<button onclick="boardNoticeSave(true)" style="padding:10px 18px; border:none; background:#001721; color:#fff; border-radius:4px; font-weight:600; cursor:pointer;">Save &amp; mark reviewed</button>';
+  if (data.status === 'reviewed' || data.status === 'published') {
+    html += '<button onclick="boardNoticePublish()" style="padding:10px 18px; border:none; background:#DE1C23; color:#fff; border-radius:4px; font-weight:600; cursor:pointer; margin-left:auto;">' + (data.status === 'published' ? 'Re-publish (regenerate link)' : 'Publish &amp; get client link') + '</button>';
+  }
+  html += '</div><div id="boardNoticeMsg" style="margin-top:14px; font-size:13px;"></div>';
+  html += '</div>';
+  overlay.innerHTML = html;
+}
+
+function _boardNoticeCollect() {
+  const overlay = document.getElementById('boardNoticeOverlay');
+  const narrative = JSON.parse(JSON.stringify(window._boardNoticeActive || {}));
+  overlay.querySelectorAll('textarea[data-key]').forEach(t => { narrative[t.dataset.key] = t.value; });
+  overlay.querySelectorAll('textarea[data-faq]').forEach(t => {
+    const i = parseInt(t.dataset.faq, 10);
+    if (narrative.faq && narrative.faq[i]) narrative.faq[i].a = t.value;
+  });
+  overlay.querySelectorAll('input[data-timeline]').forEach(inp => {
+    if (!narrative.timeline) narrative.timeline = {};
+    narrative.timeline[inp.dataset.timeline] = inp.value;
+  });
+  return narrative;
+}
+
+async function boardNoticeSave(markReviewed) {
+  const msg = document.getElementById('boardNoticeMsg');
+  msg.textContent = 'Saving…'; msg.style.color = '#666';
+  const narrative = _boardNoticeCollect();
+  const body = { narrative: narrative, mark_reviewed: !!markReviewed };
+  if (markReviewed) body.reviewed_by = prompt('Your name (for the review record):') || '';
+  try {
+    const resp = await fetch('/api/board-notice/' + entityCode, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const d = await resp.json();
+    if (!resp.ok) { msg.textContent = 'Error: ' + (d.error || resp.status); msg.style.color = '#DE1C23'; return; }
+    msg.textContent = markReviewed ? 'Saved and marked reviewed.' : 'Draft saved.';
+    msg.style.color = '#16a34a';
+    const fresh = await (await fetch('/api/board-notice/' + entityCode)).json();
+    window._boardNoticeActive = fresh.active;
+    renderBoardNoticeReview(document.getElementById('boardNoticeOverlay'), fresh);
+  } catch (e) { msg.textContent = 'Error: ' + e.message; msg.style.color = '#DE1C23'; }
+}
+
+async function boardNoticeRegenerate() {
+  if (!confirm('Regenerate the draft from the current budget numbers? Any unreviewed edits will be replaced (a reviewed/published narrative starts a fresh review cycle).')) return;
+  const resp = await fetch('/api/board-notice/' + entityCode + '?regenerate=1');
+  const data = await resp.json();
+  window._boardNoticeActive = data.active;
+  renderBoardNoticeReview(document.getElementById('boardNoticeOverlay'), data);
+}
+
+async function boardNoticePublish() {
+  const msg = document.getElementById('boardNoticeMsg');
+  msg.textContent = 'Publishing…'; msg.style.color = '#666';
+  try {
+    const resp = await fetch('/api/board-notice/' + entityCode + '/publish', { method: 'POST' });
+    const d = await resp.json();
+    if (!resp.ok) { msg.textContent = 'Error: ' + (d.error || resp.status); msg.style.color = '#DE1C23'; return; }
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    modal.innerHTML = '<div style="background:white;border-radius:12px;padding:32px;max-width:500px;width:90%;">' +
+      '<h3 style="margin-bottom:12px;">Board Presentation link</h3>' +
+      '<p style="font-size:13px;color:#64748b;margin-bottom:16px;">Share this link with the Board. It shows exactly what was reviewed and published just now — it will not change even if the budget is edited later.</p>' +
+      '<input type="text" value="' + d.url + '" readonly style="width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;margin-bottom:12px;box-sizing:border-box;" onclick="this.select()">' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+      '<button onclick="navigator.clipboard.writeText(\'' + d.url + '\');this.textContent=\'Copied!\'" style="padding:8px 16px;background:#001721;color:white;border:none;border-radius:6px;cursor:pointer;">Copy link</button>' +
+      '<button onclick="window.open(\'' + d.url + '\',\'_blank\')" style="padding:8px 16px;background:#16a34a;color:white;border:none;border-radius:6px;cursor:pointer;">Open</button>' +
+      '<button onclick="this.closest(\'div\').parentElement.remove()" style="padding:8px 16px;background:#eee;border:none;border-radius:6px;cursor:pointer;">Close</button>' +
+      '</div></div>';
+    document.body.appendChild(modal);
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    const fresh = await (await fetch('/api/board-notice/' + entityCode)).json();
+    window._boardNoticeActive = fresh.active;
+    renderBoardNoticeReview(document.getElementById('boardNoticeOverlay'), fresh);
+  } catch (e) { msg.textContent = 'Error: ' + e.message; msg.style.color = '#DE1C23'; }
 }
 
 function openAssumptions() {
@@ -34579,654 +34670,391 @@ function pmToggleReclassInv(gid) {
 """
 
 
-PRESENTATION_TEMPLATE = """<!DOCTYPE html>
+BOARD_NOTICE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ building_name }} - {{ year }} Budget Presentation</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ snapshot.budget.building_name }} — {{ snapshot.budget.year }} Budget Notice</title>
 <style>
-/* Force scrollbars always visible (fixes macOS auto-hide on horizontal/vertical scroll) */
-::-webkit-scrollbar { width: 12px; height: 12px; -webkit-appearance: none; }
-::-webkit-scrollbar-track { background: #1e293b; }
-::-webkit-scrollbar-thumb { background: #475569; border-radius: 6px; border: 2px solid #1e293b; }
-::-webkit-scrollbar-thumb:hover { background: #64748b; }
-::-webkit-scrollbar-corner { background: #1e293b; }
-* { scrollbar-width: thin; scrollbar-color: #475569 #1e293b; }
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Inter',sans-serif; background:#0f172a; color:#e2e8f0; }
-  .header { background:linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding:40px 60px; border-bottom:1px solid #334155; }
-  .header h1 { font-size:32px; font-weight:300; color:#f8fafc; letter-spacing:-0.5px; }
-  .header .subtitle { font-size:14px; color:#94a3b8; margin-top:8px; letter-spacing:1px; text-transform:uppercase; }
-  .header .logo { font-size:13px; color:#64748b; margin-top:4px; }
-  .nav { display:flex; gap:4px; padding:0 60px; background:#1e293b; border-bottom:1px solid #334155; overflow-x:auto; }
-  .nav button { padding:12px 20px; background:transparent; border:none; color:#94a3b8; font-size:13px; font-weight:500; cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
-  .nav button:hover { color:#e2e8f0; }
-  .nav button.active { color:#38bdf8; border-bottom-color:#38bdf8; }
-  .content { padding:30px 60px; max-width:1400px; }
-  .summary-cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:30px; }
-  .card { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:20px; }
-  .card .label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#64748b; margin-bottom:8px; }
-  .card .value { font-size:24px; font-weight:600; color:#f8fafc; }
-  .card .delta { font-size:13px; margin-top:4px; }
-  .delta-up { color:#f87171; }
-  .delta-down { color:#4ade80; }
-  table { width:100%; border-collapse:collapse; }
-  thead th { text-align:left; padding:10px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; border-bottom:1px solid #334155; }
-  thead th.num { text-align:right; }
-  tbody td { padding:8px 12px; border-bottom:1px solid #1e293b; font-size:13px; }
-  tbody td.num { text-align:right; font-variant-numeric:tabular-nums; }
-  tbody tr:hover { background:#1e293b; }
-  .subtotal td { font-weight:600; background:#1e293b; border-top:1px solid #334155; border-bottom:1px solid #334155; color:#f8fafc; }
-  .sheet-total td { font-weight:700; background:#0f172a; border-top:2px solid #38bdf8; color:#38bdf8; font-size:14px; }
-  .cat-header td { padding:14px 12px 6px; font-weight:600; color:#38bdf8; font-size:14px; border-bottom:2px solid #1e3a5f; }
-  .variance-neg { color:#4ade80; }
-  .variance-pos { color:#f87171; }
-  .footer { padding:30px 60px; font-size:11px; color:#475569; border-top:1px solid #1e293b; margin-top:40px; }
-  @media print {
-    body { background:white; color:#1e293b; }
-    .header { background:white; border-bottom:2px solid #1e293b; }
-    .header h1 { color:#0f172a; }
-    .nav { display:none; }
-    .card { border:1px solid #e2e8f0; }
-    .card .value { color:#0f172a; }
-    thead th { color:#64748b; border-bottom:2px solid #e2e8f0; }
-    tbody td { border-bottom:1px solid #f1f5f9; }
-    .subtotal td { background:#f8fafc; }
-    .sheet-total td { border-top:2px solid #0f172a; color:#0f172a; }
-    .cat-header td { color:#0f172a; border-bottom:2px solid #e2e8f0; }
-    .variance-neg { color:#16a34a; }
-    .variance-pos { color:#dc2626; }
-    @page { margin:0.5in; }
-  }
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+:root {
+  --nc-navy: #001721; --nc-red: #DE1C23; --nc-cream: #f4f1eb;
+  --nc-line: #e5e0d5; --nc-muted: #8a7e72;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #f6f5f2; }
+.vb { max-width: 780px; margin: 0 auto; background: #fff; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1a1a1a; min-height: 100vh; }
+.vb-letterhead { background: var(--nc-navy); color: #fff; padding: 26px 40px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; row-gap: 12px; }
+.vb-letterhead .lh1 { font-size: 15px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.vb-letterhead .lh2 { font-size: 12px; color: #9fb0b6; margin-top: 4px; letter-spacing: 0.04em; }
+.vb-print { background: none; border: 1px solid rgba(255,255,255,0.4); color: #cfd8da; font-size: 12px; font-family: inherit; padding: 10px 16px; min-height: 40px; border-radius: 2px; cursor: pointer; }
+.vb-print:hover, .vb-print:focus-visible { border-color: #fff; color: #fff; }
+.vb-print:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.vb-wrap { max-width: 700px; margin: 0 auto; padding: 40px 40px 64px; }
+.vb-meta { display: grid; grid-template-columns: 100px 1fr; row-gap: 6px; font-size: 13px; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #ddd; }
+.vb-meta dt { color: #666; font-weight: 600; } .vb-meta dd { margin: 0; }
+.vb p { font-size: 15px; line-height: 1.75; margin: 0 0 18px; color: #222; }
+.vb strong { color: var(--nc-navy); }
+.vb-stat { background: var(--nc-cream); border-radius: 4px; padding: 22px 24px; margin: 24px 0; }
+.vb-stat-num { font-size: 40px; font-weight: 800; color: var(--nc-navy); line-height: 1; font-variant-numeric: tabular-nums; }
+.vb-stat-cap { font-size: 12.5px; color: var(--nc-muted); font-weight: 600; margin-top: 4px; }
+.vb-table-wrap { overflow-x: auto; margin: 24px 0; }
+.vb-table { width: 100%; min-width: 420px; border-collapse: collapse; font-size: 13.5px; }
+.vb-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #666; padding: 8px 10px; border-bottom: 2px solid #ccc; white-space: nowrap; }
+.vb-table th.num, .vb-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vb-table td { padding: 9px 10px; border-bottom: 1px solid #eee; }
+.vb-table tr.total td { font-weight: 700; background: var(--nc-cream); color: var(--nc-navy); border-top: 2px solid #ccc; border-bottom: 2px solid #ccc; }
+.vb-table tr.neg td.num { color: #166534; }
+.vb-detail-toggle { display: flex; align-items: center; gap: 8px; background: #f8f8f6; border: 1px solid #ddd; color: var(--nc-navy); font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 12px 16px; border-radius: 3px; width: 100%; text-align: left; }
+.vb-detail-toggle:hover, .vb-detail-toggle:focus-visible { background: #f0efec; }
+.vb-detail-toggle:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: 2px; }
+.vb-detail-toggle .car { transition: transform 0.15s; display: inline-block; }
+.vb-detail-toggle.open .car { transform: rotate(90deg); }
+.vb-detail-body { display: none; margin: 10px 0 8px; }
+.vb-detail-body.open { display: block; }
+.vb-faq { margin: 32px 0; border: 1px solid #ddd; border-radius: 3px; overflow: hidden; }
+.vb-faq-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: #666; background: #f8f8f6; padding: 10px 16px; border-bottom: 1px solid #ddd; }
+.vb-faq-item { border-bottom: 1px solid #eee; } .vb-faq-item:last-child { border-bottom: none; }
+.vb-faq-q { width: 100%; text-align: left; background: none; border: none; font-family: inherit; font-size: 14px; font-weight: 600; color: #1a1a1a; padding: 14px 16px; min-height: 44px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.vb-faq-q:active { background: #f8f8f6; }
+.vb-faq-q:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
+.vb-faq-q .car { color: var(--nc-muted); transition: transform 0.15s; flex-shrink: 0; }
+.vb-faq-item.open .vb-faq-q .car { transform: rotate(90deg); }
+.vb-faq-a { display: none; padding: 0 16px 16px; font-size: 13.5px; line-height: 1.7; color: #444; white-space: pre-wrap; }
+.vb-faq-item.open .vb-faq-a { display: block; }
+.vb-sig { display: flex; align-items: center; gap: 16px; margin: 36px 0 28px; padding-top: 24px; border-top: 1px solid #ddd; }
+.vb-seal { width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--nc-navy); display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: var(--nc-navy); text-align: center; letter-spacing: 0.02em; flex-shrink: 0; }
+.vb-sig-text .n1 { font-size: 14px; font-weight: 700; color: var(--nc-navy); }
+.vb-sig-text .n2 { font-size: 12.5px; color: #666; }
+.vb-ftr { font-size: 11px; color: #999; text-align: center; padding: 18px; border-top: 1px solid #eee; }
+
+/* -- Sticky wayfinding sub-nav (sharpening pass 2026-07-02) -- */
+.vb-subnav { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid var(--nc-line); display: flex; gap: 4px; padding: 0 40px; overflow-x: auto; scrollbar-width: none; }
+.vb-subnav::-webkit-scrollbar { display: none; }
+.vb-subnav-link { flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--nc-muted); text-decoration: none; padding: 14px 12px; border-bottom: 2px solid transparent; white-space: nowrap; min-height: 44px; display: flex; align-items: center; }
+.vb-subnav-link:hover { color: var(--nc-navy); }
+.vb-subnav-link.active { color: var(--nc-navy); border-bottom-color: var(--nc-navy); }
+.vb-subnav-link:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
+
+/* -- Key Dates block (sharpening pass 2026-07-02) -- */
+.vb-dates { display: flex; flex-wrap: wrap; background: var(--nc-cream); border: 1px solid var(--nc-line); border-radius: 4px; padding: 14px 20px; margin-bottom: 24px; }
+.vb-dates-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--nc-muted); font-weight: 700; width: 100%; margin-bottom: 10px; }
+.vb-date-item { padding-right: 20px; margin-right: 20px; border-right: 1px solid var(--nc-line); }
+.vb-date-item:last-child { border-right: none; margin-right: 0; padding-right: 0; }
+.vb-date-label { display: block; font-size: 11px; color: var(--nc-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.vb-date-val { display: block; font-size: 16px; font-weight: 700; color: var(--nc-navy); font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+/* -- Metrics row + biggest-changes movers (richness pass 2026-07-02) -- */
+.vb-metrics-row { display: flex; gap: 12px; flex-wrap: wrap; margin: -8px 0 24px; }
+.vb-metric-card { flex: 1; min-width: 150px; background: #fff; border: 1px solid var(--nc-line); border-radius: 4px; padding: 12px 16px; }
+.vb-metric-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--nc-muted); font-weight: 700; margin-bottom: 4px; }
+.vb-metric-val { font-size: 19px; font-weight: 700; color: var(--nc-navy); font-variant-numeric: tabular-nums; }
+.vb-metric-sub { font-size: 11px; color: var(--nc-muted); margin-top: 2px; }
+.vb-movers { margin-bottom: 28px; }
+.vb-movers-title { font-size: 13px; font-weight: 700; color: var(--nc-navy); margin-bottom: 4px; }
+.vb-movers-sub { font-size: 11.5px; color: var(--nc-muted); margin-bottom: 14px; }
+.vb-mover-row { display: grid; grid-template-columns: 150px 1fr 90px; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12.5px; }
+.vb-mover-label { color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vb-mover-bar-track { background: #f0efec; border-radius: 2px; height: 14px; overflow: hidden; }
+.vb-mover-bar-fill { height: 100%; border-radius: 2px; }
+.vb-mover-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ── Full Budget Detail (plan: "Board Presentation — Full Budget Detail") ── */
+.vb-detail2 { margin: 40px 0; padding-top: 32px; border-top: 1px solid #ddd; }
+.vb-detail-heading { font-size: 18px; font-weight: 700; color: var(--nc-navy); margin-bottom: 6px; }
+.vb-detail-sub { font-size: 13px; color: var(--nc-muted); margin: 0 0 24px; }
+.vb-chartrow { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; margin-bottom: 28px; }
+.vb-donut { width: 140px; height: 140px; border-radius: 50%; flex-shrink: 0; }
+.vb-donut-legend { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; min-width: 180px; }
+.vb-legend-item { display: flex; align-items: center; gap: 8px; }
+.vb-legend-item .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+.vb-legend-item b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.vb-bars { margin-bottom: 28px; }
+.vb-bar-row { display: grid; grid-template-columns: 130px 1fr 1fr; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.vb-bar-label { color: #444; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vb-bar-track { background: #eee; border-radius: 2px; height: 10px; overflow: hidden; }
+.vb-bar-fill { height: 100%; border-radius: 2px; }
+.vb-bar-fill.cur { background: var(--nc-muted); }
+.vb-bar-fill.prop { background: var(--nc-navy); }
+.vb-bar-legend { font-size: 11px; color: #666; margin-top: 4px; }
+.vb-bar-legend .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+.vb-bar-legend .sw.cur { background: var(--nc-muted); } .vb-bar-legend .sw.prop { background: var(--nc-navy); margin-left: 14px; }
+.vb-tabbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #ddd; padding-bottom: 2px; }
+.vb-tab-btn { background: none; border: none; font-family: inherit; font-size: 12.5px; font-weight: 600; color: #666; padding: 8px 12px; cursor: pointer; border-radius: 3px 3px 0 0; min-height: 36px; }
+.vb-tab-btn:hover { background: #f8f8f6; color: var(--nc-navy); }
+.vb-tab-btn.active { color: var(--nc-navy); background: var(--nc-cream); box-shadow: inset 0 -2px 0 var(--nc-navy); }
+.vb-tab-btn:focus-visible { outline: 2px solid var(--nc-navy); outline-offset: -2px; }
+.vb-tabpanel { display: none; }
+.vb-tabpanel.active { display: block; }
+.vb-tabpanel-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #999; margin-bottom: 8px; display: none; }
+
+@media (max-width: 480px) {
+  .vb-letterhead { padding: 20px 20px; } .vb-wrap { padding: 24px 18px 48px; } .vb-stat { padding: 18px 16px; }
+  .vb-bar-row { grid-template-columns: 84px 1fr 1fr; font-size: 10.5px; }
+  .vb-donut { width: 108px; height: 108px; } .vb-chartrow { gap: 18px; }
+  .vb-subnav { padding: 0 18px; }
+  .vb-date-item { padding-right: 14px; margin-right: 14px; }
+  .vb-date-val { font-size: 14px; }
+  .vb-mover-row { grid-template-columns: 96px 1fr 76px; font-size: 11px; }
+  .vb-metric-card { min-width: 100%; }
+}
+@media print {
+  .vb-print { display: none !important; }
+  .vb-subnav { display: none !important; }
+  .vb-table td, .vb-mover-bar-fill, .vb-metric-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .vb-detail-body, .vb-faq-a { display: block !important; }
+  .vb-detail-toggle .car, .vb-faq-q .car { display: none !important; }
+  .vb-letterhead, .vb-table tr.total td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .vb-table, .vb-faq-item, .vb-sig, .vb-stat { break-inside: avoid; }
+  .vb-tabbar { display: none !important; }
+  .vb-tabpanel { display: block !important; margin-bottom: 24px; break-inside: avoid; }
+  .vb-tabpanel-title { display: block !important; }
+  .vb-donut { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
 </style>
 </head>
 <body>
+<div class="vb">
+  <div class="vb-letterhead">
+    <div>
+      <div class="lh1">Century Management</div>
+      <div class="lh2">Official Budget Notice &mdash; {{ snapshot.budget.year }}</div>
+    </div>
+    <button class="vb-print" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+  <nav class="vb-subnav" id="vbSubnav" aria-label="Document sections">
+    <a href="#sec-overview" class="vb-subnav-link active" data-target="sec-overview">Overview</a>
+    <a href="#sec-categories" class="vb-subnav-link" data-target="sec-categories">Category Detail</a>
+    <a href="#sec-faq" class="vb-subnav-link" data-target="sec-faq">Questions</a>
+    <a href="#sec-fulldetail" class="vb-subnav-link" data-target="sec-fulldetail">Full Budget Detail</a>
+  </nav>
+  <div class="vb-wrap">
+    <div id="sec-overview"></div>
+    <div class="vb-meta">
+      <dt>Re:</dt><dd>{{ snapshot.budget.building_name }} &mdash; Proposed {{ snapshot.budget.year }} Operating Budget</dd>
+      <dt>Prepared by:</dt><dd>Century Management Finance Team</dd>
+    </div>
 
-<div class="header">
-  <h1>{{ building_name }}</h1>
-  <div class="subtitle">{{ year }} Operating Budget</div>
-  <div class="logo">Century Management</div>
+    {% set tl = snapshot.narrative.timeline or {} %}
+    {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}
+    <div class="vb-dates">
+      <div class="vb-dates-title">Key Dates</div>
+      {% if tl.board_review_through %}<div class="vb-date-item"><span class="vb-date-label">Review by</span><span class="vb-date-val">{{ tl.board_review_through }}</span></div>{% endif %}
+      {% if tl.board_vote_by %}<div class="vb-date-item"><span class="vb-date-label">Board vote by</span><span class="vb-date-val">{{ tl.board_vote_by }}</span></div>{% endif %}
+      {% if tl.effective_date %}<div class="vb-date-item"><span class="vb-date-label">New charges effective</span><span class="vb-date-val">{{ tl.effective_date }}</span></div>{% endif %}
+    </div>
+    {% endif %}
+
+    <p>{{ snapshot.narrative.opening }}</p>
+
+    <div class="vb-stat">
+      <div class="vb-stat-num">{{ "%+.1f"|format(snapshot.narrative.headline.pct_change) }}%</div>
+      <div class="vb-stat-cap">Proposed {{ snapshot.budget.year }} operating expense change</div>
+    </div>
+
+    <div class="vb-metrics-row">
+      <div class="vb-metric-card">
+        <div class="vb-metric-label">Total operating expense</div>
+        <div class="vb-metric-val">{{ fmt(snapshot.narrative.headline.exp_proposed) }}</div>
+        <div class="vb-metric-sub">from {{ fmt(snapshot.narrative.headline.exp_current) }}</div>
+      </div>
+      {% if snapshot.narrative.income %}
+      <div class="vb-metric-card">
+        <div class="vb-metric-label">Total income</div>
+        <div class="vb-metric-val">{{ fmt(snapshot.narrative.income.proposed) }}</div>
+        <div class="vb-metric-sub">from {{ fmt(snapshot.narrative.income.current) }}</div>
+      </div>
+      {% endif %}
+      <div class="vb-metric-card">
+        <div class="vb-metric-label">Net change</div>
+        <div class="vb-metric-val">{{ '+' if snapshot.narrative.headline.net_change >= 0 else '' }}{{ fmt(snapshot.narrative.headline.net_change) }}</div>
+        <div class="vb-metric-sub">{{ '+' if snapshot.narrative.headline.pct_change >= 0 else '' }}{{ snapshot.narrative.headline.pct_change }}% vs. current budget</div>
+      </div>
+    </div>
+
+    <p>{{ snapshot.narrative.driver_summary }}</p>
+    {% if snapshot.narrative.additional_notes %}<p>{{ snapshot.narrative.additional_notes }}</p>{% endif %}
+
+    <div class="vb-table-wrap">
+      <table class="vb-table">
+        <thead><tr><th>Category</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
+        <tbody>
+          {% for d in snapshot.narrative.drivers %}
+          <tr><td>{{ d.category }}</td><td class="num">{{ fmt(d.current) }}</td><td class="num">{{ fmt(d.proposed) }}</td><td class="num">+{{ fmt(d.change) }}</td></tr>
+          {% endfor %}
+          {% if snapshot.narrative.savings and snapshot.narrative.savings|length > 0 %}
+          <tr class="neg"><td>All other categories (net savings)</td><td class="num"></td><td class="num"></td><td class="num">&minus;{{ fmt(snapshot.narrative.savings_total) }}</td></tr>
+          {% endif %}
+          <tr class="total"><td>Net change</td><td class="num">{{ fmt(snapshot.narrative.headline.exp_current) }}</td><td class="num">{{ fmt(snapshot.narrative.headline.exp_proposed) }}</td><td class="num">{{ fmt(snapshot.narrative.headline.net_change) }} &middot; {{ "%+.1f"|format(snapshot.narrative.headline.pct_change) }}%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    {% if snapshot.narrative.categories %}
+    <div id="sec-categories"></div>
+    <button class="vb-detail-toggle" id="detailToggle" onclick="toggleDetail()"><span class="car">&#9656;</span> View full expense detail by category</button>
+    <div class="vb-detail-body" id="detailBody">
+      <div class="vb-table-wrap">
+        <table class="vb-table">
+          <thead><tr><th>Sheet</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
+          <tbody>
+            {% for c in snapshot.narrative.categories %}
+            <tr{% if c.proposed < c.current %} class="neg"{% endif %}><td>{{ c.sheet }}</td><td class="num">{{ fmt(c.current) }}</td><td class="num">{{ fmt(c.proposed) }}</td><td class="num">{{ '+' if c.proposed >= c.current else '' }}{{ fmt(c.proposed - c.current) }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if snapshot.narrative.faq %}
+    <div id="sec-faq"></div>
+    <div class="vb-faq">
+      <div class="vb-faq-title">Anticipated questions</div>
+      {% for item in snapshot.narrative.faq %}
+      <div class="vb-faq-item">
+        <button class="vb-faq-q" onclick="toggleFaq(this)"><span>{{ item.q }}</span><span class="car">&#9656;</span></button>
+        <div class="vb-faq-a">{{ item.a }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}
+    <div id="sec-fulldetail"></div>
+    <div class="vb-detail2" id="fullDetailSection">
+      <div class="vb-detail-heading">Full Budget Detail</div>
+      <p class="vb-detail-sub">Every category in the proposed {{ snapshot.budget.year }} budget, in full — the same
+        numbers behind the summary above.</p>
+
+      {% if snapshot.detail_tabs.chart_data.donut %}
+      <div class="vb-chartrow">
+        <div class="vb-donut" style="background: conic-gradient({% for s in snapshot.detail_tabs.chart_data.donut %}{{ s.color }} {{ s.start }}% {{ s.start + s.pct }}%{% if not loop.last %}, {% endif %}{% endfor %});"></div>
+        <div class="vb-donut-legend">
+          {% for s in snapshot.detail_tabs.chart_data.donut %}
+          <div class="vb-legend-item"><span class="sw" style="background:{{ s.color }}"></span>{{ s.name }}<b>{{ s.pct }}%</b></div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if snapshot.detail_tabs.chart_data.bars %}
+      <div class="vb-bars">
+        {% for b in snapshot.detail_tabs.chart_data.bars %}
+        <div class="vb-bar-row">
+          <div class="vb-bar-label">{{ b.name }}</div>
+          <div class="vb-bar-track"><div class="vb-bar-fill cur" style="width:{{ b.current_pct }}%"></div></div>
+          <div class="vb-bar-track"><div class="vb-bar-fill prop" style="width:{{ b.proposed_pct }}%"></div></div>
+        </div>
+        {% endfor %}
+        <div class="vb-bar-legend"><span class="sw cur"></span>{{ snapshot.budget.year - 1 }} Budget<span class="sw prop"></span>{{ snapshot.budget.year }} Proposed</div>
+      </div>
+      {% endif %}
+
+      {% if snapshot.detail_tabs.chart_data.movers %}
+      <div class="vb-movers">
+        <div class="vb-movers-title">Biggest changes vs. current budget</div>
+        <div class="vb-movers-sub">The individual expense lines driving the {{ snapshot.budget.year }} proposal, ranked by dollar impact.</div>
+        {% for mv in snapshot.detail_tabs.chart_data.movers %}
+        <div class="vb-mover-row">
+          <div class="vb-mover-label">{{ mv.label }}</div>
+          <div class="vb-mover-bar-track"><div class="vb-mover-bar-fill" style="width:{{ mv.bar_pct }}%; background:{{ '#166534' if mv.favorable else 'var(--nc-red)' }};"></div></div>
+          <div class="vb-mover-val" style="color:{{ '#166534' if mv.favorable else 'var(--nc-red)' }};">{{ '+' if mv.change >= 0 else '' }}{{ fmt(mv.change) }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="vb-tabbar" role="tablist">
+        {% for t in snapshot.detail_tabs.tabs %}
+        <button class="vb-tab-btn{% if loop.first %} active{% endif %}" onclick="showDetailTab({{ loop.index0 }})" data-tab="{{ loop.index0 }}">{{ t.name }}</button>
+        {% endfor %}
+      </div>
+
+      {% for t in snapshot.detail_tabs.tabs %}
+      <div class="vb-tabpanel{% if loop.first %} active{% endif %}" data-panel="{{ loop.index0 }}">
+        <div class="vb-tabpanel-title">{{ t.name }}</div>
+        {% if t.lines is defined %}
+        <div class="vb-table-wrap">
+          <table class="vb-table">
+            <thead><tr><th>Description</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th><th class="num">Change</th></tr></thead>
+            <tbody>
+              {% for l in t.lines %}
+              <tr{% if l.variance < 0 %} class="neg"{% endif %}><td>{{ l.description }}</td><td class="num">{{ fmt(l.current) }}</td><td class="num">{{ fmt(l.proposed) }}</td><td class="num" style="background: linear-gradient(to right, {{ '#DBEFE1' if l.favorable else '#FBE1E0' }} 0%, {{ '#DBEFE1' if l.favorable else '#FBE1E0' }} {{ l.bar_pct or 0 }}%, transparent {{ l.bar_pct or 0 }}%); color: {{ '#166534' if l.favorable else 'var(--nc-red)' }};">{{ '+' if l.variance >= 0 else '' }}{{ fmt(l.variance) }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif t.rows is defined %}
+        <div class="vb-table-wrap">
+          <table class="vb-table">
+            <thead><tr><th>Line</th><th class="num">{{ snapshot.budget.year - 1 }} Budget</th><th class="num">{{ snapshot.budget.year }} Proposed</th></tr></thead>
+            <tbody>
+              {% for r in t.rows %}
+              <tr><td>{{ r.label }}</td><td class="num">{{ fmt(r.col6_approved_budget) }}</td><td class="num">{{ fmt(r.col7_proposed_budget) }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif t.re_taxes is defined %}
+        <div class="vb-table-wrap">
+          <table class="vb-table">
+            <tbody>
+              <tr><td>Gross real estate tax</td><td class="num">{{ fmt(t.re_taxes.gross_tax) }}</td></tr>
+              <tr><td>First-half installment</td><td class="num">{{ fmt(t.re_taxes.first_half_tax) }}</td></tr>
+              <tr><td>Second-half installment</td><td class="num">{{ fmt(t.re_taxes.second_half_tax) }}</td></tr>
+              <tr class="total"><td>Net real estate tax</td><td class="num">{{ fmt(t.re_taxes.net_tax) }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="vb-sig">
+      <div class="vb-seal">CENTURY<br>MGMT</div>
+      <div class="vb-sig-text"><div class="n1">Century Management Finance Team</div><div class="n2">On behalf of {{ snapshot.budget.building_name }}</div></div>
+    </div>
+  </div>
+  <div class="vb-ftr">Century Management &middot; Confidential &mdash; prepared for {{ snapshot.budget.building_name }} Board of Directors</div>
 </div>
-
-<div class="nav" id="tabNav"></div>
-<div class="content" id="mainContent"></div>
-
-<div class="footer">
-  Prepared by Century Management &middot; Confidential &middot; <span id="printDate"></span>
-</div>
-
 <script>
-const SHEETS = {{ sheets_json | safe }};
-const SHEET_ORDER = {{ sheet_order_json | safe }};
-const YTD_MONTHS = {{ ytd_months }};
-const REMAINING_MONTHS = {{ remaining_months }};
-const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-document.getElementById('printDate').textContent = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
-
-function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
-
-function isFixedToBudgetLine(l) {
-  const gl = (l && l.gl_code) || '';
-  if (gl.indexOf('6315') === 0) return true;          // RE Tax (expense) — existing pin
-  return !!(l && l.income_pinned);                     // fully-collectible income (task #99)
+function toggleDetail() {
+  document.getElementById('detailToggle').classList.toggle('open');
+  document.getElementById('detailBody').classList.toggle('open');
 }
-
-const BP_ONE_TIME_FEE_GLS = new Set(['6722-0000','6762-0000','6763-0000','6764-0000']);
-function isOneTimeFeeBilled(l) {
-  if (!l || !l.gl_code) return false;
-  if (!BP_ONE_TIME_FEE_GLS.has(l.gl_code)) return false;
-  const billed = (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
-  return Math.abs(billed) > 0.01;
+function toggleFaq(btn) { btn.parentElement.classList.toggle('open'); }
+function showDetailTab(i) {
+  document.querySelectorAll('.vb-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab == i));
+  document.querySelectorAll('.vb-tabpanel').forEach(p => p.classList.toggle('active', p.dataset.panel == i));
 }
-
-function computeEstimate(l) {
-  if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
-  if (isFixedToBudgetLine(l)) return (l.current_budget || 0) - (l.ytd_actual || 0);
-  // One-time annual fees: once YTD posts, no more projection (forecast = billed amount)
-  if (isOneTimeFeeBilled(l)) return 0;
-  // FA #18: Capital — no extrapolation
-  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') return 0;
-  // 210 FA: RE-tax credit income (4105/4110/4115/4120/4125) — no May-Dec estimate.
-  if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) return 0;
-  // Payroll tab uses a simplified base (no accrual/unpaid). Other tabs unchanged.
-  const isPayroll = l.sheet_name === 'Payroll';
-  const ytd = l.ytd_actual || 0;
-  const accrual = isPayroll ? 0 : (l.accrual_adj || 0);
-  const unpaid = isPayroll ? 0 : (l.unpaid_bills || 0);
-  const base = ytd + accrual + unpaid;
-  // FA #7 anomaly cap: don't extrapolate one-time refund/credit
-  const prior = l.prior_year || 0;
-  if (base < 0 && prior >= 0) return 0;
-  if (YTD_MONTHS > 0) return (base / YTD_MONTHS) * REMAINING_MONTHS;
-  return 0;
-}
-
-function computeForecast(l) {
-  if (l.forecast_override !== null && l.forecast_override !== undefined) return l.forecast_override;
-  if (isFixedToBudgetLine(l)) return l.current_budget || 0;
-  // FA directive 2026-06-10 (supersedes 2026-05-05 minus sign): Capital
-  // forecast = YTD + accrual + unpaid (no estimate).
-  if (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital') {
-    return (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
-  }
-  // Payroll: Forecast = YTD + Estimate (no accrual/unpaid). Other tabs unchanged.
-  const isPayroll = l.sheet_name === 'Payroll';
-  const accrual = isPayroll ? 0 : (l.accrual_adj || 0);
-  const unpaid = isPayroll ? 0 : (l.unpaid_bills || 0);
-  return (l.ytd_actual || 0) + accrual + unpaid + computeEstimate(l);
-}
-
-function safeEvalFormula(expr) {
-  let s = expr.trim();
-  if (s.startsWith('=')) s = s.substring(1);
-  s = s.replace(/([\d.]+)\s*%/g, '($1/100)');
-  if (!/^[\d\s+\-*\/().]+$/.test(s)) return null;
-  try {
-    const result = new Function('return (' + s + ')')();
-    if (typeof result !== 'number' || !isFinite(result)) return null;
-    return result;
-  } catch (e) { return null; }
-}
-
-// FA dir 2026-05-17: see BUILDING_DETAIL_TEMPLATE for full notes. Duplicated
-// here so this template's JS scope can resolve it.
-// FA dir 2026-05-19: 6315 (Real Estate Tax + credits) is now FA-only on the
-// RE Taxes tab. Return null so G&A categorization treats these lines as skip.
-function _gaSubForGl(gl) {
-  const p4 = (gl || '').slice(0, 4);
-  if (p4 === '6315') return null;
-  if (['6105','6110','6115','6120','6125','6126','6130','6135','6140','6145','6150','6195'].indexOf(p4) >= 0) return 'insurance';
-  if (['6310','6320','6325','6330','6335','6395'].indexOf(p4) >= 0) return 'taxes';
-  if (['6505','6510','6515','6520','6525','6535','6555','6585','6590'].indexOf(p4) >= 0) return 'prof_fees';
-  if (p4.startsWith('69')) return 'financial';
-  if (p4 >= '6700' && p4 <= '6799') return 'admin_other';
-  return 'admin_other';
-}
-
-const CATEGORIES = {
-  'Repairs & Supplies': [
-    {label:'Supplies', match: l => l.category === 'supplies'},
-    {label:'Repairs', match: l => l.category === 'repairs'},
-    {label:'Maintenance Contracts', match: l => l.category === 'maintenance'}
-  ],
-  // FA dir 2026-05-17: row_num=0 fallback via _gaSubForGl (CSV-derived).
-  'Gen & Admin': [
-    {label:'Professional Fees',     match: l => (l.row_num >= 8 && l.row_num <= 16)  || (!l.row_num && _gaSubForGl(l.gl_code) === 'prof_fees')},
-    {label:'Administrative & Other',match: l => (l.row_num >= 20 && l.row_num <= 49) || (!l.row_num && _gaSubForGl(l.gl_code) === 'admin_other')},
-    {label:'Insurance',             match: l => (l.row_num >= 53 && l.row_num <= 64) || (!l.row_num && _gaSubForGl(l.gl_code) === 'insurance')},
-    {label:'Taxes',                 match: l => !(l.gl_code || '').startsWith('6315') && ((l.row_num >= 68 && l.row_num <= 78) || (!l.row_num && _gaSubForGl(l.gl_code) === 'taxes'))},
-    {label:'Financial Expenses',    match: l => (l.row_num >= 82 && l.row_num <= 90) || (!l.row_num && _gaSubForGl(l.gl_code) === 'financial')}
-  ]
-};
-
-function sumLines(lines) {
-  const t = {prior:0, ytd:0, accrual:0, unpaid:0, estimate:0, forecast:0, budget:0, proposed:0};
-  lines.forEach(l => {
-    t.prior += l.prior_year || 0;
-    t.ytd += l.ytd_actual || 0;
-    t.accrual += l.accrual_adj || 0;
-    t.unpaid += l.unpaid_bills || 0;
-    t.estimate += computeEstimate(l);
-    t.forecast += computeForecast(l);
-    t.budget += l.current_budget || 0;
-    // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
-    // (B1/B4): never-budgeted income also contributes 0.
-    const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-    t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0))));
-  });
-  return t;
-}
-
-// ── Summary formula bar state ─────────────────────────────────────────
-let _activeSumFxCell = null;
-let _sumFormulaOriginal = '';
-// Store category data so formula builder can access it
-let _sumCatData = {};
-
-function _showSumButtons(show) {
-  ['sumFormulaPreview','sumFormulaAccept','sumFormulaCancel'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = show ? 'inline-block' : 'none';
-  });
-}
-
-// Build real math formula for a summary cell
-function _buildSumFormula(cellId) {
-  const data = _sumCatData[cellId];
-  if (!data) return '';
-  const field = data.field;
-  const lines = data.lines;
-
-  if (field === 'var') {
-    // $ Change = Curr Budget - 12 Mo Forecast
-    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
-    const forecast = Math.round(lines.reduce((s, l) => s + computeForecast(l), 0));
-    return '= ' + budget + ' - ' + forecast;
-  }
-  if (field === 'pct') {
-    // % Change = (Curr Budget - 12 Mo Forecast) / 12 Mo Forecast
-    const budget = Math.round(lines.reduce((s, l) => s + (l.current_budget || 0), 0));
-    const forecast = Math.round(lines.reduce((s, l) => s + computeForecast(l), 0));
-    return forecast ? '= (' + budget + ' - ' + forecast + ') / ' + forecast : '= 0';
-  }
-  if (field === 'forecast') {
-    // Show SUM of GL forecasts
-    const vals = lines.map(l => Math.round(computeForecast(l)));
-    return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
-  }
-  if (field === 'proposed') {
-    // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
-    // (B1/B4): never-budgeted income also contributes 0.
-    const vals = lines.map(l => {
-      const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-      return Math.round((isCap || l.no_budget) ? 0 : (l.proposed_budget || (computeForecast(l) * (1 + (l.increase_pct || 0)))));
+(function () {
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var links = {};
+  document.querySelectorAll('.vb-subnav-link').forEach(function (l) {
+    links[l.dataset.target] = l;
+    l.addEventListener('click', function (e) {
+      e.preventDefault();
+      var el = document.getElementById(l.dataset.target);
+      if (el) el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
     });
-    return '= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '');
-  }
-  if (field === 'ytd') {
-    const vals = lines.map(l => Math.round(l.ytd_actual || 0)).filter(v => v !== 0);
-    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
-  }
-  if (field === 'estimate') {
-    const vals = lines.map(l => Math.round(computeEstimate(l))).filter(v => v !== 0);
-    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
-  }
-  if (field === 'budget') {
-    const vals = lines.map(l => Math.round(l.current_budget || 0)).filter(v => v !== 0);
-    return vals.length ? ('= ' + vals.join(' + ') + (vals.length > 1 ? ' = ' + Math.round(vals.reduce((a, b) => a + b, 0)) : '')) : '= 0';
-  }
-  // Subtotal rows (field starts with 'sub_')
-  if (field.startsWith('sub_')) {
-    const subField = field.replace('sub_', '');
-    const catIds = data.catIds || [];
-    if (catIds.length && subField !== 'var' && subField !== 'pct') {
-      const vals = catIds.map(cid => {
-        const cd = _sumCatData[cid];
-        if (!cd) return 0;
-        const t = sumLines(cd.lines);
-        return Math.round(t[subField] || 0);
-      });
-      return '= ' + vals.join(' + ');
-    }
-    if (subField === 'var') {
-      const t = sumLines(lines);
-      return '= ' + Math.round(t.budget) + ' - ' + Math.round(t.forecast);
-    }
-    if (subField === 'pct') {
-      const t = sumLines(lines);
-      return t.forecast ? '= (' + Math.round(t.budget) + ' - ' + Math.round(t.forecast) + ') / ' + Math.round(t.forecast) : '= 0';
-    }
-    // Fallback: sum all lines for the field
-    const t = sumLines(lines);
-    return '= SUM of ' + lines.length + ' GL lines = ' + Math.round(t[subField] || 0);
-  }
-  return '';
-}
-
-function sumFxClick(el) {
-  if (_activeSumFxCell && _activeSumFxCell !== el) {
-    _activeSumFxCell.style.border = '';
-    _activeSumFxCell.style.borderRadius = '';
-    _activeSumFxCell.style.background = '';
-  }
-  _activeSumFxCell = el;
-  const bar = document.getElementById('sumFormulaBar');
-  const label = document.getElementById('sumFormulaLabel');
-  if (!bar || !label) return;
-
-  label.textContent = el.dataset.label || el.id;
-  label.style.display = 'inline';
-  bar.style.display = 'block';
-
-  bar.value = _buildSumFormula(el.id);
-  _sumFormulaOriginal = bar.value;
-  _showSumButtons(true);
-  sumFormulaPreview();
-
-  el.style.border = '2px solid var(--blue)';
-  el.style.borderRadius = '4px';
-  el.style.background = '#ecfdf5';
-
-  bar.focus({ preventScroll: true });
-  bar.setSelectionRange(bar.value.length, bar.value.length);
-}
-
-function sumFormulaPreview() {
-  const bar = document.getElementById('sumFormulaBar');
-  const preview = document.getElementById('sumFormulaPreview');
-  if (!bar || !preview || !_activeSumFxCell) return;
-  const typed = bar.value.trim();
-  if (!typed) { preview.style.display = 'none'; return; }
-  const result = safeEvalFormula(typed);
-  if (result !== null) {
-    const field = (_sumCatData[_activeSumFxCell.id] || {}).field || '';
-    if (field === 'pct' || field === 'sub_pct') {
-      preview.textContent = '= ' + result.toFixed(1) + '%';
-    } else {
-      preview.textContent = '= $' + Math.round(result).toLocaleString();
-    }
-    preview.style.color = 'var(--green)';
-  } else {
-    preview.textContent = '';
-  }
-  preview.style.display = result !== null ? 'inline-block' : 'none';
-}
-
-function sumFormulaAccept() {
-  // Summary is read-only — just dismiss
-  sumFormulaCancel();
-}
-
-function sumFormulaCancel() {
-  const bar = document.getElementById('sumFormulaBar');
-  if (bar) bar.value = _sumFormulaOriginal;
-  _showSumButtons(false);
-  const preview = document.getElementById('sumFormulaPreview');
-  if (preview) preview.style.display = 'none';
-  if (_activeSumFxCell) {
-    _activeSumFxCell.style.border = '';
-    _activeSumFxCell.style.borderRadius = '';
-    _activeSumFxCell.style.background = '';
-  }
-}
-
-function sumFormulaKeydown(e) {
-  if (e.key === 'Escape') { e.preventDefault(); sumFormulaCancel(); }
-}
-
-document.addEventListener('click', function(e) {
-  if (!_activeSumFxCell) return;
-  const wrap = document.getElementById('sumFormulaBarWrap');
-  if (_activeSumFxCell.contains(e.target)) return;
-  if (wrap && wrap.contains(e.target)) return;
-  _activeSumFxCell.style.border = '';
-  _activeSumFxCell.style.borderRadius = '';
-  _activeSumFxCell.style.background = '';
-  _activeSumFxCell = null;
-  const bar = document.getElementById('sumFormulaBar');
-  const label = document.getElementById('sumFormulaLabel');
-  const preview = document.getElementById('sumFormulaPreview');
-  if (bar) { bar.value = ''; bar.placeholder = 'Click any fx cell to view its formula...'; }
-  if (label) label.style.display = 'none';
-  if (preview) preview.style.display = 'none';
-  _showSumButtons(false);
-});
-
-function renderSummary() {
-  const content = document.getElementById('mainContent');
-  _sumCatData = {};
-  let allLines = [];
-  SHEET_ORDER.forEach(s => { allLines = allLines.concat(SHEETS[s] || []); });
-  const incomeLines = SHEETS['Income'] || [];
-  const expenseLines = allLines.filter(l => l.sheet_name !== 'Income');
-
-  const inc = sumLines(incomeLines);
-  const exp = sumLines(expenseLines);
-  const noiProposed = inc.proposed - exp.proposed;
-  const noiPrior = inc.prior - exp.prior;
-
-  const fxBadge = '<span style="display:inline-block; background:#4ade80; color:#fff; font-size:8px; font-weight:700; padding:1px 3px; border-radius:3px; margin-left:3px; vertical-align:middle;">fx</span>';
-
-  // Helper: make an fx cell for the summary table
-  let _cellIdx = 0;
-  function sfx(val, label, field, lines, cls, catIds) {
-    const id = 'sum_' + (++_cellIdx);
-    _sumCatData[id] = {field: field, lines: lines, catIds: catIds || []};
-    const extraCls = cls || '';
-    return '<td class="num ' + extraCls + '" id="' + id + '" data-label="' + label.replace(/"/g, '&quot;') + '" style="cursor:pointer;" onclick="sumFxClick(this)">' + val + fxBadge + '</td>';
-  }
-  // Plain cell (Prior Year — no formula bar)
-  function pln(val, cls) { return '<td class="num ' + (cls || '') + '">' + val + '</td>'; }
-
-  let html = '<div class="summary-cards">' +
-    '<div class="card"><div class="label">Total Income</div><div class="value">' + fmt(inc.proposed) + '</div>' +
-    '<div class="delta ' + (inc.proposed >= inc.prior ? 'delta-down' : 'delta-up') + '">' + (inc.prior ? ((inc.proposed/inc.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
-    '<div class="card"><div class="label">Total Expenses</div><div class="value">' + fmt(exp.proposed) + '</div>' +
-    '<div class="delta ' + (exp.proposed <= exp.prior ? 'delta-down' : 'delta-up') + '">' + (exp.prior ? ((exp.proposed/exp.prior-1)*100).toFixed(1) + '% vs prior' : '') + '</div></div>' +
-    '<div class="card"><div class="label">Net Operating Income</div><div class="value">' + fmt(noiProposed) + '</div>' +
-    '<div class="delta ' + (noiProposed >= noiPrior ? 'delta-down' : 'delta-up') + '">' + fmt(noiProposed - noiPrior) + ' vs prior</div></div>' +
-    '<div class="card"><div class="label">Operating Ratio</div><div class="value">' + (inc.proposed ? (exp.proposed/inc.proposed*100).toFixed(1) + '%' : '\u2014') + '</div>' +
-    '<div class="delta" style="color:#94a3b8;">Expenses / Income</div></div></div>';
-
-  // Formula bar
-  html += '<div id="sumFormulaBarWrap" style="display:flex; align-items:center; gap:8px; padding:8px 16px; background:#f8fafc; border:1px solid var(--gray-200,#e2e8f0); border-radius:8px; margin-bottom:12px;">' +
-    '<span style="font-size:11px; font-weight:700; color:#3b82f6; background:#dbeafe; border:1px solid #3b82f6; border-radius:4px; padding:2px 8px; white-space:nowrap;">fx</span>' +
-    '<span id="sumFormulaLabel" style="display:none; font-size:11px; font-weight:600; color:#64748b; white-space:nowrap; min-width:120px;"></span>' +
-    '<input id="sumFormulaBar" type="text" readonly placeholder="Click any fx cell to view its formula..." style="flex:1; padding:6px 10px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; font-family:monospace; background:white;" oninput="sumFormulaPreview()" onkeydown="sumFormulaKeydown(event)">' +
-    '<span id="sumFormulaPreview" style="display:none; font-size:13px; font-weight:600; color:#22c55e; white-space:nowrap; min-width:80px; text-align:right;"></span>' +
-    '<button id="sumFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:#22c55e; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaAccept()">OK</button>' +
-    '<button id="sumFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:#e2e8f0; color:#334155; border:none; border-radius:4px; cursor:pointer;" onclick="sumFormulaCancel()">Close</button>' +
-    '</div>';
-
-  // Summary table with expanded columns
-  html += '<table><thead><tr><th>Category</th>' +
-    '<th class="num">Prior Year</th>' +
-    '<th class="num">YTD Actual</th>' +
-    '<th class="num">Estimate</th>' +
-    '<th class="num">Forecast</th>' +
-    '<th class="num">Curr Budget</th>' +
-    '<th class="num">Proposed</th>' +
-    '<th class="num">$ Var</th>' +
-    '<th class="num">% Chg</th>' +
-    '</tr></thead><tbody>';
-
-  SHEET_ORDER.forEach(s => {
-    const cats = CATEGORIES[s];
-    const sheetLines = SHEETS[s] || [];
-    if (cats) {
-      const catCellIds = [];
-      cats.forEach(cat => {
-        const gl = sheetLines.filter(cat.match);
-        if (gl.length === 0) return;
-        const t = sumLines(gl);
-        const v = t.budget - t.forecast;
-        const p = t.forecast ? ((t.budget - t.forecast)/t.forecast)*100 : 0;
-        const lbl = cat.label;
-        // Track this category's cell ID base for subtotal formulas
-        const baseIdx = _cellIdx + 1;
-        html += '<tr><td style="padding-left:24px;">' + lbl + '</td>' +
-          pln(fmt(t.prior)) +
-          sfx(fmt(t.ytd), lbl + ' / YTD', 'ytd', gl) +
-          sfx(fmt(t.estimate), lbl + ' / Estimate', 'estimate', gl) +
-          sfx(fmt(t.forecast), lbl + ' / Forecast', 'forecast', gl) +
-          sfx(fmt(t.budget), lbl + ' / Curr Budget', 'budget', gl) +
-          sfx(fmt(t.proposed), lbl + ' / Proposed', 'proposed', gl) +
-          sfx(fmt(v), lbl + ' / $ Var', 'var', gl, v >= 0 ? 'variance-pos' : 'variance-neg') +
-          sfx(p.toFixed(1) + '%', lbl + ' / % Chg', 'pct', gl) +
-          '</tr>';
-        // Save category cell IDs for subtotal reference
-        catCellIds.push({ytd:'sum_'+(baseIdx), est:'sum_'+(baseIdx+1), fcst:'sum_'+(baseIdx+2), bud:'sum_'+(baseIdx+3), prop:'sum_'+(baseIdx+4)});
-      });
-      // Sheet subtotal
-      const st = sumLines(sheetLines);
-      const sv = st.budget - st.forecast;
-      const sp = st.forecast ? ((st.budget - st.forecast)/st.forecast*100) : 0;
-      html += '<tr class="subtotal"><td>' + s + '</td>' +
-        pln(fmt(st.prior)) +
-        sfx(fmt(st.ytd), s + ' Total / YTD', 'sub_ytd', sheetLines) +
-        sfx(fmt(st.estimate), s + ' Total / Estimate', 'sub_estimate', sheetLines) +
-        sfx(fmt(st.forecast), s + ' Total / Forecast', 'sub_forecast', sheetLines) +
-        sfx(fmt(st.budget), s + ' Total / Curr Budget', 'sub_budget', sheetLines) +
-        sfx(fmt(st.proposed), s + ' Total / Proposed', 'sub_proposed', sheetLines) +
-        sfx(fmt(sv), s + ' Total / $ Var', 'sub_var', sheetLines, sv >= 0 ? 'variance-pos' : 'variance-neg') +
-        sfx(sp.toFixed(1) + '%', s + ' Total / % Chg', 'sub_pct', sheetLines) +
-        '</tr>';
-    } else {
-      const t = sumLines(sheetLines);
-      const v = t.budget - t.forecast;
-      const p = t.forecast ? ((t.budget - t.forecast)/t.forecast*100) : 0;
-      html += '<tr class="subtotal"><td>' + s + '</td>' +
-        pln(fmt(t.prior)) +
-        sfx(fmt(t.ytd), s + ' / YTD', 'ytd', sheetLines) +
-        sfx(fmt(t.estimate), s + ' / Estimate', 'estimate', sheetLines) +
-        sfx(fmt(t.forecast), s + ' / Forecast', 'forecast', sheetLines) +
-        sfx(fmt(t.budget), s + ' / Curr Budget', 'budget', sheetLines) +
-        sfx(fmt(t.proposed), s + ' / Proposed', 'proposed', sheetLines) +
-        sfx(fmt(v), s + ' / $ Var', 'var', sheetLines, v >= 0 ? 'variance-pos' : 'variance-neg') +
-        sfx(p.toFixed(1) + '%', s + ' / % Chg', 'pct', sheetLines) +
-        '</tr>';
-    }
   });
-
-  // Total Operating Expenses
-  const totalV = exp.budget - exp.forecast;
-  const totalPct = exp.forecast ? ((exp.budget - exp.forecast)/exp.forecast*100).toFixed(1) : '0.0';
-  html += '<tr class="sheet-total"><td>Total Operating Expenses</td>' +
-    pln(fmt(exp.prior)) +
-    sfx(fmt(exp.ytd), 'Total Expenses / YTD', 'ytd', expenseLines) +
-    sfx(fmt(exp.estimate), 'Total Expenses / Estimate', 'estimate', expenseLines) +
-    sfx(fmt(exp.forecast), 'Total Expenses / Forecast', 'forecast', expenseLines) +
-    sfx(fmt(exp.budget), 'Total Expenses / Curr Budget', 'budget', expenseLines) +
-    sfx(fmt(exp.proposed), 'Total Expenses / Proposed', 'proposed', expenseLines) +
-    sfx(fmt(totalV), 'Total Expenses / $ Var', 'var', expenseLines, totalV >= 0 ? 'variance-pos' : 'variance-neg') +
-    sfx(totalPct + '%', 'Total Expenses / % Chg', 'pct', expenseLines) +
-    '</tr>';
-
-  // NOI
-  const noiBudget = inc.budget - exp.budget;
-  const noiForecast = inc.forecast - exp.forecast;
-  const noiV = noiBudget - noiForecast;
-  const noiPct = noiForecast ? ((noiBudget - noiForecast)/noiForecast*100).toFixed(1) : '0.0';
-  html += '<tr class="sheet-total"><td>Net Operating Income</td>' +
-    pln(fmt(noiPrior)) +
-    sfx(fmt(inc.ytd - exp.ytd), 'NOI / YTD', 'sub_ytd', allLines) +
-    sfx(fmt(inc.estimate - exp.estimate), 'NOI / Estimate', 'sub_estimate', allLines) +
-    sfx(fmt(inc.forecast - exp.forecast), 'NOI / Forecast', 'sub_forecast', allLines) +
-    sfx(fmt(inc.budget - exp.budget), 'NOI / Curr Budget', 'sub_budget', allLines) +
-    sfx(fmt(noiProposed), 'NOI / Proposed', 'sub_proposed', allLines) +
-    sfx(fmt(noiV), 'NOI / $ Var', 'sub_var', allLines, noiV >= 0 ? 'variance-neg' : 'variance-pos') +
-    sfx(noiPct + '%', 'NOI / % Chg', 'sub_pct', allLines) +
-    '</tr>';
-
-  html += '</tbody></table>';
-  content.innerHTML = html;
-}
-
-function renderSheet(sheetName) {
-  const content = document.getElementById('mainContent');
-  const lines = SHEETS[sheetName] || [];
-  const estLabel = MONTH_ABBR[YTD_MONTHS] + '-Dec';
-
-  let html = '<table><thead><tr>' +
-    '<th>GL Code</th><th>Description</th>' +
-    '<th class="num">Prior Year</th><th class="num">YTD Actual</th>' +
-    '<th class="num">' + estLabel + ' Est</th><th class="num">12 Mo Forecast</th>' +
-    '<th class="num">Proposed Budget</th><th class="num">$ Variance</th><th class="num">% Change</th>' +
-    '</tr></thead><tbody>';
-
-  const cats = CATEGORIES[sheetName];
-
-  function buildRow(l) {
-    const prior = l.prior_year || 0;
-    const forecast = computeForecast(l);
-    const proposed = l.proposed_budget || (forecast * (1 + (l.increase_pct || 0)));
-    const budget = l.current_budget || 0;
-    const v = budget - forecast;
-    const p = forecast ? ((budget - forecast)/forecast*100) : 0;
-    return '<tr><td style="font-family:monospace; font-size:12px;">' + l.gl_code + '</td><td>' + l.description + '</td>' +
-      '<td class="num">' + fmt(prior) + '</td><td class="num">' + fmt(l.ytd_actual || 0) + '</td>' +
-      '<td class="num">' + fmt(computeEstimate(l)) + '</td><td class="num">' + fmt(forecast) + '</td>' +
-      '<td class="num" style="font-weight:600;">' + fmt(proposed) + '</td>' +
-      '<td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + p.toFixed(1) + '%</td></tr>';
-  }
-
-  function buildSubtotal(label, ls) {
-    const t = sumLines(ls);
-    const v = t.budget - t.forecast;
-    return '<tr class="subtotal"><td colspan="2">' + label + '</td>' +
-      '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-      '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (v >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(v) + '</td>' +
-      '<td class="num">' + (t.forecast ? ((t.budget - t.forecast)/t.forecast*100).toFixed(1) : '0.0') + '%</td></tr>';
-  }
-
-  if (cats) {
-    cats.forEach(cat => {
-      const gl = lines.filter(cat.match);
-      if (gl.length === 0) return;
-      html += '<tr class="cat-header"><td colspan="9">' + cat.label + '</td></tr>';
-      gl.forEach(l => { html += buildRow(l); });
-      html += buildSubtotal('Total ' + cat.label, gl);
-    });
-  } else {
-    lines.forEach(l => { html += buildRow(l); });
-  }
-
-  // Sheet total
-  const t = sumLines(lines);
-  const tv = t.budget - t.forecast;
-  html += '<tr class="sheet-total"><td colspan="2">Total ' + sheetName + '</td>' +
-    '<td class="num">' + fmt(t.prior) + '</td><td class="num"></td><td class="num"></td><td class="num">' + fmt(t.forecast) + '</td>' +
-    '<td class="num">' + fmt(t.proposed) + '</td><td class="num ' + (tv >= 0 ? 'variance-pos' : 'variance-neg') + '">' + fmt(tv) + '</td>' +
-    '<td class="num">' + (t.forecast ? ((t.budget - t.forecast)/t.forecast*100).toFixed(1) : '0.0') + '%</td></tr>';
-  html += '</tbody></table>';
-  content.innerHTML = html;
-}
-
-// FA dir 2026-05-24: tab switches now push history so browser-back
-// returns to the previous tab instead of exiting the building entirely.
-// Before this, hitting back from Payroll dumped you on /dashboard and
-// lost your place mid-edit. URL form: /dashboard/<entity>?tab=Payroll.
-function switchTab(name, el, opts) {
-  opts = opts || {};
-  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
-  if (el) el.classList.add('active');
-  if (name === 'Summary') renderSummary();
-  else renderSheet(name);
-  if (!opts.skipPush) {
-    try {
-      const url = new URL(window.location.href);
-      if (name === 'Summary') url.searchParams.delete('tab');
-      else url.searchParams.set('tab', name);
-      window.history.pushState({ tab: name }, '', url.toString());
-    } catch (e) {}
-  }
-}
-
-// Activate the tab button matching `name` (used on popstate + initial load).
-function _activateTabByName(name) {
-  const buttons = document.querySelectorAll('#tabNav button');
-  let target = null;
-  buttons.forEach(b => { if (b.textContent === name) target = b; });
-  if (target) switchTab(name, target, { skipPush: true });
-}
-
-// Build tabs
-const nav = document.getElementById('tabNav');
-const summaryBtn = document.createElement('button');
-summaryBtn.textContent = 'Summary';
-summaryBtn.className = 'active';
-summaryBtn.onclick = function() { switchTab('Summary', this); };
-nav.appendChild(summaryBtn);
-
-SHEET_ORDER.forEach(s => {
-  const btn = document.createElement('button');
-  btn.textContent = s;
-  btn.onclick = function() { switchTab(s, this); };
-  nav.appendChild(btn);
-});
-
-// FA dir 2026-05-24: read initial ?tab=X from URL so deep-links land on the
-// right tab. popstate listener restores tab on browser back/forward.
-(function _initTabFromUrl() {
-  let initialTab = 'Summary';
-  try { initialTab = new URLSearchParams(window.location.search).get('tab') || 'Summary'; } catch (e) {}
-  if (initialTab === 'Summary') {
-    renderSummary();
-  } else {
-    _activateTabByName(initialTab);
+  var sections = Object.keys(links).map(function (id) { return document.getElementById(id); }).filter(Boolean);
+  if ('IntersectionObserver' in window && sections.length) {
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          Object.values(links).forEach(function (l) { l.classList.remove('active'); });
+          if (links[entry.target.id]) links[entry.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin: '-15% 0px -70% 0px' });
+    sections.forEach(function (s) { observer.observe(s); });
   }
 })();
-
-window.addEventListener('popstate', function () {
-  try {
-    const tab = new URLSearchParams(window.location.search).get('tab') || 'Summary';
-    _activateTabByName(tab);
-  } catch (e) {}
-});
 </script>
 </body>
 </html>
