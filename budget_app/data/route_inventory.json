@@ -78,6 +78,7 @@
  "/api/auto-process",
  "/api/auto-upload",
  "/api/board-notice/<entity_code>",
+ "/api/board-notice/<entity_code>/preview",
  "/api/board-notice/<entity_code>/publish",
  "/api/budget-assumptions/<entity_code>",
  "/api/budget-history/<entity_code>",

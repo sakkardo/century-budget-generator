@@ -13085,6 +13085,48 @@ def create_workflow_blueprint(db):
         url = request.host_url.rstrip("/") + "/board-notice/" + session_row.token
         return jsonify({"status": "ok", "token": session_row.token, "url": url})
 
+    @bp.route("/api/board-notice/<entity_code>/preview", methods=["GET"])
+    def api_board_notice_preview(entity_code):
+        """FA-side live preview of the client document — renders the exact
+        BOARD_NOTICE_TEMPLATE from CURRENT budget data + the narrative as it
+        stands (reviewed edits if any, else the draft), WITHOUT creating a
+        PresentationSession or touching narrative.status. The 'see it before
+        you publish' view; the client-facing board_notice_view stays
+        snapshot-isolated and is unaffected by this route."""
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        if not budget:
+            return "No budget found for this building", 404
+        narrative = BudgetNarrative.query.filter_by(budget_id=budget.id).first()
+        if narrative and narrative.reviewed_narrative:
+            narr = json.loads(narrative.reviewed_narrative)
+        elif narrative and narrative.raw_narrative:
+            narr = json.loads(narrative.raw_narrative)
+        else:
+            narr = _generate_client_narrative(budget)  # in-memory only; nothing persisted
+
+        snapshot = {
+            "budget": {"building_name": budget.building_name, "entity_code": budget.entity_code,
+                      "year": budget.year, "building_type": budget.building_type},
+            "narrative": narr,
+            "detail_tabs": _generate_client_detail_tabs(budget),
+        }
+
+        def _fmt_money(n):
+            try:
+                n = float(n)
+            except (TypeError, ValueError):
+                return "$0"
+            return ("-$" if n < 0 else "$") + f"{abs(n):,.0f}"
+
+        html = render_template_string(BOARD_NOTICE_TEMPLATE, snapshot=snapshot, fmt=_fmt_money)
+        # Static (non-sticky) banner so it scrolls away and the document's own
+        # sticky sub-nav takes over cleanly.
+        banner = ('<div style="background:#92400e;color:#fff;font-family:-apple-system,sans-serif;'
+                  'font-size:13px;font-weight:700;text-align:center;padding:9px;letter-spacing:0.03em;">'
+                  'PREVIEW &mdash; not published. This is what the board will see once you publish; '
+                  'numbers reflect the budget as of right now.</div>')
+        return html.replace("<body>", "<body>" + banner, 1)
+
     @bp.route("/board-notice/<token>", methods=["GET"])
     def board_notice_view(token):
         """Client-facing Board Presentation. Renders ONLY from the frozen
@@ -17719,6 +17761,7 @@ function renderBoardNoticeReview(overlay, data) {
   });
 
   html += '<div style="display:flex; gap:10px; margin-top:28px; padding-top:20px; border-top:1px solid #eee; flex-wrap:wrap;">' +
+    '<button onclick="boardNoticePreview()" style="padding:10px 18px; border:1px solid #4f46e5; background:#fff; color:#4f46e5; border-radius:4px; font-weight:600; cursor:pointer;">👁 Preview client view</button>' +
     '<button onclick="boardNoticeSave(false)" style="padding:10px 18px; border:1px solid #001721; background:#fff; color:#001721; border-radius:4px; font-weight:600; cursor:pointer;">Save draft</button>' +
     '<button onclick="boardNoticeSave(true)" style="padding:10px 18px; border:none; background:#001721; color:#fff; border-radius:4px; font-weight:600; cursor:pointer;">Save &amp; mark reviewed</button>';
   if (data.status === 'reviewed' || data.status === 'published') {
@@ -17768,6 +17811,23 @@ async function boardNoticeRegenerate() {
   const data = await resp.json();
   window._boardNoticeActive = data.active;
   renderBoardNoticeReview(document.getElementById('boardNoticeOverlay'), data);
+}
+
+async function boardNoticePreview() {
+  // Save the on-screen edits as a draft first so the preview shows exactly
+  // what the FA is looking at, then open the rendered client document in a
+  // new tab. Saving here never advances status -- same as "Save draft".
+  const msg = document.getElementById('boardNoticeMsg');
+  msg.textContent = 'Saving draft & opening preview…'; msg.style.color = '#666';
+  try {
+    const narrative = _boardNoticeCollect();
+    const resp = await fetch('/api/board-notice/' + entityCode, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ narrative: narrative }) });
+    if (!resp.ok) { const d = await resp.json(); msg.textContent = 'Error: ' + (d.error || resp.status); msg.style.color = '#DE1C23'; return; }
+    window._boardNoticeActive = narrative;
+    msg.textContent = 'Draft saved — preview opened in a new tab.';
+    msg.style.color = '#16a34a';
+    window.open('/api/board-notice/' + entityCode + '/preview', '_blank');
+  } catch (e) { msg.textContent = 'Error: ' + e.message; msg.style.color = '#DE1C23'; }
 }
 
 async function boardNoticePublish() {
