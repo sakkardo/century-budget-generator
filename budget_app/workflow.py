@@ -18054,7 +18054,7 @@ async function renderCamTab(contentDiv) {
         '<input type="number" step="0.0001" value="' + shareDisp + '" onblur="camUpdateClass(' + c.id + ',\'share_pct\',this.value)" onkeydown="if(event.key===\'Enter\')this.blur()" style="width:78px; font-size:12px; text-align:right; border:1px solid var(--gray-200); background:#fff; padding:2px 4px; border-radius:3px; font-variant-numeric:tabular-nums;">' +
         '<span style="font-size:11px; color:var(--gray-500);">%</span>' +
         '<button onclick="camEditNotes(' + c.id + ',\'' + safeName + '\')" title="' + (c.notes ? 'Edit note: ' + (c.notes || '').replace(/"/g,'&quot;') : 'Add a note (e.g. cite the offering plan)') + '" style="border:none; background:transparent; color:' + (c.notes ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">📝</button>' +
-        '<button onclick="camEditSummaryLink(' + c.id + ',\'' + safeName + '\')" title="' + (c.summary_row_label ? 'Linked to Summary row: ' + (c.summary_row_label || '').replace(/"/g,'&quot;') : 'Link to a specific Summary row if this class isn\\'t auto-matching one (needed for the required-increase calc)') + '" style="border:none; background:transparent; color:' + (c.summary_row_label ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">🔗</button>' +
+        '<button onclick="camEditSummaryLink(' + c.id + ',\'' + safeName + '\')" title="' + (c.summary_row_label ? 'Linked to Summary row: ' + (c.summary_row_label || '').replace(/"/g,'&quot;') : 'Link to a specific Summary row if this class isn\'t auto-matching one (needed for the required-increase calc)') + '" style="border:none; background:transparent; color:' + (c.summary_row_label ? '#4f46e5' : 'var(--gray-400)') + '; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;">🔗</button>' +
         '<button onclick="camDeleteClass(' + c.id + ',\'' + safeName + '\')" title="Delete class" style="border:none; background:transparent; color:var(--red); cursor:pointer; font-size:15px; line-height:1; padding:0 2px;">×</button>' +
       '</div>';
     });
@@ -18134,7 +18134,7 @@ async function renderCamTab(contentDiv) {
           '<div style="display:flex; align-items:center; justify-content:flex-end; gap:1px;">' +
           '<input type="number" step="0.001" value="' + sharePctDisp + '" ' +
           'onblur="camSetCellPct(\'' + l.gl_code + '\',' + c.id + ',this.value,' + (l.total || 0) + ')" onkeydown="if(event.key===\'Enter\')this.blur()" ' +
-          'title="% of this line allocated to this class -- edit here instead of the $ amount if that\\'s easier" ' +
+          'title="% of this line allocated to this class -- edit here instead of the $ amount if that\'s easier" ' +
           'style="width:60px; padding:1px 3px; text-align:right; border:1px solid transparent; background:transparent; font-variant-numeric:tabular-nums; font-size:9px; color:var(--gray-500); border-radius:3px;">' +
           '<span style="font-size:9px; color:var(--gray-400);">%</span></div></td>';
       });
