@@ -1,0 +1,40 @@
+{
+  "_comment": "Shared contract for GL-prefix logic. The Python server (budget_app/gl_logic.py) is verified against these by budget_app/test_gl_logic.py. The JavaScript mirror in the building-detail template (_sumOrphanOverlap / _sumOrphanFam) MUST produce the same answers for the 'overlap' cases. If you change the rules, change this file and BOTH sides. Token grammar: bare token '5260' = whole family (matches family base); dashed token '4130-0010' = exact sub-account (matches full GL).",
+
+  "matches": [
+    {"gl": "4130-0010", "prefixes": ["4130"], "expected": true, "note": "family base matches its sub-account"},
+    {"gl": "4130-0010", "prefixes": ["4130-0010"], "expected": true, "note": "exact token matches exact GL"},
+    {"gl": "4130-0015", "prefixes": ["4130-0010"], "expected": false, "note": "exact token does NOT match a sibling sub-account"},
+    {"gl": "4130-0015", "prefixes": ["4130"], "expected": true, "note": "family token covers every sibling"},
+    {"gl": "7120-0000", "prefixes": ["7"], "expected": true, "note": "single-digit catch-all family"},
+    {"gl": "6315-0000", "prefixes": ["6315"], "expected": true, "note": "ordinary family match"},
+    {"gl": "5260-0000", "prefixes": ["5261"], "expected": false, "note": "adjacent family does not match"},
+    {"gl": "6315-0000", "prefixes": ["5000", "6315"], "expected": true, "note": "matches if ANY token matches"},
+    {"gl": "", "prefixes": ["6315"], "expected": false, "note": "empty GL never matches"},
+    {"gl": "6315-0000", "prefixes": [], "expected": false, "note": "empty prefix list never matches"}
+  ],
+
+  "overlap": [
+    {"a": "7", "b": "7120", "expected": true, "note": "REGRESSION: catch-all '7' overlaps family '7120' (equality test missed this)"},
+    {"a": "7120", "b": "7", "expected": true, "note": "overlap is symmetric"},
+    {"a": "7045", "b": "7120", "expected": false, "note": "different families, neither prefixes the other"},
+    {"a": "4130", "b": "4130", "expected": true, "note": "identical family tokens overlap"},
+    {"a": "4130-0010", "b": "4130", "expected": true, "note": "exact sub-account falls inside its family"},
+    {"a": "4130-0010", "b": "4131", "expected": false, "note": "exact's family differs from the other family"},
+    {"a": "4130-0010", "b": "4130-0010", "expected": true, "note": "identical exact tokens overlap"},
+    {"a": "4130-0010", "b": "4130-0015", "expected": false, "note": "sibling sub-accounts do not overlap"},
+    {"a": "5", "b": "5260", "expected": true, "note": "single-digit catch-all overlaps family"},
+    {"a": "52", "b": "6315", "expected": false, "note": "unrelated families do not overlap"}
+  ],
+
+  "covered": [
+    {"tok": "4130-0010", "row_prefixes": ["4130"], "expected": true, "note": "family on the row already covers the exact GL (no-op)"},
+    {"tok": "4130", "row_prefixes": ["4130-0010"], "expected": false, "note": "an exact token does NOT cover a whole family"},
+    {"tok": "7120", "row_prefixes": ["7"], "expected": true, "note": "catch-all on the row covers the family token"},
+    {"tok": "4130-0010", "row_prefixes": ["4130-0010"], "expected": true, "note": "exact token covers itself"},
+    {"tok": "4130-0010", "row_prefixes": ["4130-0015"], "expected": false, "note": "sibling on the row does not cover"},
+    {"tok": "6315", "row_prefixes": [], "expected": false, "note": "empty row covers nothing"},
+    {"tok": "6315", "row_prefixes": ["5000", "6315"], "expected": true, "note": "covered if ANY existing token covers"},
+    {"tok": "4130-0010", "row_prefixes": ["5000", "4130"], "expected": true, "note": "covered by a family among several tokens"}
+  ]
+}
