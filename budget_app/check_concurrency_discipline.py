@@ -99,6 +99,26 @@ if "_pdf_heal_gate" not in af_src:
         "(_pdf_heal_gate) — concurrent inline SharePoint fetches ate every "
         "worker thread")
 
+# ── 6. regression lock on the 2026-07-03 payroll-wipe fix ───────────────
+# pushRosterToGL() persists roster-derived proposals to the DB as a side
+# effect of the Payroll tab RENDERING (recalcPayroll -> pushRosterToGL). With
+# an empty roster every component computes 0, so it wrote proposed_budget=0 /
+# increase_pct=-1 over stored proposals and saved them — merely OPENING the tab
+# on an un-rostered building silently wiped its payroll budget (437,
+# 2026-07-03). The guard is: no roster -> no push. Same class as the
+# render-side-effect outages above: a code path that mutates data with no user
+# action. Any new render-triggered auto-save must carry a similar guard.
+wf_src = read(HERE / "workflow.py")
+if "function pushRosterToGL()" in wf_src:
+    _pr_start = wf_src.index("function pushRosterToGL()")
+    _pr_zone = wf_src[_pr_start:_pr_start + 700]
+    if "_payrollPositions.length === 0) return;" not in _pr_zone:
+        failures.append(
+            "workflow.py pushRosterToGL() lost its empty-roster guard "
+            "(`_payrollPositions.length === 0) return;`) — opening the Payroll "
+            "tab on an un-rostered building would again persist 0/-100% over "
+            "stored payroll proposals (data-loss wipe, 437 2026-07-03)")
+
 if failures:
     print("\nCONCURRENCY-DISCIPLINE GATE FAILED — an outage pattern is back:")
     for f in failures:
