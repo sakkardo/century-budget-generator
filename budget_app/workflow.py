@@ -35411,8 +35411,9 @@ var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
       pe.textContent = (l.pct > 0 ? '+' : '') + l.pct.toFixed(1) + '%';
       pe.className = 'wif-pct' + (l.pct > 0 ? ' up' : l.pct < 0 ? ' dn' : '');
       var de = document.getElementById('wd_' + l.i);
-      de.textContent = d === 0 ? '—' : (d > 0 ? '+' : '−') + '$' + Math.abs(d).toLocaleString('en-US');
-      de.className = 'wif-delta' + (d > 0 ? ' up' : d < 0 ? ' dn' : '');
+      var dr = Math.round(d);
+      de.textContent = Math.abs(dr) < 1 ? '—' : (dr > 0 ? '+' : '−') + '$' + Math.abs(dr).toLocaleString('en-US');
+      de.className = 'wif-delta' + (dr >= 1 ? ' up' : dr <= -1 ? ' dn' : '');
     });
     cats.forEach(function (c, ci) {
       var t = 0;
