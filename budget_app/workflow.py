@@ -35039,9 +35039,41 @@ tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var
 .sig { text-align: center; padding: 34px 0 8px; color: var(--muted); font-size: 12.5px; }
 .sig b { display: block; font-family: 'IBM Plex Serif', serif; font-size: 16px; color: var(--navy); font-weight: 500; margin-bottom: 3px; }
 
+/* ── What-if workshop (interactive, lives only in the reader's browser) ── */
+.wif-band { position: sticky; top: 12px; z-index: 30; background: var(--navy); color: #f2ede4; border-radius: 10px;
+  padding: 14px 20px; display: flex; gap: 26px; align-items: center; flex-wrap: wrap;
+  box-shadow: 0 8px 24px rgba(0,23,33,.28); margin-bottom: 16px; }
+.wk { min-width: 148px; }
+.wk-l { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: #8fa3ac; }
+.wk-v { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.wk.hero .wk-v { font-size: 30px; color: #b98a4a; }
+.wk-s { font-size: 11px; color: #8fa3ac; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.wif-reset { margin-left: auto; font: inherit; font-size: 12.5px; font-weight: 600; border: 1px solid rgba(242,237,228,.35);
+  background: transparent; color: #f2ede4; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+.wif-reset:hover { background: rgba(242,237,228,.1); }
+.wif-cat { display: flex; justify-content: space-between; align-items: baseline; font-family: 'IBM Plex Serif', serif;
+  font-size: 15.5px; font-weight: 600; color: var(--navy); border-bottom: 2px solid var(--line); padding: 16px 4px 6px; }
+.wif-cat span:last-child { font-family: 'IBM Plex Sans', sans-serif; font-size: 13.5px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.wif-row { display: flex; align-items: center; gap: 14px; padding: 8px 4px; border-bottom: 1px solid #f0ece3; }
+.wif-d { flex: 1 1 240px; font-size: 13.5px; min-width: 200px; }
+.wif-cent { display: block; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.wif-lever { display: flex; align-items: center; gap: 8px; flex: 0 0 300px; }
+.wif-lever input[type=range] { flex: 1; accent-color: #b98a4a; height: 24px; min-width: 120px; }
+.wif-fine { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--line); background: #fbfaf6;
+  font-size: 15px; font-weight: 700; color: var(--navy); cursor: pointer; line-height: 1; }
+.wif-fine:hover { background: #efe9dd; }
+.wif-pct { min-width: 52px; text-align: right; font-weight: 700; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--faint); }
+.wif-pct.up { color: var(--red); } .wif-pct.dn { color: var(--green); }
+.wif-val { flex: 0 0 108px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; font-size: 14px; }
+.wif-delta { flex: 0 0 96px; text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #b3a88f; font-variant-numeric: tabular-nums; }
+.wif-delta.up { color: var(--red); } .wif-delta.dn { color: var(--green); }
+.wif-row.wif-fixed { color: var(--muted); background: #faf8f3; }
+@media (max-width: 760px) { .wif-lever { flex: 1 1 100%; } .wif-row { flex-wrap: wrap; } }
+
 @media print {
   body { background: #fff; }
   .rail, .pills, .printbtn { display: none !important; }
+  .wif { display: none !important; }
   .wrap { display: block; margin: 0; padding: 0; max-width: none; }
   .card, .kpi { box-shadow: none; break-inside: avoid; }
   .tpanel { display: block !important; margin-bottom: 18px; }
@@ -35082,6 +35114,7 @@ tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var
     <a href="#s-drv">Category changes</a>
     {% if snapshot.detail_tabs and snapshot.detail_tabs.chart_data.movers %}<a href="#s-mov">Largest movements</a>{% endif %}
     {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}<a href="#s-det">Full budget detail</a>{% endif %}
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}<a href="#s-wif">What-if workshop</a>{% endif %}
     {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}<a href="#s-dates">Key dates</a>{% endif %}
     {% if snapshot.narrative.faq %}<a href="#s-faq">Questions &amp; answers</a>{% endif %}
   </nav>
@@ -35218,6 +35251,21 @@ tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var
     </div>
     {% endif %}
 
+    {% if snapshot.detail_tabs and snapshot.detail_tabs.tabs %}
+    <div class="card wif" id="s-wif" style="display:none">
+      <div class="card-head"><div><h2>What-if workshop</h2><div class="sub">Test the budget live: slide any line and watch the {{ words.charge_word or 'common charge' }} increase recalculate. For discussion only — nothing you change here is saved or sent to Century.</div></div></div>
+      <div class="wif-band">
+        <div class="wk hero"><div class="wk-l" id="wifWordLab">Increase needed to balance</div><div class="wk-v" id="wifPct">—</div><div class="wk-s" id="wifBase"></div></div>
+        <div class="wk"><div class="wk-l">Total operating expenses</div><div class="wk-v" id="wifExp">—</div><div class="wk-s" id="wifMod">At Century proposal</div></div>
+        <div class="wk"><div class="wk-l">Less: all other income</div><div class="wk-v" id="wifOther">—</div><div class="wk-s">held at Century proposal</div></div>
+        <div class="wk"><div class="wk-l">Required to balance</div><div class="wk-v" id="wifReq">—</div><div class="wk-s" id="wifCur"></div></div>
+        <button class="wif-reset" onclick="wifResetAll()">Reset to Century proposal</button>
+      </div>
+      <div id="wifBody"></div>
+      <p class="tbl-note">A balanced budget collects exactly what it spends: {{ words.charge_word or 'common charge' }}s must cover total operating expenses minus all other income. Lines the board cannot adjust here (and any schedule outside the detail tabs) are held at the Century proposal.</p>
+    </div>
+    {% endif %}
+
     {% if tl.board_review_through or tl.board_vote_by or tl.effective_date %}
     <div class="card" id="s-dates">
       <div class="card-head"><div><h2>Key dates</h2></div></div>
@@ -35247,6 +35295,134 @@ function showTab(i) {
   document.querySelectorAll('.pill').forEach(b => b.classList.toggle('on', b.dataset.i == i));
   document.querySelectorAll('.tpanel').forEach(p => p.classList.toggle('on', p.dataset.i == i));
 }
+var WIF_TABS = {{ (snapshot.detail_tabs.tabs if snapshot.detail_tabs and snapshot.detail_tabs.tabs else []) | tojson }};
+var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
+(function () {
+  var card = document.getElementById('s-wif');
+  var railLink = document.querySelector('#rail a[href="#s-wif"]');
+  function bail() {
+    if (card && card.parentNode) card.parentNode.removeChild(card);
+    if (railLink && railLink.parentNode) railLink.parentNode.removeChild(railLink);
+  }
+  if (!card || !WIF_TABS || !WIF_TABS.length) { bail(); return; }
+  var incomeTab = null, sumTab = null, expTabs = [];
+  WIF_TABS.forEach(function (t) {
+    if (t.lines && t.name === 'Income') incomeTab = t;
+    else if (t.rows) sumTab = t;
+    else if (t.lines && t.name !== 'Commercial') expTabs.push(t);
+  });
+  if (!incomeTab || !incomeTab.lines || !incomeTab.lines.length || !expTabs.length) { bail(); return; }
+  var charge = null;
+  incomeTab.lines.forEach(function (l) { if (!charge || (l.proposed || 0) > (charge.proposed || 0)) charge = l; });
+  if (!charge || !(charge.current > 1) || !(charge.proposed > 0)) { bail(); return; }
+  var incomeProp = 0;
+  incomeTab.lines.forEach(function (l) { incomeProp += (l.proposed || 0); });
+  if (sumTab && sumTab.rows) {
+    sumTab.rows.forEach(function (r) {
+      if (r.label === 'Total Income' && typeof r.col7_proposed_budget === 'number' && r.col7_proposed_budget > 0) incomeProp = r.col7_proposed_budget;
+    });
+  }
+  var otherIncome = incomeProp - (charge.proposed || 0);
+  var lines = [];
+  expTabs.forEach(function (t) {
+    (t.lines || []).forEach(function (l) {
+      if ((l.proposed || 0) > 0.5) lines.push({ cat: t.name, d: l.description || '', prop: l.proposed, pct: 0 });
+    });
+  });
+  if (!lines.length) { bail(); return; }
+  var leverBase = 0;
+  lines.forEach(function (l) { leverBase += l.prop; });
+  var fullExp = leverBase;
+  if (sumTab && sumTab.rows) {
+    sumTab.rows.forEach(function (r) {
+      if (r.label === 'Total Expenses' && typeof r.col7_proposed_budget === 'number' && r.col7_proposed_budget > leverBase) fullExp = r.col7_proposed_budget;
+    });
+  }
+  var fixedOther = Math.max(0, fullExp - leverBase);
+  function money(n) {
+    var neg = n < 0; n = Math.round(Math.abs(n));
+    return (neg ? '-$' : '$') + n.toLocaleString('en-US');
+  }
+  function adjVal(l) { return Math.round(l.prop * (1 + l.pct / 100)); }
+  function balance() {
+    var t = fixedOther;
+    lines.forEach(function (l) { t += adjVal(l); });
+    var req = t - otherIncome;
+    var d = req - charge.current;
+    return { exp: t, req: req, delta: d, pct: d / charge.current * 100 };
+  }
+  var BASE = balance();
+  var cats = [];
+  lines.forEach(function (l, i) { l.i = i; if (cats.indexOf(l.cat) < 0) cats.push(l.cat); });
+  var h = '';
+  cats.forEach(function (c, ci) {
+    h += '<div class="wif-cat"><span>' + c + '</span><span id="wcs_' + ci + '"></span></div>';
+    lines.forEach(function (l) {
+      if (l.cat !== c) return;
+      h += '<div class="wif-row">' +
+        '<div class="wif-d">' + l.d + '<span class="wif-cent">Century: ' + money(l.prop) + '</span></div>' +
+        '<div class="wif-lever">' +
+          '<button class="wif-fine" onclick="wifFine(' + l.i + ',-0.5)" aria-label="decrease">−</button>' +
+          '<input type="range" min="-15" max="15" step="0.5" value="0" id="ws_' + l.i + '" oninput="wifSlide(' + l.i + ', this.value)">' +
+          '<button class="wif-fine" onclick="wifFine(' + l.i + ',0.5)" aria-label="increase">+</button>' +
+          '<span class="wif-pct" id="wp_' + l.i + '">0.0%</span>' +
+        '</div>' +
+        '<div class="wif-val" id="wv_' + l.i + '">' + money(l.prop) + '</div>' +
+        '<div class="wif-delta" id="wd_' + l.i + '">—</div>' +
+      '</div>';
+    });
+  });
+  if (fixedOther > 0.5) {
+    h += '<div class="wif-cat"><span>Everything else in this budget</span><span>' + money(fixedOther) + '</span></div>' +
+      '<div class="wif-row wif-fixed"><div class="wif-d">Schedules outside the adjustable detail — held at the Century proposal</div>' +
+      '<div class="wif-lever"></div><div class="wif-val">' + money(fixedOther) + '</div><div class="wif-delta">—</div></div>';
+  }
+  document.getElementById('wifBody').innerHTML = h;
+  window.wifFine = function (i, step) {
+    var l = lines[i];
+    l.pct = Math.max(-15, Math.min(15, Math.round((l.pct + step) * 2) / 2));
+    document.getElementById('ws_' + i).value = l.pct;
+    wifPaint();
+  };
+  window.wifSlide = function (i, v) { lines[i].pct = parseFloat(v) || 0; wifPaint(); };
+  window.wifResetAll = function () {
+    lines.forEach(function (l) { l.pct = 0; document.getElementById('ws_' + l.i).value = 0; });
+    wifPaint();
+  };
+  function wifPaint() {
+    var mod = 0;
+    lines.forEach(function (l) {
+      var v = adjVal(l), d = v - l.prop;
+      if (l.pct !== 0) mod++;
+      document.getElementById('wv_' + l.i).textContent = money(v);
+      var pe = document.getElementById('wp_' + l.i);
+      pe.textContent = (l.pct > 0 ? '+' : '') + l.pct.toFixed(1) + '%';
+      pe.className = 'wif-pct' + (l.pct > 0 ? ' up' : l.pct < 0 ? ' dn' : '');
+      var de = document.getElementById('wd_' + l.i);
+      de.textContent = d === 0 ? '—' : (d > 0 ? '+' : '−') + '$' + Math.abs(d).toLocaleString('en-US');
+      de.className = 'wif-delta' + (d > 0 ? ' up' : d < 0 ? ' dn' : '');
+    });
+    cats.forEach(function (c, ci) {
+      var t = 0;
+      lines.forEach(function (l) { if (l.cat === c) t += adjVal(l); });
+      document.getElementById('wcs_' + ci).textContent = money(t);
+    });
+    var b = balance();
+    var pe2 = document.getElementById('wifPct');
+    pe2.textContent = (b.pct >= 0 ? '+' : '−') + Math.abs(b.pct).toFixed(1) + '%';
+    pe2.style.color = b.pct <= 0 ? '#7fd1a8' : b.pct <= BASE.pct ? '#e8cf9e' : '#f0a0a0';
+    document.getElementById('wifExp').textContent = money(b.exp);
+    document.getElementById('wifReq').textContent = money(b.req);
+    document.getElementById('wifMod').textContent = mod === 0 ? 'At Century proposal'
+      : mod + ' line' + (mod === 1 ? '' : 's') + ' adjusted';
+  }
+  document.getElementById('wifOther').textContent = '−$' + Math.round(otherIncome).toLocaleString('en-US');
+  document.getElementById('wifCur').textContent = 'current: ' + money(charge.current);
+  document.getElementById('wifBase').textContent = 'Century proposal: ' + (BASE.pct >= 0 ? '+' : '−') + Math.abs(BASE.pct).toFixed(1) + '%';
+  document.getElementById('wifWordLab').textContent = WIF_WORD + ' increase needed to balance';
+  card.style.display = '';
+  wifPaint();
+})();
 (function () {
   const links = Array.from(document.querySelectorAll('#rail a'));
   if (!links.length) return;
