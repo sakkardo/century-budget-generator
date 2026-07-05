@@ -10334,79 +10334,118 @@ def create_workflow_blueprint(db):
                 if sk in section_data:
                     section_data[sk].append(rd)
 
+        # ── Ordinal bucketing for flat-format buildings (2026-07-05) ────────
+        # 829/872/437 class: flat imports carry section=None on data rows, so
+        # the sectioned buckets above stay empty and every subtotal recomputes
+        # from nothing (Total Income $1,500 on 829 = its one sectioned row; $0
+        # totals on 437/148/500; credit-only totals on 872). The flat layout is
+        # ordinal: a data row belongs to the first subtotal that follows it.
+        # Fill a SEPARATE bucket set so the col1/col6 footing rules below keep
+        # reading the sectioned-only buckets (2026-06-06 flat preserve rule).
+        section_data_all = {k: list(v) for k, v in section_data.items()}
+        _pending_unsectioned = []
+        for rd in result_rows:
+            _rt = rd.get("row_type")
+            if _rt == "data":
+                if not _section_key(rd.get("section") or ""):
+                    _pending_unsectioned.append(rd)
+                continue
+            if _rt != "subtotal":
+                continue
+            _ll = (rd.get("label") or "").lower()
+            _bucket = None
+            if "total income" in _ll:
+                _bucket = "income"
+            elif "total expenses" in _ll and "non" not in _ll:
+                _bucket = "expenses"
+            elif "non" in _ll and "income" in _ll:
+                _bucket = "non_operating_income"
+            elif "non" in _ll and "expense" in _ll:
+                _bucket = "non_operating_expense"
+            if _bucket:
+                section_data_all[_bucket].extend(_pending_unsectioned)
+            _pending_unsectioned = []
+
         # Recompute subtotal cols (1, 3-8) from data rows
         for rd in result_rows:
             if rd["row_type"] != "subtotal":
                 continue
             label_lower = (rd.get("label") or "").lower()
             if "total income" in label_lower:
-                data_rows = section_data.get("income", [])
+                data_rows = section_data_all.get("income", [])
+                sectioned_rows = section_data.get("income", [])
             elif "total expenses" in label_lower and "non" not in label_lower:
-                data_rows = section_data.get("expenses", [])
+                data_rows = section_data_all.get("expenses", [])
+                sectioned_rows = section_data.get("expenses", [])
             elif "net operating" in label_lower:
-                inc = section_data.get("income", [])
-                exp = section_data.get("expenses", [])
+                inc = section_data_all.get("income", [])
+                exp = section_data_all.get("expenses", [])
                 for ck in ["col2", "col3", "col4", "col5", "col7"]:
                     iv = sum(r.get(ck) or 0 for r in inc)
                     ev = sum(r.get(ck) or 0 for r in exp)
                     rd[ck] = round(iv - ev, 2) if (iv or ev) else None
                 # Footing fix 2026-06-06: foot col1 (2024 actual) / col6 (2026
-                # budget) from data rows too, so an "Add Row to Summary" row
-                # rolls into the section totals. Only when the section actually
-                # carries sectioned data rows — flat-format buildings (e.g. 148)
-                # store already-footed col1/col6 on the subtotal row, and
-                # recomputing from their (empty) section buckets would null them.
-                if inc or exp:
+                # budget) ONLY from sectioned data rows — flat-format buildings
+                # (e.g. 148) store already-footed col1/col6 on the subtotal row,
+                # and the 2026-07-05 ordinal buckets must not disturb that.
+                inc_s = section_data.get("income", [])
+                exp_s = section_data.get("expenses", [])
+                if inc_s or exp_s:
                     for ck in ["col1", "col6"]:
-                        iv = sum(r.get(ck) or 0 for r in inc)
-                        ev = sum(r.get(ck) or 0 for r in exp)
+                        iv = sum(r.get(ck) or 0 for r in inc_s)
+                        ev = sum(r.get(ck) or 0 for r in exp_s)
                         rd[ck] = round(iv - ev, 2)
                 if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                     rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
                 continue
             elif "non" in label_lower and "income" in label_lower:
-                data_rows = section_data.get("non_operating_income", [])
+                data_rows = section_data_all.get("non_operating_income", [])
+                sectioned_rows = section_data.get("non_operating_income", [])
             elif "non" in label_lower and "expense" in label_lower:
-                data_rows = section_data.get("non_operating_expense", [])
+                data_rows = section_data_all.get("non_operating_expense", [])
+                sectioned_rows = section_data.get("non_operating_expense", [])
             elif "total surplus" in label_lower or "total deficit" in label_lower:
                 # Grand total = net operating + non-op income - non-op expense
-                inc = section_data.get("income", [])
-                exp = section_data.get("expenses", [])
-                noi = section_data.get("non_operating_income", [])
-                noe = section_data.get("non_operating_expense", [])
+                inc = section_data_all.get("income", [])
+                exp = section_data_all.get("expenses", [])
+                noi = section_data_all.get("non_operating_income", [])
+                noe = section_data_all.get("non_operating_expense", [])
                 for ck in ["col2", "col3", "col4", "col5", "col7"]:
                     iv = sum(r.get(ck) or 0 for r in inc)
                     ev = sum(r.get(ck) or 0 for r in exp)
                     ni = sum(r.get(ck) or 0 for r in noi)
                     ne = sum(r.get(ck) or 0 for r in noe)
                     rd[ck] = round((iv - ev) + ni - ne, 2) if (iv or ev or ni or ne) else None
-                # Footing fix 2026-06-06: foot col1/col6 from data rows too
-                # (see Net Operating note). Preserve stored values for flat-
-                # format buildings whose section buckets are empty.
-                if inc or exp or noi or noe:
+                # Footing fix 2026-06-06: col1/col6 only from sectioned rows —
+                # preserve stored values for flat-format buildings.
+                inc_s = section_data.get("income", [])
+                exp_s = section_data.get("expenses", [])
+                noi_s = section_data.get("non_operating_income", [])
+                noe_s = section_data.get("non_operating_expense", [])
+                if inc_s or exp_s or noi_s or noe_s:
                     for ck in ["col1", "col6"]:
-                        iv = sum(r.get(ck) or 0 for r in inc)
-                        ev = sum(r.get(ck) or 0 for r in exp)
-                        ni = sum(r.get(ck) or 0 for r in noi)
-                        ne = sum(r.get(ck) or 0 for r in noe)
+                        iv = sum(r.get(ck) or 0 for r in inc_s)
+                        ev = sum(r.get(ck) or 0 for r in exp_s)
+                        ni = sum(r.get(ck) or 0 for r in noi_s)
+                        ne = sum(r.get(ck) or 0 for r in noe_s)
                         rd[ck] = round((iv - ev) + ni - ne, 2)
                 if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                     rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
                 continue
             else:
                 data_rows = []
+                sectioned_rows = []
 
-            # Simple sum for section subtotals
+            # Simple sum for section subtotals — value columns foot from the
+            # merged (sectioned + ordinal) buckets.
             for ck in ["col2", "col3", "col4", "col5", "col7"]:
                 vals = [r.get(ck) or 0 for r in data_rows]
                 rd[ck] = round(sum(vals), 2) if any(v != 0 for v in vals) else None
-            # Footing fix 2026-06-06: foot col1/col6 from data rows too, so an
-            # "Add Row to Summary" row rolls into the section total. Skip when
-            # the section has no sectioned data rows (flat-format buildings like
-            # 148 store already-footed col1/col6 — recomputing would null them).
-            if data_rows:
+            # Footing fix 2026-06-06: col1/col6 only when SECTIONED rows exist
+            # (flat-format stored, already-footed col1/col6 are never nulled).
+            if sectioned_rows:
                 for ck in ["col1", "col6"]:
-                    rd[ck] = round(sum(r.get(ck) or 0 for r in data_rows), 2)
+                    rd[ck] = round(sum(r.get(ck) or 0 for r in sectioned_rows), 2)
             if rd["col7"] is not None and rd["col5"] and rd["col5"] != 0:
                 rd["col8"] = round(((rd["col7"] - rd["col5"]) / abs(rd["col5"])) * 100, 1)
 
