@@ -433,6 +433,7 @@ def create_audited_financials_blueprint(db):
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
                 "summary_overrides": so,
+                "extract_error": self.extract_error,
                 "sharepoint_web_url": self.sharepoint_web_url
             }
 
@@ -845,7 +846,7 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
                     )
 
                 message = client.messages.create(
-                    model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+                    model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-5"),
                     max_tokens=16384,
                     messages=[
                         {

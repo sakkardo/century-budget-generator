@@ -2922,6 +2922,12 @@ def create_workflow_blueprint(db):
         budget.wizard_step = step
         if step >= 6 and not budget.wizard_completed_at:
             budget.wizard_completed_at = datetime.utcnow()
+            # Mirror wizard_complete_build: marking a budget built must also
+            # advance status past "not_started", or the dashboard's Send-to-PM
+            # transition (draft -> pm_pending) is permanently blocked —
+            # VALID_TRANSITIONS only lets not_started step to data_collection.
+            if budget.status in (None, "", "not_started", "data_collection", "data_ready"):
+                budget.status = "draft"
         db.session.commit()
 
         return jsonify({"success": True, "wizard_step": step})

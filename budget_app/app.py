@@ -1015,7 +1015,11 @@ with app.app_context():
 # Health check for Railway
 @app.route("/healthz")
 def healthz():
-    return "ok", 200
+    # Echo the running commit (Railway injects it) so deploy pollers can
+    # verify the NEW container actually serves — the 2026-06-11 mise incident
+    # had the old container serving while probes read HEALTHY.
+    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    return (("ok " + sha[:12]).strip(), 200)
 
 # Paths
 TEMPLATE_PATH = BUDGET_SYSTEM / "Budget_Final_Template_v2.xlsx"

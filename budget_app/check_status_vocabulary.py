@@ -48,6 +48,13 @@ try:
         fails.append("  workflow.py no longer calls compute_source_states")
     if '"source_states"' not in wf:
         fails.append("  workflow.py no longer emits the source_states payload key")
+    # 2026-07-05: wizard_update_step must advance status past not_started when
+    # it marks the wizard complete — 9 BUILT-but-not_started buildings had
+    # Send-to-PM permanently blocked (draft->pm_pending unreachable).
+    _i = wf.find("def wizard_update_step")
+    if _i == -1 or 'budget.status = "draft"' not in wf[_i:_i + 1400]:
+        fails.append("  wizard_update_step lost its status-advance "
+                     "(BUILT-but-not_started regression)")
 except OSError as e:
     fails.append("  cannot read workflow.py: %s" % e)
 
