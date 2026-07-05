@@ -5302,6 +5302,22 @@ async function uploadAll() {
                 )
                 db.session.add(upload)
                 db.session.commit()
+                # 2026-07-05 (wizard debugging pass): bulk uploads sat at
+                # status='uploaded' forever — extraction only started when an
+                # FA happened to open each review page, so a 15-PDF batch from
+                # 2026-06-14 was still unextracted three weeks later. Kick the
+                # same background worker the review page uses; the semaphore
+                # caps concurrency at 2, failures land in extract_error.
+                try:
+                    upload.status = "extracting"
+                    upload.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    threading.Thread(target=_extract_worker,
+                                     args=(current_app._get_current_object(), upload.id),
+                                     daemon=True).start()
+                except Exception as _bx:
+                    logger.warning("bulk-upload: auto-extract kick failed for %s: %s",
+                                   upload.id, _bx)
                 results.append({"entity_code": entity_code, "success": True, "upload_id": upload.id})
 
             return jsonify({"success": True, "results": results})
