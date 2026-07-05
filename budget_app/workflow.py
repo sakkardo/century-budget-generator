@@ -12934,7 +12934,14 @@ def create_workflow_blueprint(db):
             sn = l.sheet_name or "Other"
             if sn not in CLIENT_DETAIL_SHEETS:
                 continue
-            by_sheet.setdefault(sn, []).append(_client_safe_line(l, ytd_months))
+            row = _client_safe_line(l, ytd_months)
+            # Jacob 2026-07-05: lines with zeros across the board are noise in
+            # a client document — drop them (mirrors the Excel export's
+            # line_has_data rule; totals unchanged since they sum to zero).
+            if not any(abs(row.get(_f) or 0) > 0.005 for _f in
+                       ("prior_actual", "ytd_actual", "current", "forecast", "proposed")):
+                continue
+            by_sheet.setdefault(sn, []).append(row)
 
         tabs = []
         for sn in CLIENT_DETAIL_SHEETS:
@@ -12955,6 +12962,9 @@ def create_workflow_blueprint(db):
             _payload = _resp[0] if isinstance(_resp, tuple) else _resp
             _sdata = _payload.get_json(silent=True) or {}
             for _r in (_sdata.get("rows") or []):
+                if (_r.get("row_type") == "data"
+                        and not any(abs(_r.get(_c) or 0) > 0.005 for _c in ("col1", "col6", "col7"))):
+                    continue  # Jacob 2026-07-05: all-zero data rows stay out of the client doc
                 summary_tab_rows.append({
                     "label": _r.get("label"),
                     "row_type": _r.get("row_type"),
@@ -13020,6 +13030,8 @@ def create_workflow_blueprint(db):
                     else:
                         esc = escalations.get(t.id, {}).get("amount") or 0.0
                         prop_rent = cur_rent + float(esc)
+                    if abs(cur_rent) <= 0.005 and abs(prop_rent) <= 0.005:
+                        continue  # Jacob 2026-07-05: all-zero rows stay out of the client doc
                     variance = round(prop_rent - cur_rent, 2)
                     comm_rows.append({
                         "description": t.tenant_name + (f" ({t.unit_label})" if t.unit_label else ""),
