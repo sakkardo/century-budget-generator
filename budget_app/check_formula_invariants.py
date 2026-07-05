@@ -37,7 +37,23 @@ def load(path):
         return None
 
 
+
+def _with_page_templates(wf_path, text):
+    """Append page_templates/*.py so the corpus equals the pre-extraction
+    workflow.py (templates moved out 2026-07-05, clean-architecture tranche 1)."""
+    import glob as _glob
+    _pkg = os.path.join(os.path.dirname(os.path.abspath(wf_path)), "page_templates")
+    for _p in sorted(_glob.glob(os.path.join(_pkg, "*.py"))):
+        try:
+            with open(_p, encoding="utf-8") as _fh:
+                text += "\n" + _fh.read()
+        except OSError:
+            pass
+    return text
+
 wf = load(WF)
+if wf is not None:
+    wf = _with_page_templates(WF, wf)
 ed = load(ED)
 
 # (label, source, must_be_PRESENT, must_be_ABSENT)

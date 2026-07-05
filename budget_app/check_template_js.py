@@ -30,6 +30,20 @@ import sys
 import tempfile
 
 
+
+def _with_page_templates(wf_path, text):
+    """Append page_templates/*.py so the corpus equals the pre-extraction
+    workflow.py (templates moved out 2026-07-05, clean-architecture tranche 1)."""
+    import glob as _glob
+    _pkg = os.path.join(os.path.dirname(os.path.abspath(wf_path)), "page_templates")
+    for _p in sorted(_glob.glob(os.path.join(_pkg, "*.py"))):
+        try:
+            with open(_p, encoding="utf-8") as _fh:
+                text += "\n" + _fh.read()
+        except OSError:
+            pass
+    return text
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     wf = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "workflow.py")
@@ -48,7 +62,7 @@ def main():
             "inline-JS-escape outage that has hit production twice).\n")
         return 2
 
-    src = io.open(wf, encoding="utf-8").read()
+    src = _with_page_templates(wf, io.open(wf, encoding="utf-8").read())
     blocks = re.findall(r"<script[^>]*>(.*?)</script>", src, re.S)
     blocks = [b for b in blocks if len(b.strip()) > 40]
 

@@ -62,11 +62,25 @@ def extract(src):
     return sorted(out)
 
 
+
+def _with_page_templates(wf_path, text):
+    """Append page_templates/*.py so the corpus equals the pre-extraction
+    workflow.py (templates moved out 2026-07-05, clean-architecture tranche 1)."""
+    import glob as _glob
+    _pkg = os.path.join(os.path.dirname(os.path.abspath(wf_path)), "page_templates")
+    for _p in sorted(_glob.glob(os.path.join(_pkg, "*.py"))):
+        try:
+            with open(_p, encoding="utf-8") as _fh:
+                text += "\n" + _fh.read()
+        except OSError:
+            pass
+    return text
+
 def main():
     args = [a for a in sys.argv[1:] if a != "--update"]
     update = "--update" in sys.argv[1:]
     wf = args[0] if args else os.path.join(HERE, "workflow.py")
-    current = extract(open(wf, encoding="utf-8").read())
+    current = extract(_with_page_templates(wf, open(wf, encoding="utf-8").read()))
     if not current:
         sys.stderr.write("FRONTEND-MATH GATE: no math functions found in %s\n" % wf)
         sys.exit(1)
