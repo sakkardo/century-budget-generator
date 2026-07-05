@@ -12792,7 +12792,12 @@ def create_workflow_blueprint(db):
     # AuditUpload's draft -> reviewed -> confirmed review-gate pattern.
 
     NARRATIVE_EXPENSE_SHEETS = ("Payroll", "Energy", "Water & Sewer",
-                                "Repairs & Supplies", "Gen & Admin", "Capital")
+                                "Repairs & Supplies", "Gen & Admin",
+                                # 2026-07-05: RE Taxes sheet lines belong in the
+                                # client story — without them, buildings with a
+                                # dedicated RE-tax sheet (829/210 class) understate
+                                # the headline and the detail by the tax amount.
+                                "RE Taxes", "Capital")
 
     def _narrative_line_amounts(l):
         """(current, proposed) for one BudgetLine, mirroring _cam_line_amount's
@@ -13021,6 +13026,40 @@ def create_workflow_blueprint(db):
         if summary_tab_rows:
             tabs.append({"name": "Summary", "rows": summary_tab_rows})
 
+        # ── Reconciliation disclosure (2026-07-05) ──────────────────────────
+        # The detail tabs value lines with the flat-fallback rule (proposed =
+        # stored else current) while the Summary tab carries Century's computed
+        # totals (pins + cascade). When the two part ways by more than 1% or
+        # $1,000, disclose the difference under the Summary table instead of
+        # letting a board discover it with a calculator.
+        recon = {}
+        try:
+            sum_exp = sum_inc = None
+            for _r in summary_tab_rows or []:
+                _lbl = (_r.get("label") or "").strip().lower()
+                _v = _r.get("col7_proposed_budget")
+                if _lbl == "total income" and isinstance(_v, (int, float)):
+                    sum_inc = _v
+                elif _lbl == "total expenses" and isinstance(_v, (int, float)):
+                    sum_exp = _v
+            detail_exp = 0.0
+            for _sn in NARRATIVE_EXPENSE_SHEETS:
+                if _sn == "Capital":
+                    continue  # capital is outside the operating Total Expenses
+                for _row in by_sheet.get(_sn) or []:
+                    detail_exp += _row.get("proposed") or 0
+            detail_inc = sum((_row.get("proposed") or 0) for _row in (by_sheet.get("Income") or []))
+            if sum_exp and abs(detail_exp - sum_exp) > max(abs(sum_exp) * 0.01, 1000):
+                recon["detail_exp"] = round(detail_exp, 2)
+                recon["summary_exp"] = round(sum_exp, 2)
+                recon["diff_exp"] = round(abs(detail_exp - sum_exp), 2)
+            if sum_inc and abs(detail_inc - sum_inc) > max(abs(sum_inc) * 0.01, 1000):
+                recon["detail_inc"] = round(detail_inc, 2)
+                recon["summary_inc"] = round(sum_inc, 2)
+                recon["diff_inc"] = round(abs(detail_inc - sum_inc), 2)
+        except Exception:
+            recon = {}
+
         # RE Taxes — coop-only, numbers only (no exemption-formula mechanics).
         # Mirrors the overrides-extraction + safe-fallback pattern used by
         # _export_rewrite_re_taxes (~9026) — a failed/slow DOF lookup skips
@@ -13039,7 +13078,7 @@ def create_workflow_blueprint(db):
                     overrides = None
                 rt = compute_re_taxes(entity_code, overrides or {})
                 if rt and abs(float(rt.get("gross_tax") or 0)) > 0.5:
-                    tabs.append({"name": "RE Taxes", "re_taxes": {
+                    tabs.append({"name": "RE Tax Bill", "re_taxes": {
                         "gross_tax": round(float(rt.get("gross_tax") or 0), 2),
                         "net_tax": round(float(rt.get("net_tax") or 0), 2),
                         "first_half_tax": round(float(rt.get("first_half_tax") or 0), 2),
@@ -13133,7 +13172,7 @@ def create_workflow_blueprint(db):
                  for r in top_movers]
 
         return {"tabs": tabs, "chart_data": {"donut": donut_slices, "bars": bars, "movers": movers},
-                "meta": {"ytd_months": ytd_months}}
+                "meta": {"ytd_months": ytd_months, "recon": recon}}
 
     @bp.route("/api/board-notice/<entity_code>", methods=["GET"])
     def api_board_notice_get(entity_code):
@@ -35286,6 +35325,9 @@ tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var
             {% endfor %}
           </tbody>
         </table></div>
+        {% if snapshot.detail_tabs.meta and snapshot.detail_tabs.meta.recon %}{% set rc = snapshot.detail_tabs.meta.recon %}
+        <p class="tbl-note">{% if rc.diff_exp %}The expense detail tabs total {{ fmt(rc.detail_exp) }}; this summary reflects Century&rsquo;s computed operating budget of {{ fmt(rc.summary_exp) }} — the {{ fmt(rc.diff_exp) }} difference comes from summary-level adjustments and lines not yet individually budgeted.{% endif %}{% if rc.diff_inc %} Income detail totals {{ fmt(rc.detail_inc) }} against a computed income total of {{ fmt(rc.summary_inc) }} ({{ fmt(rc.diff_inc) }} difference).{% endif %}</p>
+        {% endif %}
         {% elif t.re_taxes is defined %}
         <div class="tbl-scroll"><table>
           <tbody>
