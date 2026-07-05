@@ -847,7 +847,10 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
 
                 message = client.messages.create(
                     model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-5"),
-                    max_tokens=16384,
+                    # 2026-07-05: sonnet-5 emits more verbose JSON than the
+                    # retired sonnet-4 pin; 16384 truncated two real audits
+                    # (836, 210) at stop_reason=max_tokens. Env-overridable.
+                    max_tokens=int(os.environ.get("CLAUDE_MAX_TOKENS", "32768")),
                     messages=[
                         {
                             "role": "user",
