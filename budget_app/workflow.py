@@ -35309,7 +35309,7 @@ var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
   WIF_TABS.forEach(function (t) {
     if (t.lines && t.name === 'Income') incomeTab = t;
     else if (t.rows) sumTab = t;
-    else if (t.lines && t.name !== 'Commercial') expTabs.push(t);
+    else if (t.lines && t.name !== 'Commercial' && t.name !== 'Capital') expTabs.push(t);
   });
   if (!incomeTab || !incomeTab.lines || !incomeTab.lines.length || !expTabs.length) { bail(); return; }
   var charge = null;
