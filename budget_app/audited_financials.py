@@ -2101,6 +2101,27 @@ async function uploadAll() {
                                      upload_id, _amr_err)
                     unmapped = []
 
+        # A4 fix (2026-07-05, the 210 FA "prior adjustments not saved" complaint):
+        # the review page never read the FA's SAVED mapping back into the
+        # dropdowns — every reopen re-rendered profile rules + heuristics, the
+        # accept-gate forced a full redo, and re-confirming overwrote
+        # mapped_data with the partial redo. Rebuild {auditor_desc: {section:
+        # category}} from mapped_data.source_lines; the dropdown renderers
+        # consult these FIRST and restore the rows green/accepted.
+        saved_selections = {}
+        try:
+            _md_saved = json.loads(upload.mapped_data) if upload.mapped_data else {}
+            for _cat, _info in (_md_saved.items() if isinstance(_md_saved, dict) else []):
+                if not isinstance(_info, dict):
+                    continue
+                _sec = _category_section(_cat)
+                for _sl in (_info.get("source_lines") or []):
+                    _d = (_sl.get("auditor_desc") or "").lower().strip()
+                    if _d:
+                        saved_selections.setdefault(_d, {})[_sec] = _cat
+        except Exception:
+            saved_selections = {}
+
         html = """
 <!DOCTYPE html>
 <html lang="en">
@@ -2227,6 +2248,17 @@ async function uploadAll() {
         const centuryCategories = {{ century_categories_json }};
         const CENTURY_TO_SUMMARY = {{ century_to_summary_json }};
         const existingRules = {{ existing_rules_json }};
+        // A4 fix: the mapping the FA already saved (mapped_data.source_lines),
+        // keyed by normalized auditor description. Outranks profile rules and
+        // heuristic suggestions so reopening the review shows saved work.
+        const savedSelections = {{ saved_selections_json }};
+        function savedFor(normalizedDesc, section) {
+            const m = savedSelections[normalizedDesc];
+            if (!m) return '';
+            if (m[section]) return m[section];
+            const vals = Object.values(m);
+            return vals.length === 1 ? vals[0] : '';
+        }
         const buildingLabels = {{ building_labels_json }};
         const buildingLabelSet = new Set(buildingLabels);
         const buildingLabelSections = {{ building_label_sections_json }};
@@ -2474,10 +2506,12 @@ async function uploadAll() {
         function makeDropdown(description, amount, section, amount1) {
             const id = 'map_' + itemIndex++;
             const normalized = description.toLowerCase().trim();
+            const savedCat = savedFor(normalized, section);
+            const isSaved = !!savedCat;
             const rulesForDesc = existingRules[normalized] || {};
-            let currentMapping = (typeof rulesForDesc === 'string')
+            let currentMapping = savedCat || ((typeof rulesForDesc === 'string')
                 ? rulesForDesc
-                : (rulesForDesc[section] || '');
+                : (rulesForDesc[section] || ''));
 
             // FA dir 2026-05-21: auto-fill priority (most → least specific).
             // The earlier ordering let an exact match in the long-tail
@@ -2510,15 +2544,23 @@ async function uploadAll() {
             // missing a recommendation (like entity 106 line items) looked
             // white/done. White is now reserved for confirmed mappings, peach
             // means "still needs Accept", green means "accepted".
-            const bgStyle = 'background:#fff3cd;';
+            // A4 fix: rows restored from the saved mapping start green and
+            // accepted — saved work must look saved.
+            const bgStyle = isSaved ? 'background:#d4edda;' : 'background:#fff3cd;';
 
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" data-suggested="' + (isSuggestion ? 'true' : 'false') + '" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (currentMapping || '').replace(/"/g, '&quot;') + '" data-accepted="' + (isSaved ? 'true' : 'false') + '" data-suggested="' + (isSuggestion ? 'true' : 'false') + '" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(currentMapping);
             html += '</select>';
-            html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            if (isSaved) {
+                html += '<button class="accept-btn" disabled style="padding:3px 8px; font-size:11px; background:#16a34a; color:#fff; border:none; border-radius:3px; white-space:nowrap;" title="Restored from saved mapping">✓</button>';
+            } else {
+                html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            }
             html += '</div>';
-            if (isSuggestion) {
+            if (isSaved) {
+                html += '<div style="font-size:10px; color:#0f766e; margin-top:2px;">restored from saved mapping</div>';
+            } else if (isSuggestion) {
                 html += '<div class="suggested-hint" style="font-size:10px; color:#7c6500; font-style:italic; margin-top:2px;">💡 suggested — please confirm or change</div>';
             }
             return html;
@@ -2527,15 +2569,23 @@ async function uploadAll() {
         // Version for split rows — inherits parent mapping, starts yellow
         function makeDropdownWithDefault(description, amount, section, defaultMapping, amount1) {
             const id = 'map_' + itemIndex++;
+            // A4 fix: the FA's saved mapping outranks the inherited default.
+            const savedCat = savedFor(description.toLowerCase().trim(), section);
+            if (savedCat) defaultMapping = savedCat;
+            const isSaved = !!savedCat;
             // FA dir 2026-05-21: peach for ALL unaccepted rows (consistent
             // with makeDropdown above). Split rows without a default also
             // need attention, not blend into white.
-            const bgStyle = 'background:#fff3cd;';
+            const bgStyle = isSaved ? 'background:#d4edda;' : 'background:#fff3cd;';
             let html = '<div data-section="' + (section || 'expense') + '" style="display:flex; align-items:center; gap:4px;">';
-            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="false" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
+            html += '<select id="' + id + '" data-desc="' + description.replace(/"/g, '&quot;') + '" data-amount="' + (amount || 0) + '" data-amount1="' + (amount1 || 0) + '" data-orig-cat="' + (defaultMapping || '').replace(/"/g, '&quot;') + '" data-accepted="' + (isSaved ? 'true' : 'false') + '" onchange="onDropdownChange(this); renderReconciliation(); updateAcceptState();" style="flex:1; padding:4px; font-size:12px; border:1px solid #ccc; border-radius:3px; cursor:pointer; ' + bgStyle + '">';
             html += buildSelectOptions(defaultMapping);
             html += '</select>';
-            html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            if (isSaved) {
+                html += '<button class="accept-btn" disabled style="padding:3px 8px; font-size:11px; background:#16a34a; color:#fff; border:none; border-radius:3px; white-space:nowrap;" title="Restored from saved mapping">✓</button>';
+            } else {
+                html += '<button onclick="acceptRow(this)" class="accept-btn" style="padding:3px 8px; font-size:11px; background:#f59e0b; color:#fff; border:none; border-radius:3px; cursor:pointer; white-space:nowrap;" title="Confirm this mapping">✓ Accept</button>';
+            }
             if (defaultMapping) {
                 html += '<div style="font-size:10px; color:#856404; margin-top:1px;">Inherited: ' + defaultMapping + '</div>';
             }
@@ -4097,6 +4147,7 @@ async function uploadAll() {
         html = html.replace("{{ century_categories_json }}", json.dumps(portfolio_labels))
         html = html.replace("{{ century_to_summary_json }}", json.dumps(century_to_summary_extended))
         html = html.replace("{{ existing_rules_json }}", json.dumps(existing_rules))
+        html = html.replace("{{ saved_selections_json }}", json.dumps(saved_selections))
         html = html.replace("{{ building_labels_json }}", json.dumps(building_labels))
         html = html.replace("{{ building_label_sections_json }}", json.dumps(building_label_sections))
         html = html.replace("{{ standard_century_labels_json }}", json.dumps(standard_century_labels))
@@ -4783,9 +4834,38 @@ async function uploadAll() {
             align["sections"] = sections_report
             extracted["_alignment"] = align
             upload.raw_extraction = json.dumps(extracted)
+            # A1 fix (2026-07-05): a year flip must carry the SAVED mapping
+            # with it — mapped_data feeds Summary Col 2 and the drill-down,
+            # and leaving it un-flipped silently diverged confirmed audits
+            # from their corrected raw extraction. Swap year_totals + per-line
+            # amounts for every mapped category in the flipped section(s).
+            _mapped_flipped = 0
+            try:
+                _md = json.loads(upload.mapped_data) if upload.mapped_data else {}
+                if isinstance(_md, dict) and _md:
+                    for _cat, _info in _md.items():
+                        if not isinstance(_info, dict):
+                            continue
+                        _cat_sec = "revenue" if _category_section(_cat) == "revenue" else "expenses"
+                        if _cat_sec not in secs:
+                            continue
+                        _yt = _info.get("year_totals")
+                        if isinstance(_yt, list) and len(_yt) >= 2:
+                            _info["year_totals"] = [_yt[1], _yt[0]] + list(_yt[2:])
+                            _info["total"] = _info["year_totals"][0]
+                        for _sl in (_info.get("source_lines") or []):
+                            _am = _sl.get("amounts")
+                            if isinstance(_am, list) and len(_am) >= 2:
+                                _sl["amounts"] = [_am[1], _am[0]] + list(_am[2:])
+                        _mapped_flipped += 1
+                    if _mapped_flipped:
+                        upload.mapped_data = json.dumps(_md)
+            except Exception:
+                logger.exception("reverse-years: mapped_data sync failed for upload %s", upload_id)
             upload.updated_at = datetime.utcnow()
             db.session.commit()
-            return jsonify({"success": True, "reversed": secs})
+            return jsonify({"success": True, "reversed": secs,
+                            "mapped_categories_flipped": _mapped_flipped})
         except Exception as e:
             db.session.rollback()
             logger.error("reverse-years failed for upload %s: %s", upload_id, e)
