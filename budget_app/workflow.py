@@ -35273,6 +35273,7 @@ tr.total td { font-weight: 700; background: #f5f7f8; border-top: 1.5px solid var
         <div class="wk"><div class="wk-l">Required to balance</div><div class="wk-v" id="wifReq">—</div><div class="wk-s" id="wifCur"></div></div>
         <button class="wif-reset" onclick="wifResetAll()">Reset to Century proposal</button>
       </div>
+      <p class="tbl-note" id="wifCaution" style="display:none; color:#92400e; font-weight:600;">This draft shows an unusually large gap against current {{ words.charge_word or 'common charge' }}s — the budget build may still be in progress. Treat the number above as directional until Century confirms the draft is complete.</p>
       <div id="wifBody"></div>
       <p class="tbl-note">A balanced budget collects exactly what it spends: {{ words.charge_word or 'common charge' }}s must cover total operating expenses minus all other income. Lines the board cannot adjust here (and any schedule outside the detail tabs) are held at the Century proposal.</p>
     </div>
@@ -35327,30 +35328,47 @@ var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
   var charge = null;
   incomeTab.lines.forEach(function (l) { if (!charge || (l.proposed || 0) > (charge.proposed || 0)) charge = l; });
   if (!charge || !(charge.current > 1) || !(charge.proposed > 0)) { bail(); return; }
-  var incomeProp = 0;
-  incomeTab.lines.forEach(function (l) { incomeProp += (l.proposed || 0); });
+  var incomeLinesSum = 0;
+  incomeTab.lines.forEach(function (l) { incomeLinesSum += (l.proposed || 0); });
+  var incomeProp = incomeLinesSum;
   if (sumTab && sumTab.rows) {
     sumTab.rows.forEach(function (r) {
-      if (r.label === 'Total Income' && typeof r.col7_proposed_budget === 'number' && r.col7_proposed_budget > 0) incomeProp = r.col7_proposed_budget;
+      var v = r.col7_proposed_budget;
+      // Sanity band (2026-07-05 sweep): partially built budgets can compute
+      // absurd summary totals (829 income total = 1,500 against 3.16M of
+      // visible income lines). Trust the Summary total only when it covers at
+      // least the charge line and stays within twice the visible lines;
+      // otherwise stay consistent with the numbers the reader can see.
+      if (r.label === 'Total Income' && typeof v === 'number'
+          && v >= (charge.proposed || 0) && v <= incomeLinesSum * 2) incomeProp = v;
     });
   }
   var otherIncome = incomeProp - (charge.proposed || 0);
   var lines = [];
+  var negSum = 0;
   expTabs.forEach(function (t) {
     (t.lines || []).forEach(function (l) {
-      if ((l.proposed || 0) > 0.5) lines.push({ cat: t.name, d: l.description || '', prop: l.proposed, pct: 0 });
+      var p = l.proposed || 0;
+      if (p > 0.5) lines.push({ cat: t.name, d: l.description || '', prop: p, pct: 0 });
+      else if (p < -0.5) negSum += p;
     });
   });
   if (!lines.length) { bail(); return; }
   var leverBase = 0;
   lines.forEach(function (l) { leverBase += l.prop; });
-  var fullExp = leverBase;
-  if (sumTab && sumTab.rows) {
+  var baseAll = leverBase + negSum;
+  var fullExp = baseAll;
+  if (sumTab && sumTab.rows && baseAll > 0) {
     sumTab.rows.forEach(function (r) {
-      if (r.label === 'Total Expenses' && typeof r.col7_proposed_budget === 'number' && r.col7_proposed_budget > leverBase) fullExp = r.col7_proposed_budget;
+      var v = r.col7_proposed_budget;
+      // Same sweep on the expense side: computed totals can come back
+      // negative (872), zero (829) or doubled (710) on unfinished builds.
+      // Accept only a positive total within 0.9x to 2x of the visible lines.
+      if (r.label === 'Total Expenses' && typeof v === 'number'
+          && v > 0 && v >= baseAll * 0.9 && v <= baseAll * 2) fullExp = v;
     });
   }
-  var fixedOther = Math.max(0, fullExp - leverBase);
+  var fixedOther = fullExp - leverBase;
   function money(n) {
     var neg = n < 0; n = Math.round(Math.abs(n));
     return (neg ? '-$' : '$') + n.toLocaleString('en-US');
@@ -35384,9 +35402,12 @@ var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
       '</div>';
     });
   });
-  if (fixedOther > 0.5) {
+  if (Math.abs(fixedOther) > 0.5) {
+    var foLabel = fixedOther >= 0
+      ? 'Schedules outside the adjustable detail — held at the Century proposal'
+      : 'Credits and adjustments (not adjustable) — held at the Century proposal';
     h += '<div class="wif-cat"><span>Everything else in this budget</span><span>' + money(fixedOther) + '</span></div>' +
-      '<div class="wif-row wif-fixed"><div class="wif-d">Schedules outside the adjustable detail — held at the Century proposal</div>' +
+      '<div class="wif-row wif-fixed"><div class="wif-d">' + foLabel + '</div>' +
       '<div class="wif-lever"></div><div class="wif-val">' + money(fixedOther) + '</div><div class="wif-delta">—</div></div>';
   }
   document.getElementById('wifBody').innerHTML = h;
@@ -35428,6 +35449,8 @@ var WIF_WORD = {{ (words.charge_word or 'common charge') | tojson }};
     document.getElementById('wifReq').textContent = money(b.req);
     document.getElementById('wifMod').textContent = mod === 0 ? 'At Century proposal'
       : mod + ' line' + (mod === 1 ? '' : 's') + ' adjusted';
+    var warn = document.getElementById('wifCaution');
+    if (warn) warn.style.display = Math.abs(b.pct) > 25 ? '' : 'none';
   }
   document.getElementById('wifOther').textContent = '−$' + Math.round(otherIncome).toLocaleString('en-US');
   document.getElementById('wifCur').textContent = 'current: ' + money(charge.current);
