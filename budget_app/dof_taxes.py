@@ -545,7 +545,10 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
         total_exemptions_current += ex["current_year"]
         total_exemptions_budget += ex["budget_year"]
 
-    net_tax = gross_tax - total_exemptions_budget
+    # A tax bill never goes negative: when DOF has no AV/tax data (gross 0)
+    # or exemptions exceed the gross, floor at 0 instead of producing a
+    # nonsense negative bill (215/308 showed -$469k/-$347k, 2026-07-05).
+    net_tax = max(0.0, gross_tax - total_exemptions_budget)
 
     # FA dir 2026-06-03 (#6): Operating Assessment proposed budget =
     # first-half tax bill × 2 × pct (default 17.5%). The pct is editable

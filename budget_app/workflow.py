@@ -1260,6 +1260,39 @@ def create_workflow_blueprint(db):
         return jsonify(result)
 
 
+    def _re_tax_overrides_for(budget):
+        """The ONE override-prep for every compute_re_taxes read site: load
+        re_taxes_overrides and backfill missing/zero exemption keys from the
+        G&A 6315 lines' current_budget (FA dir 2026-05-18: the RE-tax page
+        and the G&A tab must agree on the same dollars). Extracted 2026-07-05
+        so the dashboard bootstrap / summary pins / client doc / Excel export
+        can't drift from GET /api/re-taxes again."""
+        import json as _json
+        overrides = None
+        if budget and budget.assumptions_json:
+            try:
+                overrides = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
+            except Exception:
+                overrides = None
+        overrides = dict(overrides or {})
+        if budget:
+            _GL_TO_OVERRIDE = {
+                "6315-0010": "abatement_current",  # Co-op Abatement
+                "6315-0020": "star_current",        # STAR
+                "6315-0025": "veteran_current",     # Veteran
+                "6315-0035": "sche_current",        # SCHE
+            }
+            for _gl, _key in _GL_TO_OVERRIDE.items():
+                _existing = overrides.get(_key)
+                if _existing is None or float(_existing or 0) == 0:
+                    _line = BudgetLine.query.filter_by(
+                        budget_id=budget.id, gl_code=_gl).first()
+                    if _line and _line.current_budget:
+                        # Exemptions stored negative on G&A; the RE Tax calc
+                        # expects positive amounts to subtract.
+                        overrides[_key] = abs(float(_line.current_budget))
+        return overrides
+
     def _orphan_gls_for_budget(budget):
         """Budget lines whose GL code is NOT claimed by any Summary row prefix
         but DO carry data (ytd or current_budget). Mirrors the orphan
@@ -1728,7 +1761,14 @@ def create_workflow_blueprint(db):
         try:
             from dof_taxes import is_coop, compute_re_taxes
             if is_coop(entity_code):
-                re_taxes_data = compute_re_taxes(entity_code, assumptions.get("re_taxes_overrides"))
+                _rt_ovr = _re_tax_overrides_for(budget)
+                re_taxes_data = compute_re_taxes(entity_code, _rt_ovr)
+                if re_taxes_data:
+                    # Parity with GET /api/re-taxes — the other producer of
+                    # window._reTaxesData (saved cell edits + 10/31 toggle).
+                    if _rt_ovr.get("cell_overrides"):
+                        re_taxes_data["cell_overrides"] = _rt_ovr["cell_overrides"]
+                    re_taxes_data["after_oct31"] = bool(_rt_ovr.get("after_oct31"))
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f"RE Taxes fetch failed for {entity_code}: {e}")
@@ -3746,41 +3786,9 @@ def create_workflow_blueprint(db):
                 return jsonify({"error": "Not a co-op — condos do not have building-level RE taxes", "is_coop": False}), 200
             import json as _json
             budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
-            overrides = None
-            if budget and budget.assumptions_json:
-                try:
-                    assumptions = _json.loads(budget.assumptions_json)
-                    overrides = assumptions.get("re_taxes_overrides")
-                except Exception:
-                    pass
-
-            # FA dir 2026-05-18 (148 item #4): the RE Tax page wasn't subtracting
-            # the right benefit-credit amounts. The dof_taxes module only knew
-            # about FA-entered overrides; on 148 those had stale/seed values
-            # ($510, $510, $408, $510 → $1,938 total). The actual GL-side
-            # budget for 148's exemptions is $463,868 (per 6315-0010/0020/
-            # 0025/0035). Fall back to the G&A budget line `current_budget`
-            # values whenever an override is missing OR zero — that way the
-            # RE Tax page and the G&A tab agree on the same dollars.
-            if budget:
-                overrides = dict(overrides or {})
-                _GL_TO_OVERRIDE = {
-                    "6315-0010": "abatement_current",  # Co-op Abatement
-                    "6315-0020": "star_current",        # STAR
-                    "6315-0025": "veteran_current",     # Veteran
-                    "6315-0035": "sche_current",        # SCHE
-                }
-                for _gl, _key in _GL_TO_OVERRIDE.items():
-                    _existing = overrides.get(_key)
-                    # Only backfill from GL if override is missing or zero
-                    if _existing is None or float(_existing or 0) == 0:
-                        _line = BudgetLine.query.filter_by(
-                            budget_id=budget.id, gl_code=_gl
-                        ).first()
-                        if _line and _line.current_budget:
-                            # Exemptions stored as negative on G&A side; the
-                            # RE Tax calc expects positive amounts to subtract.
-                            overrides[_key] = abs(float(_line.current_budget))
+            # Override prep (load + FA-dir-2026-05-18 G&A 6315 backfill) lives
+            # in _re_tax_overrides_for — shared with every other producer.
+            overrides = _re_tax_overrides_for(budget)
 
             result = compute_re_taxes(entity_code, overrides)
             # Pass through saved per-cell overrides (numeric + formula sources)
@@ -9129,14 +9137,8 @@ def create_workflow_blueprint(db):
             if ws is not None:
                 ws.sheet_state = "hidden"
             return
-        _ov = None
         try:
-            if budget and budget.assumptions_json:
-                _ov = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
-        except Exception:
-            _ov = None
-        try:
-            rt = compute_re_taxes(entity_code, _ov or {})
+            rt = compute_re_taxes(entity_code, _re_tax_overrides_for(budget))
         except Exception as _e:
             if edit_log is not None:
                 edit_log.append({"sheet": "RE Taxes", "error": str(_e)[:120]})
@@ -9586,13 +9588,7 @@ def create_workflow_blueprint(db):
         try:
             from dof_taxes import is_coop as _is_coop, compute_re_taxes as _compute_re_taxes
             if _is_coop(entity_code):
-                _rt_overrides = None
-                if budget and budget.assumptions_json:
-                    try:
-                        _rt_overrides = _json.loads(budget.assumptions_json).get("re_taxes_overrides")
-                    except Exception:
-                        _rt_overrides = None
-                _rt = _compute_re_taxes(entity_code, _rt_overrides or {})
+                _rt = _compute_re_taxes(entity_code, _re_tax_overrides_for(budget))
                 _val = _rt.get("operating_assessment_proposed")
                 if _val is not None and abs(float(_val)) > 0.005:
                     _op_assess_proposed = round(float(_val), 2)
@@ -13076,13 +13072,7 @@ def create_workflow_blueprint(db):
             except ImportError:
                 from budget_app.dof_taxes import is_coop, compute_re_taxes
             if is_coop(entity_code):
-                overrides = None
-                try:
-                    if budget.assumptions_json:
-                        overrides = json.loads(budget.assumptions_json).get("re_taxes_overrides")
-                except Exception:
-                    overrides = None
-                rt = compute_re_taxes(entity_code, overrides or {})
+                rt = compute_re_taxes(entity_code, _re_tax_overrides_for(budget))
                 if rt and abs(float(rt.get("gross_tax") or 0)) > 0.5:
                     tabs.append({"name": "RE Tax Bill", "re_taxes": {
                         "gross_tax": round(float(rt.get("gross_tax") or 0), 2),
