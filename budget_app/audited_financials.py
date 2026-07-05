@@ -845,11 +845,13 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
                         + extraction_prompt
                     )
 
-                message = client.messages.create(
+                # 2026-07-05: sonnet-5 emits more verbose JSON than the
+                # retired sonnet-4 pin; 16384 truncated two real audits
+                # (836, 210) at stop_reason=max_tokens. Raising the cap forces
+                # the SDK's streaming path (non-streaming refuses long
+                # operations) — get_final_message() returns the same Message.
+                with client.messages.stream(
                     model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-5"),
-                    # 2026-07-05: sonnet-5 emits more verbose JSON than the
-                    # retired sonnet-4 pin; 16384 truncated two real audits
-                    # (836, 210) at stop_reason=max_tokens. Env-overridable.
                     max_tokens=int(os.environ.get("CLAUDE_MAX_TOKENS", "32768")),
                     messages=[
                         {
@@ -870,7 +872,8 @@ YOUR ENTIRE RESPONSE IS A SINGLE JSON OBJECT. Begin with an open brace and end w
                             ]
                         }
                     ]
-                )
+                ) as _stream:
+                    message = _stream.get_final_message()
                 stop_reason = getattr(message, "stop_reason", None)
                 response_text = ""
                 for block in (message.content or []):
