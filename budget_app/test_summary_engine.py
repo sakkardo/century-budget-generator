@@ -73,6 +73,38 @@ def main():
             sys.stderr.write("  " + f + "\n")
         sys.stderr.write("If intentional: regenerate summary_test_vectors.json in the same commit.\n")
         sys.exit(1)
+    # F3 regression (204 dry run 2026-07-06): duplicate-labeled rows must
+    # receive the audit value ONCE, with a loud warning — 204's two 'Capital
+    # Assessment' rows silently double-counted $1,005,049 before this.
+    dup_rows = [
+        SimpleNamespace(id=1, label="Capital Assessment", section="Non-Operating Income",
+                        row_type="data", display_order=1, gl_prefixes_json=None,
+                        source_tab=None, footnote_marker=None, cell_formulas_json=None,
+                        col1_prior_actual=None, col6_approved_budget=None,
+                        col7_proposed_budget=None, col1_override=None, col2_override=None,
+                        col3_override=None, col4_override=None, col5_override=None,
+                        col6_override=None),
+        SimpleNamespace(id=2, label="Capital Assessment", section="Non-Operating Income",
+                        row_type="data", display_order=2, gl_prefixes_json=None,
+                        source_tab=None, footnote_marker=None, cell_formulas_json=None,
+                        col1_prior_actual=None, col6_approved_budget=None,
+                        col7_proposed_budget=None, col1_override=None, col2_override=None,
+                        col3_override=None, col4_override=None, col5_override=None,
+                        col6_override=None),
+    ]
+    row_au = (177, json.dumps({"Capital Assessment": {
+        "total": 1005049, "year_totals": [1005049, 0], "years": [],
+        "source_lines": [{"auditor_desc": "Capital Assessment", "amounts": [1005049, 0]}],
+    }}), "2025", None, None, "x.pdf", None, None)
+    out = compute_summary("999", 2027, dup_rows, [], 4, row_au=row_au)
+    c2s = [r.get("col2") for r in out["rows"]]
+    assert c2s[0] == 1005049 and c2s[1] is None, (
+        "F3 REGRESSION: duplicate-label col2 = %r (want [1005049, None])" % c2s)
+    warn_types = {w.get("type") for w in out.get("warnings", [])}
+    assert "duplicate_label_col2" in warn_types, (
+        "F3 REGRESSION: duplicate-label warning missing (got %r)" % warn_types)
+    print("  F3 dup-label case OK (single assignment + loud warning)")
+
     print("summary_engine OK: %d real-building vectors match frozen /api/summary outputs." % len(vectors))
 
 

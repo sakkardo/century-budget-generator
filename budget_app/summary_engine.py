@@ -220,6 +220,8 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
     # a confirmed audit has empty mapped_data — see FA #2 fix below.
     warnings = []
     col2_lookup = {}
+    _col2_assigned_labels = set()   # F3: each audit category lands on ONE row
+    _col2_dup_labels = set()
     col2_meta = {}        # {summary_label: {matched_category, match_type}}
     # source_lines per summary label = the auditor's raw line items that
     # rolled up into Col 2 for this row. Used by the Inspector drill-down
@@ -587,7 +589,19 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
             pass
 
         # Compute cols 3-5 from budget_lines via GL prefix aggregation
+        # 204 dry run 2026-07-06 (F3): a summary with DUPLICATE-labeled rows
+        # used to hand the same audit value to every copy — 204's two
+        # 'Capital Assessment' rows inflated Non-Op Income col2 by
+        # $1,005,049 with zero warnings. The audit value now goes to the
+        # FIRST row bearing the label; later duplicates get None and the
+        # duplicate is reported loudly in warnings below.
         col2 = col2_lookup.get(row.label) if isinstance(col2_lookup, dict) and "_error" not in col2_lookup else None
+        if col2 is not None:
+            if row.label in _col2_assigned_labels:
+                _col2_dup_labels.add(row.label)
+                col2 = None
+            else:
+                _col2_assigned_labels.add(row.label)
         col3 = None   # 2026 YTD actual (raw — no accruals/unpaid)
         col4 = None   # 2026 estimate (= projection + accruals + unpaid)
         col5 = None   # 2026 forecast (= col3 + col4)
@@ -1201,6 +1215,22 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
             logger.warning(f"orphan-GL scan failed for {entity_code}: {_orph_err}")
     except Exception as _warn_err:
         logger.warning(f"summary duplicate-warning scan failed for {entity_code}: {_warn_err}")
+
+    # F3: loud warning when duplicate-labeled rows collided on audit col2.
+    if _col2_dup_labels:
+        warnings.append({
+            "type": "duplicate_label_col2",
+            "severity": "high",
+            "title": "Duplicate row labels — audit value assigned once",
+            "message": (
+                "These labels appear on MORE THAN ONE summary row: "
+                + ", ".join(sorted(_col2_dup_labels))
+                + ". The 2025 audit value was assigned to the first row only "
+                "(it used to be double-counted). Merge or rename the "
+                "duplicate rows."
+            ),
+            "labels": sorted(_col2_dup_labels),
+        })
 
     return {
         "entity_code": entity_code,

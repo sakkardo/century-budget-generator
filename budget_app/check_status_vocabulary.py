@@ -48,13 +48,26 @@ try:
         fails.append("  workflow.py no longer calls compute_source_states")
     if '"source_states"' not in wf:
         fails.append("  workflow.py no longer emits the source_states payload key")
-    # 2026-07-05: wizard_update_step must advance status past not_started when
-    # it marks the wizard complete — 9 BUILT-but-not_started buildings had
-    # Send-to-PM permanently blocked (draft->pm_pending unreachable).
-    _i = wf.find("def wizard_update_step")
-    if _i == -1 or 'budget.status = "draft"' not in wf[_i:_i + 1400]:
-        fails.append("  wizard_update_step lost its status-advance "
-                     "(BUILT-but-not_started regression)")
+    # 2026-07-05/06: EVERY site that stamps wizard_completed_at (in ANY file)
+    # must advance status within the following 1500 chars — 9 buildings, then
+    # 204's dry-run build, got stranded BUILT-but-not_started where
+    # Send-to-PM (draft->pm_pending) is unreachable. A future 4th completion
+    # writer without the advance fails this gate.
+    import re as _re2
+    for _fname in ("workflow.py", "app.py"):
+        _path2 = os.path.join(base, _fname)
+        try:
+            _src2 = open(_path2, encoding="utf-8").read()
+        except OSError as _e2:
+            fails.append("  cannot read %s: %s" % (_fname, _e2))
+            continue
+        for _m in _re2.finditer(r"wizard_completed_at = (?:_dt|datetime)\.utcnow\(\)", _src2):
+            _window = _src2[_m.end():_m.end() + 1500]
+            if 'status = "draft"' not in _window:
+                _ln = _src2.count("\n", 0, _m.start()) + 1
+                fails.append("  %s:%d stamps wizard_completed_at without a "
+                             "status advance (BUILT-but-not_started regression)"
+                             % (_fname, _ln))
 except OSError as e:
     fails.append("  cannot read workflow.py: %s" % e)
 

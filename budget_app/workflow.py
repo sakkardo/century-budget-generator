@@ -4355,12 +4355,18 @@ def create_workflow_blueprint(db):
         import uuid as _uuid
         _batch_id = _uuid.uuid4().hex
 
+        # 204 dry run 2026-07-06 (F4): count what actually happened — this
+        # endpoint used to 200 "ok" while matching 0 of 69 lines.
+        _applied = 0
+        _skipped = []
         for line_data in data.get("lines", []):
             line = BudgetLine.query.filter_by(
                 budget_id=budget.id, gl_code=line_data.get("gl_code")
             ).first()
             if not line:
+                _skipped.append(str(line_data.get("gl_code")))
                 continue
+            _applied += 1
             # Track changes for audit trail — all editable fields
             changes = []
             editable_float_fields = [
@@ -4439,7 +4445,11 @@ def create_workflow_blueprint(db):
             import logging
             logging.getLogger(__name__).error(f'FA lines save failed: {e}')
             return jsonify({"error": "Failed to save changes"}), 500
-        return jsonify({"status": "ok"})
+        if _skipped:
+            logger.warning("[fa-lines] entity=%s applied=%d skipped=%d (%s)",
+                           entity_code, _applied, len(_skipped), _skipped[:5])
+        return jsonify({"status": "ok", "applied": _applied,
+                        "skipped": _skipped[:50], "skipped_count": len(_skipped)})
 
 
     @bp.route("/api/lines/<entity_code>/reclass", methods=["PUT"])
@@ -4894,6 +4904,11 @@ def create_workflow_blueprint(db):
             data = request.get_json(silent=True) or {}
         except Exception:
             return jsonify({"error": "Invalid JSON"}), 400
+        # 204 dry run 2026-07-06 (F4): an unrecognized payload used to 200 and
+        # persist NOTHING. Fail loud instead.
+        if not any(k in data for k in ("assumptions", "overrides", "override")):
+            return jsonify({"error": "payload must contain 'assumptions', "
+                                     "'overrides', or 'override'"}), 400
         import json as _json
         pa = PayrollAssumption.query.filter_by(entity_code=entity_code, budget_year=BUDGET_YEAR).first()
         if not pa:

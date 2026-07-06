@@ -6484,6 +6484,13 @@ SHAREPOINT_SOURCE_PATTERNS = [
         _re.compile(r"\bfinancial[_\- ]?statement(s)?\b", _re.I),
         _re.compile(r"\bafs\b", _re.I),
         _re.compile(r"\bfy20\d{2}\b", _re.I),  # "FY2025"
+        # 204 dry run 2026-07-06 (F1): auditors also name AFS PDFs
+        # "<EC> - <CorpName>._<year>.pdf" — no audit keyword anywhere, so the
+        # file sat 'unmatched' 18 days while the wizard said "Waiting for
+        # audit PDF". Match: starts with a 3-digit entity code AND ends with
+        # a bare year + .pdf. Tight on purpose — an "Insurance_2025.pdf"
+        # without the EC prefix stays unmatched rather than eating the slot.
+        _re.compile(r"^\s*\d{3}\b.*20\d{2}\s*\.pdf$", _re.I),
     ]),
 ]
 
@@ -10543,12 +10550,26 @@ def wizard_build_budget(entity_code):
 
         # Stamp wizard_completed_at on success
         budget.wizard_completed_at = _dt.utcnow()
+        # 204 dry run 2026-07-06 (F2): marking a budget built must ALSO
+        # advance status past not_started or Send-to-PM (draft->pm_pending)
+        # is unreachable — mirrors wizard_complete_build / wizard_update_step.
+        # The status-vocabulary gate now locks every completion writer.
+        if budget.status in (None, "", "not_started", "data_collection", "data_ready"):
+            budget.status = "draft"
         # Clear selections — they\'ve been consumed
         budget.wizard_selections_json = None
 
         db.session.commit()
         summary["ok"] = True
         summary["wizard_completed_at"] = budget.wizard_completed_at.isoformat()
+        # 204 dry run 2026-07-06 (F6): top-level counter said 0 while the YSL
+        # entry inside the same response wrote 576 lines. Sum the per-source
+        # truth so the build report can't contradict itself.
+        try:
+            summary["lines_written"] = sum(
+                int(x.get("gl_lines") or 0) for x in summary.get("selections_processed", []))
+        except Exception:
+            pass
         return jsonify(summary)
 
     except Exception as e:
@@ -11638,6 +11659,14 @@ def admin_auto_load_arrivals():
                 continue
             if len(files) > 1:
                 skipped_ambiguous += 1
+                # 204 dry run 2026-07-06 (F5): a bare count told the FA
+                # nothing — name the slot + clashing files so the wizard's
+                # per-slot picker is an obvious next step.
+                results.append({
+                    "entity_code": ec, "source_type": slot,
+                    "status": "skipped_ambiguous",
+                    "candidates": [x.get("name") or "" for x in files][:6],
+                })
                 continue
             if loaded + failed >= cap:
                 remaining += 1
