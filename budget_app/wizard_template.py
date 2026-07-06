@@ -1427,12 +1427,27 @@ function renderSharepointSources() {
     }
     html += "</div>";
   });
-  // Unmatched files (informational)
+  // Unmatched files — PDFs get a one-click "Use as 2025 audit" button
+  // (204 dry run 2026-07-06: an audit PDF sat here invisible for 18 days;
+  // the pattern matcher got smarter, this catches the long tail of auditor
+  // naming creativity). Reuses the existing select-yardi button wiring.
   const unmatched = _spSources.by_source_type.unmatched || [];
   if (unmatched.length > 0) {
-    html += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:6px;\">Other files in folder (not auto-classified): ";
-    html += unmatched.map(function (f) { return escapeHtml(f.name); }).join(", ");
-    html += "</div>";
+    const auditCandidates = (_spSources.by_source_type.audit_2025 || []).length;
+    html += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:6px;\">Other files in folder (not auto-classified):</div>";
+    unmatched.forEach(function (f) {
+      const isPdf = /\.pdf$/i.test(f.name || "");
+      html += "<div style=\"display:flex; align-items:center; gap:8px; font-size:11px; color:var(--gray-600); margin-top:3px;\">";
+      html += "<span>" + escapeHtml(f.name) + "</span>";
+      if (isPdf && auditCandidates === 0) {
+        html += "<button type=\"button\" data-action=\"select-yardi\"" +
+                " data-source-type=\"audit_2025\"" +
+                " data-item-id=\"" + escapeHtmlAttr(f.item_id) + "\"" +
+                " data-filename=\"" + escapeHtmlAttr(f.name) + "\"" +
+                " style=\"font-size:11px; padding:3px 8px; background:#fff7ed; border:1px solid #fdba74; color:#9a3412; border-radius:4px; cursor:pointer; font-weight:600;\">Use as 2025 audit</button>";
+      }
+      html += "</div>";
+    });
   }
   body.innerHTML = html;
   body.querySelectorAll('button[data-action="select-yardi"]').forEach(function (btn) {

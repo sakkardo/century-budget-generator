@@ -1216,6 +1216,29 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
     except Exception as _warn_err:
         logger.warning(f"summary duplicate-warning scan failed for {entity_code}: {_warn_err}")
 
+    # Suggestion 2 (204 dry run): duplicate labels break more than audit
+    # col2 — add-row idempotency, FA overrides, and the TBC pins all key on
+    # label. Warn on ANY label that sits on 2+ data rows, audit or not.
+    _label_counts = {}
+    for _r in summary_rows:
+        if getattr(_r, "row_type", None) == "data" and getattr(_r, "label", None):
+            _label_counts[_r.label] = _label_counts.get(_r.label, 0) + 1
+    _dup_all = sorted(l for l, c in _label_counts.items() if c > 1)
+    if _dup_all:
+        warnings.append({
+            "type": "duplicate_labels",
+            "severity": "medium",
+            "title": "%d duplicate row label%s on this summary" % (
+                len(_dup_all), "s" if len(_dup_all) > 1 else ""),
+            "message": (
+                "These labels appear on more than one row: "
+                + ", ".join(_dup_all)
+                + ". Duplicate labels confuse audit matching, row overrides, "
+                "and Add Row. Merge or rename the duplicates."
+            ),
+            "labels": _dup_all,
+        })
+
     # F3: loud warning when duplicate-labeled rows collided on audit col2.
     if _col2_dup_labels:
         warnings.append({

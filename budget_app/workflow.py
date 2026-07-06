@@ -4043,6 +4043,10 @@ def create_workflow_blueprint(db):
         if budget.status == "pm_pending":
             budget.status = "pm_in_progress"
 
+        # Suggestion 5 (204 dry run): count what actually happened so a
+        # payload that matches nothing can't read as success.
+        _pm_applied = 0
+        _pm_skipped = []
         # Update each line — match by gl_code (or id if provided)
         for line_data in data.get("lines", []):
             line = None
@@ -4055,7 +4059,9 @@ def create_workflow_blueprint(db):
                     budget_id=budget.id, gl_code=line_data["gl_code"]
                 ).first()
             if not line:
+                _pm_skipped.append(str(line_data.get("gl_code") or line_data.get("id")))
                 continue
+            _pm_applied += 1
 
             # Track changes for PM audit trail
             changes = []
@@ -4234,7 +4240,14 @@ def create_workflow_blueprint(db):
             logging.getLogger(__name__).error(f'PM lines save failed: {e}')
             return jsonify({"error": "Failed to save changes"}), 500
 
-        return jsonify(budget.to_dict())
+        _resp = budget.to_dict()
+        _resp["applied"] = _pm_applied
+        _resp["skipped"] = _pm_skipped[:50]
+        _resp["skipped_count"] = len(_pm_skipped)
+        if _pm_skipped:
+            logger.warning("[update_lines] entity=%s applied=%d skipped=%d (%s)",
+                           entity_code, _pm_applied, len(_pm_skipped), _pm_skipped[:5])
+        return jsonify(_resp)
 
 
     # ─── PM R&M review gate: bulk "no change" endpoint ────────────────────
@@ -4360,11 +4373,20 @@ def create_workflow_blueprint(db):
         _applied = 0
         _skipped = []
         for line_data in data.get("lines", []):
-            line = BudgetLine.query.filter_by(
-                budget_id=budget.id, gl_code=line_data.get("gl_code")
-            ).first()
+            line = None
+            if line_data.get("gl_code"):
+                line = BudgetLine.query.filter_by(
+                    budget_id=budget.id, gl_code=line_data.get("gl_code")
+                ).first()
+            # Suggestion 6 (204 dry run): accept id too — the PM endpoint
+            # already does; the identifier asymmetry is exactly how 69 edits
+            # once no-op'd in testing.
+            if line is None and line_data.get("id"):
+                line = BudgetLine.query.get(line_data["id"])
+                if line is not None and line.budget_id != budget.id:
+                    line = None
             if not line:
-                _skipped.append(str(line_data.get("gl_code")))
+                _skipped.append(str(line_data.get("gl_code") or line_data.get("id")))
                 continue
             _applied += 1
             # Track changes for audit trail — all editable fields
@@ -4844,6 +4866,37 @@ def create_workflow_blueprint(db):
             entity_code=entity_code, budget_year=BUDGET_YEAR
         ).order_by(PayrollPosition.sort_order).all()
         return jsonify({"status": "ok", "positions": [p.to_dict() for p in positions]})
+
+    @bp.route("/api/payroll/compute/<entity_code>", methods=["GET"])
+    def api_payroll_compute(entity_code):
+        """Server-side mirror of the payroll tab math (suggestion 3,
+        2026-07-06). READ-ONLY parity check: returns the engine components,
+        totals, and the GL pushes the roster WOULD make next to what is
+        stored — so tab-vs-server drift is visible on any building. The
+        browser stays the editor; nothing is written here."""
+        try:
+            from payroll_engine import compute_payroll, roster_gl_values
+        except ImportError:
+            from budget_app.payroll_engine import compute_payroll, roster_gl_values
+        positions = [p.to_dict() for p in PayrollPosition.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(PayrollPosition.sort_order).all()]
+        pa = PayrollAssumption.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR).first()
+        assumptions, overrides = {}, {}
+        if pa:
+            d = pa.to_dict()
+            assumptions = d.get("assumptions") or {}
+            overrides = d.get("overrides") or {}
+        result = compute_payroll(positions, assumptions, overrides)
+        budget = Budget.query.filter_by(entity_code=entity_code, year=BUDGET_YEAR).first()
+        gl_lines = []
+        if budget:
+            gl_lines = [l.to_dict() for l in BudgetLine.query.filter_by(
+                budget_id=budget.id).filter(BudgetLine.sheet_name == "Payroll").all()]
+        result["gl_push_preview"] = roster_gl_values(result["components"], gl_lines)
+        result["roster_empty"] = len(positions) == 0
+        return jsonify(result)
 
     @bp.route("/api/payroll/assumptions/<entity_code>", methods=["GET"])
     def get_payroll_assumptions(entity_code):

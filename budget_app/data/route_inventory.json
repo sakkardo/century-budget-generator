@@ -142,6 +142,7 @@
  "/api/open-ap/<entity_code>",
  "/api/open-ap/<entity_code>/<gl_code>",
  "/api/payroll/assumptions/<entity_code>",
+ "/api/payroll/compute/<entity_code>",
  "/api/payroll/positions/<entity_code>",
  "/api/pm/<entity_code>/rm-bulk-no-change",
  "/api/process",
