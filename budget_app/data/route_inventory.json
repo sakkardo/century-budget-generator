@@ -171,6 +171,7 @@
  "/api/wizard/<entity_code>/acknowledge-no-prior-budget",
  "/api/wizard/<entity_code>/approved-budget-files",
  "/api/wizard/<entity_code>/assumptions",
+ "/api/wizard/<entity_code>/auto-build",
  "/api/wizard/<entity_code>/build-budget",
  "/api/wizard/<entity_code>/flag",
  "/api/wizard/<entity_code>/foundation-status",

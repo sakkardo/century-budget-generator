@@ -1282,6 +1282,7 @@ function loadSharepointSources() {
     .then(function (data) {
       _spSources = data;
       renderSharepointSources();
+      try { autoBuildEnsureCard(); } catch (e) {}
       // Re-render foundation panel now that filename details are available.
       try { renderFoundationPanel(); } catch (e) {}
       if (info) {
@@ -2554,6 +2555,116 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   } catch (e) { /* noop */ }
 });
+
+// ── One-click Build from SharePoint (suggestion 4, preview approved
+// 2026-07-06). The button drives POST /api/wizard/<ec>/auto-build — a
+// status-driven chain: every call advances what can advance without a
+// human and returns the checklist rendered below. Human steps stay human:
+// file ambiguity pauses with a picker, the audit confirmation ALWAYS
+// pauses. The endpoint refuses built budgets, so re-clicking is safe.
+let _abPolling = false;
+let _abChoices = {};
+function autoBuildEnsureCard() {
+  const panel = document.getElementById("spSourcesPanel");
+  if (!panel || document.getElementById("autoBuildCard")) return;
+  const card = document.createElement("div");
+  card.id = "autoBuildCard";
+  card.style.cssText = "background:#fff; border:1px solid var(--gray-200); border-radius:10px; padding:14px 16px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.04);";
+  card.innerHTML = "<div style=\"display:flex; align-items:center; justify-content:space-between; gap:14px;\">" +
+    "<div><div style=\"font-size:13px; font-weight:700; color:#1e3a5f;\">\u26A1 Build from SharePoint</div>" +
+    "<div style=\"font-size:11.5px; color:var(--gray-500); margin-top:2px;\">Stages every source, extracts the audit, and builds \u2014 pausing once for your mapping confirmation.</div></div>" +
+    "<button id=\"autoBuildBtn\" onclick=\"autoBuildStart()\" style=\"background:#1e3a5f; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;\">Build automatically</button></div>" +
+    "<div id=\"autoBuildSteps\" style=\"display:none; margin-top:10px;\"></div>";
+  panel.insertBefore(card, panel.firstChild);
+}
+function autoBuildStart() {
+  _abChoices = {};
+  _abPolling = true;
+  const btn = document.getElementById("autoBuildBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Running..."; }
+  autoBuildTick();
+}
+function autoBuildChoose(slot, itemId) {
+  _abChoices[slot] = itemId;
+  const btn = document.getElementById("autoBuildBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Running..."; }
+  autoBuildTick();
+}
+function autoBuildTick() {
+  const ent = selectedEntity;
+  if (!ent) return;
+  fetch("/api/wizard/" + ent + "/auto-build", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({choices: _abChoices})
+  }).then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) { throw new Error(data.error); }
+      autoBuildRender(data);
+      const btn = document.getElementById("autoBuildBtn");
+      if (data.next_action === "wait_extract" && _abPolling) {
+        setTimeout(autoBuildTick, 6000);
+        if (btn) { btn.disabled = true; btn.textContent = "Extracting..."; }
+      } else if (data.next_action === "complete") {
+        _abPolling = false;
+        if (btn) { btn.disabled = true; btn.textContent = "Done \u2713"; }
+        try { loadFoundationStatus(); } catch (e) {}
+        try { loadSharepointSources(); } catch (e) {}
+      } else {
+        // choose_file / confirm_audit / blocked — wait for the human, keep
+        // the button re-clickable so the chain resumes after their action.
+        _abPolling = false;
+        if (btn) { btn.disabled = false; btn.textContent = "Continue build"; }
+      }
+    })
+    .catch(function (e) {
+      _abPolling = false;
+      const el = document.getElementById("autoBuildSteps");
+      if (el) { el.style.display = "block"; el.innerHTML = "<div style=\"color:#b45309; font-size:12px;\">Auto-build failed: " + escapeHtml(String(e && e.message ? e.message : e)) + "</div>"; }
+      const btn = document.getElementById("autoBuildBtn");
+      if (btn) { btn.disabled = false; btn.textContent = "Retry build"; }
+    });
+}
+function autoBuildRender(data) {
+  const el = document.getElementById("autoBuildSteps");
+  if (!el) return;
+  el.style.display = "block";
+  const ICONS = { done: "\u2713", choose: "\u23F3", waiting_confirm: "\u23F8",
+                  extracting: "\u23F3", missing: "\u2715", error: "\u2715", todo: "\u25CB" };
+  const COLORS = { done: "#16a34a", choose: "#d97706", waiting_confirm: "#d97706",
+                   extracting: "#d97706", missing: "#b91c1c", error: "#b91c1c", todo: "var(--gray-400)" };
+  let html = "";
+  (data.steps || []).forEach(function (st) {
+    const ic = ICONS[st.state] || "\u25CB";
+    const col = COLORS[st.state] || "var(--gray-400)";
+    html += "<div style=\"display:flex; gap:10px; padding:7px 2px; border-bottom:1px solid var(--gray-100); font-size:12.5px; align-items:flex-start;\">";
+    html += "<div style=\"width:20px; text-align:center; font-weight:700; color:" + col + ";\">" + ic + "</div>";
+    html += "<div style=\"flex:1;\"><div style=\"font-weight:" + (st.state === "todo" ? "400" : "600") + "; color:" + (st.state === "todo" ? "var(--gray-400)" : "#111827") + ";\">" + escapeHtml(st.title || st.key) + "</div>";
+    if (st.detail) { html += "<div style=\"font-size:11px; color:var(--gray-500); margin-top:1px;\">" + escapeHtml(st.detail) + "</div>"; }
+    if (st.state === "choose" && st.candidates && st.candidates.length) {
+      html += "<div style=\"margin-top:5px;\">";
+      st.candidates.forEach(function (c) {
+        html += "<button type=\"button\" data-ab-slot=\"" + escapeHtmlAttr(st.key) + "\" data-ab-item=\"" + escapeHtmlAttr(c.item_id || "") + "\" style=\"display:inline-flex; gap:6px; align-items:center; font-size:11px; background:#fff; border:1px solid var(--gray-200); border-radius:6px; padding:4px 9px; margin:2px 6px 2px 0; cursor:pointer;\">" + escapeHtml(c.name || "") + " <span style=\"color:var(--gray-400);\">" + escapeHtml((c.last_modified || "").slice(0, 10)) + "</span></button>";
+      });
+      html += "</div>";
+    }
+    if (st.state === "waiting_confirm") {
+      html += "<div style=\"background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:9px 12px; margin-top:6px; display:flex; align-items:center; justify-content:space-between; gap:10px;\">" +
+              "<span style=\"font-size:11.5px; color:#92400e;\">The build stays paused until you review and confirm the mapping \u2014 this step is never automatic.</span>" +
+              (st.review_url ? "<a href=\"" + escapeHtmlAttr(st.review_url) + "\" style=\"background:#d97706; color:#fff; border-radius:6px; padding:6px 14px; font-weight:700; font-size:11.5px; text-decoration:none; white-space:nowrap;\">Open review \u2192</a>" : "") + "</div>";
+    }
+    if (st.next_url) {
+      html += "<div style=\"margin-top:4px;\"><a href=\"" + escapeHtmlAttr(st.next_url) + "\" style=\"font-size:11.5px; color:#1e3a5f; font-weight:600;\">Open dashboard \u2192</a></div>";
+    }
+    html += "</div></div>";
+  });
+  el.innerHTML = html;
+  el.querySelectorAll("button[data-ab-slot]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      autoBuildChoose(b.getAttribute("data-ab-slot"), b.getAttribute("data-ab-item"));
+    });
+  });
+}
 </script>
 
 </body>

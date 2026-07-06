@@ -11278,6 +11278,215 @@ def _build_apply_maint_proof(entity_code, selection):
             pass
 
 
+
+@app.route("/api/wizard/<entity_code>/auto-build", methods=["POST"])
+def wizard_auto_build(entity_code):
+    """One-click Build from SharePoint (dry-run suggestion 4, preview
+    approved 2026-07-06). STATUS-DRIVEN chain: each call advances every
+    stage that can advance without a human, then returns the checklist the
+    wizard panel renders. Human steps stay human — file ambiguity pauses
+    with candidates, and the audit-mapping confirmation ALWAYS pauses.
+    Never touches a built budget. Body: {"choices": {slot: item_id}}.
+    """
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    body = request.get_json(silent=True) or {}
+    choices = body.get("choices") or {}
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": "No budget row for this entity"}), 404
+    if budget.wizard_completed_at:
+        return jsonify({
+            "entity_code": entity_code, "built": True, "next_action": "complete",
+            "steps": [{"key": "build", "state": "done",
+                       "title": "Budget already built",
+                       "detail": "This building is built — auto-build never touches a built budget."}],
+        })
+
+    steps = []
+
+    def step(key, state, title, detail=None, **extra):
+        d = {"key": key, "state": state, "title": title, "detail": detail}
+        d.update(extra)
+        steps.append(d)
+
+    # ── SharePoint listing (once) ────────────────────────────────────────
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code)
+        by = sp.get("by_source_type") or {}
+    except Exception as e:
+        return jsonify({"error": "SharePoint listing failed: " + str(e)[:160]}), 502
+
+    # ── staged-data facts (same definitions as /api/budgets tiles) ──────
+    def _one(sql):
+        try:
+            return db.session.execute(db.text(sql), {"ec": entity_code}).scalar() or 0
+        except Exception:
+            db.session.rollback()
+            return 0
+    staged = {
+        "ysl": _one("SELECT COUNT(*) FROM budget_lines bl JOIN budgets b ON b.id = bl.budget_id "
+                    "WHERE b.entity_code = :ec"),
+        "expense_distribution": _one("SELECT COUNT(*) FROM expense_reports WHERE entity_code = :ec"),
+        "ap_aging": _one("SELECT COUNT(*) FROM open_ap_reports WHERE entity_code = :ec"),
+    }
+    n_summary = _one("SELECT COUNT(*) FROM budget_summary_rows WHERE entity_code = :ec AND budget_year = " + str(int(_BY)))
+
+    def _select(slot, f):
+        with app.test_request_context(json={
+            "source_type": slot, "item_id": f.get("item_id"),
+            "filename": f.get("name") or "", "web_url": f.get("web_url") or "",
+        }):
+            rv = _wizard_record_selection(entity_code)
+        resp = rv[0] if isinstance(rv, tuple) else rv
+        return json.loads(resp.get_data(as_text=True) or "{}")
+
+    def _cands(files):
+        return [{"item_id": x.get("item_id"), "name": x.get("name"),
+                 "last_modified": x.get("last_modified")} for x in files][:6]
+
+    # ── approved 2026 ────────────────────────────────────────────────────
+    if n_summary > 0:
+        step("approved_2026", "done", "Approved 2026 budget", "%d summary rows" % n_summary)
+    elif bool(getattr(budget, "foundation_no_prior_budget", False)):
+        step("approved_2026", "done", "Approved 2026 budget", "No prior budget (acknowledged)")
+    else:
+        files = by.get("approved_2026") or []
+        picked = None
+        if choices.get("approved_2026"):
+            picked = next((f for f in files if f.get("item_id") == choices["approved_2026"]), None)
+        elif len(files) == 1:
+            picked = files[0]
+        if picked:
+            r = _select("approved_2026", picked)
+            step("approved_2026", "done" if r.get("ok") else "error",
+                 "Approved 2026 budget", (picked.get("name") or "")[:80])
+        elif len(files) > 1:
+            step("approved_2026", "choose", "Approved 2026 budget — pick a file",
+                 "%d files match" % len(files), candidates=_cands(files))
+        else:
+            step("approved_2026", "missing", "Approved 2026 budget",
+                 "No file in SharePoint — upload it or acknowledge no prior budget")
+
+    # ── the three Yardi slots ────────────────────────────────────────────
+    SLOT_TITLES = {"ysl": "YSL", "expense_distribution": "Expense distribution",
+                   "ap_aging": "AP aging"}
+    for slot in ("ysl", "expense_distribution", "ap_aging"):
+        title = SLOT_TITLES[slot]
+        if staged[slot] > 0:
+            step(slot, "done", title + " staged", "%d records" % staged[slot])
+            continue
+        files = by.get(slot) or []
+        picked = None
+        if choices.get(slot):
+            picked = next((f for f in files if f.get("item_id") == choices[slot]), None)
+        elif len(files) == 1:
+            picked = files[0]
+        if picked:
+            r = _select(slot, picked)
+            pr = (r.get("parse_result") or {})
+            step(slot, "done" if r.get("ok") else "error", title + " staged",
+                 ((picked.get("name") or "")[:60] + (" · " + str(pr.get("gl_lines")) + " GL lines" if pr.get("gl_lines") else "")))
+        elif len(files) > 1:
+            step(slot, "choose", title + " — 2+ files match, pick one",
+                 None, candidates=_cands(files))
+        else:
+            step(slot, "missing", title, "No file found in SharePoint")
+
+    # ── audit: select if needed; extraction/confirm state via foundation ─
+    with app.test_request_context():
+        frv = wizard_foundation_status(entity_code)
+    fresp = frv[0] if isinstance(frv, tuple) else frv
+    fs = json.loads(fresp.get_data(as_text=True) or "{}")
+    audit_state = fs.get("audit")
+    if fs.get("foundation_confirmed_at") or audit_state == "confirmed":
+        step("audit", "done", "Audit confirmed", "Foundation complete")
+    elif audit_state in ("extracted", "mapped"):
+        step("audit", "waiting_confirm", "Waiting for you — confirm the audit mapping",
+             "Extraction ready for review. This step is never automatic.",
+             review_url=fs.get("review_url"))
+    elif audit_state == "extracting":
+        step("audit", "extracting", "Audit extracting",
+             "Claude is reading the PDF — this takes a couple of minutes")
+    elif audit_state == "uploaded":
+        step("audit", "extracting", "Audit queued for extraction",
+             "Upload exists — extraction starts automatically")
+    else:
+        files = by.get("audit_2025") or []
+        picked = None
+        if choices.get("audit_2025"):
+            picked = next((f for f in files if f.get("item_id") == choices["audit_2025"]), None)
+        elif len(files) == 1:
+            picked = files[0]
+        if picked:
+            r = _select("audit_2025", picked)
+            step("audit", "extracting" if r.get("ok") else "error",
+                 "Audit PDF selected — extracting", (picked.get("name") or "")[:80])
+        elif len(files) > 1:
+            step("audit", "choose", "Audit PDF — pick a file", None, candidates=_cands(files))
+        else:
+            unmatched_pdfs = [f for f in (by.get("unmatched") or [])
+                              if (f.get("name") or "").lower().endswith(".pdf")]
+            step("audit", "missing", "No audit PDF found",
+                 ("%d unmatched PDF(s) in the folder — use the picker below the tiles"
+                  % len(unmatched_pdfs)) if unmatched_pdfs else
+                 "Nothing in SharePoint looks like the 2025 audit",
+                 candidates=_cands(unmatched_pdfs))
+
+    # ── build (only when everything above is done) ───────────────────────
+    blockers = [s for s in steps if s["state"] in ("choose", "missing", "error",
+                                                   "waiting_confirm", "extracting")]
+    if not blockers:
+        with app.test_request_context(json={}):
+            brv = wizard_build_budget(entity_code)
+        bresp = brv[0] if isinstance(brv, tuple) else brv
+        bcode = brv[1] if isinstance(brv, tuple) and len(brv) > 1 else 200
+        bp_ = json.loads(bresp.get_data(as_text=True) or "{}")
+        if bp_.get("ok"):
+            step("build", "done", "Budget built",
+                 "%s lines · status advanced to Draft" % bp_.get("lines_written"))
+            step("ready", "done", "Ready for FA review",
+                 "Open the dashboard to review the built budget",
+                 next_url="/dashboard/" + entity_code)
+        else:
+            step("build", "error", "Build failed",
+                 (bp_.get("message") or bp_.get("error") or str(bcode))[:200])
+    else:
+        step("build", "todo", "Build budget", "Runs automatically once every step above is green")
+        step("ready", "todo", "Ready for FA review", None)
+
+    # next_action: first blocker wins
+    next_action = "complete"
+    for s in steps:
+        if s["state"] == "choose":
+            next_action = "choose_file"
+            break
+        if s["state"] == "waiting_confirm":
+            next_action = "confirm_audit"
+            break
+        if s["state"] == "extracting":
+            next_action = "wait_extract"
+            break
+        if s["state"] in ("missing", "error"):
+            next_action = "blocked"
+            break
+
+    # Log the chain state for traceability (same channel as other wizard ops)
+    try:
+        db.session.execute(db.text(
+            "INSERT INTO wizard_events (entity_code, event_type, detail, created_at) "
+            "VALUES (:ec, 'auto_build_tick', :d, NOW())"
+        ), {"ec": entity_code, "d": json.dumps({"next_action": next_action,
+                                                "states": {s["key"]: s["state"] for s in steps}})[:1500]})
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    return jsonify({"entity_code": entity_code, "built": False,
+                    "steps": steps, "next_action": next_action})
+
 @app.route("/api/wizard/<entity_code>/foundation-status", methods=["GET"])
 def wizard_foundation_status(entity_code):
     """Return the Foundation gate state for an entity. Used by Step 2 to render
