@@ -130,6 +130,20 @@ def main():
           ]),
           {"Residential": 0.765953, "Retail": 0.166464, "Garage": 0.067583})
 
+    # Chart-only sheets (openpyxl Chartsheet) have no cells/max_row — the
+    # 2026-07-06 portfolio import crashed on 25 real condos whose Excels
+    # carry a chart tab. The parser must skip them, not raise. The data
+    # sheet's NAME deliberately doesn't match (forces the cell-scan loop,
+    # which is the path that touched the chartsheet).
+    wb_cs = _wb("Alloc Data", [
+        [None, "CAM Allocation"], [None, "Schedule A-1"],
+        [None, "Total Expenses", "Residential", "Commercial", "Total"],
+        [None, "2026 Budget", 87.4000, 12.6000, 100.0000],
+    ])
+    wb_cs.create_chartsheet(title="Chart1", index=0)  # chartsheet FIRST
+    check("chartsheet tab present", wb_cs,
+          {"Residential": 0.874, "Commercial": 0.126})
+
     # Vertical fallback (label col / share col, one row per class).
     check("vertical layout (4-class)",
           _wb("A-1", [

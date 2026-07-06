@@ -11069,9 +11069,14 @@ def create_workflow_blueprint(db):
             for name in workbook.sheetnames:
                 n = name.lower().strip()
                 if "cam" in n or "schedule a-1" in n or n == "a-1":
-                    return workbook[name]
+                    ws = workbook[name]
+                    if getattr(ws, "max_row", None) is None:
+                        continue  # chart-only sheet, no cells
+                    return ws
             for name in workbook.sheetnames:
                 ws = workbook[name]
+                if getattr(ws, "max_row", None) is None:
+                    continue  # chart-only sheet, no cells
                 for r in range(1, min((ws.max_row or 0) + 1, 8)):
                     for c in range(1, min((ws.max_column or 0) + 1, 12)):
                         v = ws.cell(row=r, column=c).value
