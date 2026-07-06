@@ -2296,10 +2296,29 @@ async function uploadAll() {
             return parseFloat(String(v).replace(/[,$\s]/g, '')) || 0;
         }
 
+        // FA A5 (210 notes): Excel-style entry in amount cells. Same safe
+        // parser as the FA dashboard's safeEvalFormula: strip a leading '=',
+        // allow commas/$ in typed numbers, 'N%' means N/100, whitelist the
+        // characters, evaluate. Returns null when the input is not a valid
+        // arithmetic expression (caller falls back to parseDollar).
+        function safeEvalAmount(expr) {
+            let str = String(expr === undefined || expr === null ? '' : expr).trim();
+            if (!str || str === '—') return null;
+            if (str.charAt(0) === '=') str = str.substring(1);
+            str = str.split(',').join('').split('$').join('');
+            str = str.replace(/([0-9.]+)[ ]*%/g, '($1/100)');
+            if (!/^[0-9 +*/().-]+$/.test(str)) return null;
+            try {
+                const result = new Function('return (' + str + ')')();
+                if (typeof result !== 'number' || !isFinite(result)) return null;
+                return result;
+            } catch (e) { return null; }
+        }
+
         // Editable cell for current year (2025)
         function makeAmtInput(amount, rowId) {
             const raw = Math.round(amount || 0);
-            return '<input class="amt-cell" type="text" value="' + formatAmount(raw) + '" data-raw="' + raw + '" data-row="' + rowId + '" onfocus="this.value=this.dataset.raw" onblur="amtCellBlur(this)">';
+            return '<input class="amt-cell" type="text" value="' + formatAmount(raw) + '" data-raw="' + raw + '" data-row="' + rowId + '" title="Type a value or a formula: =1200+300, 2500*1.03, 10%*50000" onfocus="this.value=this.dataset.raw" onblur="amtCellBlur(this)">';
         }
 
         // Read-only cell for prior year (2024)
@@ -2308,7 +2327,10 @@ async function uploadAll() {
         }
 
         function amtCellBlur(el) {
-            const raw = parseDollar(el.value);
+            // A5: '=1200+300' / '2500*1.03' / '10%*50000' all evaluate;
+            // plain numbers behave exactly as before.
+            const evaled = safeEvalAmount(el.value);
+            const raw = (evaled !== null) ? evaled : parseDollar(el.value);
             el.dataset.raw = Math.round(raw);
             el.value = formatAmount(raw);
             // Update the linked select's data-amount so reconciliation picks it up
