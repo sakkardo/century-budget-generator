@@ -623,6 +623,10 @@ BUILDING_DETAIL_TEMPLATE = r"""
     <div id="unifiedStatusBlock" style="background:var(--blue-light); border-bottom:1px solid var(--gray-200); margin:0;">
       <!-- Diff Strip: "what changed since last visit" — renders only when last visit >24h AND there's a delta. -->
       <div id="diffStrip" style="display:none;"></div>
+      <!-- Newer-file check (Jacob 2026-07-08): on open, live-scan this building's
+           SP folder; if a source file postdates the ingested data, ask the FA
+           whether to update the budget with the new figures. -->
+      <div id="sourceFreshnessBanner" style="display:none;"></div>
       <!-- Readiness Inspector: 9-gate inline checklist (full version on Action Center). -->
       <div id="readinessInspector" style="display:none;"></div>
       <!-- FA directive 2026-05-14 (Phase 3): periodBanner + auditStatusBanner hidden
@@ -672,6 +676,91 @@ function _isUnchangedInput(el) {
   const focused = el.dataset.focusedVal;
   if (focused === undefined) return false;  // no snapshot — assume changed
   return String(el.value || '') === String(focused);
+}
+
+// ─── Newer-file-in-SharePoint check (Jacob 2026-07-08) ──────────────────────
+// On open, live-scan THIS building's SP folder (the server compares against
+// the same ingest timestamps the dashboard tiles use). If a source file is
+// newer than the ingested data, ask the FA whether to update the budget with
+// it. Dismiss is per-session AND keyed to the newest file date, so a later
+// arrival re-prompts even in the same session.
+let _sfStale = [];
+(function initSourceFreshness() {
+  fetch(`/api/building/${entityCode}/source-freshness`)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d || !d.built || !(d.stale || []).length) return;
+      _sfStale = d.stale;
+      const newestKey = d.stale.map(s => s.sp_modified || '').sort().pop() || '';
+      if (sessionStorage.getItem('sf_dismiss_' + entityCode) === newestKey) return;
+      const el = document.getElementById('sourceFreshnessBanner');
+      if (!el) return;
+      const esc = (s) => (s === null || s === undefined ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const fmtD = (iso) => { try { const dt = new Date(String(iso).replace(' ', 'T')); return isNaN(dt) ? '' : (dt.getMonth() + 1) + '/' + dt.getDate(); } catch (e) { return ''; } };
+      let html = '<div style="display:flex; align-items:flex-start; gap:10px; padding:10px 24px; background:#fffbeb; border-bottom:1px solid #fde68a;">';
+      html += '<span style="font-size:16px;">📄</span>';
+      html += '<div style="flex:1; font-size:13px; color:#92400e;">';
+      html += '<b>Newer file' + (d.stale.length > 1 ? 's' : '') + ' in SharePoint.</b> ';
+      html += 'This budget was built from older data — update it with the new figures?';
+      d.stale.forEach((s, i) => {
+        html += '<div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
+        html += '<span style="font-weight:600;">' + esc(s.label) + ':</span>';
+        html += '<span style="font-family:ui-monospace,monospace; font-size:12px;">' + esc(s.filename) + '</span>';
+        html += '<span style="font-size:12px; color:#b45309;">modified ' + esc(fmtD(s.sp_modified)) + ' · budget loaded ' + esc(fmtD(s.loaded_at)) + '</span>';
+        html += '<button type="button" data-sf-idx="' + i + '" style="font-size:12px; font-weight:600; padding:4px 10px; background:#b45309; color:white; border:none; border-radius:4px; cursor:pointer;">Update with new figures</button>';
+        if (s.web_url) html += '<a href="' + esc(s.web_url) + '" target="_blank" rel="noopener" style="font-size:12px; color:var(--blue);">Open in SP ↗</a>';
+        html += '</div>';
+      });
+      html += '</div>';
+      html += '<button type="button" id="sfDismissBtn" style="font-size:12px; color:#92400e; background:none; border:1px solid #fde68a; border-radius:4px; padding:4px 10px; cursor:pointer; flex-shrink:0;">Dismiss</button>';
+      html += '</div>';
+      el.innerHTML = html;
+      el.style.display = 'block';
+      el.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-sf-idx]');
+        if (btn) { _sfUpdateSource(parseInt(btn.getAttribute('data-sf-idx'), 10), btn); return; }
+        if (e.target.closest('#sfDismissBtn')) {
+          sessionStorage.setItem('sf_dismiss_' + entityCode, newestKey);
+          el.style.display = 'none';
+        }
+      });
+    })
+    .catch(() => {});
+})();
+
+function _sfUpdateSource(idx, btn) {
+  const s = _sfStale[idx];
+  if (!s) return;
+  let msg = 'Update ' + s.label + ' from "' + s.filename + '"?\n\n' +
+            'This re-ingests the file and refreshes the figures it feeds in this budget.';
+  if (s.source_type === 'ysl') {
+    msg += '\n\nWARNING: a YSL refresh also RESETS FA adjustments (proposed budget, overrides, accruals, notes) on every GL line present in the new file.';
+  } else if (s.source_type === 'approved_2026') {
+    msg += '\n\nNote: this replaces the Summary tab prior-budget rows with the new file.';
+  }
+  if (!confirm(msg)) return;
+  btn.disabled = true; btn.textContent = 'Updating…'; btn.style.opacity = '0.6';
+  fetch(`/api/wizard/${entityCode}/use-sp-source`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_type: s.source_type, item_id: s.item_id,
+                           filename: s.filename, web_url: s.web_url }),
+  })
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (ok && d && d.ok) {
+        showToast(s.label + ' updated from ' + s.filename + ' — reloading…', 'success');
+        setTimeout(() => window.location.reload(), 1200);
+      } else {
+        const err = (d && (d.parse_error || d.error)) || 'unknown error';
+        showToast('Update failed: ' + err, 'error');
+        btn.disabled = false; btn.textContent = 'Update with new figures'; btn.style.opacity = '1';
+      }
+    })
+    .catch(err => {
+      showToast('Update failed: ' + err, 'error');
+      btn.disabled = false; btn.textContent = 'Update with new figures'; btn.style.opacity = '1';
+    });
 }
 
 // ─── Wizard Sidebar (re-entry mode) ─────────────────────────────────────────
@@ -3039,7 +3128,7 @@ async function renderCamTab(contentDiv) {
     html += '<p style="font-size:11px; color:var(--gray-400); margin-top:6px;">Turn on <strong>“CAM drives this budget”</strong> (top right) to feed each class\'s common charges into the Summary.</p>';
   }
 
-  // Required increase -- the FA's actual worksheet math: back out other
+  // Required increase — the FA's actual worksheet math: back out other
   // income, split what's left by share, compare to current common charges.
   html += '<div style="margin-top:18px; border-top:2px solid var(--gray-200); padding-top:14px;">';
   html += '<div style="font-size:13px; font-weight:700; color:var(--gray-800); margin-bottom:8px;">Required increase</div>';
@@ -3054,7 +3143,7 @@ async function renderCamTab(contentDiv) {
     if (hasTotals) {
       html += '<div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:10px; font-size:12px;">' +
         '<div>Total allocated expense: <strong>' + fmt0(reqIncrease.grand_total_expense) + '</strong></div>' +
-        '<div>Less: other income: <strong style="color:var(--green);">−' + fmt0(reqIncrease.other_income) + '</strong></div>' +
+        '<div>Less: other income: <strong style="color:var(--green);">&minus;' + fmt0(reqIncrease.other_income) + '</strong></div>' +
         '<div>Amount to be covered by common charges: <strong>' + fmt0(reqIncrease.amount_to_be_covered) + '</strong></div>' +
         '</div>';
     }

@@ -482,7 +482,9 @@ def register_models(db):
         id = db.Column(db.Integer, primary_key=True)
         budget_id = db.Column(db.Integer, db.ForeignKey("budgets.id"), nullable=False)
         token = db.Column(db.String(64), unique=True, nullable=False)
-        created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+        # nullable: this app has no reliable per-request FA-identity resolution
+        # server-side (see app.py migration relaxing the old NOT NULL).
+        created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
         is_active = db.Column(db.Boolean, default=True)
         expires_at = db.Column(db.DateTime, nullable=True)
         client_name = db.Column(db.String(255), default="")

@@ -828,6 +828,16 @@ with app.app_context():
             logger.info("Added new uq_entity_year_ver constraint")
         except Exception:
             db.session.rollback()
+        # Board Presentation redesign (2026-07-01): this app has no reliable
+        # per-request FA-identity resolution, so a hard NOT NULL FK on who
+        # created a presentation link can't be populated. Relax it — mirrors
+        # the many other nullable "by" tracking fields already in this schema.
+        try:
+            db.session.execute(db.text("ALTER TABLE presentation_sessions ALTER COLUMN created_by DROP NOT NULL"))
+            db.session.commit()
+            logger.info("Relaxed presentation_sessions.created_by to nullable")
+        except Exception:
+            db.session.rollback()
         try:
             db.session.execute(db.text("SET lock_timeout = DEFAULT"))
             db.session.commit()
@@ -11925,6 +11935,90 @@ def admin_auto_load_arrivals():
         "ok": True, "loaded": loaded, "failed": failed,
         "skipped_ambiguous": skipped_ambiguous, "deferred_past_cap": remaining,
         "stage_bumps": stage_bumps, "cap": cap, "results": results,
+    })
+
+
+@app.route("/api/building/<entity_code>/source-freshness", methods=["GET"])
+def building_source_freshness(entity_code):
+    """Jacob 2026-07-08: on-open staleness check for the building detail page.
+
+    The newer-file signal previously lived ONLY on the FA dashboard tiles
+    (sp_inventory cache, ≤15-min-stale auto-scan) — an FA opening a built
+    budget directly never saw it. This endpoint live-scans THIS entity's SP
+    folder (force_refresh, ~2 Graph calls) and reports each source whose
+    newest SharePoint file postdates the ingested data, so the detail page
+    can ask whether to update the budget with the new figures.
+
+    Read-only: no staging, no sp_inventory writes. Uses the SAME staged-ts
+    definitions as workflow.py list_budgets and the SAME _sp_newer comparison
+    as source_status.py, so this can never disagree with the dashboard tiles.
+    audit_2025 is excluded — audits go through extract/confirm, not re-ingest.
+    """
+    try:
+        from source_status import _sp_newer, SOURCE_LABELS
+    except ImportError:
+        from budget_app.source_status import _sp_newer, SOURCE_LABELS
+    Budget = workflow_models["Budget"]
+    from workflow import BUDGET_YEAR as _BY
+
+    budget = Budget.query.filter_by(entity_code=entity_code, year=_BY).first()
+    if not budget:
+        return jsonify({"error": f"No Budget row for entity {entity_code}"}), 404
+
+    # Staged-data timestamps — mirrors workflow.py list_budgets (1015-1080).
+    def _scalar_ts(sql):
+        try:
+            row = db.session.execute(db.text(sql), {"ec": entity_code, "by": _BY}).fetchone()
+            return row[0].isoformat() if row and row[0] else None
+        except Exception:
+            db.session.rollback()
+            return None
+    loaded_ts = {
+        "approved_2026": _scalar_ts(
+            "SELECT MIN(imported_at) FROM budget_summary_rows "
+            "WHERE entity_code = :ec AND budget_year = :by"),
+        "ysl": _scalar_ts(
+            "SELECT MIN(bl.updated_at) FROM budget_lines bl "
+            "JOIN budgets b ON b.id = bl.budget_id WHERE b.entity_code = :ec"),
+        "expense_distribution": _scalar_ts(
+            "SELECT MAX(uploaded_at) FROM expense_reports WHERE entity_code = :ec"),
+        "ap_aging": _scalar_ts(
+            "SELECT MAX(uploaded_at) FROM open_ap_reports WHERE entity_code = :ec"),
+        "maint_proof": _scalar_ts(
+            "SELECT MAX(uploaded_at) FROM maint_proof_reports WHERE entity_code = :ec"),
+    }
+
+    try:
+        sp = _sharepoint_list_entity_sources(entity_code, force_refresh=True)
+    except Exception as e:
+        return jsonify({"error": f"sharepoint scan failed: {str(e)[:200]}"}), 502
+    by_type = sp.get("by_source_type") or {}
+
+    stale = []
+    for slot, ts in loaded_ts.items():
+        if not ts:
+            continue  # nothing ingested — the wizard/dashboard flows own that case
+        files = by_type.get(slot) or []
+        if not files:
+            continue
+        newest = sorted(files, key=lambda f: f.get("last_modified") or "",
+                        reverse=True)[0]
+        if _sp_newer(newest.get("last_modified"), ts):
+            stale.append({
+                "source_type": slot,
+                "label": SOURCE_LABELS.get(slot, slot),
+                "filename": newest.get("name") or "",
+                "item_id": newest.get("item_id"),
+                "web_url": newest.get("web_url") or "",
+                "sp_modified": newest.get("last_modified"),
+                "loaded_at": ts,
+            })
+
+    return jsonify({
+        "entity_code": str(entity_code),
+        "built": bool(budget.wizard_completed_at),
+        "folder_exists": bool(sp.get("folder_exists")),
+        "stale": stale,
     })
 
 

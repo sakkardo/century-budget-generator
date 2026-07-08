@@ -3577,3 +3577,7 @@ function pmToggleReclassInv(gid) {
 """
 
 
+# Board Presentation redesign (2026-07-01): client-facing template, rendered
+# ONLY from a frozen PresentationSession.snapshot_data (see board_notice_view).
+# Ported from the reviewed/approved design mockup (design-shotgun session,
+# "Formal & Institutional" concept, plan: "Client Board Presentation").
