@@ -304,6 +304,22 @@ DASHBOARD_TEMPLATE = r"""
   .action-menu-items button:hover { background: var(--gray-50); }
   .action-menu-items .del-item { color: var(--red); }
   .action-menu-items .del-item:hover { background: var(--red-light); }
+  /* ── Option C "Refined Ledger" (Jacob 2026-07-08) ─────────────────────
+     File bar: six fixed-order segments (B E Y A M Au) replace the letter
+     tiles. Color = state, hover names the source + detail, click keeps the
+     exact same jump targets the tiles had. Same shared source_states brain. */
+  .fbar { display: inline-flex; gap: 2px; }
+  .fbar .fseg { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 16px; border-radius: 3px; font-size: 8.5px; font-weight: 800; text-decoration: none; padding: 0 2px; }
+  .fbar .fseg:hover { filter: brightness(0.93); }
+  .fseg.fs-ok { background: #def7ec; color: #057a55; }
+  .fseg.fs-ok.fs-stale { box-shadow: inset 0 0 0 1.5px #d97706; color: #b45309; }
+  .fseg.fs-act { background: #fef3c7; color: #b45309; box-shadow: inset 0 0 0 1.5px #f59e0b; }
+  .fseg.fs-ready { background: #fef3c7; color: #92400e; }
+  .fseg.fs-miss { background: #fde8e8; color: #e02424; }
+  .fseg.fs-fail { background: #e02424; color: #fff; }
+  .fseg.fs-setup { background: #ede9e1; color: #a39a8b; }
+  /* Tier group header rows — pure presentation over the readiness sort. */
+  tr.grp-row td { font-size: 10px; font-weight: 800; letter-spacing: 0.06em; padding: 5px 12px; text-transform: uppercase; }
 </style>
 </head>
 <body>
@@ -370,13 +386,14 @@ DASHBOARD_TEMPLATE = r"""
         <span style="font-weight:700; color:var(--gray-500); text-transform:uppercase; letter-spacing:0.04em; font-size:11px;">Files</span>
         <span style="font-size:12px;">B 2026 Budget · E Expense Dist · Y YSL · A AP Aging · M Maint Proof · Au 2025 Audit</span>
         <span style="color:var(--gray-300); margin:0 2px;">·</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✓</span> <b>In the budget</b></span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile act" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">!</span> <b>Act now</b> — audit needs you (extract / confirm)</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ready" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">◷</span> <b>Arrived</b> — loads automatically (staged ✓ = data already in)</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile ok stale" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">↻</span> <b>Newer file in SP</b> — click to re-ingest</span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile miss" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">✕</span> <b>Missing / failed</b></span>
-        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="ds-tile setup" style="min-width:18px; height:15px; font-size:9px; padding:1px 3px;">–</span> Setup — not started</span>
-        <span style="color:var(--gray-500); margin-left:auto;">Click a tile to jump to wizard / review ↗</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-ok">B</span> <b>In the budget</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-act">Au</span> <b>Act now</b> — audit needs you (extract / confirm)</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-ready">E</span> <b>Arrived</b> — loads automatically</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-ok fs-stale">B</span> <b>Newer file in SP</b> — click to re-ingest</span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-miss">Y</span> <b>Missing</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-fail">A</span> <b>Failed in build</b></span>
+        <span style="display:inline-flex; align-items:center; gap:6px;"><span class="fseg fs-setup">M</span> Setup — not started</span>
+        <span style="color:var(--gray-500); margin-left:auto;">Hover a segment for detail · click to jump ↗</span>
       </div>
       <div id="buildingsTableWrap">
         <table id="budgets-table">
@@ -829,15 +846,56 @@ function renderBudgets(budgets) {
   // Sort by current sort state
   const col = _sortState.column;
   const dir = _sortState.direction === 'asc' ? 1 : -1;
+  // Option C (Jacob 2026-07-08): built rows with a newer file in SP sort to
+  // the top of their group — stale data is the one BUILT state that needs FA
+  // attention.
+  function _hasStale(bb) {
+    const ss = bb.source_states || {};
+    return Object.keys(ss).some(function (k) {
+      const st = ss[k] || {};
+      return st.sub === 'newer_in_sp' && st.state === 'in_budget';
+    });
+  }
   filtered.sort((a, b) => {
     const va = _getSortValue(a, col);
     const vb = _getSortValue(b, col);
     if (va < vb) return -1 * dir;
     if (va > vb) return 1 * dir;
+    if (col === 'readiness') return (_hasStale(b) ? 1 : 0) - (_hasStale(a) ? 1 : 0);
     return 0;
   });
 
+  // Option C: tier-grouped section headers. Pure presentation over the
+  // readiness sort — headers only render on the default sort (tier_order is
+  // monotonic there, so groups are contiguous), and empty groups never
+  // appear because headers are emitted on boundary crossings.
+  function _groupOf(bb) {
+    const t = (bb.readiness && bb.readiness.tier) || '';
+    if (t === 'BUILT') return 'built';
+    if (t === 'NEEDS_AUDIT' || t === 'NEEDS_FILES') return 'waiting';
+    return 'needs_you';
+  }
+  const GRP_META = {
+    needs_you: { label: 'Needs you', style: 'background:#fdf0dd; color:#b45309;' },
+    waiting:   { label: 'Waiting on others', style: 'background:#f1f0ec; color:#7d7468;' },
+    built:     { label: 'Built', style: 'background:#def7ec; color:#065f46;' },
+  };
+  const grpCounts = { needs_you: 0, waiting: 0, built: 0 };
+  filtered.forEach(function (bb) { grpCounts[_groupOf(bb)] += 1; });
+  let lastGrp = null;
+
   filtered.forEach(b => {
+    if (_sortState.column === 'readiness') {
+      const g = _groupOf(b);
+      if (g !== lastGrp) {
+        lastGrp = g;
+        const gtr = document.createElement('tr');
+        gtr.className = 'grp-row';
+        gtr.innerHTML = '<td colspan="7" style="' + GRP_META[g].style + '">' +
+          GRP_META[g].label + ' · ' + grpCounts[g] + '</td>';
+        tbody.appendChild(gtr);
+      }
+    }
     const tr = document.createElement('tr');
     // Display lifecycle stage if present (new vocabulary), fall back to legacy status label.
     // Pill color still keyed off status so existing CSS classes apply unchanged.
@@ -858,11 +916,32 @@ function renderBudgets(budgets) {
     };
     const pmLabel = pmStatusMap[b.status] || formatStatus(b.status);
 
+    // Option C: one tier-driven primary action per row. The backend already
+    // computes next_action/next_url per tier (workflow.py readiness block) —
+    // this renders it instead of making the FA infer it from tiles.
     let actionHtml = '';
+    const rd = b.readiness || {};
+    const isBuilt = rd.tier === 'BUILT';
+    const rowStale = _hasStale(b);
+    if (!isBuilt && rd.next_url) {
+      if (rd.next_action === 'build') {
+        actionHtml = `<a class="btn-action btn-green" href="${rd.next_url}" style="text-decoration:none;">Build →</a>`;
+      } else if (rd.next_action === 'audit_review') {
+        actionHtml = `<a class="btn-action btn-orange" href="${rd.next_url}" style="text-decoration:none;">Review audit →</a>`;
+      } else {
+        // Waiting tiers: no FA action exists yet — quiet wizard link (manual
+        // upload escape hatch lives there). The chase workflow lands here later.
+        actionHtml = `<a href="${rd.next_url}" style="font-size:12px; color:var(--gray-500); text-decoration:none;">Wizard ↗</a>`;
+      }
+    } else if (isBuilt && rowStale) {
+      // Newer file in SP than the built budget — the detail page prompts the
+      // update on open (source-freshness banner, shipped 2026-07-08).
+      actionHtml = `<a class="btn-action btn-orange" href="/dashboard/${b.entity_code}" style="text-decoration:none;">Update figures →</a>`;
+    }
     if (b.status === 'draft') {
-      actionHtml = `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')">Send to PM</button>`;
+      actionHtml += `<button class="btn-action btn-blue" onclick="changeStatus('${b.entity_code}', 'pm_pending')"${rowStale ? ' style="margin-left:4px;"' : ''}>Send to PM</button>`;
     } else if (b.status === 'fa_review') {
-      actionHtml = `
+      actionHtml += `
         <button class="btn-action btn-green" onclick="approveStatus('${b.entity_code}')">Approve</button>
         <button class="btn-action btn-orange" onclick="returnTopm('${b.entity_code}')" style="margin-left: 4px;">Return</button>
       `;
@@ -891,26 +970,27 @@ function renderBudgets(budgets) {
     const tiles = TILE_ORDER.map(function (o) {
       const key = o[0], letter = o[1], label = o[2];
       const s = ss[key] || { state: 'missing' };
-      let cls = 'ds-tile miss', glyph = '✕', sub = '', tip = label + ' — not in SharePoint · chase the file';
+      let cls = 'fseg fs-miss', glyph = '✕', sub = '', tip = label + ' — not in SharePoint · chase the file';
       let href = '/wizard/' + b.entity_code + '?step=2&focus=' + key;
       if (s.state === 'in_budget') {
-        cls = 'ds-tile ok';
+        cls = 'fseg fs-ok';
         glyph = '✓';
         sub = (key === 'audit_2025') ? 'conf' : (fmtDt(s.date) || '');
-        tip = (key === 'audit_2025') ? ('Audit confirmed ' + (fmtDt(s.date) || '')) : (label + ' is in the built budget');
+        tip = (key === 'audit_2025') ? ('Audit confirmed ' + (fmtDt(s.date) || ''))
+            : (label + ' is in the built budget' + (fmtDt(s.date) ? ' (loaded ' + fmtDt(s.date) + ')' : ''));
         if (key === 'audit_2025' && au && au.id) href = '/audited-financials/review/' + au.id;
         // Stale-source flag (Jacob 2026-06-10, 733's ExpDist): a newer file
         // is in SharePoint than what was ingested — surface it instead of
         // silently running on the old file. Click lands on the wizard slot
         // where one click on the new file re-ingests (parse-on-click).
         if (s.sub === 'newer_in_sp') {
-          cls = 'ds-tile ok stale';
+          cls = 'fseg fs-ok fs-stale';
           glyph = '↻';
           sub = 'new file';
           tip = label + ': a NEWER file (' + (fmtDt(s.sp_date) || 'recent') + ') is in SharePoint than the ingested data (' + (fmtDt(s.date) || '') + ') — click, then pick the new file to re-ingest';
         }
       } else if (s.state === 'needs_review') {
-        cls = 'ds-tile act';
+        cls = 'fseg fs-act';
         glyph = (s.sub === 'extracting') ? '⟳' : '!';
         sub = s.sub || 'review';
         tip = (s.sub === 'extracting') ? 'Extraction running — opens live progress'
@@ -918,28 +998,29 @@ function renderBudgets(budgets) {
             : 'Audit extracted — click to confirm the mapping';
         if (au && au.id) href = '/audited-financials/review/' + au.id;
       } else if (s.state === 'in_sp') {
-        cls = 'ds-tile ready';
+        cls = 'fseg fs-ready';
         glyph = '◷';
         sub = (s.via === 'staged') ? 'staged ✓' : (fmtDt(s.date) ? ('SP ' + fmtDt(s.date)) : 'SP');
         tip = (s.via === 'staged')
             ? (label + ' is staged — data already loaded, turns green when the budget is built')
             : (label + ' in SharePoint' + (fmtDt(s.date) ? ' since ' + fmtDt(s.date) : '') + ' — loads automatically, turns green when the budget is built');
       } else if (s.state === 'failed') {
+        cls = 'fseg fs-fail';
         glyph = '✕';
         sub = 'failed';
         tip = label + ' failed during build — fix the file and rebuild';
       } else if (s.state === 'setup') {
-        cls = 'ds-tile setup';
+        cls = 'fseg fs-setup';
         glyph = '–';
         sub = '';
         tip = 'Not started';
       }
-      return '<a href="' + href + '" class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '" data-focus="' + key + '">' +
-               '<span class="t-letter">' + letter + '<span class="t-glyph">' + glyph + '</span></span>' +
-               (sub ? '<span class="t-dt">' + sub + '</span>' : '') +
-             '</a>';
+      // Option C: segment emission — letter only; state lives in the color,
+      // detail in the tooltip. glyph/sub stay computed above because the
+      // tips reference them and future surfaces may want them back.
+      return '<a href="' + href + '" class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '" data-focus="' + key + '">' + letter + '</a>';
     });
-    const dataHtml = '<div class="ds-tiles">' + tiles.join('') + '</div>';
+    const dataHtml = '<div class="fbar">' + tiles.join('') + '</div>';
 
     // Status UX Phase 3 (2026-06-09): Days unified with the wizard \u2014 same
     // anchor (last ACTIVITY = freshest of any load timestamp or budget edit)
@@ -953,10 +1034,26 @@ function renderBudgets(budgets) {
       Object.keys(tsAll).forEach(function (k) {
         if (tsAll[k]) { const t = new Date(tsAll[k]).getTime(); if (t > last) last = t; }
       });
+      // Option C: queue-aware aging. For the two audit queues the honest
+      // anchor is the audit row's own timestamp (how long it has sat waiting
+      // for extract/confirm), not portfolio-wide activity. SLA thresholds
+      // tighten for actionable rows (7/14) vs waiting rows (14/21); built
+      // rows keep a quiet gray count.
+      let tip = 'Days since last activity (file loads or edits)';
+      if ((rd.tier === 'NEEDS_AUDIT_EXTRACT' || rd.tier === 'IN_PROGRESS') && b.audit && b.audit.ts) {
+        const at = new Date(b.audit.ts).getTime();
+        if (at > 0) { last = at; tip = 'Days this audit has waited in the ' + (rd.tier === 'IN_PROGRESS' ? 'confirm' : 'extract') + ' queue'; }
+      }
       if (last > 0) {
         const days = Math.floor((Date.now() - last) / 86400000);
-        const color = days >= 21 ? 'var(--red)' : days >= 14 ? '#a16207' : 'var(--gray-500)';
-        daysHtml = `<span style="font-weight:${days >= 14 ? 700 : 600};color:${color};" title="Days since last activity (file loads or edits)">${days}d</span>`;
+        const grp = _groupOf(b);
+        const amberAt = grp === 'needs_you' ? 7 : 14;
+        const redAt = grp === 'needs_you' ? 14 : 21;
+        const color = grp === 'built' ? 'var(--gray-500)'
+                    : days >= redAt ? 'var(--red)'
+                    : days >= amberAt ? '#a16207' : 'var(--gray-500)';
+        const hot = grp !== 'built' && days >= amberAt;
+        daysHtml = `<span style="font-weight:${hot ? 700 : 600};color:${color};" title="${tip}">${days}d</span>`;
       }
     }
 
@@ -974,9 +1071,26 @@ function renderBudgets(budgets) {
     };
     const stageStyle = stageStyles[statusLabel] || '';
     const stageTip = (statusLabel === 'PM Review') ? ('PM Review \u2014 ' + pmLabel) : statusLabel;
-    const stagePill = stageStyle
-      ? `<span class="pill" style="${stageStyle}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`
-      : `<span class="pill ${statusClass}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`;
+    // Option C: phase-aware status. Pre-build the lifecycle words said
+    // "Not Started" while the building was mid-pipeline — until a budget
+    // exists, the readiness tier is the operational truth. Post-build the
+    // lifecycle stage takes over (draft → PM → approved), unchanged.
+    const tierPillStyles = {
+      'READY_TO_BUILD': 'background:#def7ec; color:#057a55; font-weight:700;',
+      'IN_PROGRESS': 'background:#fef3c7; color:#b45309;',
+      'NEEDS_AUDIT_EXTRACT': 'background:#e5eff6; color:#22577e;',
+      'NEEDS_AUDIT': 'background:#f1f0ec; color:#7d7468;',
+      'NEEDS_FILES': 'background:#f1f0ec; color:#7d7468;',
+    };
+    let stagePill;
+    if (!isBuilt && rd.tier && tierPillStyles[rd.tier]) {
+      const tl = rd.tier_label || formatStatus(b.status);
+      stagePill = `<span class="pill" style="${tierPillStyles[rd.tier]}" title="${tl.replace(/"/g, '&quot;')}">${tl}</span>`;
+    } else {
+      stagePill = stageStyle
+        ? `<span class="pill" style="${stageStyle}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`
+        : `<span class="pill ${statusClass}" title="${stageTip.replace(/"/g, '&quot;')}">${statusLabel}</span>`;
+    }
 
     const pmName = _pmByEntity[b.entity_code] || '\u2014';
     tr.innerHTML = `
@@ -996,6 +1110,12 @@ function filterBudgetTable() {
   const query = document.getElementById('budgetSearch').value.toLowerCase();
   const rows = document.querySelectorAll('#budgets-table tbody tr');
   rows.forEach(row => {
+    // Option C: group headers vanish during a search — a lookup result set
+    // shouldn't carry section counts that no longer match what's visible.
+    if (row.classList.contains('grp-row')) {
+      row.style.display = query ? 'none' : '';
+      return;
+    }
     const text = row.textContent.toLowerCase();
     row.style.display = text.includes(query) ? '' : 'none';
   });
