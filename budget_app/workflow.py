@@ -2125,11 +2125,14 @@ def create_workflow_blueprint(db):
     #      diff without writing. UI previews this before committing.
     #   5. Restore endpoint — /api/ysl/restore/<entity_code> rewinds the
     #      most recent merge from snapshot.
-    _YSL_MERGE_ALLOWLIST = {"204", "212"}
-    # Beta safety: entities in the allowlist are PREVIEW-ONLY (dry-run only).
-    # When we're ready to enable live commits, flip this to True (or promote
-    # a per-entity set with commit privileges).
-    _YSL_MERGE_COMMIT_ENABLED = False
+    # 724 added 2026-08-18 (Jacob: "go ahead with the ysl merge for 724"):
+    # its FA re-uploaded a July YSL that the wizard never re-ingested (FA
+    # note #5) - the merge is the sanctioned refresh path for a built
+    # budget (preserves user edits, snapshots, writes BudgetRevisions).
+    _YSL_MERGE_ALLOWLIST = {"204", "212", "724"}
+    # Commits enabled 2026-08-18 with Jacob's explicit OK: dry-run stays the
+    # default mode; a live commit still requires mode=commit explicitly.
+    _YSL_MERGE_COMMIT_ENABLED = True
     _YSL_MERGE_REFRESH_FIELDS = (
         "prior_year", "ytd_actual", "ytd_budget", "current_budget",
     )
