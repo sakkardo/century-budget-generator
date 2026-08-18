@@ -7666,11 +7666,14 @@ function parsePct(s) {
   if (typeof s === 'number') return s;
   if (!s) return 0;
   s = String(s).trim();
-  const hasPct = s.endsWith('%');
   s = s.replace(/%/g, '').replace(/,/g, '');
   const n = parseFloat(s);
   if (isNaN(n)) return 0;
-  return hasPct ? n / 100 : n;
+  // FA 724 (2026-08-18): a %-formatted field ALWAYS means percent. The old
+  // suffix-sniffing kept a bare "6" as 6.0 (=600%), which cascaded a x7
+  // estimated AV and x3 benefit growth into the tax math. Same rule as CAM
+  // shares: entry is in percent, stored as a fraction, no guessing.
+  return n / 100;
 }
 function fmtDollar(n) {
   if (n == null || isNaN(n)) return '$0';
@@ -14447,6 +14450,21 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
   const catConfig = SHEET_CATEGORIES[sheetName];
 
+  // Single source of the default-proposed rule. buildLineRow (cells) and
+  // sumLines (sheet/category totals) MUST use this same function or totals
+  // silently include values no cell shows (724 #15: two zero-budget upfront
+  // insurance premiums annualized x3 into the Sheet Total only).
+  // FA #26/#25 (2026-06-15): R+M and Gen&Admin propose off the 2026 budget;
+  // Payroll Processing (5172) = 2026 budget x 1.03; others forecast-based.
+  function faDefaultProposed(l) {
+    const budget = l.current_budget || 0;
+    if (l.gl_code === '5172-0000') return budget * 1.03;
+    if (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin') {
+      return budget * (1 + (l.increase_pct || 0));
+    }
+    return faComputeForecast(l) * (1 + (l.increase_pct || 0));
+  }
+
   function buildLineRow(l) {
     const gl = l.gl_code;
     const prior = l.prior_year || 0;
@@ -14462,11 +14480,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     // not the 12-mo forecast; Payroll Processing (5172) = 2026 budget × 1.03.
     // Other expenses keep forecast×(1+incr). An explicit proposed_budget always
     // wins (handled by the `l.proposed_budget ||` below).
-    const _budgetBasis = (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin');
-    const defaultProposed = (gl === '5172-0000')
-      ? (budget * 1.03)
-      : (_budgetBasis ? (budget * (1 + (l.increase_pct || 0)))
-                      : (forecast * (1 + (l.increase_pct || 0))));
+    const defaultProposed = faDefaultProposed(l);
     let proposed;
     if (userFormula) {
       const evalResult = safeEvalFormula(userFormula);
@@ -14601,7 +14615,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
       // (B1/B4): never-budgeted income also contributes 0.
       const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-      t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || (faComputeForecast(l) * (1 + (l.increase_pct || 0))));
+      t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || faDefaultProposed(l));
     });
     return t;
   }

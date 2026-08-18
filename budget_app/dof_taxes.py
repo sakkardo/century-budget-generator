@@ -486,8 +486,20 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
         v = overrides.get(key)
         return v if (v is not None and v != 0) else default
 
-    rate = _override_or("tax_rate", dof.get("tax_rate", 0))
-    est_rate = _override_or("est_tax_rate", rate)
+    def _pct_norm(v):
+        # Percent-unit hardening (724 FA notes #19/#20/#21, 2026-08-18):
+        # tax rates, AV growth, and benefit growth are structurally < 100%,
+        # so a stored value > 1 can only be a percent-number saved raw by
+        # the old bare-entry path (parsePct kept "6" as 6.0). Normalize at
+        # compute so legacy overrides cannot inflate the math x100.
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return 0.0
+        return v / 100.0 if v > 1.0 else v
+
+    rate = _pct_norm(_override_or("tax_rate", dof.get("tax_rate", 0)))
+    est_rate = _pct_norm(_override_or("est_tax_rate", rate))
 
     # Auto-calculate transitional AV increase from DOF data
     if prior_trans_av > 0 and current_trans_av > 0:
@@ -499,9 +511,13 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
     trans_increase = overrides.get("transitional_av_increase", auto_trans_increase)
     if trans_increase is None:
         trans_increase = auto_trans_increase
+    trans_increase = _pct_norm(trans_increase)
 
-    # 1st Half (Jul-Dec): prior year transitional AV × rate
-    first_half_av = _override_or("first_half_av", prior_trans_av or current_trans_av)
+    # 1st half bills on the CURRENT-year (26/27) transitional AV — the page's
+    # g11 cell has always been labeled that way, but this fed the prior-year
+    # DOF field (724 FA note #19: "doesn't match either BBL trans av for
+    # 26/27"). An explicit first_half_av override still wins.
+    first_half_av = _override_or("first_half_av", current_trans_av or prior_trans_av)
     first_half_tax = first_half_av * rate / 2
 
     # 2nd Half (Jan-Jun): current transitional AV × estimated rate
@@ -514,25 +530,25 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
     exemptions = {
         "veteran": {
             "gl_code": "6315-0025",
-            "growth_pct": overrides.get("veteran_growth", 0.0),
+            "growth_pct": _pct_norm(overrides.get("veteran_growth", 0.0)),
             "current_year": overrides.get("veteran_current", 0.0),
             "budget_year": 0.0,  # computed below
         },
         "sche": {
             "gl_code": "6315-0035",
-            "growth_pct": overrides.get("sche_growth", 0.0),
+            "growth_pct": _pct_norm(overrides.get("sche_growth", 0.0)),
             "current_year": overrides.get("sche_current", 0.0),
             "budget_year": 0.0,
         },
         "star": {
             "gl_code": "6315-0020",
-            "growth_pct": overrides.get("star_growth", 0.0),
+            "growth_pct": _pct_norm(overrides.get("star_growth", 0.0)),
             "current_year": overrides.get("star_current", 0.0),
             "budget_year": 0.0,
         },
         "coop_abatement": {
             "gl_code": "6315-0010",
-            "growth_pct": overrides.get("abatement_growth", 0.0),
+            "growth_pct": _pct_norm(overrides.get("abatement_growth", 0.0)),
             "current_year": overrides.get("abatement_current", 0.0),
             "budget_year": 0.0,
         },
