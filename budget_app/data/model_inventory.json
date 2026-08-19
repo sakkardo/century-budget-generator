@@ -85,7 +85,7 @@
   "table": "payroll_assumptions"
  },
  "PayrollPosition": {
-  "columns": 15,
+  "columns": 16,
   "relationships": 0,
   "table": "payroll_positions"
  },

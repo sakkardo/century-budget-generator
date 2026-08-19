@@ -619,6 +619,9 @@ def register_models(db):
         employee_count = db.Column(db.Integer, default=0)
         hourly_rate = db.Column(db.Float, default=0.0)
         bonus_per_employee = db.Column(db.Float, default=0.0)
+        # FA 724 #22 (2026-08-19): recurring additional weekly earnings
+        # (differential) — paid all 52 weeks, no OT factor, no wage increase.
+        additional_weekly = db.Column(db.Float, nullable=True)
         effective_week_override = db.Column(db.Float, nullable=True)
         # Per-position wage-increase override. Both null => inherit global from PayrollAssumption.
         # wage_increase_mode: 'pct' | 'dollar' | NULL
@@ -671,6 +674,7 @@ def register_models(db):
                 "employee_count": self.employee_count,
                 "hourly_rate": float(self.hourly_rate or 0),
                 "bonus_per_employee": float(self.bonus_per_employee or 0),
+                "additional_weekly": float(self.additional_weekly or 0),
                 "effective_week_override": float(self.effective_week_override) if self.effective_week_override is not None else None,
                 "wage_increase_mode": self.wage_increase_mode,
                 "wage_increase_value": float(self.wage_increase_value) if self.wage_increase_value is not None else None,

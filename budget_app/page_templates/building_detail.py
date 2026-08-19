@@ -5888,6 +5888,16 @@ function _ancComputeLineTotal(line) {
   return qty * annualRate * monthsFactor * occFactor;
 }
 
+function _ancMonthlyTotal(l) {
+  // FA 724 #7 (Jennifer): "total monthly" display = occupied x monthly rate
+  // x occupancy factor. Annual-period rates are shown at /12.
+  const qty = Number(l.qty) || 0;
+  const rate = Number(l.rate) || 0;
+  const occFactor = (Number(l.occupancy) || 100) / 100;
+  const moRate = l.period === 'mo' ? rate : rate / 12;
+  return qty * moRate * occFactor;
+}
+
 function _ancComputeBackupTotal(gl) {
   return _ancGetBackup(gl).reduce(function(s, l) { return s + _ancComputeLineTotal(l); }, 0);
 }
@@ -5961,14 +5971,15 @@ function ancRenderDrawer(gl) {
 
   let linesHtml = '';
   if (items.length === 0) {
-    linesHtml = '<tr><td colspan="8" style="text-align:center; color:var(--gray-500); padding:16px;"><em>No backup lines yet — click "+ Add line" to start.</em></td></tr>';
+    linesHtml = '<tr><td colspan="10" style="text-align:center; color:var(--gray-500); padding:16px;"><em>No backup lines yet — click "+ Add line" to start.</em></td></tr>';
   } else {
     items.forEach(function(l, idx) {
       const lineTotal = _ancComputeLineTotal(l);
       const esc = (l.label || '').replace(/"/g, '&quot;');
       linesHtml += '<tr>' +
         '<td><input type="text" value="' + esc + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'label\',this.value,false)"></td>' +
-        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.qty)||0) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'qty\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (l.totalUnits != null ? Number(l.totalUnits) : '') + '" placeholder="\u2014" title="Total units in the building (informational \u2014 the math uses Occupied)" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'totalUnits\',this.value,true)"></td>' +
+        '<td class="num"><input type="text" class="num-input" value="' + (Number(l.qty)||0) + '" title="Occupied units \u2014 drives the math" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'qty\',this.value,true)"></td>' +
         '<td class="num"><input type="text" class="num-input" value="' + (Number(l.rate)||0).toFixed(2) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'rate\',this.value,true)"></td>' +
         '<td><select onchange="ancUpdLine(\'' + gl + '\',' + idx + ',\'period\',this.value,false)">' +
           '<option value="mo"' + (l.period === 'mo' ? ' selected' : '') + '>Monthly</option>' +
@@ -5976,11 +5987,12 @@ function ancRenderDrawer(gl) {
         '</select></td>' +
         '<td class="num"><input type="text" class="num-input" value="' + (Number(l.monthsActive)||12) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'monthsActive\',this.value,true)"></td>' +
         '<td class="num"><input type="text" class="num-input" value="' + (Number(l.occupancy)||100) + '" onfocus="this.select()" oninput="ancUpdLine(\'' + gl + '\',' + idx + ',\'occupancy\',this.value,true)"></td>' +
+        '<td class="num" style="color:var(--gray-600);">' + _ancFmtD2(_ancMonthlyTotal(l)) + '</td>' +
         '<td class="num anc-line-total">' + _ancFmtD2(lineTotal) + '</td>' +
         '<td><button class="anc-remove-btn" onclick="ancRemoveLine(\'' + gl + '\',' + idx + ')" title="Remove">✕</button></td>' +
       '</tr>';
     });
-    linesHtml += '<tr class="anc-total-row"><td colspan="6" style="text-align:right;">Backup Total</td><td class="num">' + _ancFmtD2(backupTotal) + '</td><td></td></tr>';
+    linesHtml += '<tr class="anc-total-row"><td colspan="7" style="text-align:right;">Backup Total</td><td class="num">' + _ancFmtD2(_ancGetBackup(gl).reduce(function(s2, l2) { return s2 + _ancMonthlyTotal(l2); }, 0)) + '</td><td class="num">' + _ancFmtD2(backupTotal) + '</td><td></td></tr>';
   }
 
   const priorYear = Number(line.prior_year) || 0;
@@ -5995,8 +6007,8 @@ function ancRenderDrawer(gl) {
       '<div class="anc-compare-cell ' + compareCls + '"><div class="anc-label">Current Col 6</div><div class="anc-value">' + _ancFmtD(col6) + '</div><div class="anc-hint">' + driftLabel + '</div></div>' +
     '</div>' +
     '<table class="anc-lines">' +
-      '<colgroup><col style="width:28%"><col style="width:10%"><col style="width:13%"><col style="width:11%"><col style="width:10%"><col style="width:11%"><col style="width:14%"><col style="width:3%"></colgroup>' +
-      '<thead><tr><th>Label</th><th class="num">Qty</th><th class="num">Rate</th><th>Period</th><th class="num">Months</th><th class="num">Occ %</th><th class="num">Annual Total</th><th></th></tr></thead>' +
+      '<colgroup><col style="width:20%"><col style="width:8%"><col style="width:8%"><col style="width:10%"><col style="width:9%"><col style="width:8%"><col style="width:8%"><col style="width:13%"><col style="width:13%"><col style="width:3%"></colgroup>' +
+      '<thead><tr><th>Label</th><th class="num" title="Total units in the building (informational)">Total Units</th><th class="num" title="Occupied units drive the math">Occupied</th><th class="num">Rate</th><th>Period</th><th class="num">Months</th><th class="num">Occ %</th><th class="num">Monthly Total</th><th class="num">Annual Total</th><th></th></tr></thead>' +
       '<tbody>' + linesHtml + '</tbody>' +
     '</table>' +
     '<div class="anc-actions">' +
@@ -12150,7 +12162,8 @@ async function renderPayrollTab(sheetLines, contentDiv) {
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Bonus $/Emp</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Override the global Effective Week for this position only. Leave blank to use global.">Eff Wk Override</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Per-position wage increase % override. Leave blank to inherit the global rate.">Incr %</th>
-              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Per-position wage increase $/hr override. Leave blank to inherit the global rate.">Incr $/hr</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Per-position wage increase in DOLLARS PER WEEK (e.g. the union's flat $/week raise). Leave blank to inherit the global rate.">Incr $/wk</th>
+              <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);" title="Recurring additional earnings $/week (e.g. a differential) — paid all 52 weeks, taxed like wages, not multiplied by the OT factor or the wage increase.">Add'l $/wk</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Weekly Pay</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Pre-Incr Wages</th>
               <th class="r" style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:8px 10px; border-bottom:2px solid var(--gray-200);">Post-Incr Rate</th>
@@ -12166,6 +12179,27 @@ async function renderPayrollTab(sheetLines, contentDiv) {
           <tfoot id="prRosterFoot"></tfoot>
         </table>
       </div>
+    </div>
+  </div>`;
+
+  // ── Other Payroll (FA 724 #23) — flat lines outside the roster math ────
+  html += `
+  <div style="background:white; border-radius:10px; border:1px solid var(--gray-200); margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:var(--gray-50); border-bottom:1px solid var(--gray-200); border-radius:10px 10px 0 0;">
+      <h3 style="font-size:13px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin:0;">Other Payroll Expense</h3>
+      <span style="font-size:11px; color:var(--gray-500);">Flat amounts (e.g. outside employees) — not run through taxes, OT, or benefits; pushed to the GL you pick.</span>
+    </div>
+    <div style="padding:10px 20px 14px;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="background:var(--gray-50);">
+          <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:6px 10px;">Label</th>
+          <th style="text-align:right; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:6px 10px;">Annual $</th>
+          <th style="text-align:left; font-size:10px; font-weight:700; color:var(--gray-500); text-transform:uppercase; padding:6px 10px;">GL Code</th>
+          <th style="width:40px;"></th>
+        </tr></thead>
+        <tbody id="prOtherBody"></tbody>
+      </table>
+      <button onclick="prOtherAdd()" style="margin-top:8px; background:none; border:1px dashed #9ca3af; border-radius:6px; padding:6px 14px; font-size:12px; color:var(--gray-600); cursor:pointer;">+ Add other payroll line</button>
     </div>
   </div>`;
 
@@ -12398,6 +12432,7 @@ function prRosterChanged(el) {
     const rateInput = tr.querySelector('.pr-pos-rate');
     const bonusInput = tr.querySelector('.pr-pos-bonus');
     const effWkInput = tr.querySelector('.pr-pos-effwk');
+    const addWkInput = tr.querySelector('.pr-pos-addwk');
     if (!nameInput) return;
     const effWkRaw = effWkInput ? effWkInput.value.trim() : '';
     const priorRow = prior[i] || {};
@@ -12407,6 +12442,7 @@ function prRosterChanged(el) {
       hourly_rate: parseFloat(rateInput.value.replace(/[^0-9.]/g, '')) || 0,
       bonus_per_employee: bonusInput ? (parseFloat(bonusInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
       effective_week_override: effWkRaw === '' ? null : (parseFloat(effWkRaw) || null),
+      additional_weekly: addWkInput && addWkInput.value.trim() !== '' ? (parseFloat(addWkInput.value.replace(/[^0-9.]/g, '')) || 0) : 0,
       wage_increase_mode: priorRow.wage_increase_mode || null,
       wage_increase_value: (priorRow.wage_increase_value != null) ? priorRow.wage_increase_value : null,
       extra_bonuses: Array.isArray(priorRow.extra_bonuses) ? priorRow.extra_bonuses : [],
@@ -12439,7 +12475,9 @@ function prRosterWageIncrChanged(el, idx, mode) {
   } else {
     const num = parseFloat(raw.replace(/[^0-9.\-]/g, '')) || 0;
     _payrollPositions[idx].wage_increase_mode = mode;
-    _payrollPositions[idx].wage_increase_value = (mode === 'pct') ? (num / 100) : num;
+    // FA 724 #1 (Jennifer): the dollar column is entered in $ per WEEK;
+    // stored internally as $/hr (÷40) so the engine math is unchanged.
+    _payrollPositions[idx].wage_increase_value = (mode === 'pct') ? (num / 100) : (num / 40);
   }
   recalcPayroll();
   clearTimeout(_prRosterSaveTimer);
@@ -12518,8 +12556,13 @@ function recalcPayroll() {
     const preIncrWages = weeklyPay * posPreWks * count;
     const postIncrRate = applyWageIncrease(rate, posWiMode, posWiValue);
     const postIncrWages = (postIncrRate * 40) * posPostWks * count;
-    const annualBase = preIncrWages + postIncrWages;
-    const ot = annualBase * otFactor;
+    // FA 724 #22: additional weekly earnings — all 52 weeks, in annual
+    // base (taxed like wages), NOT in the OT basis, VSH includes it.
+    // MIRRORS payroll_engine.compute_payroll — change both together.
+    const additional = (p.additional_weekly || 0) * 52 * count;
+    const wageBase = preIncrWages + postIncrWages;
+    const annualBase = wageBase + additional;
+    const ot = wageBase * otFactor;
     const vsh = annualBase * vshFactor;
     // Base bonus cell + optional stacked extra bonus lines (per_emp / lump / pct_wages)
     let bonus = bonusPerEmp * count;
@@ -12539,7 +12582,7 @@ function recalcPayroll() {
     totalComp += comp;
     totalBonus += bonus;
 
-    return { count, rate, bonusPerEmp, posPreWks, posPostWks, posWiMode, posWiValue, weeklyPay, preIncrWages, postIncrRate, postIncrWages, annualBase, ot, vsh, bonus, comp };
+    return { count, rate, bonusPerEmp, posPreWks, posPostWks, posWiMode, posWiValue, weeklyPay, preIncrWages, postIncrRate, postIncrWages, additional, annualBase, ot, vsh, bonus, comp };
   });
 
   // Calculate taxes & benefits
@@ -13005,8 +13048,8 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       ? ('=' + rate + '+' + posWiValue.toFixed(2))
       : ('=' + rate + '*(1+' + posWiValue.toFixed(4) + ')');
     const fPostWages = '=' + (c.postIncrRate||0).toFixed(4) + '*40*' + usedPostWks + '*' + count;
-    const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0);
-    const fOT = '=' + (c.annualBase||0) + '*' + ctx.otFactor.toFixed(4);
+    const fAnnualBase = '=' + (c.preIncrWages||0) + '+' + (c.postIncrWages||0) + ((c.additional||0) ? ('+' + c.additional) : '');
+    const fOT = '=' + (((c.annualBase||0) - (c.additional||0))) + '*' + ctx.otFactor.toFixed(4);
     const fVSH = '=' + (c.annualBase||0) + '*' + ctx.vshFactor.toFixed(4);
     const fComp = '=' + (c.annualBase||0) + '+' + (c.ot||0) + '+' + (c.vsh||0);
 
@@ -13016,11 +13059,12 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
     if (posHasOverride) {
       const mv = p.wage_increase_value || 0;
       if (p.wage_increase_mode === 'dollar') {
-        incrDollarDisplay = mv.toFixed(2);
+        // Stored as $/hr; the FA-facing column speaks $/week (x40).
+        incrDollarDisplay = (mv * 40).toFixed(2);
         incrPctDisplay = (rate > 0) ? ((mv / rate) * 100).toFixed(2) : '';
       } else {
         incrPctDisplay = (mv * 100).toFixed(2);
-        incrDollarDisplay = (rate * mv).toFixed(2);
+        incrDollarDisplay = (rate * mv * 40).toFixed(2);
       }
     }
     // Light blue tint when row is overriding global; otherwise same cream as other inputs
@@ -13033,7 +13077,8 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
       '<td style="' + ns + '">' + prBonusCellHTML(p, i, c) + '</td>' +
       '<td style="' + ns + '"><input class="pr-pos-effwk" type="number" min="1" max="52" placeholder="—" value="' + (p.effective_week_override || '') + '" onchange="prRosterChanged(this)" title="Override global Effective Week for this position only" style="' + is + '"></td>' +
       '<td style="' + ns + '"><input class="pr-pos-wage-incr-pct" type="text" placeholder="—" value="' + incrPctDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'pct\')" title="Override wage increase % for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
-      '<td style="' + ns + '"><input class="pr-pos-wage-incr-dollar" type="text" placeholder="—" value="' + incrDollarDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'dollar\')" title="Override wage increase $/hr for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-wage-incr-dollar" type="text" placeholder="—" value="' + incrDollarDisplay + '" onchange="prRosterWageIncrChanged(this,' + i + ',\'dollar\')" title="Wage increase in $ per WEEK for this position (leave blank to inherit global)" style="' + overrideIs + '"></td>' +
+      '<td style="' + ns + '"><input class="pr-pos-addwk" type="text" placeholder="\u2014" value="' + (p.additional_weekly || '') + '" onchange="prRosterChanged(this)" title="Recurring additional earnings $/week — all 52 weeks, taxed like wages, no OT factor" style="' + is + '"></td>' +
       rosterFx('pr_rost_wk_'+i, 'weeklyPay', c.weeklyPay||0, fWeekly, i) +
       rosterFx('pr_rost_pre_'+i, 'preIncrWages', c.preIncrWages||0, fPreWages, i) +
       rosterFx('pr_rost_pr_'+i, 'postIncrRate', c.postIncrRate||0, fPostRate, i) +
@@ -14063,7 +14108,47 @@ function togglePrGLGroup(groupKey) {
 // Push roster-derived component values to linked GL lines.
 // Updates _payrollGLLines in memory, then persists to DB via /api/fa-lines.
 let _prPushSaveTimer = null;
+function renderOtherPayroll() {
+  const body = document.getElementById('prOtherBody');
+  if (!body) return;
+  const lines = (_payrollAssumptions && Array.isArray(_payrollAssumptions.other_payroll_lines))
+    ? _payrollAssumptions.other_payroll_lines : [];
+  const is = 'padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; background:#fbfaf4; box-sizing:content-box;';
+  let rows = '';
+  lines.forEach((ln, i) => {
+    rows += '<tr>' +
+      '<td style="padding:5px 10px;"><input type="text" value="' + String(ln.label || '').replace(/"/g, '&quot;') + '" onchange="prOtherChanged(' + i + ', \'label\', this)" placeholder="e.g. Outside employee" style="' + is + ' width:260px;"></td>' +
+      '<td style="padding:5px 10px; text-align:right;"><input type="text" value="' + (ln.annual || '') + '" onchange="prOtherChanged(' + i + ', \'annual\', this)" style="' + is + ' text-align:right; width:110px;"></td>' +
+      '<td style="padding:5px 10px;"><input type="text" value="' + String(ln.gl_code || '').replace(/"/g, '&quot;') + '" onchange="prOtherChanged(' + i + ', \'gl_code\', this)" placeholder="5105-0000" style="' + is + ' width:110px;"></td>' +
+      '<td style="padding:5px 10px;"><button onclick="prOtherRemove(' + i + ')" title="Remove line" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:14px;">\u00d7</button></td>' +
+      '</tr>';
+  });
+  if (!rows) rows = '<tr><td colspan="4" style="padding:8px 10px; font-size:12px; color:var(--gray-500);">None — payroll is roster-only.</td></tr>';
+  body.innerHTML = rows;
+}
+function prOtherChanged(idx, field, el) {
+  if (!_payrollAssumptions.other_payroll_lines) _payrollAssumptions.other_payroll_lines = [];
+  const ln = _payrollAssumptions.other_payroll_lines[idx];
+  if (!ln) return;
+  if (field === 'annual') ln.annual = parseFloat((el.value || '').replace(/[^0-9.]/g, '')) || 0;
+  else ln[field] = (el.value || '').trim();
+  recalcPayroll();
+  savePayrollAssumptions();
+}
+function prOtherAdd() {
+  if (!_payrollAssumptions.other_payroll_lines) _payrollAssumptions.other_payroll_lines = [];
+  _payrollAssumptions.other_payroll_lines.push({label: '', annual: 0, gl_code: '5105-0000'});
+  renderOtherPayroll();
+}
+function prOtherRemove(idx) {
+  if (!_payrollAssumptions.other_payroll_lines) return;
+  _payrollAssumptions.other_payroll_lines.splice(idx, 1);
+  renderOtherPayroll();
+  recalcPayroll();
+  savePayrollAssumptions();
+}
 function pushRosterToGL() {
+  try { renderOtherPayroll(); } catch (e) {}
   const comps = window._payrollComponents;
   if (!comps || !Array.isArray(_payrollGLLines)) return;
   // No roster -> no push. An empty roster computes $0 for every component;
@@ -14074,9 +14159,19 @@ function pushRosterToGL() {
   const savePayload = [];
   let changed = false;
 
+  // FA 724 #23: other-payroll lines write to the GL the FA picked —
+  // additive when that GL is also component-mapped. MIRRORS
+  // payroll_engine.roster_gl_values — change both together.
+  const otherByGl = {};
+  ((_payrollAssumptions && _payrollAssumptions.other_payroll_lines) || []).forEach(ln => {
+    const amt = parseFloat(ln.annual) || 0;
+    const gl = (ln.gl_code || '').trim();
+    if (amt && gl) otherByGl[gl] = (otherByGl[gl] || 0) + amt;
+  });
   _payrollGLLines.forEach(line => {
     const componentKey = PAYROLL_COMPONENT_MAP[line.gl_code];
-    if (!componentKey || comps[componentKey] === undefined) {
+    const otherAmt = otherByGl[line.gl_code] || 0;
+    if ((!componentKey || comps[componentKey] === undefined) && !otherAmt) {
       line._linked = false;
       return;
     }
@@ -14085,7 +14180,7 @@ function pushRosterToGL() {
       line._linked = false;
       return;
     }
-    const newProposed = Math.round(comps[componentKey]);
+    const newProposed = Math.round(((componentKey && comps[componentKey] !== undefined) ? comps[componentKey] : 0) + otherAmt);
     const oldProposed = Math.round(line.proposed_budget || 0);
     line._linked = true;
     line.proposed_budget = newProposed;
@@ -14656,7 +14751,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const isAnc = (sheetName === 'Income') && _isAncillaryGl(gl);
     const ancExpanded = isAnc && _ancExpanded.has(gl);
     const ancIcon = isAnc
-      ? '<span id="anc_icon_' + gl + '" class="anc-expand-icon" onclick="ancToggleDrawer(\'' + gl + '\', event)" title="Open backup worksheet">' + (ancExpanded ? '−' : '+') + '</span>'
+      ? '<span id="anc_icon_' + gl + '" class="anc-expand-icon" onclick="ancToggleDrawer(\'' + gl + '\', event)" title="Open the backup worksheet (units x rate = monthly + annual)" style="width:auto; padding:0 7px; font-size:10px; background:#15803d;">' + (ancExpanded ? 'close −' : '📋 worksheet') + '</span>'
       : '';
 
     const mainRow = '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +

@@ -70,6 +70,22 @@ def compute_payroll(positions, assumptions, overrides=None):
     ot_factor = _num(a.get("ot_factor"), 0.002) or 0.002
     vsh_factor = _num(a.get("vac_sick_hol_factor"), 0.10) or 0.10
 
+    # FA 724 #23 (Jennifer, 2026-08-19): flat other-payroll lines (e.g. a
+    # $55,000/yr outside employee doing side projects). Excluded from gross
+    # wages, taxes, OT/VSH, and benefits; added to total labor and pushed
+    # to the GL the FA picks per line.
+    other_lines = []
+    for _ln in (a.get("other_payroll_lines") or []):
+        _amt = _num((_ln or {}).get("annual"))
+        if not _amt:
+            continue
+        other_lines.append({
+            "label": str((_ln or {}).get("label") or "").strip()[:80],
+            "annual": _amt,
+            "gl_code": (str((_ln or {}).get("gl_code") or "").strip() or "5105-0000"),
+        })
+    total_other = sum(_l["annual"] for _l in other_lines)
+
     total_employees = 0
     total_annual_base = 0.0
     total_ot = 0.0
@@ -95,8 +111,15 @@ def compute_payroll(positions, assumptions, overrides=None):
         pre_wages = weekly_pay * pos_pre * count
         post_rate = apply_wage_increase(rate, pos_mode, pos_value)
         post_wages = (post_rate * 40) * pos_post * count
-        annual_base = pre_wages + post_wages
-        ot = annual_base * ot_factor
+        # FA 724 #22 (Jennifer, 2026-08-19): recurring additional weekly
+        # earnings (e.g. a $260.10/wk differential). Paid all 52 weeks and
+        # taxed like wages (flows into annual base -> gross), but the OT
+        # factor applies to rate-derived wages only and the wage increase
+        # does not compound it. Paid time off (VSH) includes it.
+        additional = _num(p.get("additional_weekly")) * 52 * count
+        wage_base = pre_wages + post_wages
+        annual_base = wage_base + additional
+        ot = wage_base * ot_factor
         vsh = annual_base * vsh_factor
         bonus = bonus_per_emp * count
         extras = p.get("extra_bonuses") or []
@@ -123,6 +146,7 @@ def compute_payroll(positions, assumptions, overrides=None):
             "position_name": p.get("position_name"), "count": count,
             "rate": rate, "pre_wks": pos_pre, "post_wks": pos_post,
             "post_rate": post_rate, "annual_base": annual_base,
+            "additional": additional,
             "ot": ot, "vsh": vsh, "bonus": bonus, "comp": comp,
         })
 
@@ -192,7 +216,7 @@ def compute_payroll(positions, assumptions, overrides=None):
     o_profit = _ov("profit_sharing", profit_share)
     o_tax_total = _ov("total_payroll_tax", o_fica + o_sui + o_fui + o_mta + o_nys + o_pfl)
     o_union_total = _ov("total_union", o_welfare + o_pension + o_supp + o_legal + o_training + o_profit)
-    total_labor = _ov("total_labor", gross_wages + o_tax_total + o_wc + o_union_total)
+    total_labor = _ov("total_labor", gross_wages + o_tax_total + o_wc + o_union_total + total_other)
 
     components = {
         "annual_base": total_annual_base,
@@ -211,6 +235,7 @@ def compute_payroll(positions, assumptions, overrides=None):
         "legal_fund": o_legal,
         "training_fund": o_training,
         "profit_sharing": o_profit,
+        "other_payroll_lines": other_lines,
     }
 
     return {
@@ -224,6 +249,7 @@ def compute_payroll(positions, assumptions, overrides=None):
             "gross_wages": gross_wages,
             "total_payroll_tax": o_tax_total,
             "total_union": o_union_total,
+            "other_payroll": total_other,
             "total_labor": total_labor,
         },
     }
@@ -254,4 +280,32 @@ def roster_gl_values(components, gl_lines):
             "increase_pct": (new_proposed / curr - 1) if curr else 0,
             "stored_proposed": line.get("proposed_budget"),
         })
+    # FA 724 #23: other-payroll lines push to their chosen GL — additive
+    # when that GL is also component-mapped; skipped when the GL is not on
+    # the sheet (nothing to write to) or carries a manual formula.
+    others = components.get("other_payroll_lines") or []
+    if others:
+        by_gl = {}
+        for ln in others:
+            by_gl[ln["gl_code"]] = by_gl.get(ln["gl_code"], 0) + ln["annual"]
+        existing = {o["gl_code"]: o for o in out}
+        for line in gl_lines or []:
+            gl = line.get("gl_code")
+            if gl not in by_gl or line.get("proposed_formula"):
+                continue
+            curr = _num(line.get("current_budget"))
+            if gl in existing:
+                o = existing[gl]
+                o["proposed_budget"] = round(o["proposed_budget"] + by_gl[gl])
+                o["increase_pct"] = (o["proposed_budget"] / curr - 1) if curr else 0
+                o["component"] = (o.get("component") or "") + "+other_payroll"
+            else:
+                new_p = round(by_gl[gl])
+                out.append({
+                    "gl_code": gl,
+                    "component": "other_payroll",
+                    "proposed_budget": new_p,
+                    "increase_pct": (new_p / curr - 1) if curr else 0,
+                    "stored_proposed": line.get("proposed_budget"),
+                })
     return out

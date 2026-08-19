@@ -4851,6 +4851,7 @@ def create_workflow_blueprint(db):
                 employee_count=int(p.get("employee_count", 0) or 0),
                 hourly_rate=float(p.get("hourly_rate", 0) or 0),
                 bonus_per_employee=float(p.get("bonus_per_employee", 0) or 0),
+                additional_weekly=(float(p.get("additional_weekly") or 0) or None),
                 effective_week_override=(float(p["effective_week_override"]) if p.get("effective_week_override") not in (None, "", 0) else None),
                 wage_increase_mode=wi_mode,
                 wage_increase_value=wi_val,

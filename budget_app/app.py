@@ -721,6 +721,7 @@ with app.app_context():
             ("payroll_positions", "wage_increase_mode", "VARCHAR(10)"),
             ("payroll_positions", "wage_increase_value", "FLOAT"),
             ("payroll_positions", "extra_bonuses_json", "TEXT"),
+            ("payroll_positions", "additional_weekly", "FLOAT"),
             ("budgets", "assumptions_history_json", "TEXT"),
             ("budgets", "wizard_completed_at", "TIMESTAMP"),
             ("budgets", "wizard_step", "INTEGER DEFAULT 0"),

@@ -156,5 +156,101 @@ def main():
     print("payroll_engine OK: %d hand-computed checks + override cascade + GL-push guards." % len(checks))
 
 
+def main_jennifer():
+    """724 FA model (Jennifer, 2026-08-19): per-position $/wk increases at
+    different effective weeks + additional weekly earnings + flat other
+    payroll lines. Every expected value below is HAND-computed:
+
+    RM       1 x $45.34, +$50/wk (=$1.25/hr) @ wk27 -> pre 26 / post 26
+             old wk 1,813.60 x26 = 47,153.60 ; new 46.59 -> 1,863.60 x26 = 48,453.60
+             wage_base 95,607.20 ; additional 0 ; OT 191.2144 ; VSH 9,560.72
+    Handyman 1 x $33.66, +$40/wk (=$1.00/hr) @ wk17 -> pre 16 / post 36
+             old 1,346.40 x16 = 21,542.40 ; new 34.66 -> 1,386.40 x36 = 49,910.40
+             wage_base 71,452.80 ; additional 260.10 x52 = 13,525.20
+             annual 84,978.00 ; OT (wage-only) 142.9056 ; VSH 8,497.80
+    Doorman  5 x $30.78, +$35/wk (=$0.875/hr) @ wk17
+             old 1,231.20 x16 x5 = 98,496.00 ; new 31.655 -> 1,266.20 x36 x5 = 227,916.00
+             wage_base = annual = 326,412.00 ; OT 652.824 ; VSH 32,641.20
+    Totals   annual_base 506,997.20 ; OT 986.944 ; VSH 50,699.72
+             gross 558,683.864 ; employees 7 ; other_payroll 55,000 (5110-0000)
+    """
+    POS = [
+        {"position_name": "Resident Manager", "employee_count": 1, "hourly_rate": 45.34,
+         "bonus_per_employee": 0, "extra_bonuses": [], "effective_week_override": 27,
+         "wage_increase_mode": "dollar", "wage_increase_value": 1.25, "additional_weekly": 0},
+        {"position_name": "Handyman", "employee_count": 1, "hourly_rate": 33.66,
+         "bonus_per_employee": 0, "extra_bonuses": [], "effective_week_override": 17,
+         "wage_increase_mode": "dollar", "wage_increase_value": 1.00, "additional_weekly": 260.10},
+        {"position_name": "Doorman", "employee_count": 5, "hourly_rate": 30.78,
+         "bonus_per_employee": 0, "extra_bonuses": [], "effective_week_override": 17,
+         "wage_increase_mode": "dollar", "wage_increase_value": 0.875, "additional_weekly": 0},
+    ]
+    A = dict(ASSUMPTIONS)
+    A["other_payroll_lines"] = [
+        {"label": "Outside employee - side projects", "annual": 55000, "gl_code": "5110-0000"},
+    ]
+    fails = []
+    r = compute_payroll(POS, A)
+    t, c, pos = r["totals"], r["computed"], r["positions"]
+
+    checks = [
+        ("RM annual_base", pos[0]["annual_base"], 95607.20),
+        ("Handyman additional", pos[1]["additional"], 13525.20),
+        ("Handyman annual_base", pos[1]["annual_base"], 84978.00),
+        ("Handyman OT excludes additional", pos[1]["ot"], 142.9056),
+        ("Handyman VSH includes additional", pos[1]["vsh"], 8497.80),
+        ("Doorman annual_base", pos[2]["annual_base"], 326412.00),
+        ("total annual_base", t["annual_base"], 506997.20),
+        ("total OT", t["ot"], 986.944),
+        ("total VSH", t["vsh"], 50699.72),
+        ("gross wages", t["gross_wages"], 558683.864),
+        ("other_payroll total", t["other_payroll"], 55000.0),
+        ("SUI 7 employees", c["sui"], 12000 * 0.021 * 7),
+        ("FICA on gross", c["fica"], 558683.864 * 0.0765),
+    ]
+    for name, got, want in checks:
+        if not close(got, want):
+            fails.append("%s: got %.4f want %.4f" % (name, got, want))
+
+    if not close(t["total_labor"] - 55000,
+                 t["gross_wages"] + t["total_payroll_tax"]
+                 + r["components"]["workers_comp"] + t["total_union"]):
+        fails.append("total_labor does not include exactly the other-payroll amount")
+
+    gl_lines = [
+        {"gl_code": "5105-0000", "current_budget": 500000.0, "proposed_budget": 0.0},
+        {"gl_code": "5110-0000", "current_budget": 50000.0, "proposed_budget": 0.0},
+    ]
+    pushes = {x["gl_code"]: x for x in roster_gl_values(r["components"], gl_lines)}
+    if pushes.get("5105-0000", {}).get("proposed_budget") != round(506997.20):
+        fails.append("5105 push wrong: %r" % pushes.get("5105-0000"))
+    if pushes.get("5110-0000", {}).get("proposed_budget") != 55000:
+        fails.append("5110 other-payroll push wrong: %r" % pushes.get("5110-0000"))
+    if pushes.get("5110-0000", {}).get("component") != "other_payroll":
+        fails.append("5110 component tag wrong")
+
+    A2 = dict(A)
+    A2["other_payroll_lines"] = [{"label": "x", "annual": 10000, "gl_code": "5105-0000"}]
+    r2 = compute_payroll(POS, A2)
+    p2 = {x["gl_code"]: x for x in roster_gl_values(r2["components"], gl_lines)}
+    if p2.get("5105-0000", {}).get("proposed_budget") != round(506997.20 + 10000):
+        fails.append("additive collision push wrong: %r" % p2.get("5105-0000"))
+
+    A3 = dict(A)
+    A3["other_payroll_lines"] = [{"label": "x", "annual": 9999, "gl_code": "5999-0000"}]
+    r3 = compute_payroll(POS, A3)
+    p3 = {x["gl_code"]: x for x in roster_gl_values(r3["components"], gl_lines)}
+    if "5999-0000" in p3:
+        fails.append("absent-GL other line must not push")
+
+    if fails:
+        sys.stderr.write("PAYROLL-ENGINE GATE FAILED (Jennifer model):" + chr(10))
+        for f in fails:
+            sys.stderr.write("  " + f + chr(10))
+        sys.exit(1)
+    print("payroll_engine OK (Jennifer model): %d hand-computed checks + GL-push cases." % len(checks))
+
+
 if __name__ == "__main__":
     main()
+    main_jennifer()
