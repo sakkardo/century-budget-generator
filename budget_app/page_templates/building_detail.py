@@ -4785,11 +4785,21 @@ function _biRecalcAmort() {
   let firstAmortPmt = null;
   for (let i = 1; i <= totalPeriods; i++) {
     const beg = balance;
-    const interest = beg * periodRate;
+    // FA 724 (Jennifer, 2026-08-19): interest-only months bill on the DAY
+    // COUNT of the previous month (actual/360, the commercial mortgage
+    // standard) - payments vary with 28/30/31-day months. Monthly I/O
+    // only; amortizing payments stay level (PMT formula).
+    let interest = beg * periodRate;
     const inIOPhase = i <= ioPeriods;
+    if (inIOPhase && freq === 12) {
+      const dd = new Date(startDate);
+      dd.setMonth(dd.getMonth() + (i - 1));
+      const daysPrev = new Date(dd.getFullYear(), dd.getMonth(), 0).getDate();
+      interest = beg * (annualRate / 360) * daysPrev;
+    }
     let pmt, principalPaid;
     if (inIOPhase) {
-      pmt = ioPmt;
+      pmt = interest;
       principalPaid = 0;
       // Balloon at maturity for pure I/O: last period repays full balance.
       if (isPureIO && i === totalPeriods) {

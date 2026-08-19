@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # Add new properties here as they join the portfolio.
 
 PROPERTY_TAX_CONFIG = {
+    # 724 Cherokee Owners: TWO parcels (Jennifer Murman 2026-08-19 —
+    # "Manhattan block 1489 lot 37" is the second BBL). extra_bbls AVs are
+    # summed with the primary parcel's; both are tax class 2 so
+    # rate x (AV1 + AV2) equals the sum of the two bills exactly.
+    "724": {
+        "extra_bbls": ["1014890037"],
+    },
     "204": {
         "building_name": "444 East 86th Street Owners Corp.",
         "address": "444 East 86th St, New York, NY 10028",
@@ -411,6 +418,46 @@ def fetch_dof_data(entity_code: str) -> dict | None:
                     "tax_class": cfg.get("tax_class") or record.get("curtaxclass") or "2",
                     "year": record.get("year", ""),
                 }
+                # Multi-parcel buildings (724 FA note #18): sum each extra
+                # BBL's AVs into the totals. Same tax class means
+                # rate x summed AV = the sum of the individual bills.
+                extra = [b for b in (cfg.get("extra_bbls") or []) if b]
+                merged = 0
+                for xb in extra:
+                    xparid = _bbl_to_parid(xb)
+                    if not xparid:
+                        continue
+                    try:
+                        xresp = requests.get(SODA_API_URL, params={
+                            "$where": f"parid='{xparid}'",
+                            "$limit": 1,
+                            "$order": "year DESC",
+                        }, timeout=10)
+                        if xresp.status_code != 200 or not xresp.json():
+                            logger.warning(f"DOF extra-BBL {xb} returned no data for {entity_code}")
+                            continue
+                        xrec = xresp.json()[0]
+                        def _xf(*keys):
+                            for k in keys:
+                                v = xrec.get(k)
+                                if v not in (None, "", "0"):
+                                    try:
+                                        return float(v)
+                                    except (TypeError, ValueError):
+                                        pass
+                            return 0.0
+                        result["assessed_value"] += _xf("curtrntot", "tentrntot")
+                        result["actual_av"] += _xf("curacttot", "tenacttot")
+                        result["prior_trans_av"] += _xf("pytrntot")
+                        result["prior_actual_av"] += _xf("pyacttot")
+                        result["market_value"] += _xf("curmkttot", "tenmkttot")
+                        result["taxable_value"] += _xf("curtxbtot", "tentxbtot")
+                        merged += 1
+                    except Exception as xe:
+                        logger.warning(f"DOF extra-BBL fetch failed for {entity_code}/{xb}: {xe}")
+                if merged:
+                    result["bbl"] = parid + " +" + str(merged) + " parcel" + ("s" if merged > 1 else "")
+                    result["extra_bbls_merged"] = merged
                 _save_cache(entity_code, result)
                 logger.info(
                     f"DOF data fetched for {entity_code} (parid={parid}): "
