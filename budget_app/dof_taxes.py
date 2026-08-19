@@ -579,6 +579,18 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
     except (TypeError, ValueError):
         op_assess_pct = 0.175
     operating_assessment_proposed = first_half_tax * 2 * op_assess_pct
+    # FA 724 #8 (Jennifer, 2026-08-19): co-ops bill the assessment per share.
+    # per-share = round((H1 x 2 x pct) / shares, 2); total = per-share x
+    # shares. Shares round-trip through re_taxes_overrides from the page
+    # (sourced from Building Info's maintenance history).
+    try:
+        op_assess_shares = float(overrides.get("op_assess_shares") or 0)
+    except (TypeError, ValueError):
+        op_assess_shares = 0.0
+    op_assess_per_share = 0.0
+    if op_assess_shares > 0:
+        op_assess_per_share = round(operating_assessment_proposed / op_assess_shares, 2)
+        operating_assessment_proposed = round(op_assess_per_share * op_assess_shares, 2)
 
     bbl_str = cfg.get("bbl") or dof.get("bbl") or ""
     bbl_parts = _split_bbl(bbl_str) if bbl_str else {}
@@ -614,6 +626,8 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
         # FA dir 2026-06-03 (#6): operating-assessment proposed driver
         "operating_assessment_pct": op_assess_pct,
         "operating_assessment_proposed": round(operating_assessment_proposed, 2),
+        "op_assess_per_share": op_assess_per_share,
+        "op_assess_shares": op_assess_shares,
     }
 
 

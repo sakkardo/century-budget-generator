@@ -4664,6 +4664,16 @@ function _biRecalcAmort() {
   let endBalance = 0;
   let solverNote = '';
   if (mode === 'standard') {
+    // FA 724 #14 (Jennifer, 2026-08-19): a FULL interest-only loan has no
+    // amortizing term - principal + rate + I/O period is a complete spec.
+    // Take the schedule length from the I/O period; the engine below then
+    // renders it as pure interest-only with the balloon at maturity.
+    if (!termYears && (Math.floor(Number(a.io_months)) || 0) > 0) {
+      termYears = Math.floor(Number(a.io_months)) / freq;
+      const _ioTermEl = document.getElementById('biAmTerm');
+      if (_ioTermEl && !_ioTermEl.value) _ioTermEl.value = String(Math.round(termYears * 100) / 100);
+      solverNote = 'Interest-only: schedule length taken from the I/O period (balloon at maturity).';
+    }
     if (!termYears) needs.push('Term (years)');
     if (needs.length > 0) {
       _clearOutputs('Enter <strong>' + needs.join('</strong> and <strong>') + '</strong>.');
@@ -8732,7 +8742,51 @@ function _reRenderOpAssessProposed() {
   const pctEl = document.getElementById('reOpAssessPct');
   const pct = pctEl ? parsePct(pctEl.value) : 0.175;
   const el = document.getElementById('reOpAssessProposed');
-  if (el) el.textContent = fmtDollar(fh * 2 * pct);
+  if (!el) return;
+  const raw = fh * 2 * pct;
+  // FA 724 #8 (Jennifer, 2026-08-19): co-ops bill the assessment per share.
+  // per-share = round(((H1 x 2) x pct) / shares, 2); total = per-share x
+  // shares (rounding makes the billed total differ slightly from the raw
+  // product). Shares come from Building Info's maintenance history.
+  _reFetchShares().then(function (shares) {
+    let line = document.getElementById('reOpAssessPerShare');
+    if (shares > 0) {
+      const perShare = Math.round((raw / shares) * 100) / 100;
+      const total = Math.round(perShare * shares * 100) / 100;
+      el.textContent = fmtDollar(total);
+      if (!line) {
+        line = document.createElement('div');
+        line.id = 'reOpAssessPerShare';
+        line.style.cssText = 'font-size:11.5px; color:var(--gray-500); margin-top:2px;';
+        if (el.parentNode) el.parentNode.appendChild(line);
+      }
+      line.textContent = '= $' + perShare.toFixed(2) + '/share \u00d7 ' + shares.toLocaleString() + ' shares';
+      if (window._reTaxesData) window._reTaxesData.op_assess_shares = shares;
+    } else {
+      el.textContent = fmtDollar(raw);
+      if (line) line.textContent = '';
+    }
+  });
+}
+let _reSharesCache = null;
+function _reFetchShares() {
+  if (_reSharesCache !== null) return Promise.resolve(_reSharesCache);
+  const re = window._reTaxesData || {};
+  const ec = re.entity_code || (window._data && window._data.entity_code);
+  if (!ec) { _reSharesCache = 0; return Promise.resolve(0); }
+  return fetch('/api/building-info/' + ec)
+    .then(function (r) { return r.json(); })
+    .then(function (bi) {
+      const mh = (bi && bi.maintenance_history) || [];
+      let best = 0, bestYear = -1;
+      (Array.isArray(mh) ? mh : []).forEach(function (e) {
+        const y = Number(e.year) || 0, sh = Number(e.shares) || 0;
+        if (sh > 0 && y > bestYear) { bestYear = y; best = sh; }
+      });
+      _reSharesCache = best;
+      return best;
+    })
+    .catch(function () { _reSharesCache = 0; return 0; });
 }
 function reOpAssessOnInput() {
   _reRenderOpAssessProposed();
@@ -8775,6 +8829,7 @@ function reTaxBuildPayload() {
     // FA dir 2026-05-19: After-10/31 toggle (zeros out May-Dec estimate)
     after_oct31:       !!(STATE && STATE.afterOct31),
     // FA dir 2026-06-03 (#6): operating-assessment % → Summary 4200 proposed
+    op_assess_shares: (window._reTaxesData && Number(window._reTaxesData.op_assess_shares)) || 0,
     operating_assessment_pct: (function () {
       const el = document.getElementById('reOpAssessPct');
       return el ? parsePct(el.value) : 0.175;
@@ -14288,6 +14343,17 @@ async function savePrGLIncrease(el) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function renderEditableSheet(sheetName, sheetLines, contentDiv) {
+  // FA 724 #6 (Jennifer, 2026-08-19): never-budgeted income (prepaid /
+  // dividend / messenger) disappears from the Income tab entirely - not
+  // rendered and not in any tab total. Summary actuals are unaffected.
+  sheetLines = (sheetLines || []).filter(l => !l.no_budget);
+  // FA 724 #17: co-ops manage RE taxes on the dedicated RE Taxes page; the
+  // Gen & Admin copies are redundant there. Rows stay in the DB + Summary
+  // feed - they are only hidden from this tab (condos keep them: no page).
+  if (sheetName === 'Gen & Admin' &&
+      String((window._data && window._data.building_type) || '').toLowerCase() === 'coop') {
+    sheetLines = sheetLines.filter(l => !/^(6315|6320)/.test(l.gl_code || ''));
+  }
   const NC = 15;
   const estLbl = estimateLabel();
 
@@ -14459,6 +14525,26 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
   function faDefaultProposed(l) {
     const budget = l.current_budget || 0;
     if (l.gl_code === '5172-0000') return budget * 1.03;
+    // FA 724 #9 (Jennifer, 2026-08-19): other-income draft-1 proposed = the
+    // current-year budget, never the 12-mo forecast. Calculated rows
+    // (maintenance increase, op assessment, tax credits) carry stored values
+    // that win before this default is consulted.
+    if (l.sheet_name === 'Income') {
+      return budget;
+    }
+    // FA 724 #15 (Jennifer, 2026-08-19): insurance (6105-6195) proposes off
+    // the renewal model. Upfront-paid premiums carry $0 budget but the full
+    // expiring premium in YTD - that premium is the base.
+    const glNum = parseInt((l.gl_code || '').slice(0, 4), 10);
+    if (l.sheet_name === 'Gen & Admin' && glNum >= 6105 && glNum <= 6195) {
+      const ir = (window._data && window._data.assumptions && window._data.assumptions.insurance_renewal) || {};
+      const pre = Number(ir.pre_renewal_months) || 0;
+      const post = Number(ir.post_renewal_months) || 0;
+      const inc = Number(ir.increase_percent) || 0;
+      const factor = (pre + post) > 0 ? (pre + post * (1 + inc)) / (pre + post) : 1;
+      const premium = budget || ((l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0));
+      return premium * factor;
+    }
     if (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin') {
       return budget * (1 + (l.increase_pct || 0));
     }
