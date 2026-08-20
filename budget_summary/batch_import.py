@@ -70,8 +70,28 @@ def extract_importable_data(parsed, expected_col1_year=None):
     # This would be the "2025 Budget" equivalent — not imported but useful for validation
     prev_budget_source = budget_cols[-2] if len(budget_cols) >= 2 else None
 
+    # FA 724 #3 (Jennifer 2026-08-18): FA notes typed into the yrlycomp
+    # sheet ("add capital amounts into budget - they will get back to you",
+    # "60k for electrical") imported as summary line items. A real data row
+    # carries at least one numeric value in some year column; a labeled row
+    # with none — unless its label is a known summary category (kept:
+    # zero-activity category rows and "incl w/above"-style rows still carry
+    # meaning) — is a note, not a line item.
+    try:
+        from GL_TO_SUMMARY_MAP import SUMMARY_ROW_MAP, LABEL_ALIASES, _CONDO_ROWS
+        _known_labels = set(SUMMARY_ROW_MAP) | set(LABEL_ALIASES) | set(_CONDO_ROWS)
+    except ImportError:
+        _known_labels = set()
+    skipped_notes = []
+
     imported_rows = []
     for row in rows:
+        if row["row_type"] == "data":
+            _vals = row.get("values") or {}
+            _has_number = any(isinstance(v, (int, float)) for v in _vals.values())
+            if not _has_number and row["label"] not in _known_labels:
+                skipped_notes.append(row["label"])
+                continue
         # Extract Col 1 value
         col1_val = None
         if col1_source:
@@ -107,7 +127,9 @@ def extract_importable_data(parsed, expected_col1_year=None):
         "col1_year_match": col1_year_match,
         "col1_warning": col1_warning,
         "rows": imported_rows,
+        "skipped_note_rows": skipped_notes,
         "stats": {
+            "note_rows_skipped": len(skipped_notes),
             "total_rows": len(imported_rows),
             "data_rows": len([r for r in imported_rows if r["row_type"] == "data"]),
             "subtotal_rows": len([r for r in imported_rows if r["row_type"] == "subtotal"]),

@@ -352,6 +352,9 @@ BUILDING_DETAIL_TEMPLATE = r"""
   tr[data-type="d"] .row-del-btn { opacity: 0; transition: opacity 0.15s; }
   tr[data-type="d"]:hover .row-del-btn { opacity: 1; }
   tr[data-type="d"] .row-del-btn:hover { color: var(--red); }
+  tr[data-type="d"] .row-move-btn { opacity: 0; transition: opacity 0.15s; }
+  tr[data-type="d"]:hover .row-move-btn { opacity: 1; }
+  tr[data-type="d"] .row-move-btn:hover { color: var(--blue); }
 
   /* Commercial tab — period table inline-edit affordances (Phase 5.2). */
   .comm-period-table tr:hover .comm-period-del { opacity: 1; }
@@ -4990,7 +4993,8 @@ function safeEvalFormula(expr) {
 
 // ── Show/hide formula bar buttons ──────────────────────────────────────
 function _showFormulaButtons(show, hasFormula) {
-  const ids = ['faFormulaPreview','faFormulaAccept','faFormulaCancel'];
+  // FA 724 #16: 'Zero' shows whenever a cell is in edit mode (see below).
+  const ids = ['faFormulaPreview','faFormulaAccept','faFormulaCancel','faFormulaZero'];
   ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = show ? 'inline-block' : 'none'; });
   const clearBtn = document.getElementById('faFormulaClear');
   if (clearBtn) clearBtn.style.display = (show && hasFormula) ? 'inline-block' : 'none';
@@ -5468,6 +5472,40 @@ function formulaBarAccept() {
     if (preview) preview.style.display = 'none';
   }, 1200);
 }
+
+// ── Zero / delete-the-value (FA 724 #16, Jennifer 2026-08-18) ──────────
+// "I tried to delete the may-dec est for other financial expense and it
+// would not let me." The est/forecast/proposed cells are readonly inputs
+// (edited only via the fx bar) and 'Clear' reverts to the AUTO formula, so
+// the value always came back. Deleting a value cell = pin it to zero:
+//   estimate/forecast -> override 0 (honored: 0 !== null)
+//   proposed          -> '=0' formula pin (a bare stored 0 is falsy and the
+//                        renewal/default rules would resurrect a value)
+// Routed through the fx bar + formulaBarAccept so saves, badges, revision
+// rows, and undo behave exactly as if the FA typed it.
+function fxDeleteActiveCell() {
+  const bar = document.getElementById('faFormulaBar');
+  if (!bar) return;
+  if (_activeFxCell) {
+    if (bar.readOnly) return;
+    bar.value = (_activeFxCell.dataset.field === 'proposed_budget') ? '=0' : '0';
+    formulaBarAccept();
+  } else if (_activeSubtotalCell) {
+    bar.value = '=0';
+    formulaBarAccept();
+  }
+}
+
+// Delete/Backspace on a selected (highlighted) cell zeros it — but never
+// while the user is typing in a real input (the fx bar included).
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable) && !ae.readOnly) return;
+  if (!_activeFxCell || !_activeFxCell.style.border) return;
+  e.preventDefault();
+  fxDeleteActiveCell();
+});
 
 // ── Cancel: revert formula bar to original ─────────────────────────────
 function formulaBarCancel() {
@@ -9364,6 +9402,17 @@ async function renderBudgetSummary(contentDiv) {
     warningsBannerHtml += '</div>';
   }
 
+  // FA 724 #4 (Jennifer 2026-08-18): a summary with no section_header and
+  // no subtotal rows renders as one flat list and nothing totals. New
+  // builds get organized at import; this banner self-heals older ones.
+  if (!rows.some(r => r.row_type === 'section_header' || r.row_type === 'subtotal')) {
+    warningsBannerHtml += '<div style="margin:0 0 12px 0;padding:12px 16px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;display:flex;align-items:center;gap:12px;">' +
+      '<div style="font-size:18px;">\ud83e\udde9</div>' +
+      '<div style="flex:1;font-size:13px;color:#1e40af;"><b>No section structure yet.</b> Organize this summary into Income / Expenses / Non-Operating sections with live totals.</div>' +
+      '<button onclick="sumOrganizeSections(this)" style="padding:6px 14px;border-radius:6px;border:none;background:var(--blue);color:white;font-size:12px;font-weight:700;cursor:pointer;">Organize into sections</button>' +
+      '</div>';
+  }
+
   // Build section-aware data structure
   const rows = sumData.rows;
   const sections = {};
@@ -9609,12 +9658,18 @@ async function renderBudgetSummary(contentDiv) {
       // rows and imported rows (col6 set) — those failures bubble up as
       // toasts. Hover-reveal is handled by CSS rules in the style block.
       const delBtn = '<button onclick="sumDeleteRow(this,\''+r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')" class="row-del-btn" title="Delete this row" style="margin-left:6px;background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;vertical-align:middle;">&times;</button>';
+      // FA 724 #4 (Jennifer 2026-08-18): reorder rows to match the monthly
+      // financial / Excel budget order. Arrows swap with the adjacent data
+      // row; the server stops at section boundaries.
+      const _lblEsc = r.label.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+      const moveBtns = '<button onclick="sumMoveRow(this,\''+_lblEsc+'\',\'up\')" class="row-move-btn" title="Move this row up" style="background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:11px;line-height:1;padding:0 2px;vertical-align:middle;">\u25b2</button>' +
+        '<button onclick="sumMoveRow(this,\''+_lblEsc+'\',\'down\')" class="row-move-btn" title="Move this row down" style="background:transparent;border:none;color:var(--gray-400);cursor:pointer;font-size:11px;line-height:1;padding:0 2px;vertical-align:middle;">\u25bc</button>';
       // FA directive 2026-05-17: data-label on <tr> so deep-links from the
       // Health drawer (e.g. duplicate-row Review) can find the right row in
       // O(1) by attribute, instead of fragile textContent matching that
       // breaks on footnote markers and the × delete button.
       html += '<tr data-sec="'+r._sk+'" data-type="d" data-order="'+r.display_order+'" data-label="'+r.label.replace(/"/g,'&quot;')+'">' +
-        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+'</td>' +
+        '<td style="padding:8px 10px;border-bottom:1px solid var(--gray-200);position:sticky;left:0;z-index:15;background:white;min-width:200px;max-width:240px;border-right:2px solid var(--gray-300);box-shadow:2px 0 8px rgba(90,74,63,0.08);">'+r.label+fn+delBtn+moveBtns+'</td>' +
         '<td style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--gray-200);">'+schip(r.source_tab)+'</td>' +
         // FA dir 2026-05-17: pass override info for c1/c2/c6 too (newly editable).
         // Also pass any saved formula string via r.formulas so makeInput can
@@ -11495,6 +11550,48 @@ function sumCloseInsert() {
 //   - succeeds for FA-created data rows
 // On 403 or any error, show a toast and leave the row in place.
 // FA directive 2026-05-14 Phase 4.3.
+// FA 724 #4 (Jennifer 2026-08-18): reorder a Summary data row within its
+// section. Server renumbers the whole entity and returns 'boundary' when
+// the row is already at its section's edge.
+async function sumMoveRow(btnEl, label, dir) {
+  if (btnEl) btnEl.disabled = true;
+  try {
+    const resp = await fetch('/api/admin/move-summary-row', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_code: entityCode, label: label, direction: dir})
+    });
+    const d = await resp.json();
+    if (!resp.ok || d.error) { showToast('Move failed: ' + (d.error || resp.status), 'error'); return; }
+    if (d.status === 'boundary') { showToast(d.message || 'Row is at the edge of its section', 'info'); return; }
+    loadDetail();
+  } catch (e) {
+    showToast('Move failed: ' + e, 'error');
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+// FA 724 #4: one-click server-side organize for structure-less summaries.
+async function sumOrganizeSections(btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Organizing\u2026'; }
+  try {
+    const resp = await fetch('/api/summary/' + entityCode + '/organize-sections', {method: 'POST'});
+    const d = await resp.json();
+    if (!resp.ok || d.error) {
+      showToast('Organize failed: ' + (d.error || resp.status), 'error');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Organize into sections'; }
+      return;
+    }
+    if (d.status === 'noop') { showToast(d.reason || 'Already organized', 'info'); }
+    else { showToast('Summary organized: ' + d.moved + ' rows into sections, ' + d.inserted + ' totals added', 'success'); }
+    loadDetail();
+  } catch (e) {
+    showToast('Organize failed: ' + e, 'error');
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Organize into sections'; }
+  }
+}
+
 async function sumDeleteRow(btnEl, label) {
   if (!label) return;
   if (!confirm('Delete row "' + label + '"? This cannot be undone (re-import the approved file to restore).')) return;
@@ -12381,6 +12478,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
     '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '<button id="faFormulaZero" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="fxDeleteActiveCell()" title="Delete the value \u2014 pin this cell to 0 (Clear reverts to the auto-formula instead)">Zero</button>' +
     '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
     // FA dir 2026-05-19: per-tab Undo + History controls. Visible on every
     // sheet tab. Scoped to the active sheet via `sheet=` query param.
@@ -14906,6 +15004,7 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     '<button id="faFormulaAccept" style="display:none; padding:4px 14px; font-size:12px; font-weight:600; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarAccept()">Accept</button>' +
     '<button id="faFormulaCancel" style="display:none; padding:4px 14px; font-size:12px; font-weight:500; background:var(--gray-200); color:var(--gray-700); border:none; border-radius:4px; cursor:pointer;" onclick="formulaBarCancel()">Cancel</button>' +
     '<button id="faFormulaClear" style="display:none; padding:4px 10px; font-size:11px; background:#fef2f2; color:var(--red); border:1px solid #fecaca; border-radius:4px; cursor:pointer;" onclick="formulaBarClear()" title="Remove formula, revert to auto-calc">Clear</button>' +
+    '<button id="faFormulaZero" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="fxDeleteActiveCell()" title="Delete the value \u2014 pin this cell to 0 (Clear reverts to the auto-formula instead)">Zero</button>' +
     '<button id="faFormulaUndo" style="display:none; padding:4px 10px; font-size:11px; background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:4px; cursor:pointer;" onclick="formulaBarUndo()" title="Undo the last accepted formula change">↶ Undo</button>' +
     // FA dir 2026-05-19: per-tab Undo + History controls. Visible on every
     // sheet tab. Scoped to the active sheet via `sheet=` query param.

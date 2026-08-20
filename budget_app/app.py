@@ -10915,6 +10915,28 @@ def _build_apply_approved_2026(entity_code, selection, BudgetSummaryRow, BUDGET_
     except Exception:
         logger.warning(f"gas-prefix dedupe skipped for {entity_code}", exc_info=True)
 
+    # FA 724 #4 (Jennifer 2026-08-18): builds whose yrlycomp yielded only
+    # data rows (no Total Income / Total Expenses framework — the 724 class)
+    # must land sectioned, or the Summary renders one flat list and nothing
+    # totals. No commit here — the organize rides the caller's commit so the
+    # whole build stays atomic.
+    try:
+        try:
+            from summary_engine import plan_section_organization, apply_section_organization
+        except ImportError:
+            from budget_app.summary_engine import plan_section_organization, apply_section_organization
+        _rows_now = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(BudgetSummaryRow.display_order).all()
+        _plan = plan_section_organization(_rows_now)
+        if _plan is not None:
+            apply_section_organization(
+                db, BudgetSummaryRow, entity_code, BUDGET_YEAR, _rows_now, _plan)
+            logger.info(f"[batch-import] {entity_code}: organized summary into sections")
+    except Exception:
+        db.session.rollback()
+        logger.warning(f"summary organize skipped for {entity_code}", exc_info=True)
+
     return written
 
 
@@ -12953,6 +12975,105 @@ def admin_set_summary_row_prefixes():
         "rows_updated": len(rows),
         "diffs": diffs,
     })
+
+
+@app.route("/api/admin/move-summary-row", methods=["POST"])
+def admin_move_summary_row():
+    """Reorder one Summary data row (FA 724 #4, Jennifer 2026-08-18: "I am
+    also not able to move the rows so that they fall in order as our monthly
+    financial/excel version"). Referenced by the health-check fix button
+    since 2026-05 but never implemented until now.
+
+    Body: {entity_code, label, direction: "up"|"down"}   (FA arrow buttons;
+          swaps with the adjacent data row, stopping at section boundaries)
+       or {entity_code, label, to_position: <display_order>}  (health-check
+          fix; may cross sections — the row's section re-stamps from its new
+          neighborhood).
+
+    No admin key — FA-facing, like add/delete-summary-row. Every move
+    renumbers the whole entity contiguously via the +100000 two-step
+    (uq_summary_entity_year_order is not deferrable).
+    """
+    BudgetSummaryRow = workflow_models["BudgetSummaryRow"]
+    from workflow import BUDGET_YEAR as _BY
+
+    data = request.get_json(silent=True) or {}
+    entity_code = (data.get("entity_code") or "").strip()
+    label = (data.get("label") or "").strip()
+    direction = (data.get("direction") or "").strip().lower()
+    to_position = data.get("to_position")
+    if not entity_code or not label:
+        return jsonify({"error": "entity_code and label required"}), 400
+    if direction not in ("up", "down") and to_position is None:
+        return jsonify({"error": "direction ('up'/'down') or to_position required"}), 400
+
+    rows = BudgetSummaryRow.query.filter_by(
+        entity_code=entity_code, budget_year=_BY
+    ).order_by(BudgetSummaryRow.display_order).all()
+    target = next((r for r in rows if r.label == label and r.row_type == "data"), None)
+    if not target:
+        return jsonify({"error": f"data row {label!r} not found"}), 404
+    idx = rows.index(target)
+
+    new_section = None
+    if direction in ("up", "down"):
+        step = -1 if direction == "up" else 1
+        j = idx + step
+        if j < 0 or j >= len(rows) or rows[j].row_type != "data":
+            return jsonify({"status": "boundary",
+                            "message": "Row is at the %s of its section — rows reorder within their section."
+                                       % ("top" if step < 0 else "bottom")})
+        new_list = list(rows)
+        new_list[idx], new_list[j] = new_list[j], new_list[idx]
+    else:
+        try:
+            to_position = int(to_position)
+        except (TypeError, ValueError):
+            return jsonify({"error": "to_position must be an integer"}), 400
+        others = [r for r in rows if r.id != target.id]
+        k = next((i for i, r in enumerate(others)
+                  if (r.display_order or 0) >= to_position), len(others))
+        new_list = others[:k] + [target] + others[k:]
+        # Re-stamp section from the new neighborhood: nearest preceding
+        # section_header wins; else nearest preceding row's section; else
+        # nearest following row's section.
+        for r in reversed(new_list[:k]):
+            if r.row_type == "section_header":
+                new_section = r.label
+                break
+            if new_section is None and r.section:
+                new_section = r.section
+        if new_section is None:
+            for r in new_list[k + 1:]:
+                if r.section:
+                    new_section = r.section
+                    break
+
+    try:
+        db.session.execute(db.text(
+            "UPDATE budget_summary_rows SET display_order = display_order + 100000 "
+            "WHERE entity_code = :ec AND budget_year = :y"),
+            {"ec": entity_code, "y": _BY})
+        for i, r in enumerate(new_list):
+            db.session.execute(db.text(
+                "UPDATE budget_summary_rows SET display_order = :o WHERE id = :id"),
+                {"o": i + 1, "id": r.id})
+        if new_section and new_section != target.section:
+            db.session.execute(db.text(
+                "UPDATE budget_summary_rows SET section = :s WHERE id = :id"),
+                {"s": new_section, "id": target.id})
+        db.session.expire_all()
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"move failed: {str(e)[:200]}"}), 500
+
+    _log_wizard_event(entity_code, "summary", "move_summary_row",
+                      payload={"label": label, "direction": direction or None,
+                               "to_position": to_position, "section": new_section})
+    return jsonify({"status": "ok", "label": label,
+                    "new_order": new_list.index(target) + 1,
+                    "section": new_section or target.section})
 
 
 @app.route("/api/admin/delete-summary-row", methods=["POST"])

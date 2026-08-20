@@ -4516,6 +4516,37 @@ def create_workflow_blueprint(db):
                for r in rows if (r.row_type == "data") and r.label]
         return jsonify({"rows": out})
 
+    @bp.route("/api/summary/<entity_code>/organize-sections", methods=["POST"])
+    def api_summary_organize_sections(entity_code):
+        """FA 724 #4 (Jennifer 2026-08-18): organize a data-only summary into
+        the canonical Income / Expenses / Non-Operating framework with live
+        totals. Idempotent — a summary that already has any section_header
+        or subtotal row (sectioned or flat-with-totals) is a noop."""
+        try:
+            from summary_engine import plan_section_organization, apply_section_organization
+        except ImportError:
+            from budget_app.summary_engine import plan_section_organization, apply_section_organization
+        rows = BudgetSummaryRow.query.filter_by(
+            entity_code=entity_code, budget_year=BUDGET_YEAR
+        ).order_by(BudgetSummaryRow.display_order).all()
+        if not rows:
+            return jsonify({"error": "No summary rows for %s" % entity_code}), 404
+        plan = plan_section_organization(rows)
+        if plan is None:
+            return jsonify({"status": "noop",
+                            "reason": "summary already has section/subtotal structure"})
+        try:
+            result = apply_section_organization(
+                db, BudgetSummaryRow, entity_code, BUDGET_YEAR, rows, plan)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "organize failed: %s" % str(e)[:200]}), 500
+        logger.info("[organize-sections] %s: moved=%d inserted=%d",
+                    entity_code, result["moved"], result["inserted"])
+        return jsonify({"status": "ok", "entity_code": entity_code,
+                        "moved": result["moved"], "inserted": result["inserted"]})
+
     @bp.route("/api/lines/<entity_code>/map-to-summary", methods=["PUT"])
     def map_line_to_summary(entity_code):
         """Map an Unmapped budget line into a Summary row: append the GL to that
@@ -9425,6 +9456,29 @@ def create_workflow_blueprint(db):
                 imported += 1
 
         db.session.commit()
+
+        # FA 724 #4 (Jennifer 2026-08-18): an import that lands only data
+        # rows (no Total Income / Total Expenses framework) renders as one
+        # flat list and nothing totals. Organize it right here so the
+        # Summary is presentation-ready from the first paint.
+        _organized = None
+        try:
+            try:
+                from summary_engine import plan_section_organization, apply_section_organization
+            except ImportError:
+                from budget_app.summary_engine import plan_section_organization, apply_section_organization
+            _rows_now = BudgetSummaryRow.query.filter_by(
+                entity_code=entity_code, budget_year=budget_year
+            ).order_by(BudgetSummaryRow.display_order).all()
+            _plan = plan_section_organization(_rows_now)
+            if _plan is not None:
+                _organized = apply_section_organization(
+                    db, BudgetSummaryRow, entity_code, budget_year, _rows_now, _plan)
+                db.session.commit()
+        except Exception as _oe:
+            db.session.rollback()
+            logger.warning("summary import organize skipped for %s: %s", entity_code, _oe)
+
         return jsonify({
             "status": "ok",
             "entity_code": entity_code,
@@ -9432,6 +9486,7 @@ def create_workflow_blueprint(db):
             "imported": imported,
             "updated": updated,
             "total_rows": len(data["rows"]),
+            "organized": _organized,
         })
 
 

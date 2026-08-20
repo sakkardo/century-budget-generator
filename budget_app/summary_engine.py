@@ -47,6 +47,126 @@ def _section_key(section_label):
         return "expenses"
     return ""
 
+_CANON_SECTIONS = (
+    ("income", "Income"),
+    ("expenses", "Expenses"),
+    ("non_operating_income", "Non-Operating Income"),
+    ("non_operating_expense", "Non-Operating Expense"),
+)
+
+
+def plan_section_organization(summary_rows):
+    """FA 724 #4 (Jennifer 2026-08-18): a summary whose rows are ALL
+    row_type='data' (the wizard-built class — no Total Income / Total
+    Expenses framework) renders as one undifferentiated list and nothing
+    totals. Plan the canonical sectioned layout: for each of the four
+    sections, a section_header, the section's data rows (relative order
+    preserved), and its subtotal row(s) — labels chosen to match BOTH this
+    engine's subtotal matchers and the frontend renderer's.
+
+    Non-Operating Income is always created even when empty ("there is no
+    place for non-operating income").
+
+    Returns None when the summary already has ANY section_header/subtotal
+    row (sectioned 733-class and flat-with-totals 148-class are left
+    alone), or when there are no data rows. Otherwise:
+      {"order":   [(row_id, new_display_order, canonical_section), ...],
+       "inserts": [{display_order, label, section, row_type}, ...]}
+    Orders are contiguous 1..N across both lists. Pure — no DB.
+    """
+    rows = list(summary_rows or [])
+    if not rows:
+        return None
+    if any(getattr(r, "row_type", None) in ("section_header", "subtotal") for r in rows):
+        return None
+    data = [r for r in rows if getattr(r, "row_type", None) == "data"]
+    if not data:
+        return None
+
+    buckets = {k: [] for k, _ in _CANON_SECTIONS}
+    for r in sorted(data, key=lambda r: (getattr(r, "display_order", 0) or 0)):
+        sk = _section_key(getattr(r, "section", None) or "")
+        if not sk:
+            # Unsectioned row: classify by GL prefix (2026-06-16 gotcha —
+            # income = 4xxx, everything else is an expense).
+            first = ""
+            try:
+                pj = getattr(r, "gl_prefixes_json", None)
+                prefixes = _json.loads(pj) if pj else []
+                first = str(prefixes[0]).strip()[:1] if prefixes else ""
+            except Exception:
+                first = ""
+            sk = "income" if first == "4" else "expenses"
+        buckets[sk].append(r)
+
+    canon = dict(_CANON_SECTIONS)
+    order, inserts = [], []
+    pos = 0
+
+    def nxt():
+        nonlocal pos
+        pos += 1
+        return pos
+
+    def hdr(sk):
+        inserts.append({"display_order": nxt(), "label": canon[sk],
+                        "section": canon[sk], "row_type": "section_header"})
+
+    def sub(sk, label):
+        inserts.append({"display_order": nxt(), "label": label,
+                        "section": canon[sk], "row_type": "subtotal"})
+
+    hdr("income")
+    for r in buckets["income"]:
+        order.append((r.id, nxt(), canon["income"]))
+    sub("income", "Total Income")
+
+    hdr("expenses")
+    for r in buckets["expenses"]:
+        order.append((r.id, nxt(), canon["expenses"]))
+    sub("expenses", "Total Expenses")
+    sub("expenses", "Net Operating Surplus <Deficit>")
+
+    hdr("non_operating_income")
+    for r in buckets["non_operating_income"]:
+        order.append((r.id, nxt(), canon["non_operating_income"]))
+    sub("non_operating_income", "Total Non-Operating Income")
+
+    hdr("non_operating_expense")
+    for r in buckets["non_operating_expense"]:
+        order.append((r.id, nxt(), canon["non_operating_expense"]))
+    sub("non_operating_expense", "Total Non-Operating Expenses")
+    sub("non_operating_expense", "Total Surplus <Deficit>")
+
+    return {"order": order, "inserts": inserts}
+
+
+def apply_section_organization(db, BudgetSummaryRow, entity_code, budget_year, rows, plan):
+    """DB glue for plan_section_organization. Renumbers via the +100000
+    two-step (uq_summary_entity_year_order is not deferrable; Postgres
+    checks UNIQUE per-row inside an UPDATE), re-stamps each data row's
+    section to the canonical label, then inserts the framework rows.
+    Row updates go through raw SQL keyed by id so stale ORM state can't
+    suppress an UPDATE. Caller owns the commit."""
+    db.session.execute(db.text(
+        "UPDATE budget_summary_rows SET display_order = display_order + 100000 "
+        "WHERE entity_code = :ec AND budget_year = :y"),
+        {"ec": entity_code, "y": budget_year})
+    for rid, new_order, new_section in plan["order"]:
+        db.session.execute(db.text(
+            "UPDATE budget_summary_rows SET display_order = :o, section = :s "
+            "WHERE id = :id AND entity_code = :ec AND budget_year = :y"),
+            {"o": new_order, "s": new_section, "id": rid,
+             "ec": entity_code, "y": budget_year})
+    for ins in plan["inserts"]:
+        db.session.add(BudgetSummaryRow(
+            entity_code=entity_code, budget_year=budget_year,
+            display_order=ins["display_order"], label=ins["label"],
+            section=ins["section"], row_type=ins["row_type"]))
+    db.session.expire_all()
+    return {"moved": len(plan["order"]), "inserted": len(plan["inserts"])}
+
+
 def _is_capital_line(line):
     """FA #18: Capital lines must not extrapolate forecast or auto-fill proposed.
     Capital lines are tagged BOTH ways at ingestion (sheet_name='Capital'
