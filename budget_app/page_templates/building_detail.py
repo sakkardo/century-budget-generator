@@ -9405,7 +9405,7 @@ async function renderBudgetSummary(contentDiv) {
   // FA 724 #4 (Jennifer 2026-08-18): a summary with no section_header and
   // no subtotal rows renders as one flat list and nothing totals. New
   // builds get organized at import; this banner self-heals older ones.
-  if (!rows.some(r => r.row_type === 'section_header' || r.row_type === 'subtotal')) {
+  if (!(sumData.rows || []).some(r => r.row_type === 'section_header' || r.row_type === 'subtotal')) {
     warningsBannerHtml += '<div style="margin:0 0 12px 0;padding:12px 16px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;display:flex;align-items:center;gap:12px;">' +
       '<div style="font-size:18px;">\ud83e\udde9</div>' +
       '<div style="flex:1;font-size:13px;color:#1e40af;"><b>No section structure yet.</b> Organize this summary into Income / Expenses / Non-Operating sections with live totals.</div>' +
