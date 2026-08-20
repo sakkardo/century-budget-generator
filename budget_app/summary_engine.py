@@ -112,6 +112,13 @@ def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
         # year-end, not monthly — no May-Dec estimate (forecast = YTD).
         elif gl[:4] in ("4105", "4110", "4115", "4120", "4125"):
             est = 0
+        # FA 724 (Jennifer 2026-08-20): insurance premiums bill on policy
+        # schedules — the remaining estimate is the unbilled remainder of
+        # the current budget (never negative). Upfront-paid premiums stop
+        # annualizing. MIRRORS faComputeEstimate — change both together.
+        elif (line.get("sheet_name") == "Gen & Admin"
+              and gl[:4].isdigit() and 6105 <= int(gl[:4]) <= 6195):
+            est = max(0.0, float(line.get("current_budget", 0) or 0) - ytd_total)
         # FA #7 anomaly cap: negative YTD against non-negative prior
         # year is a one-time refund/credit; don't extrapolate.
         elif ytd_total < 0 and prior >= 0:

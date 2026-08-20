@@ -2887,7 +2887,7 @@ function renderAssumptionsTab(assumptions, contentDiv) {
     row('PFL', pctF('payroll_tax','PFL', pt.PFL))
   );
   const unionCard = card('Union Benefits · 32BJ',
-    row('Welfare · $/mo/man', numF('union_benefits','welfare_monthly', ub.welfare_monthly, '$')) +
+    row('Health · $/mo/man', numF('union_benefits','welfare_monthly', ub.welfare_monthly, '$')) +
     row('Pension · $/wk/man', numF('union_benefits','pension_weekly', ub.pension_weekly, '$')) +
     row('Supp Retirement · $/wk', numF('union_benefits','supp_retirement_weekly', ub.supp_retirement_weekly, '$')) +
     row('Legal · $/mo', numF('union_benefits','legal_monthly', ub.legal_monthly, '$')) +
@@ -6664,6 +6664,11 @@ function faIsCapital(l) {
   return l && (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
 }
 
+function faIsInsuranceLine(l) {
+  const g4 = parseInt(((l && l.gl_code) || '').slice(0, 4), 10);
+  return (l && l.sheet_name === 'Gen & Admin') && g4 >= 6105 && g4 <= 6195;
+}
+
 function faComputeEstimate(l) {
   // Use override if FA set one
   if (l.estimate_override !== null && l.estimate_override !== undefined) return l.estimate_override;
@@ -6679,6 +6684,15 @@ function faComputeEstimate(l) {
   // 210 FA: RE-tax credit income (Abatement/STAR/Veteran/SCRIE/SCHE — GL
   // 4105/4110/4115/4120/4125) posts at year-end, not monthly — no May-Dec estimate.
   if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) return 0;
+  // FA 724 (Jennifer 2026-08-20): insurance premiums bill on policy
+  // schedules, not evenly — the remaining estimate is the unbilled
+  // remainder of the current budget (never negative). Upfront-paid
+  // premiums therefore estimate $0 and the forecast is the real premium.
+  // MIRRORS summary_engine._aggregate_by_prefix — change both together.
+  if (faIsInsuranceLine(l)) {
+    const _b = (l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0);
+    return Math.max(0, (l.current_budget || 0) - _b);
+  }
   const ytd = l.ytd_actual || 0;
   const accrual = l.accrual_adj || 0;
   const unpaid = l.unpaid_bills || 0;
@@ -6722,6 +6736,17 @@ function faGetFormulaTooltip(l, field) {
     if (faIsCapital(l)) {
       return '=0';   // Capital -> no estimate
     }
+    // 210 FA B2 follow-up: credit income (4105-4125) never extrapolates —
+    // the VALUE was already 0 but this tooltip still showed the old /N*M
+    // formula, so the FA thought the fix never landed.
+    if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) {
+      return '=0';
+    }
+    // FA 724 (Jennifer 2026-08-20): insurance estimates = the unbilled
+    // remainder of the current budget (see faComputeEstimate).
+    if (faIsInsuranceLine(l)) {
+      return '=max(0, ' + (l.current_budget || 0) + '-(' + ytd + '+' + accrual + '+' + unpaid + '))';
+    }
     if (YTD_MONTHS > 0) return '=(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS;
     return '=0';
   }
@@ -6735,6 +6760,10 @@ function faGetFormulaTooltip(l, field) {
     }
     if (faIsCapital(l)) {
       return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')';   // Capital: YTD net of accrual, plus unpaid (2026-06-10 sign fix)
+    }
+    // 210 FA B2 follow-up: credit income forecast = YTD only (no estimate).
+    if (['4105','4110','4115','4120','4125'].indexOf((l.gl_code||'').slice(0,4)) >= 0) {
+      return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+0';
     }
     const estExpr = (YTD_MONTHS > 0) ? '(' + ytd + '+' + accrual + '+' + unpaid + ')/' + YTD_MONTHS + '*' + REMAINING_MONTHS : '0';
     return '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
@@ -12357,7 +12386,7 @@ async function renderPayrollTab(sheetLines, contentDiv) {
         <!-- Column 3: Union Benefits -->
         <div style="padding:14px 20px;">
           <div style="font-size:10px; font-weight:700; color:#5a4a3f; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; padding-bottom:4px; border-bottom:1px solid #f5efe7;">Union Benefits (32BJ)</div>
-          ${prAssumpRow('Welfare ($/mo)', 'welfare_monthly', (a.welfare_monthly || 0).toFixed(2), '$')}
+          ${prAssumpRow('Health ($/mo)', 'welfare_monthly', (a.welfare_monthly || 0).toFixed(2), '$')}
           ${prAssumpRow('Pension ($/wk)', 'pension_weekly', (a.pension_weekly || 0).toFixed(2), '$')}
           ${prAssumpRow('Supp Retirement ($/wk)', 'supp_retirement_weekly', (a.supp_retirement_weekly || 0).toFixed(2), '$')}
           ${prAssumpRow('Legal ($/mo)', 'legal_monthly', (a.legal_monthly || 0).toFixed(2), '$')}
@@ -13380,7 +13409,7 @@ function renderPayrollRoster(posCalcs, totalEmp, totalBase, totalOT, totalVSH, t
 // +$82.50 × 30 wks of pension on top of the standard $82.50 × 52.
 
 const PR_ADJ_BENEFITS = [
-  {key: 'welfare',         label: 'Welfare',          unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'welfare_monthly'},
+  {key: 'welfare',         label: 'Health',           unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'welfare_monthly'},
   {key: 'pension',         label: 'Pension',          unit: '$/wk',  periodLabel: 'wk',  periodsPerYear: 52, defaultKey: 'pension_weekly'},
   {key: 'supp_retirement', label: 'Supp Retirement',  unit: '$/wk',  periodLabel: 'wk',  periodsPerYear: 52, defaultKey: 'supp_retirement_weekly'},
   {key: 'legal',           label: 'Legal',            unit: '$/mo',  periodLabel: 'mo',  periodsPerYear: 12, defaultKey: 'legal_monthly'},
@@ -13698,7 +13727,7 @@ function renderPayrollTaxes(t) {
   // Union Benefits
   html += '<tr style="height:8px;"><td colspan="4"></td></tr>';
   html += '<tr><td colspan="4" style="' + catHdr + '">Union Benefits (32BJ)</td></tr>';
-  html += taxRow('Welfare', '$' + (a.welfare_monthly||0).toFixed(2) + '/mo', '$' + (a.welfare_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.welfareAmt), 'welfare');
+  html += taxRow('Health', '$' + (a.welfare_monthly||0).toFixed(2) + '/mo', '$' + (a.welfare_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.welfareAmt), 'welfare');
   html += taxRow('Pension', '$' + (a.pension_weekly||0).toFixed(2) + '/wk', '$' + (a.pension_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.pensionAmt), 'pension');
   html += taxRow('Supp. Retirement', '$' + (a.supp_retirement_weekly||0).toFixed(2) + '/wk', '$' + (a.supp_retirement_weekly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 52 wk', fD(t.suppRetAmt), 'supp_retirement');
   html += taxRow('Legal Fund', '$' + (a.legal_monthly||0).toFixed(2) + '/mo', '$' + (a.legal_monthly||0).toFixed(2) + ' × ' + t.totalEmployees + ' emp × 12 mo', fD(t.legalAmt), 'legal');
@@ -13817,7 +13846,7 @@ function payrollShowLineage(evt, td) {
   const _sumComp = (keys) => keys.reduce((s, k) => s + _appliedComp(k), 0);
   const TAX_KEYS = ['fica','sui','fui','mta','nys_disability','pfl'];
   const UNION_KEYS = ['welfare','pension','supp_retirement','legal','training','profit_sharing'];
-  const COMP_LABELS = {fica:'FICA', sui:'SUI', fui:'FUI', mta:'MTA', nys_disability:'NYS Disability', pfl:'Paid Family Leave', workers_comp:'Workers Compensation', welfare:'Welfare', pension:'Pension', supp_retirement:'Supp. Retirement', legal:'Legal Fund', training:'Training Fund', profit_sharing:'Profit Sharing'};
+  const COMP_LABELS = {fica:'FICA', sui:'SUI', fui:'FUI', mta:'MTA', nys_disability:'NYS Disability', pfl:'Paid Family Leave', workers_comp:'Workers Compensation', welfare:'Health', pension:'Pension', supp_retirement:'Supp. Retirement', legal:'Legal Fund', training:'Training Fund', profit_sharing:'Profit Sharing'};
   switch (key) {
     case 'fica':
       breakdown.push({l: 'Gross Wages',     v: fD(grossW)});
@@ -14870,18 +14899,14 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     if (l.sheet_name === 'Income') {
       return budget;
     }
-    // FA 724 #15 (Jennifer, 2026-08-19): insurance (6105-6195) proposes off
-    // the renewal model. Upfront-paid premiums carry $0 budget but the full
-    // expiring premium in YTD - that premium is the base.
-    const glNum = parseInt((l.gl_code || '').slice(0, 4), 10);
-    if (l.sheet_name === 'Gen & Admin' && glNum >= 6105 && glNum <= 6195) {
+    // FA 724 (Jennifer 2026-08-20, superseding 08-19): insurance proposes
+    // at the renewal increase over the 12-mo forecast — "assumptions times
+    // 12 mo forecast" — for every insurance category. The forecast itself
+    // uses the unbilled-remainder estimate (see faComputeEstimate).
+    if (faIsInsuranceLine(l)) {
       const ir = (window._data && window._data.assumptions && window._data.assumptions.insurance_renewal) || {};
-      const pre = Number(ir.pre_renewal_months) || 0;
-      const post = Number(ir.post_renewal_months) || 0;
       const inc = Number(ir.increase_percent) || 0;
-      const factor = (pre + post) > 0 ? (pre + post * (1 + inc)) / (pre + post) : 1;
-      const premium = budget || ((l.ytd_actual || 0) + (l.accrual_adj || 0) + (l.unpaid_bills || 0));
-      return premium * factor;
+      return faComputeForecast(l) * (1 + inc);
     }
     if (l.sheet_name === 'Repairs & Supplies' || l.sheet_name === 'Gen & Admin') {
       return budget * (1 + (l.increase_pct || 0));
