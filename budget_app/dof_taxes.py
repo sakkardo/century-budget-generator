@@ -20,13 +20,9 @@ logger = logging.getLogger(__name__)
 # Add new properties here as they join the portfolio.
 
 PROPERTY_TAX_CONFIG = {
-    # 724 Cherokee Owners: TWO parcels (Jennifer Murman 2026-08-19 —
-    # "Manhattan block 1489 lot 37" is the second BBL). extra_bbls AVs are
-    # summed with the primary parcel's; both are tax class 2 so
-    # rate x (AV1 + AV2) equals the sum of the two bills exactly.
-    "724": {
-        "extra_bbls": ["1014890037"],
-    },
+    # Extra parcels are FA-managed on the RE Taxes page (stored per-building
+    # in re_taxes_overrides.extra_bbls); a config "extra_bbls" list is still
+    # honored as a fallback and merged with the page's list.
     "204": {
         "building_name": "444 East 86th Street Owners Corp.",
         "address": "444 East 86th St, New York, NY 10028",
@@ -344,7 +340,7 @@ def is_coop(entity_code: str, buildings: list[dict] = None) -> bool:
     return False
 
 
-def fetch_dof_data(entity_code: str) -> dict | None:
+def fetch_dof_data(entity_code: str, extra_bbls=None) -> dict | None:
     """Fetch current tax assessment data from NYC DOF via SODA API.
 
     Resolution order (rewritten 2026-05-03 to fix two bugs):
@@ -418,10 +414,26 @@ def fetch_dof_data(entity_code: str) -> dict | None:
                     "tax_class": cfg.get("tax_class") or record.get("curtaxclass") or "2",
                     "year": record.get("year", ""),
                 }
-                # Multi-parcel buildings (724 FA note #18): sum each extra
-                # BBL's AVs into the totals. Same tax class means
-                # rate x summed AV = the sum of the individual bills.
-                extra = [b for b in (cfg.get("extra_bbls") or []) if b]
+                # Multi-parcel buildings (724 FA note #18 + 2026-08-20:
+                # "2 separate sections for each BBL... capability to add in
+                # more BBLs as necessary"). Extra BBLs come from the page
+                # (re_taxes_overrides.extra_bbls, FA-managed) merged with any
+                # legacy config entry. Each parcel's AVs are summed into the
+                # totals (same tax class: rate x summed AV = sum of bills)
+                # and returned individually in result["parcels"].
+                parcels = [{
+                    "bbl": parid,
+                    "trans_av": result["assessed_value"],
+                    "prior_trans_av": result["prior_trans_av"],
+                    "actual_av": result["actual_av"],
+                }]
+                _seen = {parid}
+                extra = []
+                for _b in list(cfg.get("extra_bbls") or []) + list(extra_bbls or []):
+                    _pb = _bbl_to_parid(_b) if _b else None
+                    if _pb and _pb not in _seen:
+                        _seen.add(_pb)
+                        extra.append(_pb)
                 merged = 0
                 for xb in extra:
                     xparid = _bbl_to_parid(xb)
@@ -452,9 +464,17 @@ def fetch_dof_data(entity_code: str) -> dict | None:
                         result["prior_actual_av"] += _xf("pyacttot")
                         result["market_value"] += _xf("curmkttot", "tenmkttot")
                         result["taxable_value"] += _xf("curtxbtot", "tentxbtot")
+                        parcels.append({
+                            "bbl": xparid,
+                            "trans_av": _xf("curtrntot", "tentrntot"),
+                            "prior_trans_av": _xf("pytrntot"),
+                            "actual_av": _xf("curacttot", "tenacttot"),
+                        })
                         merged += 1
                     except Exception as xe:
                         logger.warning(f"DOF extra-BBL fetch failed for {entity_code}/{xb}: {xe}")
+                result["parcels"] = parcels
+                result["extra_bbls_used"] = [p["bbl"] for p in parcels[1:]]
                 if merged:
                     result["bbl"] = parid + " +" + str(merged) + " parcel" + ("s" if merged > 1 else "")
                     result["extra_bbls_merged"] = merged
@@ -510,7 +530,7 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
     and exemption amounts.
     """
     overrides = overrides or {}
-    dof = fetch_dof_data(entity_code)
+    dof = fetch_dof_data(entity_code, extra_bbls=overrides.get("extra_bbls"))
     cfg = PROPERTY_TAX_CONFIG.get(entity_code, {})
 
     if not dof:
@@ -675,6 +695,8 @@ def compute_re_taxes(entity_code: str, overrides: dict = None) -> dict:
         "operating_assessment_proposed": round(operating_assessment_proposed, 2),
         "op_assess_per_share": op_assess_per_share,
         "op_assess_shares": op_assess_shares,
+        "parcels": dof.get("parcels") or [],
+        "extra_bbls": [p.get("bbl") for p in (dof.get("parcels") or [])[1:]],
     }
 
 

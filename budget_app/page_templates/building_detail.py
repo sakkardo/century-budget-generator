@@ -8742,6 +8742,68 @@ function _rePopulatePropertyCard(entityCode, re) {
   propLocked = !!(d && d.configured);
   applyPropLock();
   onPropFieldChange();
+  try { _reRenderParcels(re); } catch (e) {}
+}
+
+// ── Parcels (multi-BBL) — Jennifer 2026-08-20: per-BBL sections + the
+// ability to add more BBLs per building. The list saves to
+// re_taxes_overrides.extra_bbls; totals above stay the summed math.
+function _reRenderParcels(re) {
+  const card = document.getElementById('propCard');
+  if (!card) return;
+  let block = document.getElementById('reParcelsBlock');
+  if (!block) {
+    block = document.createElement('div');
+    block.id = 'reParcelsBlock';
+    block.style.cssText = 'margin-top:10px; border-top:1px dashed #d1d5db; padding-top:8px;';
+    card.appendChild(block);
+  }
+  const parcels = (re && re.parcels) || [];
+  let html = '<div style="font-size:10px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;">Parcels (' + (parcels.length || 1) + ') \u2014 each BBL below; the tax math above uses the summed AVs</div>';
+  if (parcels.length) {
+    html += '<table style="border-collapse:collapse; font-size:12px;"><tr style="color:#6b7280; font-size:10px; text-transform:uppercase;"><th style="text-align:left; padding:2px 14px 2px 0;">BBL</th><th style="text-align:right; padding:2px 14px 2px 0;">Trans AV (26/27)</th><th style="text-align:right; padding:2px 14px 2px 0;">Prior Trans AV</th><th style="text-align:right; padding:2px 14px 2px 0;">Actual AV</th><th></th></tr>';
+    parcels.forEach(function (p, i) {
+      html += '<tr><td style="padding:2px 14px 2px 0; font-variant-numeric:tabular-nums;">' + (p.bbl || '') + (i === 0 ? ' <span style="font-size:9px; color:#6b7280;">PRIMARY</span>' : '') + '</td>' +
+        '<td style="text-align:right; padding:2px 14px 2px 0;">' + fmtDollar(p.trans_av || 0) + '</td>' +
+        '<td style="text-align:right; padding:2px 14px 2px 0;">' + fmtDollar(p.prior_trans_av || 0) + '</td>' +
+        '<td style="text-align:right; padding:2px 14px 2px 0;">' + fmtDollar(p.actual_av || 0) + '</td>' +
+        '<td>' + (i === 0 ? '' : '<button onclick="reParcelRemove(\'' + (p.bbl || '') + '\')" title="Remove this parcel" style="background:none; border:none; color:#b91c1c; cursor:pointer;">\u2715</button>') + '</td></tr>';
+    });
+    html += '</table>';
+  }
+  html += '<div style="margin-top:6px; display:flex; gap:6px; align-items:center;">' +
+    '<input id="reParcelAddInput" type="text" placeholder="Add BBL: 10 digits or boro-block-lot" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:5px; font-size:12px; width:230px;">' +
+    '<button onclick="reParcelAdd()" style="background:#1e3a5f; color:white; border:none; border-radius:5px; padding:5px 12px; font-size:12px; cursor:pointer;">+ Add parcel</button>' +
+    '<span style="font-size:11px; color:#6b7280;">e.g. 1-1489-37</span></div>';
+  block.innerHTML = html;
+}
+function _reNormalizeBbl(raw) {
+  raw = String(raw || '').trim();
+  if (/^\d{10}$/.test(raw)) return raw;
+  const m = raw.match(/^(\d)[-\s\/](\d{1,5})[-\s\/](\d{1,4})$/);
+  if (!m) return null;
+  return m[1] + m[2].padStart(5, '0') + m[3].padStart(4, '0');
+}
+function reParcelAdd() {
+  const el = document.getElementById('reParcelAddInput');
+  const bbl = _reNormalizeBbl(el && el.value);
+  if (!bbl) { alert('Enter a 10-digit BBL or borough-block-lot (e.g. 1-1489-37).'); return; }
+  const re = window._reTaxesData || {};
+  const list = Array.isArray(re.extra_bbls) ? re.extra_bbls.slice() : [];
+  if (list.indexOf(bbl) !== -1 || (re.parcels || []).some(function (p) { return p.bbl === bbl; })) {
+    alert('That parcel is already on this building.');
+    return;
+  }
+  list.push(bbl);
+  re.extra_bbls = list;
+  autosaveReTaxes();
+  setTimeout(function () { try { refreshDOFData(); } catch (e) {} }, 900);
+}
+function reParcelRemove(bbl) {
+  const re = window._reTaxesData || {};
+  re.extra_bbls = (re.extra_bbls || []).filter(function (b) { return b !== bbl; });
+  autosaveReTaxes();
+  setTimeout(function () { try { refreshDOFData(); } catch (e) {} }, 900);
 }
 
 // FA dir 2026-06-03 (#6): Operating Assessment proposed = first-half RE tax
@@ -8851,6 +8913,7 @@ function reTaxBuildPayload() {
     // FA dir 2026-05-19: After-10/31 toggle (zeros out May-Dec estimate)
     after_oct31:       !!(STATE && STATE.afterOct31),
     // FA dir 2026-06-03 (#6): operating-assessment % → Summary 4200 proposed
+    extra_bbls: (window._reTaxesData && Array.isArray(window._reTaxesData.extra_bbls)) ? window._reTaxesData.extra_bbls : [],
     op_assess_shares: (window._reTaxesData && Number(window._reTaxesData.op_assess_shares)) || 0,
     operating_assessment_pct: (function () {
       const el = document.getElementById('reOpAssessPct');
@@ -14806,7 +14869,12 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       // FA directive 2026-05-05: Capital — no proposed budget. FA 2026-06-17
       // (B1/B4): never-budgeted income also contributes 0.
       const isCap = (l.sheet_name === 'Capital' || (l.category || '').toLowerCase() === 'capital');
-      t.proposed += (isCap || l.no_budget) ? 0 : (l.proposed_budget || faDefaultProposed(l));
+      // A formula pins the value: a formula-set 0 must NOT fall through to
+      // the default (724 2026-08-20: 6105 "=0" kept resurrecting the renewal
+      // default in the section total while the cell showed 0).
+      t.proposed += (isCap || l.no_budget) ? 0
+        : (l.proposed_formula ? (l.proposed_budget || 0)
+                              : (l.proposed_budget || faDefaultProposed(l)));
     });
     return t;
   }
