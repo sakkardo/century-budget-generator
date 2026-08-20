@@ -6101,6 +6101,176 @@ function ancRemoveLine(gl, idx) {
   ancRedrawDrawer(gl);
 }
 
+// ── Energy worksheet (Jennifer 2026-08-20) ────────────────────────────────
+// Per-account usage x rate schedules replacing the Excel energy sheets.
+// Monthly $ = usage x (ESCO $/unit + prior-year delivery $/unit x (1+incr)).
+const _energyExpanded = new Set();
+const _ENERGY_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function _isEnergyGl(gl, sheetName) {
+  if (sheetName === 'Energy') return /^(5250|5251|5252|5255|5260|5265|5270)-/.test(gl || '');
+  if (sheetName === 'Water & Sewer') return /^(6305|5275)-/.test(gl || '');
+  return false;
+}
+
+function _energyGetLine(gl) {
+  const sheets = (typeof allSheets !== 'undefined' && allSheets) || {};
+  const pools = [].concat(sheets['Energy'] || [], sheets['Water & Sewer'] || []);
+  return pools.find(function (l) { return l.gl_code === gl; });
+}
+
+function _energyGetAccounts(gl) {
+  const line = _energyGetLine(gl);
+  if (!line) return [];
+  if (!Array.isArray(line.backup_json)) line.backup_json = [];
+  return line.backup_json;
+}
+
+function _energyBlankAccount() {
+  return { _energy: true, label: '', esco_rate: 0, delivery_incr_pct: 0,
+           usage: [0,0,0,0,0,0,0,0,0,0,0,0],
+           prior_delivery: [0,0,0,0,0,0,0,0,0,0,0,0] };
+}
+
+function _energyMonthly(acc, m) {
+  const u = Number((acc.usage || [])[m]) || 0;
+  const pd = Number((acc.prior_delivery || [])[m]) || 0;
+  const esco = Number(acc.esco_rate) || 0;
+  const incr = Number(acc.delivery_incr_pct) || 0;
+  return u * (esco + pd * (1 + incr));
+}
+
+function _energyAccountAnnual(acc) {
+  let s = 0;
+  for (let m = 0; m < 12; m++) s += _energyMonthly(acc, m);
+  return s;
+}
+
+function _energyTotal(gl) {
+  return _energyGetAccounts(gl).reduce(function (s, a) { return s + _energyAccountAnnual(a); }, 0);
+}
+
+function energyToggleDrawer(gl, ev) {
+  if (ev) ev.stopPropagation();
+  const row = document.querySelector('tr[data-energy-drawer="' + gl + '"]');
+  if (!row) return;
+  const icon = document.getElementById('energy_icon_' + gl);
+  if (_energyExpanded.has(gl)) {
+    _energyExpanded.delete(gl);
+    row.style.display = 'none';
+    row.querySelector('td').innerHTML = '';
+    if (icon) icon.textContent = '\u26a1 worksheet';
+  } else {
+    _energyExpanded.add(gl);
+    row.style.display = '';
+    row.querySelector('td').innerHTML = energyRenderDrawer(gl);
+    if (icon) icon.textContent = 'close \u2212';
+  }
+}
+
+function energyRedraw(gl) {
+  const row = document.querySelector('tr[data-energy-drawer="' + gl + '"]');
+  if (row && _energyExpanded.has(gl)) row.querySelector('td').innerHTML = energyRenderDrawer(gl);
+}
+
+function energyRenderDrawer(gl) {
+  const line = _energyGetLine(gl);
+  if (!line) return '<div class="anc-drawer"><em>Line not found.</em></div>';
+  const accounts = _energyGetAccounts(gl);
+  const total = _energyTotal(gl);
+  const col7 = Number(line.proposed_budget) || 0;
+  const inSync = Math.abs(col7 - total) < 1;
+  const is = 'padding:3px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; text-align:right; width:64px; background:#fbfaf4;';
+  let html = '<div class="anc-drawer">' +
+    '<h3>Energy Worksheet <span class="anc-gl-small">\u00b7 ' + gl + ' ' + (line.description || '') + '</span></h3>' +
+    '<div style="font-size:11.5px; color:#6b7280; margin:2px 0 8px;">Per account: monthly usage \u00d7 (ESCO contract $/unit + prior-year delivery $/unit \u00d7 (1 + increase)). Matches the Excel energy schedules.</div>';
+  accounts.forEach(function (acc, ai) {
+    const annual = _energyAccountAnnual(acc);
+    html += '<div style="border:1px solid var(--gray-200); border-radius:8px; padding:10px 12px; margin-bottom:10px; background:white;">' +
+      '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">' +
+      '<input type="text" value="' + String(acc.label || '').replace(/"/g, '&quot;') + '" placeholder="Account (e.g. Con Ed #42-2033\u2026)" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'label\',-1,this.value)" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; width:250px; background:#fbfaf4;">' +
+      '<label style="font-size:11px; color:#6b7280;">ESCO $/unit <input type="text" value="' + (Number(acc.esco_rate) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'esco_rate\',-1,this.value)" style="' + is + '"></label>' +
+      '<label style="font-size:11px; color:#6b7280;">Delivery incr % <input type="text" value="' + ((Number(acc.delivery_incr_pct) || 0) * 100) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'delivery_incr_pct\',-1,this.value)" style="' + is + ' width:44px;"></label>' +
+      '<span style="margin-left:auto; font-size:12px; font-weight:700;">Annual: ' + _ancFmtD2(annual) + '</span>' +
+      '<button onclick="energyRemoveAccount(\'' + gl + '\',' + ai + ')" title="Remove account" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:14px;">\u2715</button>' +
+      '</div>' +
+      '<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:11px;">' +
+      '<tr><td style="padding:2px 6px; color:#6b7280;"></td>' + _ENERGY_MONTHS.map(function (mn) { return '<th style="padding:2px 6px; color:#6b7280; font-size:10px; text-transform:uppercase;">' + mn + '</th>'; }).join('') + '</tr>' +
+      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Usage</td>' + _ENERGY_MONTHS.map(function (_, m) {
+        return '<td><input type="text" value="' + (Number((acc.usage || [])[m]) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'usage\',' + m + ',this.value)" style="' + is + '"></td>';
+      }).join('') + '</tr>' +
+      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Prior delivery $/unit</td>' + _ENERGY_MONTHS.map(function (_, m) {
+        return '<td><input type="text" value="' + (Number((acc.prior_delivery || [])[m]) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'prior_delivery\',' + m + ',this.value)" style="' + is + '"></td>';
+      }).join('') + '</tr>' +
+      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Budget $</td>' + _ENERGY_MONTHS.map(function (_, m) {
+        return '<td style="text-align:right; padding:3px 6px; font-variant-numeric:tabular-nums; color:#15803d; font-weight:600;">' + Math.round(_energyMonthly(acc, m)).toLocaleString() + '</td>';
+      }).join('') + '</tr>' +
+      '</table></div></div>';
+  });
+  html += '<div style="display:flex; gap:10px; align-items:center;">' +
+    '<button onclick="energyAddAccount(\'' + gl + '\')" style="background:none; border:1px dashed #9ca3af; border-radius:6px; padding:6px 14px; font-size:12px; color:#4b5563; cursor:pointer;">+ Add account</button>' +
+    '<span style="font-size:13px; font-weight:800;">Building total: ' + _ancFmtD2(total) + '</span>' +
+    (inSync ? '<span style="font-size:12px; color:#16a34a; font-weight:700;">\u2713 In sync with proposed</span>'
+            : '<button class="anc-sync-btn" onclick="energySyncToProposed(\'' + gl + '\')">Sync proposed \u2192 ' + _ancFmtD(total) + '</button>') +
+    '</div></div>';
+  return html;
+}
+
+function energyUpd(gl, ai, field, monthIdx, value) {
+  const accounts = _energyGetAccounts(gl);
+  const acc = accounts[ai];
+  if (!acc) return;
+  if (field === 'label') acc.label = value;
+  else if (field === 'esco_rate') acc.esco_rate = _ancParseNum(value);
+  else if (field === 'delivery_incr_pct') acc.delivery_incr_pct = _ancParseNum(value) / 100;
+  else if (field === 'usage' || field === 'prior_delivery') {
+    if (!Array.isArray(acc[field])) acc[field] = [0,0,0,0,0,0,0,0,0,0,0,0];
+    acc[field][monthIdx] = _ancParseNum(value);
+  }
+  faAutoSave(gl, 'backup_json', accounts);
+  // update only derived cells (keep typing smooth): redraw on blur is
+  // overkill; recompute the Budget $ row + totals via full redraw only
+  // when focus leaves - here just refresh the totals text lazily.
+  clearTimeout(window._energyRedrawTimer);
+  window._energyRedrawTimer = setTimeout(function () {
+    const active = document.activeElement;
+    const keep = active && active.tagName === 'INPUT';
+    if (!keep) energyRedraw(gl);
+  }, 1200);
+}
+
+function energyAddAccount(gl) {
+  const accounts = _energyGetAccounts(gl);
+  accounts.push(_energyBlankAccount());
+  faAutoSave(gl, 'backup_json', accounts);
+  energyRedraw(gl);
+}
+
+function energyRemoveAccount(gl, ai) {
+  const accounts = _energyGetAccounts(gl);
+  accounts.splice(ai, 1);
+  faAutoSave(gl, 'backup_json', accounts);
+  energyRedraw(gl);
+}
+
+function energySyncToProposed(gl) {
+  const line = _energyGetLine(gl);
+  if (!line) return;
+  const total = Math.round(_energyTotal(gl));
+  line.proposed_budget = total;
+  line.proposed_formula = '';
+  const propInput = document.getElementById('prop_' + gl);
+  if (propInput) {
+    propInput.value = fmt(total);
+    propInput.dataset.raw = total;
+    propInput.dataset.formula = '';
+  }
+  faAutoSave(gl, 'proposed_budget', total);
+  faAutoSave(gl, 'proposed_formula', null);
+  if (typeof recalcRow === 'function') recalcRow(gl);
+  energyRedraw(gl);
+}
+
 function ancSyncToCol6(gl) {
   const line = _ancGetLine(gl);
   if (!line) return;
@@ -14812,13 +14982,19 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
 
     // Ancillary backup expand icon (only on Income sheet for eligible GL prefixes)
     const isAnc = (sheetName === 'Income') && _isAncillaryGl(gl);
+    // Energy worksheet chip (Energy + Water & Sewer sheets) - Jennifer 2026-08-20
+    const isEnergyWs = _isEnergyGl(gl, sheetName);
+    const energyExpanded = isEnergyWs && _energyExpanded.has(gl);
+    const energyIcon = isEnergyWs
+      ? '<span id="energy_icon_' + gl + '" class="anc-expand-icon" onclick="energyToggleDrawer(\'' + gl + '\', event)" title="Open the energy worksheet (per-account usage x rates)" style="width:auto; padding:0 7px; font-size:10px; background:#b45309;">' + (energyExpanded ? 'close \u2212' : '\u26a1 worksheet') + '</span>'
+      : '';
     const ancExpanded = isAnc && _ancExpanded.has(gl);
     const ancIcon = isAnc
       ? '<span id="anc_icon_' + gl + '" class="anc-expand-icon" onclick="ancToggleDrawer(\'' + gl + '\', event)" title="Open the backup worksheet (units x rate = monthly + annual)" style="width:auto; padding:0 7px; font-size:10px; background:#15803d;">' + (ancExpanded ? 'close −' : '📋 worksheet') + '</span>'
       : '';
 
     const mainRow = '<tr data-gl="' + gl + '" class="' + (isZero ? 'zero-row' : '') + '"' + (isZero && !_faShowZeroRows ? ' style="display:none;"' : '') + '>' +
-      '<td class="frozen frozen-gl">' + ancIcon + '<span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
+      '<td class="frozen frozen-gl">' + ancIcon + energyIcon + '<span style="font-size:13px; font-variant-numeric:tabular-nums;">' + gl + '</span>' + reclassBadge + '</td>' +
       '<td class="frozen frozen-desc"><a href="#" onclick="faToggleInvoices(\'' + gl + '\', this); return false;" style="color:inherit; text-decoration:none; cursor:pointer;" title="Click to view expenses">' + l.description + ' <span class="fa-drill-arrow" style="font-size:10px; color:var(--gray-400);">▶</span></a>' + oneTimeBadge + '</td>' +
       '<td class="num">' + $cell('pr_'+gl, 'prior_year', prior) + '</td>' +
       '<td class="num">' + $cell('ytd_'+gl, 'ytd_actual', ytd) + '</td>' +
@@ -14852,8 +15028,11 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     const ancDrawerRow = isAnc
       ? '<tr class="anc-drawer-row" data-anc-drawer="' + gl + '"' + (ancExpanded ? '' : ' style="display:none;"') + '><td colspan="' + NC + '">' + (ancExpanded ? ancRenderDrawer(gl) : '') + '</td></tr>'
       : '';
+    const energyDrawerRow = isEnergyWs
+      ? '<tr class="anc-drawer-row" data-energy-drawer="' + gl + '"' + (energyExpanded ? '' : ' style="display:none;"') + '><td colspan="' + NC + '">' + (energyExpanded ? energyRenderDrawer(gl) : '') + '</td></tr>'
+      : '';
 
-    return mainRow + ancDrawerRow;
+    return mainRow + ancDrawerRow + energyDrawerRow;
   }
 
   function sumLines(lines) {
