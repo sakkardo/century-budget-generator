@@ -6101,9 +6101,13 @@ function ancRemoveLine(gl, idx) {
   ancRedrawDrawer(gl);
 }
 
-// ── Energy worksheet (Jennifer 2026-08-20) ────────────────────────────────
-// Per-account usage x rate schedules replacing the Excel energy sheets.
-// Monthly $ = usage x (ESCO $/unit + prior-year delivery $/unit x (1+incr)).
+// ── Energy worksheet (Jennifer 2026-08-20, v2 12:12 spec) ─────────────────
+// Her sheet's row model per account: the FA enters Usage (prior yr + this
+// yr) + Vendor $ + ESCO $ straight from the bills; the app computes the
+// per-unit rates (vendor$/usage, esco$/usage), the total, and
+//   Budget $ = avg(2-yr usage) x (vendor $/unit x (1+incr) + ESCO contract)
+// with two account assumptions: vendor increase % and the ESCO contract
+// $/unit. Persisted per line in backup_json.
 const _energyExpanded = new Set();
 const _ENERGY_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -6119,31 +6123,61 @@ function _energyGetLine(gl) {
   return pools.find(function (l) { return l.gl_code === gl; });
 }
 
+function _energyMigrate(acc) {
+  // v1 items carried {usage[12], prior_delivery[12], esco_rate,
+  // delivery_incr_pct}. Convert to the v2 bill-entry shape so the computed
+  // budget is IDENTICAL: u1=u2=usage, vendor$ = usage x prior_delivery,
+  // esco$ = usage x esco_rate, contract = esco_rate, incr preserved.
+  if (acc && acc._energy === true && !Array.isArray(acc.months)) {
+    const months = [];
+    for (let m = 0; m < 12; m++) {
+      const u = Number((acc.usage || [])[m]) || 0;
+      const pd = Number((acc.prior_delivery || [])[m]) || 0;
+      const er = Number(acc.esco_rate) || 0;
+      months.push({ u1: u, u2: u, vd: u * pd, ed: u * er });
+    }
+    acc.months = months;
+    acc.vendor_incr_pct = Number(acc.delivery_incr_pct) || 0;
+    acc.esco_contract = Number(acc.esco_rate) || 0;
+    acc._energy = 2;
+    delete acc.usage; delete acc.prior_delivery;
+    delete acc.esco_rate; delete acc.delivery_incr_pct;
+  }
+  return acc;
+}
+
 function _energyGetAccounts(gl) {
   const line = _energyGetLine(gl);
   if (!line) return [];
   if (!Array.isArray(line.backup_json)) line.backup_json = [];
+  line.backup_json.forEach(_energyMigrate);
   return line.backup_json;
 }
 
 function _energyBlankAccount() {
-  return { _energy: true, label: '', esco_rate: 0, delivery_incr_pct: 0,
-           usage: [0,0,0,0,0,0,0,0,0,0,0,0],
-           prior_delivery: [0,0,0,0,0,0,0,0,0,0,0,0] };
+  const months = [];
+  for (let m = 0; m < 12; m++) months.push({ u1: 0, u2: 0, vd: 0, ed: 0 });
+  return { _energy: 2, label: '', vendor_incr_pct: 0, esco_contract: 0, months: months };
 }
 
-function _energyMonthly(acc, m) {
-  const u = Number((acc.usage || [])[m]) || 0;
-  const pd = Number((acc.prior_delivery || [])[m]) || 0;
-  const esco = Number(acc.esco_rate) || 0;
-  const incr = Number(acc.delivery_incr_pct) || 0;
-  return u * (esco + pd * (1 + incr));
+function _energyMonthCalc(acc, m) {
+  const mo = (acc.months || [])[m] || {};
+  const u1 = Number(mo.u1) || 0, u2 = Number(mo.u2) || 0;
+  const vd = Number(mo.vd) || 0, ed = Number(mo.ed) || 0;
+  const vendorRate = u2 > 0 ? vd / u2 : 0;
+  const escoRate = u2 > 0 ? ed / u2 : 0;
+  const budgetUsage = (u1 + u2) / 2;
+  const incr = Number(acc.vendor_incr_pct) || 0;
+  const contract = Number(acc.esco_contract) || 0;
+  const budget = budgetUsage * (vendorRate * (1 + incr) + contract);
+  return { u1: u1, u2: u2, vd: vd, ed: ed, vendorRate: vendorRate,
+           escoRate: escoRate, total: vd + ed, budgetUsage: budgetUsage, budget: budget };
 }
 
 function _energyAccountAnnual(acc) {
-  let s = 0;
-  for (let m = 0; m < 12; m++) s += _energyMonthly(acc, m);
-  return s;
+  let sum = 0;
+  for (let m = 0; m < 12; m++) sum += _energyMonthCalc(acc, m).budget;
+  return sum;
 }
 
 function _energyTotal(gl) {
@@ -6159,12 +6193,12 @@ function energyToggleDrawer(gl, ev) {
     _energyExpanded.delete(gl);
     row.style.display = 'none';
     row.querySelector('td').innerHTML = '';
-    if (icon) icon.textContent = '\u26a1 worksheet';
+    if (icon) icon.textContent = '⚡ worksheet';
   } else {
     _energyExpanded.add(gl);
     row.style.display = '';
     row.querySelector('td').innerHTML = energyRenderDrawer(gl);
-    if (icon) icon.textContent = 'close \u2212';
+    if (icon) icon.textContent = 'close −';
   }
 }
 
@@ -6180,63 +6214,73 @@ function energyRenderDrawer(gl) {
   const total = _energyTotal(gl);
   const col7 = Number(line.proposed_budget) || 0;
   const inSync = Math.abs(col7 - total) < 1;
-  const is = 'padding:3px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; text-align:right; width:64px; background:#fbfaf4;';
+  const yNow = new Date().getFullYear();
+  const is = 'padding:3px 5px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; text-align:right; width:78px; background:#fbfaf4;';
+  const cs = 'text-align:right; padding:3px 6px; font-variant-numeric:tabular-nums; font-size:11px;';
   let html = '<div class="anc-drawer">' +
-    '<h3>Energy Worksheet <span class="anc-gl-small">\u00b7 ' + gl + ' ' + (line.description || '') + '</span></h3>' +
-    '<div style="font-size:11.5px; color:#6b7280; margin:2px 0 8px;">Per account: monthly usage \u00d7 (ESCO contract $/unit + prior-year delivery $/unit \u00d7 (1 + increase)). Matches the Excel energy schedules.</div>';
+    '<h3>Energy Worksheet <span class="anc-gl-small">· ' + gl + ' ' + (line.description || '') + '</span></h3>' +
+    '<div style="font-size:11.5px; color:#6b7280; margin:2px 0 8px;">Enter usage and the vendor/ESCO dollar amounts straight from the bills — the per-unit rates and the budget are computed: Budget $ = avg 2-yr usage × (vendor $/unit × (1+increase) + ESCO contract $/unit).</div>';
   accounts.forEach(function (acc, ai) {
     const annual = _energyAccountAnnual(acc);
     html += '<div style="border:1px solid var(--gray-200); border-radius:8px; padding:10px 12px; margin-bottom:10px; background:white;">' +
       '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">' +
-      '<input type="text" value="' + String(acc.label || '').replace(/"/g, '&quot;') + '" placeholder="Account (e.g. Con Ed #42-2033\u2026)" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'label\',-1,this.value)" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; width:250px; background:#fbfaf4;">' +
-      '<label style="font-size:11px; color:#6b7280;">ESCO $/unit <input type="text" value="' + (Number(acc.esco_rate) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'esco_rate\',-1,this.value)" style="' + is + '"></label>' +
-      '<label style="font-size:11px; color:#6b7280;">Delivery incr % <input type="text" value="' + ((Number(acc.delivery_incr_pct) || 0) * 100) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'delivery_incr_pct\',-1,this.value)" style="' + is + ' width:44px;"></label>' +
-      '<span style="margin-left:auto; font-size:12px; font-weight:700;">Annual: ' + _ancFmtD2(annual) + '</span>' +
-      '<button onclick="energyRemoveAccount(\'' + gl + '\',' + ai + ')" title="Remove account" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:14px;">\u2715</button>' +
+      '<input type="text" value="' + String(acc.label || '').replace(/"/g, '&quot;') + '" placeholder="Account (e.g. Con Ed #42-2033…)" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'label\',-1,null,this.value)" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; width:250px; background:#fbfaf4;">' +
+      '<label style="font-size:11px; color:#6b7280;">Vendor increase % <input type="text" value="' + (((Number(acc.vendor_incr_pct) || 0) * 100).toFixed(1)) + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'vendor_incr_pct\',-1,null,this.value)" style="' + is + ' width:44px;"></label>' +
+      '<label style="font-size:11px; color:#6b7280;">ESCO contract $/unit <input type="text" value="' + (Number(acc.esco_contract) || 0) + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'esco_contract\',-1,null,this.value)" style="' + is + '"></label>' +
+      '<span style="margin-left:auto; font-size:12px; font-weight:700;">Annual budget: ' + _ancFmtD2(annual) + '</span>' +
+      '<button onclick="energyRemoveAccount(\'' + gl + '\',' + ai + ')" title="Remove account" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:14px;">✕</button>' +
       '</div>' +
-      '<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:11px;">' +
-      '<tr><td style="padding:2px 6px; color:#6b7280;"></td>' + _ENERGY_MONTHS.map(function (mn) { return '<th style="padding:2px 6px; color:#6b7280; font-size:10px; text-transform:uppercase;">' + mn + '</th>'; }).join('') + '</tr>' +
-      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Usage</td>' + _ENERGY_MONTHS.map(function (_, m) {
-        return '<td><input type="text" value="' + (Number((acc.usage || [])[m]) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'usage\',' + m + ',this.value)" style="' + is + '"></td>';
-      }).join('') + '</tr>' +
-      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Prior delivery $/unit</td>' + _ENERGY_MONTHS.map(function (_, m) {
-        return '<td><input type="text" value="' + (Number((acc.prior_delivery || [])[m]) || 0) + '" oninput="energyUpd(\'' + gl + '\',' + ai + ',\'prior_delivery\',' + m + ',this.value)" style="' + is + '"></td>';
-      }).join('') + '</tr>' +
-      '<tr><td style="padding:2px 6px; color:#6b7280; white-space:nowrap;">Budget $</td>' + _ENERGY_MONTHS.map(function (_, m) {
-        return '<td style="text-align:right; padding:3px 6px; font-variant-numeric:tabular-nums; color:#15803d; font-weight:600;">' + Math.round(_energyMonthly(acc, m)).toLocaleString() + '</td>';
-      }).join('') + '</tr>' +
-      '</table></div></div>';
+      '<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:11px; width:100%;">' +
+      '<tr style="color:#6b7280; font-size:10px; text-transform:uppercase;">' +
+      '<th style="text-align:left; padding:3px 6px;">Month</th>' +
+      '<th style="' + cs + '">Usage ' + (yNow - 1) + '</th>' +
+      '<th style="' + cs + '">Usage ' + yNow + '</th>' +
+      '<th style="' + cs + '">Vendor $</th>' +
+      '<th style="' + cs + '">ESCO $</th>' +
+      '<th style="' + cs + '" title="Vendor $ / usage">Vendor $/unit</th>' +
+      '<th style="' + cs + '" title="ESCO $ / usage">ESCO $/unit</th>' +
+      '<th style="' + cs + '">Total $</th>' +
+      '<th style="' + cs + '" title="Average of the two usage years">Budget usage</th>' +
+      '<th style="' + cs + '">Budget $</th></tr>';
+    for (let m = 0; m < 12; m++) {
+      const c = _energyMonthCalc(acc, m);
+      html += '<tr>' +
+        '<td style="padding:3px 6px; color:#6b7280;">' + _ENERGY_MONTHS[m] + '</td>' +
+        '<td style="' + cs + '"><input type="text" value="' + c.u1 + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'u1\',this.value)" style="' + is + '"></td>' +
+        '<td style="' + cs + '"><input type="text" value="' + c.u2 + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'u2\',this.value)" style="' + is + '"></td>' +
+        '<td style="' + cs + '"><input type="text" value="' + c.vd + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'vd\',this.value)" style="' + is + '"></td>' +
+        '<td style="' + cs + '"><input type="text" value="' + c.ed + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'ed\',this.value)" style="' + is + '"></td>' +
+        '<td style="' + cs + '">' + c.vendorRate.toFixed(4) + '</td>' +
+        '<td style="' + cs + '">' + c.escoRate.toFixed(4) + '</td>' +
+        '<td style="' + cs + '">' + _ancFmtD2(c.total) + '</td>' +
+        '<td style="' + cs + '">' + c.budgetUsage.toLocaleString(undefined, {maximumFractionDigits: 1}) + '</td>' +
+        '<td style="' + cs + ' color:#15803d; font-weight:700;">' + _ancFmtD2(c.budget) + '</td></tr>';
+    }
+    html += '</table></div></div>';
   });
   html += '<div style="display:flex; gap:10px; align-items:center;">' +
     '<button onclick="energyAddAccount(\'' + gl + '\')" style="background:none; border:1px dashed #9ca3af; border-radius:6px; padding:6px 14px; font-size:12px; color:#4b5563; cursor:pointer;">+ Add account</button>' +
     '<span style="font-size:13px; font-weight:800;">Building total: ' + _ancFmtD2(total) + '</span>' +
-    (inSync ? '<span style="font-size:12px; color:#16a34a; font-weight:700;">\u2713 In sync with proposed</span>'
-            : '<button class="anc-sync-btn" onclick="energySyncToProposed(\'' + gl + '\')">Sync proposed \u2192 ' + _ancFmtD(total) + '</button>') +
+    (inSync ? '<span style="font-size:12px; color:#16a34a; font-weight:700;">✓ In sync with proposed</span>'
+            : '<button class="anc-sync-btn" onclick="energySyncToProposed(\'' + gl + '\')">Sync proposed → ' + _ancFmtD(total) + '</button>') +
     '</div></div>';
   return html;
 }
 
-function energyUpd(gl, ai, field, monthIdx, value) {
+function energyUpd(gl, ai, field, monthIdx, subKey, value) {
   const accounts = _energyGetAccounts(gl);
   const acc = accounts[ai];
   if (!acc) return;
   if (field === 'label') acc.label = value;
-  else if (field === 'esco_rate') acc.esco_rate = _ancParseNum(value);
-  else if (field === 'delivery_incr_pct') acc.delivery_incr_pct = _ancParseNum(value) / 100;
-  else if (field === 'usage' || field === 'prior_delivery') {
-    if (!Array.isArray(acc[field])) acc[field] = [0,0,0,0,0,0,0,0,0,0,0,0];
-    acc[field][monthIdx] = _ancParseNum(value);
+  else if (field === 'vendor_incr_pct') acc.vendor_incr_pct = _ancParseNum(value) / 100;
+  else if (field === 'esco_contract') acc.esco_contract = _ancParseNum(value);
+  else if (field === 'months') {
+    if (!Array.isArray(acc.months)) acc.months = _energyBlankAccount().months;
+    if (!acc.months[monthIdx]) acc.months[monthIdx] = { u1: 0, u2: 0, vd: 0, ed: 0 };
+    acc.months[monthIdx][subKey] = _ancParseNum(value);
   }
   faAutoSave(gl, 'backup_json', accounts);
-  // update only derived cells (keep typing smooth): redraw on blur is
-  // overkill; recompute the Budget $ row + totals via full redraw only
-  // when focus leaves - here just refresh the totals text lazily.
-  clearTimeout(window._energyRedrawTimer);
-  window._energyRedrawTimer = setTimeout(function () {
-    const active = document.activeElement;
-    const keep = active && active.tagName === 'INPUT';
-    if (!keep) energyRedraw(gl);
-  }, 1200);
+  energyRedraw(gl);
 }
 
 function energyAddAccount(gl) {
