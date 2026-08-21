@@ -867,9 +867,24 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
                                 # matching the FA's "proposed = current budget"
                                 # (the displayed budget column), not the sum of
                                 # sparse line budgets. Mirrors the income pin.
+                                # FA 724 (Jennifer 2026-08-20): INSURANCE rows
+                                # (all bases in 6105-6195) are exempt from the
+                                # col6 pin — their col7 is the per-line
+                                # forecast x (1+renewal) aggregate, which
+                                # _aggregate_by_prefix now computes; the pin
+                                # froze 724's Insurance row at 302,312 while
+                                # the sheet cells showed the renewal defaults.
+                                def _ins_base(_b):
+                                    try:
+                                        return 6105 <= int(_b) <= 6195
+                                    except Exception:
+                                        return False
+                                _is_insurance_row = bool(_bases) and all(
+                                    _ins_base(b) for b in _bases)
                                 _dom = agg.get("dominant_sheet", "")
                                 if (_dom in ("Repairs & Supplies", "Gen & Admin")
-                                        and col6 is not None and abs(float(col6)) > 0.005):
+                                        and col6 is not None and abs(float(col6)) > 0.005
+                                        and not _is_insurance_row):
                                     col7 = round(float(col6), 2)
                                 else:
                                     _agg_proposed = round(agg.get("proposed_budget", 0) or 0, 2)
