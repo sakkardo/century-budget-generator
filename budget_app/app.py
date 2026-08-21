@@ -13589,6 +13589,50 @@ def admin_add_summary_row():
             ), {"ec": entity_code, "by": _BY})
             db.session.flush()
 
+    if target_order is None and section:
+        # FA 724 (Jennifer 2026-08-20 4:41pm): adding into an EMPTY section
+        # sent no after_label, so the row fell to max+1 — stranded below
+        # Total Surplus. Belt for every caller: when the entity's rows carry
+        # section stamps, place the new row right before the section's first
+        # subtotal (or right after its header when no subtotal exists yet).
+        def _sec_canon(s):
+            sl = (s or "").lower().strip()
+            if "non" in sl and "income" in sl:
+                return "noi"
+            if "non" in sl and "expense" in sl:
+                return "noe"
+            if sl == "income":
+                return "income"
+            if sl in ("expenses", "expense"):
+                return "expenses"
+            return ""
+        _want = _sec_canon(section)
+        if _want:
+            _sec_rows = sorted(
+                [r for r in BudgetSummaryRow.query.filter_by(
+                    entity_code=entity_code, budget_year=_BY).all()
+                 if _sec_canon(r.section) == _want],
+                key=lambda r: r.display_order or 0)
+            _pos = None
+            for r in _sec_rows:
+                if r.row_type == "subtotal":
+                    _pos = r.display_order  # insert BEFORE the subtotal
+                    break
+            if _pos is None and _sec_rows:
+                _pos = (_sec_rows[-1].display_order or 0) + 1  # after the section's last row
+            if _pos is not None:
+                db.session.execute(db.text(
+                    "UPDATE budget_summary_rows SET display_order = display_order + 10000 "
+                    "WHERE entity_code = :ec AND budget_year = :by AND display_order >= :ord"
+                ), {"ec": entity_code, "by": _BY, "ord": _pos})
+                db.session.flush()
+                db.session.execute(db.text(
+                    "UPDATE budget_summary_rows SET display_order = display_order - 9999 "
+                    "WHERE entity_code = :ec AND budget_year = :by AND display_order >= 10000"
+                ), {"ec": entity_code, "by": _BY})
+                db.session.flush()
+                target_order = _pos
+
     if target_order is None:
         # Fall back: max + 1 of all rows for this entity.
         max_row = db.session.execute(db.text(

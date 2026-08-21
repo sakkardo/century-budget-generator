@@ -5705,6 +5705,45 @@ function faLineChanged(gl, field, value) {
     forecast = ytd + accrual + unpaid + estimate;
   }
 
+  // FA 724 (Jennifer 2026-08-20 4:41pm): keep the in-memory line current
+  // with this edit, then compute display values through the SAME branch
+  // rules the render uses (faComputeEstimate / faComputeForecast /
+  // faDefaultProposed) — the legacy base/N*M + forecastx(1+inc) math here
+  // ignored the insurance/income/R&S branches, so zeroing an insurance
+  // estimate repainted (and worse, PERSISTED) the wrong proposed.
+  let lineObj = null;
+  if (typeof allSheets === 'object' && allSheets) {
+    for (const _sn in allSheets) {
+      const _f = (allSheets[_sn] || []).find(function (l) { return l.gl_code === gl; });
+      if (_f) { lineObj = _f; break; }
+    }
+  }
+  if (lineObj) {
+    if (field === 'estimate_override') {
+      lineObj.estimate_override = (value === null || value === undefined) ? null : (parseFloat(value) || 0);
+    } else if (field === 'forecast_override') {
+      lineObj.forecast_override = (value === null || value === undefined) ? null : (parseFloat(value) || 0);
+    } else if (field === '__recalc_estimate') {
+      lineObj.estimate_override = null;
+    } else if (field === '__recalc_forecast') {
+      lineObj.forecast_override = null;
+    } else if (field === '__recalc_proposed') {
+      lineObj.proposed_budget = 0;
+      lineObj.proposed_formula = null;
+    } else if (field === 'proposed_budget') {
+      lineObj.proposed_budget = Math.round(parseDollar(value));
+    } else if (field === 'increase_pct') {
+      lineObj.increase_pct = (parseFloat(value) || 0) / 100;
+    } else if (field === 'ytd_actual' || field === 'accrual_adj' || field === 'unpaid_bills'
+               || field === 'prior_year' || field === 'current_budget') {
+      lineObj[field] = Math.round(parseDollar(value));
+    }
+    if (field !== 'estimate_override' && field !== 'forecast_override') {
+      estimate = faComputeEstimate(lineObj);
+      forecast = faComputeForecast(lineObj);
+    }
+  }
+
   // Check if proposed has a user formula — if so, don't auto-recalc it
   const propEl = document.getElementById('prop_' + gl);
   const hasUserFormula = propEl && propEl.dataset.proposedFormula;
@@ -5712,6 +5751,13 @@ function faLineChanged(gl, field, value) {
   if (hasUserFormula && field !== '__recalc_proposed') {
     const evalResult = safeEvalFormula(propEl.dataset.proposedFormula);
     proposed = evalResult !== null ? evalResult : parseFloat(propEl.dataset.raw) || 0;
+  } else if (lineObj && typeof window.faDefaultProposed === 'function') {
+    proposed = lineObj.proposed_formula
+      ? (lineObj.proposed_budget || 0)
+      : (lineObj.proposed_budget || window.faDefaultProposed(lineObj));
+    if (lineObj.sheet_name === 'Capital' || (lineObj.category || '').toLowerCase() === 'capital') {
+      proposed = 0;
+    }
   } else {
     proposed = forecast * (1 + incPct);
   }
@@ -5734,17 +5780,27 @@ function faLineChanged(gl, field, value) {
     estExpr = '0';
   }
   const fcstFormula = '=' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + ')';
+  // When the line object drove the math, pass null formulas so the cells
+  // KEEP the render's branch-aware tooltips instead of the legacy strings.
   const propFormula = hasUserFormula && field !== '__recalc_proposed'
     ? propEl.dataset.proposedFormula
-    : '=(' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + '))*(1+' + incPct.toFixed(4) + ')';
+    : (lineObj ? null
+       : '=(' + ytd + '+(' + accrual + ')+(' + unpaid + ')+(' + estExpr + '))*(1+' + incPct.toFixed(4) + ')');
 
-  if (field !== 'estimate_override') updateCell('est_' + gl, estimate, estFormula);
-  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, fcstFormula);
+  if (field !== 'estimate_override') updateCell('est_' + gl, estimate, lineObj ? null : estFormula);
+  if (field !== 'forecast_override') updateCell('fcst_' + gl, forecast, lineObj ? null : fcstFormula);
   if (field !== 'proposed_budget') updateCell('prop_' + gl, proposed, propFormula);
 
-  // Only auto-save proposed if there's no user formula (formula saves handled by Accept)
-  if (!hasUserFormula || field === '__recalc_proposed') {
-    faAutoSave(gl, 'proposed_budget', Math.round(proposed));
+  // FA 724 (Jennifer 2026-08-20 4:41pm): this chain used to PERSIST the
+  // recomputed proposed on every estimate/forecast/value edit — storing a
+  // legacy-rule display default (6140 froze at 4,133 = its new forecast
+  // instead of the live x1.15 insurance default). Defaults are NEVER
+  // stored: display recomputes above, storage keeps 0 / the FA's own
+  // value. The one explicit write left is Clear ('__recalc_proposed'),
+  // which stores 0 so the live default drives everywhere (Summary, board,
+  // export all compute the same rule server-side).
+  if (field === '__recalc_proposed') {
+    faAutoSave(gl, 'proposed_budget', 0);
   }
 
   // FA dir 2026-06-05: $ Var = Proposed - Curr Budget; % Chg = (Proposed - Budget) / Budget.
@@ -6257,7 +6313,7 @@ function energyRenderDrawer(gl) {
   const cs = 'text-align:right; padding:3px 6px; font-variant-numeric:tabular-nums; font-size:11px;';
   let html = '<div class="anc-drawer">' +
     '<h3>Energy Worksheet <span class="anc-gl-small">· ' + gl + ' ' + (line.description || '') + '</span></h3>' +
-    '<div style="font-size:11.5px; color:#6b7280; margin:2px 0 8px;">Enter usage and the vendor/ESCO dollar amounts straight from the bills — the per-unit rates and the budget are computed: Budget $ = avg 2-yr usage × (vendor $/unit × (1+increase) + ESCO contract $/unit).</div>';
+    '<div style="font-size:11.5px; color:#6b7280; margin:2px 0 8px;">Enter usage and the vendor/ESCO dollar amounts straight from the bills — the per-unit rates and the budget are computed: Budget $ = avg 2-yr usage × (vendor $/unit × (1+increase) + ESCO contract $/unit). <b>Hover any computed cell to see its formula with the real numbers.</b></div>';
   accounts.forEach(function (acc, ai) {
     const annual = _energyAccountAnnual(acc);
     html += '<div style="border:1px solid var(--gray-200); border-radius:8px; padding:10px 12px; margin-bottom:10px; background:white;">' +
@@ -6265,7 +6321,7 @@ function energyRenderDrawer(gl) {
       '<input type="text" value="' + String(acc.label || '').replace(/"/g, '&quot;') + '" placeholder="Account (e.g. Con Ed #42-2033…)" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'label\',-1,null,this.value)" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px; width:250px; background:#fbfaf4;">' +
       '<label style="font-size:11px; color:#6b7280;">Vendor increase % <input type="text" value="' + (((Number(acc.vendor_incr_pct) || 0) * 100).toFixed(1)) + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'vendor_incr_pct\',-1,null,this.value)" style="' + is + ' width:44px;"></label>' +
       '<label style="font-size:11px; color:#6b7280;">ESCO contract $/unit <input type="text" value="' + (Number(acc.esco_contract) || 0) + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'esco_contract\',-1,null,this.value)" style="' + is + '"></label>' +
-      '<span style="margin-left:auto; font-size:12px; font-weight:700;">Annual budget: ' + _ancFmtD2(annual) + '</span>' +
+      '<span style="margin-left:auto; font-size:12px; font-weight:700;" title="= sum of the 12 monthly Budget $ cells below">Annual budget: ' + _ancFmtD2(annual) + '</span>' +
       '<button onclick="energyRemoveAccount(\'' + gl + '\',' + ai + ')" title="Remove account" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:14px;">✕</button>' +
       '</div>' +
       '<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:11px; width:100%;">' +
@@ -6288,11 +6344,13 @@ function energyRenderDrawer(gl) {
         '<td style="' + cs + '"><input type="text" value="' + c.u2 + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'u2\',this.value)" style="' + is + '"></td>' +
         '<td style="' + cs + '"><input type="text" value="' + c.vd + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'vd\',this.value)" style="' + is + '"></td>' +
         '<td style="' + cs + '"><input type="text" value="' + c.ed + '" onchange="energyUpd(\'' + gl + '\',' + ai + ',\'months\',' + m + ',\'ed\',this.value)" style="' + is + '"></td>' +
-        '<td style="' + cs + '">' + c.vendorRate.toFixed(4) + '</td>' +
-        '<td style="' + cs + '">' + c.escoRate.toFixed(4) + '</td>' +
-        '<td style="' + cs + '">' + _ancFmtD2(c.total) + '</td>' +
-        '<td style="' + cs + '">' + c.budgetUsage.toLocaleString(undefined, {maximumFractionDigits: 1}) + '</td>' +
-        '<td style="' + cs + ' color:#15803d; font-weight:700;">' + _ancFmtD2(c.budget) + '</td></tr>';
+        // FA 724 (Jennifer 2026-08-20 4:41pm): every computed cell shows its
+        // formula with the real numbers on hover.
+        '<td style="' + cs + '" title="= Vendor $ \u00f7 usage = ' + c.vd + ' \u00f7 ' + c.u2 + '">' + c.vendorRate.toFixed(4) + '</td>' +
+        '<td style="' + cs + '" title="= ESCO $ \u00f7 usage = ' + c.ed + ' \u00f7 ' + c.u2 + '">' + c.escoRate.toFixed(4) + '</td>' +
+        '<td style="' + cs + '" title="= Vendor $ + ESCO $ = ' + c.vd + ' + ' + c.ed + '">' + _ancFmtD2(c.total) + '</td>' +
+        '<td style="' + cs + '" title="= (' + c.u1 + ' + ' + c.u2 + ') \u00f7 2">' + c.budgetUsage.toLocaleString(undefined, {maximumFractionDigits: 1}) + '</td>' +
+        '<td style="' + cs + ' color:#15803d; font-weight:700;" title="= ' + c.budgetUsage.toFixed(1) + ' \u00d7 (' + c.vendorRate.toFixed(4) + ' \u00d7 (1 + ' + ((Number(acc.vendor_incr_pct) || 0) * 100).toFixed(1) + '%) + ' + (Number(acc.esco_contract) || 0) + ') = ' + _ancFmtD2(c.budget) + '">' + _ancFmtD2(c.budget) + '</td></tr>';
     }
     html += '</table></div></div>';
   });
@@ -11945,7 +12003,30 @@ async function sumDoInsert(secKey) {
     const sectionRows = rows
       .filter(r => r._sk === secKey && r.row_type === 'data' && r.label !== label)
       .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
-    if (sectionRows.length > 0) after_label = sectionRows[sectionRows.length - 1].label;
+    if (sectionRows.length > 0) {
+      after_label = sectionRows[sectionRows.length - 1].label;
+    } else {
+      // FA 724 (Jennifer 2026-08-20 4:41pm): an EMPTY section (e.g. a fresh
+      // Non-Operating Income) has no data row to anchor after, so the row
+      // used to land at max+1 — below Total Surplus, unreachable by the
+      // within-section arrows. Anchor to the section's header; on
+      // flat-format buildings (no headers) anchor to the row right above
+      // the section's subtotal.
+      const hdr = rows.find(r => r._sk === secKey && r.row_type === 'section_header');
+      if (hdr) {
+        after_label = hdr.label;
+      } else {
+        const subs = rows
+          .filter(r => r._sk === secKey && r.row_type === 'subtotal')
+          .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+        if (subs.length > 0) {
+          const prev = rows
+            .filter(r => (r.display_order || 0) < (subs[0].display_order || 0))
+            .sort((a, b) => (b.display_order || 0) - (a.display_order || 0))[0];
+          if (prev) after_label = prev.label;
+        }
+      }
+    }
   } catch (e) { /* fall back to end-of-table */ }
 
   try {
@@ -15056,6 +15137,10 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
     }
     return faComputeForecast(l) * (1 + (l.increase_pct || 0));
   }
+  // FA 724 (Jennifer 2026-08-20 4:41pm): faLineChanged must use this SAME
+  // rule. Closure-clean (only l + window._data + top-level helpers), so
+  // expose the single source instead of duplicating branches.
+  window.faDefaultProposed = faDefaultProposed;
 
   function buildLineRow(l) {
     const gl = l.gl_code;
