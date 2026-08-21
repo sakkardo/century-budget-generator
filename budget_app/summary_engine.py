@@ -174,7 +174,8 @@ def _is_capital_line(line):
     return (line.get("sheet_name") == "Capital"
             or (line.get("category") or "").lower() == "capital")
 
-def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
+def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months,
+                         insurance_renewal_pct=0.0):
     """Sum budget_lines matching GL prefixes. Returns ytd/estimate/forecast/current_budget.
 
     FA directive 2026-05-05: COL 3 (YTD) on the Summary tab must show
@@ -300,7 +301,12 @@ def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
             proposed = 0
         else:
             proposed = float(line.get("proposed_budget", 0) or 0)
-            if proposed == 0:
+            # Round-5 formula-zero guard (MIRRORS sumLines/buildLineRow):
+            # an explicit proposed_formula pins the stored value — '=0'
+            # means ZERO, never "fall through to a default".
+            if line.get("proposed_formula"):
+                pass
+            elif proposed == 0:
                 inc_pct = float(line.get("increase_pct", 0) or 0)
                 cb = float(line.get("current_budget", 0) or 0)
                 sheet = line.get("sheet_name", "") or ""
@@ -310,6 +316,13 @@ def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
                 # the forecast basis (income col7 is pinned at the row level).
                 if gl == "5172-0000":
                     proposed = cb * 1.03
+                # FA 724 (Jennifer 2026-08-20): insurance (G&A 6105-6195)
+                # proposes at the renewal increase over the 12-mo forecast —
+                # MIRRORS faDefaultProposed. Must sit BEFORE the Gen & Admin
+                # budget-basis branch or the Insurance row's col7 = col6.
+                elif (sheet == "Gen & Admin" and gl[:4].isdigit()
+                      and 6105 <= int(gl[:4]) <= 6195):
+                    proposed = line_forecast * (1 + float(insurance_renewal_pct or 0))
                 elif sheet in ("Repairs & Supplies", "Gen & Admin"):
                     proposed = cb * (1 + inc_pct)
                 elif line_forecast > 0:
@@ -333,7 +346,8 @@ def _aggregate_by_prefix(budget_lines_dicts, prefixes, ytd_months):
 
 def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months,
                     row_au=None, col2_sql_error=None,
-                    op_assess_proposed=None, re_tax_exemptions_budget=None):
+                    op_assess_proposed=None, re_tax_exemptions_budget=None,
+                    insurance_renewal_pct=0.0):
     """Compute the full 8-column summary payload (the /api/summary body).
 
     Returns the response dict the route jsonifies. Body is the verbatim
@@ -741,7 +755,8 @@ def compute_summary(entity_code, budget_year, summary_rows, bl_dicts, ytd_months
             except Exception:
                 prefixes = []
             if prefixes:
-                agg = _aggregate_by_prefix(bl_dicts, prefixes, ytd_months)
+                agg = _aggregate_by_prefix(bl_dicts, prefixes, ytd_months,
+                                    insurance_renewal_pct=insurance_renewal_pct)
                 agg_count = agg.get("count", 0)
                 if agg_count > 0:
                     # FA directive 2026-05-05:

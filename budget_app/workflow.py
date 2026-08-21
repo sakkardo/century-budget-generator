@@ -9536,6 +9536,16 @@ def create_workflow_blueprint(db):
             except Exception:
                 pass
 
+        # FA 724 (Jennifer 2026-08-20): insurance col7 = forecast x
+        # (1 + renewal increase) — thread the assumption into the engine.
+        _ins_renewal_pct = 0.0
+        try:
+            _ins = (_json.loads(budget.assumptions_json)
+                    if budget and budget.assumptions_json else {}).get("insurance_renewal") or {}
+            _ins_renewal_pct = float(_ins.get("increase_percent") or 0)
+        except Exception:
+            _ins_renewal_pct = 0.0
+
         # ── FA dir 2026-06-03 (#6): operating-assessment proposed driver ──
         # The operating-assessment (GL 4200) row's proposed budget (Col 7) =
         # first-half RE tax × 2 × pct (default 17.5%, editable per-property on
@@ -9592,6 +9602,7 @@ def create_workflow_blueprint(db):
             row_au=row_au, col2_sql_error=col2_sql_error,
             op_assess_proposed=_op_assess_proposed,
             re_tax_exemptions_budget=_re_tax_exemptions_budget,
+            insurance_renewal_pct=_ins_renewal_pct,
         ))
 
 
