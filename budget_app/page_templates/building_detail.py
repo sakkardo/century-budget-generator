@@ -15256,7 +15256,18 @@ function renderEditableSheet(sheetName, sheetLines, contentDiv) {
       fxCell('est_'+gl, 'estimate_override', estimate, estFormula, l.estimate_override !== null && l.estimate_override !== undefined) +
       fxCell('fcst_'+gl, 'forecast_override', forecast, fcstFormula, l.forecast_override !== null && l.forecast_override !== undefined, undefined, faIsIncomePinned(l)) +
       '<td class="num">' + $cell('bud_'+gl, 'current_budget', budget) + '</td>' +
-      '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>' +
+      // FA 724 (Jennifer 2026-08-21): "the inc % says 0 — what does this
+      // represent an increase over?" On insurance rows the per-line Inc %
+      // is inert: proposed = 12-mo forecast x (1 + Insurance Renewal
+      // assumption). Show that instead of a misleading editable zero.
+      (faIsInsuranceLine(l)
+        ? (function () {
+            const _ir = (window._data && window._data.assumptions && window._data.assumptions.insurance_renewal) || {};
+            const _rp = ((Number(_ir.increase_percent) || 0) * 100).toFixed(1).replace(/\.0$/, '');
+            return '<td class="num" title="Insurance rows use the Insurance Renewal assumption (\u2699 Assumptions tab), not this per-line increase: proposed = 12-mo forecast \u00d7 (1 + ' + _rp + '%).">' +
+              '<span style="font-size:10.5px; color:#b45309; font-weight:700; white-space:nowrap;">renewal ' + _rp + '%</span></td>';
+          })()
+        : '<td class="num"><input id="inc_'+gl+'" class="cell cell-pct" type="text" value="'+incPct+'%" data-raw="'+incPct+'" data-gl="'+gl+'" data-field="increase_pct" onfocus="this.value=this.dataset.raw" onblur="pctCellBlur(this)"></td>') +
       fxCell('prop_'+gl, 'proposed_budget', proposed, propFormula, false, userFormula, false,
              (sheetName === 'Income' ? 'Income note: the Summary tab sets the income rows independently. This line feeds the Excel export and the board document detail, not the Summary income row.' : '')) +
       '<td class="num" style="position:relative; cursor:pointer; color:'+varColor+';" onclick="fxCellFocus(document.getElementById(\'var_'+gl+'\'))">' +
@@ -15597,6 +15608,15 @@ function switchDrawerTab(tab) {
 async function faTabUndoLast() {
   const sheet = window._activeFaSheet || '';
   if (!sheet) { alert('No active sheet'); return; }
+  // FA 724 (Jennifer 2026-08-21): an edit followed quickly by Undo landed
+  // inside the 800ms autosave debounce — Undo read history BEFORE the edit
+  // was saved, reverted an older change invisibly, and the edit flushed
+  // afterward ("I zeroed the est and clicked undo and it didn't undo
+  // anything"). Flush pending saves first so the newest edit is always the
+  // one on top.
+  try {
+    if (typeof _faFlushSave === 'function') { await _faFlushSave(); }
+  } catch (e) { /* history fetch below still proceeds */ }
   // Fetch most recent change on this sheet
   try {
     const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) +
@@ -15639,6 +15659,9 @@ async function faTabUndoLast() {
 async function faTabShowHistory() {
   const sheet = window._activeFaSheet || '';
   if (!sheet) { alert('No active sheet'); return; }
+  try {
+    if (typeof _faFlushSave === 'function') { await _faFlushSave(); }
+  } catch (e) { /* proceed */ }
   try {
     const resp = await fetch('/api/recent-changes/' + encodeURIComponent(entityCode) +
                               '?sheet=' + encodeURIComponent(sheet) + '&limit=50');
