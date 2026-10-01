@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLES = os.path.join(HERE, "..", "tasks", "snapshot_samples")
 
 
-def create_blueprint(service, identity=None, dev=True, signing_allowed=None):
+def create_blueprint(service, identity=None, dev=True, signing_allowed=None, identity_detail=None, signin_url=None):
     bp = Blueprint("snapshots", __name__)
 
     def err(e, code=400):
@@ -33,6 +33,7 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None):
         me = uid()
         return jsonify({"dev": dev, "me": {"id": me, "name": service.directory.name(me)} if me else None,
                         "signing_allowed": True if signing_allowed is None else bool(signing_allowed()),
+                        "signin_url": signin_url, "signout_url": "/auth/snapshot/logout" if signin_url else None,
                         "users": service.directory.users(), "buildings": service.directory.buildings(),
                         "samples": samples})
 
@@ -104,9 +105,16 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None):
         if signing_allowed is not None and not signing_allowed():
             return err("Signing is switched off until a secure sign-in is in place. Nothing was signed.", 403)
         if not uid():
-            return err("Choose who you are first.", 401)
+            return err("Sign in with Microsoft first." if signin_url else "Choose who you are first.", 401)
         b = request.get_json(force=True)
-        return action(lambda: service.sign(rid, uid(), b["role"], b["decision"], b.get("note", "")))
+        via = identity_detail() if identity_detail else None
+        return action(lambda: service.sign(rid, uid(), b["role"], b["decision"], b.get("note", ""), via=via))
+
+    @bp.route("/api/snapshots/<rid>/release", methods=["POST"])
+    def release(rid):
+        if signing_allowed is not None and not signing_allowed():
+            return err("Signing is switched off until a secure sign-in is in place.", 403)
+        return action(lambda: service.release_now(rid, uid()))
 
     @bp.route("/api/snapshots/reset", methods=["POST"])
     def reset():

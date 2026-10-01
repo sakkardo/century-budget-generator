@@ -269,7 +269,7 @@ class Service:
             return "This building has no %s assigned in Monday." % " or ".join(r.upper() for r in st["missing_assignments"])
         return "FA and PM must be two different people. Assign a second person in Monday."
 
-    def sign(self, rid, user_id, role, decision, note):
+    def sign(self, rid, user_id, role, decision, note, via=None):
         def fn(rec):
             if rec.get("released"):
                 raise ValueError("Already released.")
@@ -278,6 +278,8 @@ class Service:
             v = self._cur(rec)
             entry = so.record_signature(rec["signoffs"], user_id, self._team(rec["entity"]), role, decision, note, v["hash"])
             entry["at"] = now_s()
+            if via:
+                entry["via"] = via  # e.g. {"email": ..., "oid": ...} from Microsoft sign-in
             rec["signoffs"].append(entry)
             rec["log"].append({"at": now_s(), "who": self._name(user_id),
                                "what": "%s %s%s" % (role.upper(), "approved" if decision == "approve" else "requested changes",
@@ -303,10 +305,32 @@ class Service:
         except Exception:
             rec["released"] = None
             raise
+        if getattr(self.releaser, "dry_run", False):
+            # release is switched off: remember where it WOULD go, but do not lock the snapshot as released
+            rec["released"] = None
+            rec["rehearsal"] = {"at": now_s(), "files": files}
+            rec["log"].append({"at": now_s(), "who": "System", "what": "Approved. Release is switched off, so no files were written (rehearsal checked the folders)"})
+            return
         rec["released"]["files"] = files
-        rec["released"]["dry_run"] = bool(getattr(self.releaser, "dry_run", False))
-        rec["log"].append({"at": now_s(), "who": "System", "what": (
-            "Release rehearsal only, no files written" if rec["released"]["dry_run"] else "Released to the SharePoint folders")})
+        rec["released"]["dry_run"] = False
+        rec["log"].append({"at": now_s(), "who": "System", "what": "Released to the SharePoint folders"})
+
+    def release_now(self, rid, user_id):
+        """For a snapshot already approved while release was switched off: the FA sends it once release is on."""
+        def fn(rec):
+            if rec.get("released"):
+                raise ValueError("Already released.")
+            if "fa" not in so.can_sign(user_id, self._team(rec["entity"])):
+                raise ValueError("Only the building's FA can release it.")
+            v = self._cur(rec)
+            ok, why = so.can_publish(v["snapshot"], rec["signoffs"], self._team(rec["entity"]), v["hash"], v["acks"])
+            if not ok:
+                raise ValueError(" ".join(why))
+            if getattr(self.releaser, "dry_run", False):
+                raise ValueError("Release to SharePoint is switched off.")
+            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "Released after approval"})
+            self._release(rec)
+        self._mutate(rid, fn)
 
     # ------------------------------------------------------------- views
     def list(self):
@@ -328,7 +352,9 @@ class Service:
         can = {"edit": "fa" in roles and not rec["released"],
                "send": "fa" in roles and not rec["sent"] and ok and not st["state"].startswith("blocked") and not rec["released"],
                "sign_pm": "pm" in roles and rec["sent"] and not rec["released"] and not approved("pm"),
-               "sign_fa": "fa" in roles and rec["sent"] and not rec["released"] and approved("pm") and not approved("fa")}
+               "sign_fa": "fa" in roles and rec["sent"] and not rec["released"] and approved("pm") and not approved("fa"),
+               "release": "fa" in roles and not rec["released"] and approved("pm") and approved("fa")
+                          and not getattr(self.releaser, "dry_run", False)}
         why_not = []
         if "fa" in roles and not rec["sent"]:
             why_not = list(why)
@@ -339,7 +365,8 @@ class Service:
         return {
             "id": rec["id"], "entity": rec["entity"], "client": rec["client"], "building": s["meta"]["building"],
             "month": rec["month"], "year": rec["year"], "stage": stage, "version": v["n"], "sent": rec["sent"],
-            "released": rec["released"], "state": st["state"], "waiting_on": st["waiting_on"],
+            "released": rec["released"], "rehearsal": rec.get("rehearsal"),
+            "release_off": bool(getattr(self.releaser, "dry_run", False)), "state": st["state"], "waiting_on": st["waiting_on"],
             "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"], "commentary": v["commentary"],
             "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],

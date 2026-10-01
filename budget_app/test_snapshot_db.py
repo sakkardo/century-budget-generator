@@ -36,6 +36,10 @@ class FakeGraph:
         self.files[path] = data
 
 
+def helpers_of(app):
+    return app.snapshot_helpers
+
+
 def build(graph, identity_box, strong=True):
     app = Flask(__name__)
     app.config.update(SQLALCHEMY_DATABASE_URI="sqlite://", SECRET_KEY="t")
@@ -61,6 +65,7 @@ def build(graph, identity_box, strong=True):
     bp, models, helpers = snapshot_db.create_snapshot_blueprint(
         db, wm, buildings_fn=bf, graph=graph, identity_fn=(lambda: identity_box["id"]) if strong else None)
     app.register_blueprint(bp)
+    app.snapshot_helpers = helpers
     with app.app_context():
         db.create_all()
         for uid, name in ((2, "Kristy Paxinos"), (8, "Jacob Sirotkin"), (17, "George Matos"), (42, "Jennifer Murman, Giovanni Lizarazo")):
@@ -105,10 +110,25 @@ def run():
     who["id"] = 2
     assert P("/api/snapshots/%s/sign" % rid, {"role": "fa", "decision": "approve"}).status_code == 200
     v = c.get("/api/snapshots/%s" % rid).json
-    assert v["stage"] == "released" and v["released"]["dry_run"] is True and graph.files == {}, v["released"]
-    assert v["released"]["files"][0].startswith("01 - Accounting General/Monthly Financial Snapshots/2026/08-2026/")
-    assert "204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/" in v["released"]["files"][1]
-    assert c.get("/api/snapshots").json[0]["stage"] == "released"
+    # release switched off: approved, NOT locked as released, nothing written, target paths remembered
+    assert v["stage"] == "approved" and v["released"] is None and graph.files == {}, (v["stage"], v["released"])
+    assert v["release_off"] is True and v["can"]["release"] is False
+    assert v["rehearsal"]["files"][0].startswith("01 - Accounting General/Monthly Financial Snapshots/2026/08-2026/")
+    assert "204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/" in v["rehearsal"]["files"][1]
+    assert c.get("/api/snapshots").json[0]["stage"] == "approved"
+    assert P("/api/snapshots/%s/release" % rid).status_code == 400  # still switched off
+    # switch release on: the FA (only) releases the already-approved snapshot; both files land
+    graph_rel = helpers_of(app)["service"].releaser
+    graph_rel.enabled = True
+    who["id"] = 8
+    assert P("/api/snapshots/%s/release" % rid).status_code == 400  # PM cannot release
+    who["id"] = 2
+    assert c.get("/api/snapshots/%s" % rid).json["can"]["release"] is True
+    assert P("/api/snapshots/%s/release" % rid).status_code == 200
+    v = c.get("/api/snapshots/%s" % rid).json
+    assert v["stage"] == "released" and len(graph.files) == 2
+    assert P("/api/snapshots/%s/release" % rid).status_code == 400  # never twice
+    graph_rel.enabled = False
 
     # enabled releaser writes both files, matches the existing month folder name, never overwrites
     os.environ["SNAPSHOT_RELEASE_ENABLED"] = "1"

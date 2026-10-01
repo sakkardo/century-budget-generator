@@ -22,10 +22,11 @@ from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 
 try:
+    import snapshot_auth
     import snapshot_routes
     import snapshot_service
 except ImportError:
-    from budget_app import snapshot_routes, snapshot_service
+    from budget_app import snapshot_auth, snapshot_routes, snapshot_service
 
 
 def _env_on(name):
@@ -125,7 +126,7 @@ class AppGraph:
             raise RuntimeError("Graph %s on PUT %s" % (e.code, path))
 
 
-def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None, identity_fn=None):
+def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None, identity_fn=None, msal_factory=None):
     """buildings_fn() -> [{"entity_code","building_name"}]; graph: see SharePointReleaser;
     identity_fn() -> user id or None (defaults to the signed century_fa_id cookie)."""
 
@@ -245,13 +246,24 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
     directory = DbDirectory()
     releaser = SharePointReleaser(graph) if graph else _NoGraph()
     service = snapshot_service.Service(store, releaser, directory)
+    def find_user_by_email(email):
+        User = workflow_models["User"]
+        u = db.session.query(User).filter(db.func.lower(User.email) == email.lower()).first()
+        return u.id if u else None
+
+    auth_bp, detail = None, None
+    if identity_fn is None and (msal_factory is not None or snapshot_auth.configured()):
+        auth_bp, identity_fn, detail = snapshot_auth.create_auth(find_user_by_email, msal_factory=msal_factory)
     strong = identity_fn is not None
     identity = identity_fn or default_identity
 
     def signing_allowed():
         return strong or _env_on("SNAPSHOT_ALLOW_PICKER_SIGNING")
 
-    bp = snapshot_routes.create_blueprint(service, identity=identity, dev=False, signing_allowed=signing_allowed)
+    bp = snapshot_routes.create_blueprint(service, identity=identity, dev=False, signing_allowed=signing_allowed,
+                                          identity_detail=detail, signin_url="/auth/snapshot/login" if auth_bp else None)
+    if auth_bp is not None:
+        bp.register_blueprint(auth_bp)
     return bp, {"SnapshotRecord": SnapshotRecord}, {"service": service, "store": store, "directory": directory}
 
 

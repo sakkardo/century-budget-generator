@@ -1,0 +1,128 @@
+"""Monthly Financial Snapshot: Microsoft sign-in for signers.
+
+Authorization-code flow against the existing "Century Budget Generator" Azure app (single tenant).
+After sign-in the person's Microsoft email is matched to a users row; that user id is the identity the
+snapshot rules use. The result is kept in a signed, http-only cookie that expires after 12 hours.
+
+The cookie is NOT signed with the app's SECRET_KEY (unset on Railway, so it falls back to a default
+written in the code). It is keyed from AZURE_CLIENT_SECRET, which only the server holds.
+
+Needs one tenant setting (Jacob's click): add this Web redirect URI to the Azure app registration
+    https://<public domain>/auth/snapshot/callback
+"""
+import hashlib
+import os
+
+from flask import Blueprint, jsonify, make_response, redirect, request
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+COOKIE = "century_snapshot_signin"
+FLOW_COOKIE = "century_snapshot_flow"
+MAX_AGE = 12 * 3600
+SCOPES = ["User.Read"]
+
+
+def _key():
+    secret = os.environ.get("AZURE_CLIENT_SECRET", "")
+    if not secret:
+        return None
+    return hashlib.sha256(("century-snapshot-signin|" + secret).encode("utf-8")).hexdigest()
+
+
+def _signer():
+    k = _key()
+    return URLSafeTimedSerializer(k, salt="snapshot-signin") if k else None
+
+
+def _redirect_uri():
+    dom = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    if dom:
+        return "https://%s/auth/snapshot/callback" % dom
+    return request.url_root.rstrip("/") + "/auth/snapshot/callback"
+
+
+def _msal_app():
+    import msal
+    tenant = os.environ["AZURE_TENANT_ID"]
+    return msal.ConfidentialClientApplication(
+        client_id=os.environ["AZURE_CLIENT_ID"], client_credential=os.environ["AZURE_CLIENT_SECRET"],
+        authority="https://login.microsoftonline.com/%s" % tenant)
+
+
+def configured():
+    return all(os.environ.get(k) for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"))
+
+
+def create_auth(find_user_by_email, msal_factory=None):
+    """find_user_by_email(email) -> user id or None. Returns (blueprint, identity_fn, detail_fn)."""
+    factory = msal_factory or _msal_app
+    bp = Blueprint("snapshot_auth", __name__)
+
+    def read_cookie():
+        s = _signer()
+        raw = request.cookies.get(COOKIE)
+        if not (s and raw):
+            return None
+        try:
+            return s.loads(raw, max_age=MAX_AGE)
+        except (BadSignature, SignatureExpired):
+            return None
+
+    def identity():
+        data = read_cookie()
+        return int(data["uid"]) if data and data.get("uid") else None
+
+    def detail():
+        data = read_cookie() or {}
+        return {"email": data.get("email"), "oid": data.get("oid")}
+
+    @bp.route("/auth/snapshot/login")
+    def login():
+        if not configured() or not _signer():
+            return jsonify({"error": "Microsoft sign-in is not configured on this server."}), 503
+        flow = factory().initiate_auth_code_flow(SCOPES, redirect_uri=_redirect_uri())
+        resp = make_response(redirect(flow["auth_uri"]))
+        # the handshake (state, nonce, PKCE verifier) rides in its own short-lived cookie signed with the server-only key
+        resp.set_cookie(FLOW_COOKIE, _signer().dumps(flow), max_age=600, httponly=True, samesite="Lax",
+                        secure=bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")))
+        return resp
+
+    @bp.route("/auth/snapshot/callback")
+    def callback():
+        flow = None
+        try:
+            flow = _signer().loads(request.cookies.get(FLOW_COOKIE, ""), max_age=600) if _signer() else None
+        except (BadSignature, SignatureExpired):
+            flow = None
+        if not flow:
+            return redirect("/snapshots?signin=expired")
+        try:
+            result = factory().acquire_token_by_auth_code_flow(flow, request.args.to_dict())
+        except ValueError:  # state mismatch or replay
+            return redirect("/snapshots?signin=failed")
+        claims = result.get("id_token_claims") or {}
+        if "error" in result or not claims:
+            return redirect("/snapshots?signin=failed")
+        if claims.get("tid") != os.environ.get("AZURE_TENANT_ID"):
+            return redirect("/snapshots?signin=failed")
+        email = (claims.get("preferred_username") or claims.get("email") or "").strip().lower()
+        uid = find_user_by_email(email) if email else None
+        if not uid:
+            resp = make_response(redirect("/snapshots?signin=unknown"))
+            resp.set_cookie(COOKIE, "", max_age=0)
+            resp.set_cookie(FLOW_COOKIE, "", max_age=0)
+            return resp
+        token = _signer().dumps({"uid": uid, "email": email, "oid": claims.get("oid"), "name": claims.get("name")})
+        resp = make_response(redirect("/snapshots"))
+        resp.set_cookie(FLOW_COOKIE, "", max_age=0)
+        resp.set_cookie(COOKIE, token, max_age=MAX_AGE, httponly=True, secure=request.is_secure or bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")),
+                        samesite="Lax")
+        return resp
+
+    @bp.route("/auth/snapshot/logout", methods=["GET", "POST"])
+    def logout():
+        resp = make_response(redirect("/snapshots"))
+        resp.set_cookie(COOKIE, "", max_age=0)
+        return resp
+
+    return bp, identity, detail

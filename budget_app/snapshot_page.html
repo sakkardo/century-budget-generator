@@ -103,7 +103,16 @@ function init() {
       el("as").innerHTML = m.users.map(function (u) { return '<option value="' + u.id + '">' + esc(u.name) + "</option>"; }).join("");
       state.me = m.users[0].id; el("as").value = state.me;
     } else {
-      el("as").parentNode.innerHTML = m.me ? 'Signed in as <b>' + esc(m.me.name) + '</b>' : '<span class="msg err">Pick your name on the FA Dashboard first, then reload.</span>';
+      var q = location.search;
+      if (m.me) {
+        el("as").parentNode.innerHTML = 'Signed in as <b>' + esc(m.me.name) + '</b>' + (m.signout_url ? ' &middot; <a href="' + m.signout_url + '">Sign out</a>' : '');
+      } else if (m.signin_url) {
+        el("as").parentNode.innerHTML = '<a class="primary" style="padding:6px 12px;border-radius:4px;background:var(--red);color:#fff;text-decoration:none;font-weight:600" href="' + m.signin_url + '">Sign in with Microsoft</a>';
+      } else {
+        el("as").parentNode.innerHTML = '<span class="msg err">Sign-in is not available.</span>';
+      }
+      if (q.indexOf("signin=unknown") >= 0) { el("detail").insertAdjacentHTML("beforebegin", '<div class="msg err" style="margin-bottom:12px">Your Microsoft account is not linked to a user in the budget app. Ask Jacob to add your work email to your user record.</div>'); }
+      if (q.indexOf("signin=failed") >= 0 || q.indexOf("signin=expired") >= 0) { el("detail").insertAdjacentHTML("beforebegin", '<div class="msg err" style="margin-bottom:12px">Sign-in did not complete. Try again.</div>'); }
       state.me = m.me ? m.me.id : 0;
       document.querySelector(".test").style.display = "none";
     }
@@ -186,6 +195,15 @@ function signHtml(v) {
     h += '<div class="msg okk" style="margin-top:10px">Released. In the real system these two files go to SharePoint (test copies here):<br>' + v.released.files.map(esc).join("<br>") + "</div>";
     return h;
   }
+  if (v.stage === "approved") {
+    if (v.can.release) {
+      h += '<div class="row" style="margin-top:10px"><button id="release" class="primary">Release to SharePoint</button></div>';
+    } else if (v.release_off) {
+      h += '<div class="msg" style="margin-top:10px">Approved by both. Release to SharePoint is switched off, so nothing was copied yet.' +
+        (v.rehearsal ? '<br>It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") : "") + "</div>";
+    }
+    return h;
+  }
   if (v.can.send) { h += '<div class="row" style="margin-top:10px"><button id="send" class="primary">Send to sign-off</button></div>'; }
   var role_ = v.can.sign_pm ? "pm" : (v.can.sign_fa ? "fa" : "");
   if (role_) {
@@ -227,6 +245,7 @@ function wire(v) {
       act("POST", "/api/snapshots/" + v.id + "/sign", { role: this.getAttribute("data-role"), decision: decision, note: el("sn").value });
     };
   }
+  on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });
   on("appr", decide("approve"));
   on("rej", decide("request_changes"));
