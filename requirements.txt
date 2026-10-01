@@ -1,6 +1,7 @@
 # Smoke-test marker: 2026-04-29 — Railway transfer verified
 flask==3.1.2
 flask-sqlalchemy==3.1.1
+SQLAlchemy==2.0.48
 openpyxl==3.1.5
 psycopg2-binary==2.9.10
 gunicorn==23.0.0
