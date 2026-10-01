@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 CENTURY_CATEGORIES = [
     # Income
     "Maintenance",
+    # 302 FA (2026-07): condo vocabulary for Maintenance — extraction labeled
+    # income "Common Charges", which had no income mapping and defaulted to
+    # the EXPENSE section, breaking reconciliation. First-class category now.
+    "Common Charges",
     "Tax Benefit Credits",
     "Commercial",
     "Garage",
@@ -73,6 +77,11 @@ CENTURY_CATEGORIES = [
 CENTURY_TO_SUMMARY = {
     # Income categories → Total Operating Income
     "Maintenance": "Total Operating Income",
+    # 302 FA (2026-07): condo Common Charges = income, same bucket as
+    # Maintenance. Without this entry _category_section() returned "expense"
+    # and the reconciliation showed a phantom variance on condos.
+    "Common Charges": "Total Operating Income",
+    "Commercial Common Charges": "Total Operating Income",
     "Tax Benefit Credits": "Total Operating Income",
     "Commercial": "Total Operating Income",
     "Garage": "Total Operating Income",
