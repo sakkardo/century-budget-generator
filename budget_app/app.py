@@ -601,6 +601,23 @@ except ImportError:
 fr_bp, fr_models, fr_helpers = create_file_repository_blueprint(db, workflow_models)
 app.register_blueprint(fr_bp)
 
+# Register monthly financial snapshot blueprint (FA + PM sign-off, then copy to SharePoint).
+# Signing is OFF until a secure sign-in exists and release is a dry run until
+# SNAPSHOT_RELEASE_ENABLED=1. Wrapped so a problem here can never stop the app booting.
+try:
+    try:
+        from snapshot_db import create_snapshot_blueprint, AppGraph
+    except ImportError:
+        from budget_app.snapshot_db import create_snapshot_blueprint, AppGraph
+    # lambdas: these helpers are defined further down this file, so look them up at call time
+    snap_bp, snap_models, snap_helpers = create_snapshot_blueprint(
+        db, workflow_models, buildings_fn=lambda: load_buildings(),
+        graph=AppGraph(lambda *a, **k: _graph_get(*a, **k), lambda: _graph_get_drive_id(),
+                       lambda: _get_graph_token()))
+    app.register_blueprint(snap_bp)
+except Exception as _e:
+    logger.warning("Snapshot blueprint not registered: %s", _e)
+
 # Ensure every request starts with a clean DB session.
 # Prevents poisoned PostgreSQL transactions from leaking via connection pool.
 @app.before_request
