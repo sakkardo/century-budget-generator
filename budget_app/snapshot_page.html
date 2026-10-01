@@ -4,88 +4,210 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Monthly Financial Snapshots</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
 <style>
-:root{--bg:#f6f4f3;--paper:#fff;--ink:#221f1f;--mute:#6d6564;--line:#e4dedc;--red:#a4262c;--red-soft:#f7e3e2;--good:#2f6b4f;--good-soft:#e1efe7;--warn:#8a5a00;--warn-soft:#f6ecd2;--font:"Segoe UI",system-ui,sans-serif}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--font)}
-header{background:var(--paper);border-top:4px solid var(--red);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
-header h1{font-size:17px;margin:0;font-weight:650}
-.test{background:var(--warn-soft);color:var(--warn);font-size:11px;font-weight:650;padding:2px 8px;border-radius:99px;letter-spacing:.04em}
-.who{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:13px}
-select,input,textarea,button{font:inherit}
-select,input[type=text],textarea{border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:6px 8px;border-radius:4px;min-width:0}
-textarea{width:100%;resize:vertical}
-button{border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:6px 12px;border-radius:4px;cursor:pointer}
-button.primary{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
-button.good{background:var(--good);border-color:var(--good);color:#fff;font-weight:600}
-button:disabled{opacity:.45;cursor:not-allowed}
-button:focus-visible,select:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--red);outline-offset:1px}
-main{display:grid;grid-template-columns:260px minmax(0,1fr);gap:16px;padding:16px;max-width:1500px;margin:0 auto}
-@media(max-width:900px){main{grid-template-columns:1fr}}
-.card{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:14px}
-.card h2{font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--mute);margin:0 0 10px}
-.list{display:grid;gap:6px}
-.item{border:1px solid var(--line);border-radius:5px;padding:8px 10px;cursor:pointer;display:grid;gap:2px;text-align:left;background:var(--paper)}
-.item.on{border-color:var(--red);background:var(--red-soft)}
-.item b{font-weight:600}
-.pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:99px;font-weight:600;background:var(--line);color:var(--mute)}
-.pill.draft{background:var(--line)}.pill.in_signoff{background:var(--warn-soft);color:var(--warn)}.pill.changes_requested{background:var(--red-soft);color:var(--red)}.pill.approved,.pill.released{background:var(--good-soft);color:var(--good)}
-.gen{display:grid;gap:8px;margin-top:14px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.steps{display:flex;gap:0;flex-wrap:wrap;margin:0 0 14px}
-.step{flex:1 1 110px;font-size:12px;padding:7px 10px;border-bottom:3px solid var(--line);color:var(--mute)}
-.step.done{border-color:var(--good);color:var(--good);font-weight:600}
-.step.now{border-color:var(--red);color:var(--ink);font-weight:650}
-.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
-@media(max-width:1200px){.cols{grid-template-columns:1fr}}
-.stack{display:grid;gap:14px;align-content:start}
-iframe{width:100%;height:78vh;min-height:560px;border:1px solid var(--line);border-radius:4px;background:#fff}
-.chk{display:grid;grid-template-columns:auto 1fr;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);font-size:13px}
-.chk:last-child{border:0}
-.ok{color:var(--good);font-weight:700}.bad{color:var(--red);font-weight:700}.rev{color:var(--warn);font-weight:700}
-.note{font-size:12px;color:var(--mute)}
-.msg{background:var(--warn-soft);color:var(--warn);border-radius:4px;padding:8px 10px;font-size:13px}
-.msg.err{background:var(--red-soft);color:var(--red)}
-.msg.okk{background:var(--good-soft);color:var(--good)}
-.com{border-left:3px solid var(--line);padding-left:10px;margin-bottom:10px}
-.com.draft{border-color:var(--warn)}
-.com b{display:block;font-size:13px;margin-bottom:3px}
-.sig{display:grid;grid-template-columns:90px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
-.log{font-size:12px;color:var(--mute);display:grid;gap:3px;max-height:160px;overflow:auto}
-.empty{color:var(--mute);padding:40px 10px;text-align:center}
+/* Tokens: canonical names from DESIGN.md (Century Budget System). Century red is the brand mark only. */
+:root {
+  --ink:#2d2520; --ink-2:#4a3f35; --cream:#f5f3f1; --surface:#ffffff; --surface-warm:#f5f0eb;
+  --tan:#c4b5a6; --tan-muted:#a89888; --label:#8b7b6b; --border:#e8e0d8; --rule:#ddd5cc;
+  --brand:#a4262c;
+  --ok:#065f46; --ok-bg:#def7ec; --ok-bd:#a7f3d0;
+  --warn:#a16207; --warn-bg:#fef3c7; --warn-bd:#fde68a;
+  --bad:#991b1b; --bad-bg:#fef2f2; --bad-bd:#fecaca;
+  --info:#1e3a8a; --info-bg:#eff6ff; --info-bd:#bfdbfe;
+  --setup:#7d7468; --setup-bg:#f1f0ec; --setup-bd:#e0dcd2;
+  --radius:10px; --radius-lg:12px; --radius-sm:6px; --gap:14px; --gap-lg:20px;
+  --shadow:0 1px 2px rgba(45,37,32,0.04); --lift:0 4px 16px rgba(45,37,32,0.06);
+  --font:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+* { box-sizing:border-box }
+html, body { margin:0 }
+body { background:var(--cream); color:var(--ink-2); font:14px/1.5 var(--font) }
+select, input, textarea, button { font:inherit; color:inherit }
+a { color:var(--ink) }
+:focus-visible { outline:2px solid var(--ink); outline-offset:2px }
+
+/* navbar */
+.nav { position:sticky; top:0; z-index:10; background:var(--ink); color:var(--cream); display:flex; align-items:center; gap:16px; padding:0 24px; min-height:56px; flex-wrap:wrap }
+.brand { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.2px; color:var(--cream); text-decoration:none }
+.brand-mark { width:22px; height:22px; border-radius:5px; background:var(--brand); display:grid; place-items:center; font-size:12px; font-weight:800; color:#fff }
+.brand small { font-weight:500; color:var(--tan-muted); font-size:13px }
+.test { font-size:11px; font-weight:700; letter-spacing:1px; text-transform:uppercase; background:rgba(245,158,11,.18); color:#fcd34d; padding:3px 10px; border-radius:99px }
+.who { margin-left:auto; display:flex; align-items:center; gap:10px; font-size:13px; color:var(--tan-muted) }
+.who b { color:var(--cream); font-weight:600 }
+.who a { color:var(--tan) }
+.who select { background:#3d342c; border:1px solid #5a4d42; color:var(--cream); border-radius:var(--radius-sm); padding:7px 10px; min-height:36px }
+.nav .ghost { background:transparent; border:1px solid #5a4d42; color:var(--tan); border-radius:var(--radius-sm); padding:7px 12px; cursor:pointer; min-height:36px }
+.nav .ghost:hover { border-color:var(--tan); color:var(--cream) }
+.signin { display:inline-flex; align-items:center; gap:8px; background:var(--cream); color:var(--ink) !important; text-decoration:none; font-weight:600; padding:8px 14px; border-radius:var(--radius-sm); min-height:36px }
+.signin:hover { background:#fff }
+.ms { display:grid; grid-template-columns:7px 7px; gap:1px }
+.ms i { width:7px; height:7px; display:block }
+
+/* layout */
+main { display:grid; grid-template-columns:300px minmax(0,1fr); gap:var(--gap-lg); padding:24px; max-width:1560px; margin:0 auto }
+@media (max-width:960px) { main { grid-template-columns:1fr; padding:16px } }
+.panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow) }
+.pad { padding:20px }
+.label { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--label); margin:0 0 12px }
+.muted { color:var(--label); font-size:13px }
+.banners { display:grid; gap:10px; margin-bottom:var(--gap) }
+.banners:empty { display:none }
+
+/* rail */
+aside { display:grid; gap:var(--gap); align-content:start; position:sticky; top:76px }
+@media (max-width:960px) { aside { position:static } }
+.list { display:grid; gap:8px }
+.item { all:unset; box-sizing:border-box; cursor:pointer; display:grid; gap:4px; padding:12px 14px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); transition:border-color .15s, box-shadow .15s }
+.item:hover { border-color:var(--tan); box-shadow:var(--lift) }
+.item.on { border-color:var(--ink); box-shadow:inset 3px 0 0 var(--ink) }
+.item .t { font-weight:600; color:var(--ink); line-height:1.3 }
+.item .m { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:13px; color:var(--label) }
+.item:focus-visible { outline:2px solid var(--ink); outline-offset:2px }
+.field { display:grid; gap:6px; margin-bottom:12px }
+.field > span { font-size:13px; font-weight:600; color:var(--ink) }
+select.ctl, input.ctl, textarea { width:100%; border:1px solid var(--border); background:var(--surface); border-radius:var(--radius-sm); padding:9px 11px; min-height:40px }
+select.ctl:hover, input.ctl:hover, textarea:hover { border-color:var(--tan) }
+textarea { line-height:1.5; resize:vertical }
+.drop { display:grid; gap:2px; place-items:center; text-align:center; border:1.5px dashed var(--rule); border-radius:var(--radius); padding:14px; cursor:pointer; background:var(--surface-warm); color:var(--ink-2); font-size:13px }
+.drop:hover, .drop:focus-within { border-color:var(--tan) }
+.drop b { color:var(--ink); font-weight:600 }
+.drop input { position:absolute; width:1px; height:1px; opacity:0 }
+
+/* buttons */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; padding:0 18px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface-warm); color:var(--ink); font-weight:600; cursor:pointer; transition:background .15s, border-color .15s, box-shadow .15s }
+.btn:hover { border-color:var(--tan); box-shadow:var(--lift) }
+.btn.primary { background:var(--ink); border-color:var(--ink); color:var(--cream) }
+.btn.primary:hover { background:#3d342c }
+.btn.approve { background:var(--ok); border-color:var(--ok); color:#fff }
+.btn.approve:hover { background:#054d39 }
+.btn.block { width:100% }
+.btn:disabled { opacity:.5; cursor:not-allowed; box-shadow:none }
+
+/* pills */
+.pill { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600; padding:3px 10px; border-radius:99px; border:1px solid var(--setup-bd); background:var(--setup-bg); color:var(--setup); white-space:nowrap }
+.pill.in_signoff { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
+.pill.changes_requested { background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad) }
+.pill.approved, .pill.released { background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok) }
+.pill.draftnote { background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn) }
+
+/* header */
+.head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; padding:22px 24px }
+.eyebrow { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--label) }
+.head h1 { margin:4px 0 4px; font-size:24px; line-height:1.2; font-weight:700; color:var(--ink); text-wrap:balance }
+.head .pill { font-size:13px; padding:5px 12px }
+
+/* stepper */
+.steps { display:flex; padding:4px 24px 22px; gap:0; overflow-x:auto }
+.step { flex:1 1 0; min-width:96px; position:relative; display:grid; justify-items:center; gap:6px; text-align:center; font-size:12.5px; color:var(--label) }
+.step::before { content:""; position:absolute; top:13px; left:-50%; right:50%; height:2px; background:var(--border) }
+.step:first-child::before { display:none }
+.step .dot { position:relative; z-index:1; width:28px; height:28px; border-radius:50%; display:grid; place-items:center; font-size:12px; font-weight:700; background:var(--surface); border:2px solid var(--border); color:var(--label) }
+.step.done .dot { background:var(--ok); border-color:var(--ok); color:#fff }
+.step.done::before, .step.now::before { background:var(--ok) }
+.step.now .dot { background:var(--ink); border-color:var(--ink); color:var(--cream); box-shadow:0 0 0 4px rgba(45,37,32,.1) }
+.step.now { color:var(--ink); font-weight:600 }
+.step.done { color:var(--ink-2) }
+.waiting { margin:-8px 24px 20px; font-size:13px; color:var(--ink-2); text-align:center }
+.waiting b { color:var(--ink) }
+
+/* columns */
+.cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.05fr); gap:var(--gap-lg); margin-top:var(--gap-lg); align-items:start }
+@media (max-width:1280px) { .cols { grid-template-columns:1fr } }
+.stack { display:grid; gap:var(--gap-lg) }
+.preview { position:sticky; top:76px }
+@media (max-width:1280px) { .preview { position:static } }
+.preview iframe { display:block; width:100%; height:calc(100vh - 170px); min-height:620px; border:0; border-top:1px solid var(--border); border-radius:0 0 var(--radius-lg) var(--radius-lg); background:#fff }
+.preview .bar { display:flex; justify-content:space-between; align-items:center; padding:14px 20px }
+.preview .bar a { font-size:13px; font-weight:600; text-decoration:none }
+
+/* sign-off */
+.sig { display:grid; grid-template-columns:150px minmax(0,1fr); gap:12px; align-items:start; padding:12px 0; border-top:1px solid var(--border) }
+.sig:first-of-type { border-top:0; padding-top:0 }
+.sig .r { font-weight:600; color:var(--ink) }
+.sig .who2 { font-size:13px; color:var(--label); margin-top:3px }
+.sig .quote { font-size:13px; color:var(--ink-2); margin-top:6px; padding-left:10px; border-left:2px solid var(--rule) }
+.decide { margin-top:16px; padding:16px; border-radius:var(--radius); background:var(--surface-warm); border:1px solid var(--border); display:grid; gap:10px }
+.decide .row { display:flex; gap:10px; flex-wrap:wrap }
+.decide .row .btn { flex:1 1 160px }
+
+/* messages */
+.msg { border-radius:var(--radius); padding:12px 14px; font-size:13.5px; border:1px solid var(--warn-bd); background:var(--warn-bg); color:#713f12 }
+.msg.err { background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad) }
+.msg.okk { background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok) }
+.msg.info { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
+.paths { font-size:12.5px; margin-top:6px; word-break:break-word; opacity:.9 }
+
+/* checks */
+details.checks summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; font-weight:600; color:var(--ink) }
+details.checks summary::-webkit-details-marker { display:none }
+details.checks summary .chev { margin-left:auto; color:var(--label); font-size:13px; font-weight:500 }
+details.checks[open] summary .chev::after { content:" (hide)" }
+.badge { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; font-size:14px; font-weight:800; flex:none }
+.badge.ok { background:var(--ok-bg); color:var(--ok) }
+.badge.bad { background:var(--bad-bg); color:var(--bad) }
+.chklist { margin-top:14px; display:grid }
+.chk { display:grid; grid-template-columns:22px 1fr; gap:8px; padding:7px 0; border-top:1px solid var(--border); font-size:13.5px }
+.chk .g { font-weight:800 }
+.g.ok { color:var(--ok) } .g.bad { color:var(--bad) } .g.rev { color:var(--warn) }
+.chk .d { font-size:13px; color:var(--label) }
+
+/* commentary */
+.com { display:grid; gap:6px; margin-bottom:16px }
+.com .ct { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-weight:600; color:var(--ink) }
+.com p { margin:0 }
+.edit-foot { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:4px }
+
+/* history */
+details.hist summary { cursor:pointer; font-weight:600; color:var(--ink) }
+.log { display:grid; gap:6px; margin-top:12px; font-size:13px; color:var(--ink-2) }
+.log time { color:var(--label); font-variant-numeric:tabular-nums; margin-right:6px }
+
+.empty { display:grid; place-items:center; text-align:center; gap:6px; padding:72px 24px; color:var(--label) }
+.empty b { color:var(--ink); font-size:16px }
+@media (prefers-reduced-motion:reduce) { * { transition:none !important } }
 </style>
 </head>
 <body>
-<header>
-  <h1>Monthly Financial Snapshots</h1>
-  <span class="test">TEST MODE: test people, local files, nothing is published</span>
+<header class="nav" role="banner">
+  <a class="brand" href="/snapshots"><span class="brand-mark" aria-hidden="true">C</span>Century <small>Monthly Financial Snapshots</small></a>
+  <span class="test">Test mode &middot; nothing is published</span>
   <div class="who"><label for="as">Acting as</label><select id="as"></select>
-    <button id="reset" title="Delete all test snapshots">Reset test data</button></div>
+    <button id="reset" class="ghost" title="Delete all test snapshots">Reset test data</button></div>
 </header>
 <main>
-  <aside>
-    <div class="card">
-      <h2>Snapshots</h2>
+  <aside aria-label="Snapshots">
+    <div class="panel pad">
+      <p class="label">Snapshots</p>
       <div id="list" class="list"></div>
-      <div class="gen">
-        <h2 style="margin-top:14px">New snapshot</h2>
-        <label for="gb" class="note">Building</label><select id="gb"></select>
-        <label for="gs" class="note">Statement</label><select id="gs"></select>
-        <label for="gf" class="note">or upload the statement PDF</label><input id="gf" type="file" accept="application/pdf">
-        <button id="gen" class="primary">Generate snapshot</button>
-        <div id="genmsg"></div>
+    </div>
+    <div class="panel pad">
+      <p class="label">New snapshot</p>
+      <label class="field"><span>Building</span><select id="gb" class="ctl"></select></label>
+      <label class="field" id="gsrow"><span>Sample statement</span><select id="gs" class="ctl"></select></label>
+      <div class="field"><span>Monthly financial statement</span>
+        <label class="drop" for="gf"><input id="gf" type="file" accept="application/pdf"><b id="gfname">Choose the statement PDF</b><span>from the building's Monthly Financials folder</span></label>
       </div>
+      <button id="gen" class="btn primary block">Generate snapshot</button>
+      <div id="genmsg" style="margin-top:10px"></div>
     </div>
   </aside>
-  <section id="detail"><div class="card empty">Pick a snapshot, or generate one from a statement.</div></section>
+  <section aria-live="polite">
+    <div id="banners" class="banners"></div>
+    <div id="detail"><div class="panel empty"><b>No snapshot open</b>Pick one on the left, or generate one from a statement.</div></div>
+  </section>
 </main>
 <script>
-var state = { me: 0, meta: null, cur: null, draft: null };
+var state = { me: 0, meta: null, cur: null };
 
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function el(id) { return document.getElementById(id); }
 var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 var STAGE = { draft: "Draft", in_signoff: "In sign-off", changes_requested: "Changes requested", approved: "Approved", released: "Released" };
+var GLYPH = { draft: "&#9998;", in_signoff: "&#9719;", changes_requested: "&#10007;", approved: "&#10003;", released: "&#10003;" };
+function pill(stage) { return '<span class="pill ' + stage + '">' + GLYPH[stage] + " " + STAGE[stage] + "</span>"; }
+function banner(cls, html) { el("banners").insertAdjacentHTML("beforeend", '<div class="msg ' + cls + '">' + html + "</div>"); }
 
 function api(method, url, body) {
   var sep = url.indexOf("?") >= 0 ? "&" : "?";
@@ -96,6 +218,8 @@ function api(method, url, body) {
   });
 }
 
+var MSLOGO = '<span class="ms" aria-hidden="true"><i style="background:#f25022"></i><i style="background:#7fba00"></i><i style="background:#00a4ef"></i><i style="background:#ffb900"></i></span>';
+
 function init() {
   api("GET", "/api/snapshots/meta").then(function (m) {
     state.meta = m;
@@ -104,146 +228,164 @@ function init() {
       state.me = m.users[0].id; el("as").value = state.me;
     } else {
       var q = location.search;
+      var who = document.querySelector(".who");
       if (m.me) {
-        el("as").parentNode.innerHTML = 'Signed in as <b>' + esc(m.me.name) + '</b>' + (m.signout_url ? ' &middot; <a href="' + m.signout_url + '">Sign out</a>' : '');
+        who.innerHTML = '<span>Signed in as <b>' + esc(m.me.name) + '</b></span>' + (m.signout_url ? '<a href="' + m.signout_url + '">Sign out</a>' : "");
       } else if (m.signin_url) {
-        el("as").parentNode.innerHTML = '<a class="primary" style="padding:6px 12px;border-radius:4px;background:var(--red);color:#fff;text-decoration:none;font-weight:600" href="' + m.signin_url + '">Sign in with Microsoft</a>';
+        who.innerHTML = '<a class="signin" href="' + m.signin_url + '">' + MSLOGO + "Sign in with Microsoft</a>";
       } else {
-        el("as").parentNode.innerHTML = '<span class="msg err">Sign-in is not available.</span>';
+        who.innerHTML = "<span>Sign-in is not available.</span>";
       }
-      if (q.indexOf("signin=unknown") >= 0) { el("detail").insertAdjacentHTML("beforebegin", '<div class="msg err" style="margin-bottom:12px">Your Microsoft account is not linked to a user in the budget app. Ask Jacob to add your work email to your user record.</div>'); }
-      if (q.indexOf("signin=failed") >= 0 || q.indexOf("signin=expired") >= 0) { el("detail").insertAdjacentHTML("beforebegin", '<div class="msg err" style="margin-bottom:12px">Sign-in did not complete. Try again.</div>'); }
+      if (q.indexOf("signin=unknown") >= 0) { banner("err", "Your Microsoft account is not linked to a user in the budget app. Ask Jacob to add your work email to your user record."); }
+      if (q.indexOf("signin=failed") >= 0 || q.indexOf("signin=expired") >= 0) { banner("err", "Sign-in did not complete. Try again."); }
       state.me = m.me ? m.me.id : 0;
       document.querySelector(".test").style.display = "none";
     }
-    if (!m.signing_allowed) { el("detail").insertAdjacentHTML("beforebegin", '<div class="msg" style="margin-bottom:12px">Signing is switched off until a secure sign-in is in place. You can generate, review and edit snapshots, but not sign or release them.</div>'); }
-    el("gb").innerHTML = m.buildings.map(function (b) { return '<option value="' + b.entity + '">' + esc(b.entity + " - " + b.client) + "</option>"; }).join("");
-    if (!m.dev) { el("gs").style.display = "none"; el("gs").previousElementSibling.style.display = "none"; }
-    el("gs").innerHTML = '<option value="">Choose a sample statement</option>' + m.samples.map(function (s) { return '<option>' + esc(s) + "</option>"; }).join("");
+    if (!m.signing_allowed) { banner("", "Signing is switched off until a secure sign-in is in place. You can generate, review and edit snapshots, but not sign or release them."); }
+    el("gb").innerHTML = m.buildings.map(function (b) { return '<option value="' + b.entity + '">' + esc(b.entity + " – " + b.client) + "</option>"; }).join("");
+    if (!m.dev) { el("gsrow").style.display = "none"; }
+    el("gs").innerHTML = '<option value="">None, I will upload a PDF</option>' + m.samples.map(function (s) { return "<option>" + esc(s) + "</option>"; }).join("");
     refreshList();
   });
 }
 
-function refreshList(keep) {
+function refreshList() {
   return api("GET", "/api/snapshots").then(function (rows) {
     el("list").innerHTML = rows.length ? rows.map(function (r) {
-      return '<button class="item' + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '"><b>' + esc(r.entity + " - " + r.client) + "</b><span>" +
-        MONTHS[r.month - 1] + " " + r.year + ' &middot; v' + r.version + '</span><span><span class="pill ' + r.stage + '">' + STAGE[r.stage] + "</span></span></button>";
-    }).join("") : '<div class="note">No snapshots yet.</div>';
+      return '<button class="item' + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '" aria-current="' + (state.cur === r.id) + '"><span class="t">' + esc(r.entity + " – " + r.client) +
+        '</span><span class="m"><span>' + MONTHS[r.month - 1] + " " + r.year + " &middot; v" + r.version + "</span>" + pill(r.stage) + "</span></button>";
+    }).join("") : '<div class="muted">No snapshots yet.</div>';
     Array.prototype.forEach.call(document.querySelectorAll(".item"), function (b) { b.onclick = function () { openSnap(b.getAttribute("data-id")); }; });
   });
 }
 
-function openSnap(id, preserve) {
+function openSnap(id) {
   state.cur = id;
-  return api("GET", "/api/snapshots/" + id).then(function (v) { render(v, preserve); refreshList(); });
+  return api("GET", "/api/snapshots/" + id).then(function (v) { render(v); refreshList(); });
 }
 
+function current(v, role) { return v.signoffs.filter(function (x) { return x.role === role && x.current; }).pop(); }
+function teamNames(v, role) { return v.team.filter(function (a) { return a.role === role; }).map(function (a) { return a.name; }).join(" or "); }
+
 function steps(v) {
-  var s = v.stage, pmOk = v.signoffs.some(function (x) { return x.role === "pm" && x.decision === "approve" && x.current; });
+  var s = v.stage, pm = current(v, "pm"), pmOk = pm && pm.decision === "approve";
   var allTied = v.checks.every(function (c) { return c.status === "tied"; });
-  var list = [
-    ["Generated", "done"],
-    ["Checks", allTied ? "done" : "now"],
-    ["FA sends", v.sent ? "done" : "now"],
-    ["PM signs", pmOk ? "done" : (v.sent ? "now" : "")],
-    ["FA signs", s === "released" || s === "approved" ? "done" : (pmOk ? "now" : "")],
-    ["Released", s === "released" ? "done" : ""]
-  ];
-  return '<div class="steps">' + list.map(function (x) { return '<div class="step ' + x[1] + '">' + esc(x[0]) + "</div>"; }).join("") + "</div>";
+  var done = { gen: true, chk: allTied, send: v.sent, pm: pmOk, fa: s === "approved" || s === "released", rel: s === "released" };
+  var order = [["gen", "Generated"], ["chk", "Checks tie"], ["send", "Sent by FA"], ["pm", "PM signs"], ["fa", "FA signs"], ["rel", "Released"]];
+  var nowSet = false;
+  var html = order.map(function (x, i) {
+    var cls = done[x[0]] ? "done" : (!nowSet ? (nowSet = true, "now") : "");
+    var mark = done[x[0]] ? "&#10003;" : String(i + 1);
+    return '<div class="step ' + cls + '"' + (cls === "now" ? ' aria-current="step"' : "") + '><span class="dot">' + mark + "</span>" + esc(x[1]) + "</div>";
+  }).join("");
+  var wait = "";
+  if (s === "changes_requested") { wait = "Changes requested. The FA edits the commentary and the snapshot goes back to the PM."; }
+  else if (v.sent && !pmOk) { wait = "Waiting on <b>" + esc(teamNames(v, "pm") || "the PM") + "</b> (Property Manager)"; }
+  else if (pmOk && !done.fa) { wait = "Waiting on <b>" + esc(teamNames(v, "fa") || "the FA") + "</b> (Financial Analyst)"; }
+  else if (!v.sent) { wait = "Draft. The FA reviews the commentary and sends it to sign-off."; }
+  else if (s === "approved" && v.release_off) { wait = "Approved by both. Release to SharePoint is switched off."; }
+  return '<div class="steps" role="list">' + html + "</div>" + (wait ? '<p class="waiting">' + wait + "</p>" : "");
 }
 
 function checksHtml(v) {
-  return v.checks.map(function (c) {
-    var icon = c.status === "tied" ? '<span class="ok">&#10003;</span>' : (c.severity === "block" ? '<span class="bad">&#10007;</span>' : '<span class="rev">!</span>');
+  var bad = v.checks.filter(function (c) { return c.status !== "tied"; });
+  var rows = v.checks.map(function (c) {
+    var g = c.status === "tied" ? '<span class="g ok">&#10003;</span>' : (c.severity === "block" ? '<span class="g bad">&#10007;</span>' : '<span class="g rev">!</span>');
     var extra = "";
     if (c.status !== "tied") {
-      extra = '<div class="note">' + esc(c.detail) + "</div>";
+      extra = '<div class="d">' + esc(c.detail) + "</div>";
       if (c.severity === "review") {
-        extra += '<input type="text" data-ack="' + esc(c.id) + '" placeholder="FA note explaining this" value="' + esc(v.acks[c.id] || "") + '" style="width:100%;margin-top:4px">';
+        extra += '<input class="ctl" type="text" data-ack="' + esc(c.id) + '" placeholder="FA note explaining this" value="' + esc(v.acks[c.id] || "") + '" style="margin-top:6px">';
       }
     }
-    return '<div class="chk">' + icon + "<div>" + esc(c.label) + extra + "</div></div>";
+    return '<div class="chk">' + g + "<div>" + esc(c.label) + extra + "</div></div>";
   }).join("");
+  var head = bad.length
+    ? '<span class="badge bad">!</span>' + bad.length + " of " + v.checks.length + " checks need attention"
+    : '<span class="badge ok">&#10003;</span>All ' + v.checks.length + " checks tie to the statement";
+  return '<details class="checks"' + (bad.length ? " open" : "") + "><summary>" + head + '<span class="chev">Details</span></summary><div class="chklist">' + rows + "</div></details>";
 }
 
 function commentaryHtml(v) {
   var editable = v.can.edit;
   var body = v.commentary.map(function (c, i) {
-    if (!editable) { return '<div class="com"><b>' + esc(c.title) + "</b>" + esc(c.text) + "</div>"; }
-    return '<div class="com' + (c.draft ? " draft" : "") + '"><b>' + esc(c.title) + (c.draft ? ' <span class="pill in_signoff">draft, FA to confirm</span>' : "") +
-      '</b><textarea rows="3" data-ci="' + i + '">' + esc(c.text) + "</textarea></div>";
+    var tag = c.draft ? '<span class="pill draftnote">Draft &middot; FA to confirm</span>' : "";
+    if (!editable) { return '<div class="com"><div class="ct">' + esc(c.title) + tag + "</div><p>" + esc(c.text) + "</p></div>"; }
+    return '<div class="com"><label class="ct" for="ci' + i + '">' + esc(c.title) + tag + '</label><textarea id="ci' + i + '" rows="3" data-ci="' + i + '">' + esc(c.text) + "</textarea></div>";
   }).join("");
-  var note = editable ? '<label class="note" for="bn">Note to the board (prints on the snapshot)</label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" :
-    (v.board_note ? '<div class="msg"><b>Note to the board:</b> ' + esc(v.board_note) + "</div>" : "");
-  var btn = editable ? '<div class="row" style="margin-top:8px"><button id="saveedit">Save changes (makes a new version)</button><span class="note">Saving clears any signatures.</span></div>' : "";
+  var note = editable
+    ? '<div class="com"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea></div>"
+    : (v.board_note ? '<div class="msg info"><b>Note to the board:</b> ' + esc(v.board_note) + "</div>" : "");
+  var btn = editable ? '<div class="edit-foot"><button id="saveedit" class="btn">Save changes</button><span class="muted">Saving makes a new version and clears any signatures.</span></div>' : "";
   return body + note + btn;
 }
 
 function signHtml(v) {
-  function role(r, label) {
-    var s = v.signoffs.filter(function (x) { return x.role === r && x.current; });
-    var last = s[s.length - 1];
-    var team = v.team.filter(function (a) { return a.role === r; }).map(function (a) { return a.name; }).join(" or ");
-    var st = last ? (last.decision === "approve" ? '<span class="ok">Approved</span> by ' + esc(last.name) + " &middot; " + esc(last.at) : '<span class="bad">Requested changes</span> by ' + esc(last.name) + " &middot; " + esc(last.at)) : '<span class="note">Waiting</span>';
-    if (last && last.note) { st += '<div class="note">&ldquo;' + esc(last.note) + "&rdquo;</div>"; }
-    return '<div class="sig"><b>' + label + "</b><div>" + st + '<div class="note">' + esc(team || "not assigned") + "</div></div></div>";
+  function row(r, label) {
+    var last = current(v, r);
+    var st = last
+      ? (last.decision === "approve" ? '<span class="pill approved">&#10003; Approved</span>' : '<span class="pill changes_requested">&#10007; Changes requested</span>')
+      : '<span class="pill">&#9719; Waiting</span>';
+    var who = last ? esc(last.name) + " &middot; " + esc(last.at) : esc(teamNames(v, r) || "Not assigned");
+    var q = last && last.note ? '<div class="quote">&ldquo;' + esc(last.note) + "&rdquo;</div>" : "";
+    return '<div class="sig"><div class="r">' + label + '</div><div>' + st + '<div class="who2">' + who + "</div>" + q + "</div></div>";
   }
-  var h = role("pm", "Property Manager") + role("fa", "Financial Analyst");
-  if (v.stale) { h += '<div class="note" style="margin-top:6px">' + v.stale + " earlier signature(s) no longer count because the snapshot changed.</div>"; }
+  var h = row("pm", "Property Manager") + row("fa", "Financial Analyst");
+  if (v.stale) { h += '<p class="muted" style="margin:10px 0 0">' + v.stale + " earlier signature(s) no longer count because the snapshot changed.</p>"; }
+  if (v.problems && v.problems.length) { h += '<div class="msg err" style="margin-top:14px">' + v.problems.map(esc).join("<br>") + "</div>"; }
   if (v.stage === "released") {
-    h += '<div class="msg okk" style="margin-top:10px">Released. In the real system these two files go to SharePoint (test copies here):<br>' + v.released.files.map(esc).join("<br>") + "</div>";
-    return h;
+    return h + '<div class="msg okk" style="margin-top:14px"><b>Released.</b> Copied to:<div class="paths">' + v.released.files.map(esc).join("<br>") + "</div></div>";
   }
   if (v.stage === "approved") {
-    if (v.can.release) {
-      h += '<div class="row" style="margin-top:10px"><button id="release" class="primary">Release to SharePoint</button></div>';
-    } else if (v.release_off) {
-      h += '<div class="msg" style="margin-top:10px">Approved by both. Release to SharePoint is switched off, so nothing was copied yet.' +
-        (v.rehearsal ? '<br>It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") : "") + "</div>";
+    if (v.can.release) { return h + '<div class="decide"><button id="release" class="btn primary">Release to SharePoint</button></div>'; }
+    if (v.release_off) {
+      return h + '<div class="msg info" style="margin-top:14px"><b>Approved by both.</b> Release to SharePoint is switched off, so nothing was copied yet.' +
+        (v.rehearsal ? '<div class="paths">It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") + "</div>" : "") + "</div>";
     }
     return h;
   }
-  if (v.can.send) { h += '<div class="row" style="margin-top:10px"><button id="send" class="primary">Send to sign-off</button></div>'; }
-  var role_ = v.can.sign_pm ? "pm" : (v.can.sign_fa ? "fa" : "");
-  if (role_) {
-    var rel = role_ === "fa" ? " Approving releases it to the SharePoint folders." : "";
-    h += '<div style="margin-top:10px"><label class="note" for="sn">Note (needed if you request changes)</label><textarea id="sn" rows="2"></textarea>' +
-      '<div class="row" style="margin-top:6px"><button class="good" id="appr" data-role="' + role_ + '">Approve as ' + role_.toUpperCase() + '</button><button id="rej" data-role="' + role_ + '">Request changes</button></div>' +
-      (rel ? '<div class="note">' + rel + "</div>" : "") + "</div>";
+  if (v.can.send) { h += '<div class="decide"><button id="send" class="btn primary">Send to sign-off</button><span class="muted">The PM signs first, then you.</span></div>'; }
+  var role = v.can.sign_pm ? "pm" : (v.can.sign_fa ? "fa" : "");
+  if (role) {
+    h += '<div class="decide"><label class="ct" for="sn" style="font-weight:600;color:var(--ink)">Your decision <span class="muted" style="font-weight:500">a note is needed to request changes</span></label>' +
+      '<textarea id="sn" rows="2" placeholder="Optional note"></textarea><div class="row">' +
+      '<button class="btn approve" id="appr" data-role="' + role + '">&#10003; Approve as ' + role.toUpperCase() + '</button>' +
+      '<button class="btn" id="rej" data-role="' + role + '">Request changes</button></div>' +
+      (role === "fa" ? '<span class="muted">Your approval releases it to the SharePoint folders.</span>' : "") + "</div>";
   }
-  if (v.why_not.length) { h += '<div class="msg" style="margin-top:10px">' + v.why_not.map(esc).join("<br>") + "</div>"; }
-  if (!v.can.send && !role_ && !v.why_not.length) {
-    h += '<div class="note" style="margin-top:10px">Nothing for ' + esc(personName(state.me)) + " to do on this one" + (v.my_roles.length ? "" : " (not assigned to this building)") + ".</div>";
+  // normal waiting is progress, not a problem: quiet text; real blockers keep the warning box
+  var waitOnly = v.why_not.filter(function (w) { return /^Waiting for/.test(w); });
+  var blockers = v.why_not.filter(function (w) { return !/^Waiting for/.test(w); });
+  if (blockers.length) { h += '<div class="msg" style="margin-top:14px">' + blockers.map(esc).join("<br>") + "</div>"; }
+  if (waitOnly.length) { h += '<p class="muted" style="margin:14px 0 0">&#9719; ' + waitOnly.map(esc).join(" ") + "</p>"; }
+  if (!v.can.send && !role && !v.why_not.length) {
+    h += '<p class="muted" style="margin:14px 0 0">Nothing for you to do on this one' + (v.my_roles.length ? "" : " (you are not on this building's team)") + ".</p>";
   }
   return h;
 }
 
-function personName(id) { var u = state.meta.users.filter(function (x) { return x.id === Number(id); })[0]; return u ? u.name : ""; }
-
-function render(v, preserve) {
-  var ts = v.stage;
-  var html = '<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between"><div><h2 style="margin:0">' + esc(v.entity) + "</h2><div style=\"font-size:20px;font-weight:650\">" + esc(v.building || v.client) + "</div>" +
-    '<div class="note">' + MONTHS[v.month - 1] + " " + v.year + " &middot; version " + v.version + " &middot; from " + esc(v.source) + '</div></div><span class="pill ' + ts + '" style="font-size:13px">' + STAGE[ts] + "</span></div></div>" +
-    steps(v) + '<div id="err"></div><div class="cols"><div class="stack">' +
-    '<div class="card"><h2>Sign-off</h2>' + signHtml(v) + "</div>" +
-    '<div class="card"><h2>Does it tie to the statement?</h2>' + checksHtml(v) + "</div>" +
-    '<div class="card"><h2>What changed (commentary)</h2>' + commentaryHtml(v) + "</div>" +
-    '<div class="card"><h2>History</h2><div class="log">' + v.log.map(function (l) { return "<div>" + esc(l.at) + " &middot; <b>" + esc(l.who) + "</b> " + esc(l.what) + "</div>"; }).join("") + "</div></div>" +
-    '</div><div class="card"><h2>Preview (what the board will see)</h2><iframe title="Snapshot preview" src="/api/snapshots/' + v.id + "/pdf?v=" + Date.now() + '#toolbar=0"></iframe></div></div>';
+function render(v) {
+  var html = '<div class="panel"><div class="head"><div><div class="eyebrow">' + esc(v.entity) + " &middot; " + MONTHS[v.month - 1] + " " + v.year + "</div><h1>" + esc(v.building || v.client) + "</h1>" +
+    '<div class="muted">Version ' + v.version + " &middot; generated " + esc(v.generated_at) + " from " + esc(v.source) + "</div></div>" + pill(v.stage) + "</div>" + steps(v) + "</div>" +
+    '<div id="err"></div><div class="cols"><div class="stack">' +
+    '<div class="panel pad"><p class="label">Sign-off</p>' + signHtml(v) + "</div>" +
+    '<div class="panel pad">' + checksHtml(v) + "</div>" +
+    '<div class="panel pad"><p class="label">What changed</p>' + commentaryHtml(v) + "</div>" +
+    '<div class="panel pad"><details class="hist"><summary>History (' + v.log.length + ")</summary><div class=\"log\">" +
+    v.log.map(function (l) { return "<div><time>" + esc(l.at) + "</time><b>" + esc(l.who) + "</b> " + esc(l.what) + "</div>"; }).join("") + "</div></details></div>" +
+    '</div><div class="panel preview"><div class="bar"><p class="label" style="margin:0">What the board will see</p><a href="/api/snapshots/' + v.id + '/pdf" target="_blank" rel="noopener">Open PDF</a></div>' +
+    '<iframe title="Snapshot preview" src="/api/snapshots/' + v.id + "/pdf?v=" + Date.now() + '#toolbar=0&view=FitH"></iframe></div></div>';
   el("detail").innerHTML = html;
   wire(v);
 }
 
-function showErr(e) { el("err").innerHTML = '<div class="msg err" style="margin-bottom:12px">' + esc(e.message) + "</div>"; window.scrollTo(0, 0); }
+function showErr(e) { el("err").innerHTML = '<div class="msg err" style="margin-top:var(--gap-lg)">' + esc(e.message) + "</div>"; el("err").scrollIntoView({ block: "center" }); }
 function act(method, url, body) { api(method, url, body).then(function () { return openSnap(state.cur); }).catch(showErr); }
 
 function wire(v) {
   function on(id, fn) { var node = el(id); if (node) { node.onclick = fn; } }
   function decide(decision) {
-    return function () {
-      act("POST", "/api/snapshots/" + v.id + "/sign", { role: this.getAttribute("data-role"), decision: decision, note: el("sn").value });
-    };
+    return function () { act("POST", "/api/snapshots/" + v.id + "/sign", { role: this.getAttribute("data-role"), decision: decision, note: el("sn").value }); };
   }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });
@@ -260,16 +402,19 @@ function wire(v) {
 }
 
 if (el("as")) { el("as").onchange = function () { state.me = Number(el("as").value); if (state.cur) { openSnap(state.cur); } }; }
-if (el("reset")) { el("reset").onclick = function () { api("POST", "/api/snapshots/reset").then(function () { state.cur = null; el("detail").innerHTML = '<div class="card empty">Pick a snapshot, or generate one from a statement.</div>'; refreshList(); }); }; }
+if (el("reset")) { el("reset").onclick = function () { api("POST", "/api/snapshots/reset").then(function () { state.cur = null; el("detail").innerHTML = '<div class="panel empty"><b>No snapshot open</b>Pick one on the left, or generate one from a statement.</div>'; refreshList(); }); }; }
+el("gf").onchange = function () { el("gfname").textContent = el("gf").files[0] ? el("gf").files[0].name : "Choose the statement PDF"; };
 el("gen").onclick = function () {
   var fd = new FormData();
   fd.append("entity", el("gb").value); fd.append("sample", el("gs").value); fd.append("as", state.me);
   if (el("gf").files[0]) { fd.append("file", el("gf").files[0]); }
-  el("genmsg").innerHTML = '<div class="note">Reading the statement...</div>';
+  var b = el("gen"); b.disabled = true; b.textContent = "Reading the statement...";
+  el("genmsg").innerHTML = "";
   fetch("/api/snapshots/generate", { method: "POST", body: fd }).then(function (r) {
     return r.json().then(function (j) { if (!r.ok) { throw new Error(j.error); } return j; });
-  }).then(function (j) { el("genmsg").innerHTML = ""; return openSnap(j.id); })
-    .catch(function (e) { el("genmsg").innerHTML = '<div class="msg err">' + esc(e.message) + "</div>"; });
+  }).then(function (j) { return openSnap(j.id); })
+    .catch(function (e) { el("genmsg").innerHTML = '<div class="msg err">' + esc(e.message) + "</div>"; })
+    .then(function () { b.disabled = false; b.textContent = "Generate snapshot"; });
 };
 init();
 </script>
