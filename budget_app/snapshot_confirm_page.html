@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>$title</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap">
+<style>
+:root{--ink:#2d2520;--ink-2:#4a3f35;--cream:#f5f3f1;--surface:#fff;--warm:#f5f0eb;--label:#8b7b6b;--border:#e8e0d8;--brand:#a4262c;
+--ok:#065f46;--ok-bg:#def7ec;--ok-bd:#a7f3d0;--warn-bg:#fef3c7;--warn-bd:#fde68a;--bad:#991b1b;--bad-bg:#fef2f2;--bad-bd:#fecaca;
+--font:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--cream);color:var(--ink-2);font:15px/1.55 var(--font)}
+.top{background:var(--ink);color:var(--cream);padding:14px 20px;display:flex;align-items:center;gap:10px;font-weight:700}
+.mark{width:22px;height:22px;border-radius:5px;background:var(--brand);display:grid;place-items:center;font-size:12px;color:#fff}
+.top small{font-weight:500;color:#a89888}
+main{max-width:680px;margin:0 auto;padding:20px 16px 48px;display:grid;gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--label)}
+h1{font-size:22px;line-height:1.25;color:var(--ink);margin:4px 0 6px}
+h2{font-size:15px;color:var(--ink);margin:0 0 10px}
+.muted{color:var(--label);font-size:13px}
+.kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.kpi{border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .l{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--label)}
+.kpi .v{font-size:19px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.kpi .s{font-size:12px;color:var(--label)}
+.note{margin:0 0 12px}.note b{color:var(--ink)}
+.board{background:#f7e3e2;border:1px solid var(--brand);border-radius:8px;padding:10px 12px;font-size:14px}
+.pdf{display:inline-flex;gap:8px;align-items:center;font-weight:600;color:var(--ink)}
+.btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:50px;border-radius:8px;border:1px solid var(--border);
+font:600 16px var(--font);cursor:pointer;background:var(--warm);color:var(--ink)}
+.btn.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn:focus-visible,textarea:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:15px var(--font);min-height:90px;resize:vertical}
+details summary{cursor:pointer;font-weight:600;color:var(--ink);padding:6px 0}
+.msg{border-radius:12px;padding:18px 20px;border:1px solid var(--warn-bd);background:var(--warn-bg);color:#713f12}
+.msg.ok{background:var(--ok-bg);border-color:var(--ok-bd);color:var(--ok)}
+.msg.bad{background:var(--bad-bg);border-color:var(--bad-bd);color:var(--bad)}
+.msg h1{color:inherit;font-size:20px}
+form{display:grid;gap:10px;margin:0}
+@media (max-width:420px){.kpis{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="top"><span class="mark" aria-hidden="true">C</span>Century <small>Monthly Financial Snapshot</small></div>
+<main>
+$body
+</main>
+</body>
+</html>

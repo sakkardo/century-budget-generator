@@ -89,7 +89,7 @@ textarea { line-height:1.5; resize:vertical }
 
 /* pills */
 .pill { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600; padding:3px 10px; border-radius:99px; border:1px solid var(--setup-bd); background:var(--setup-bg); color:var(--setup); white-space:nowrap }
-.pill.in_signoff { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
+.pill.in_signoff, .pill.awaiting_pm { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
 .pill.changes_requested { background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad) }
 .pill.approved, .pill.released { background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok) }
 .pill.draftnote { background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn) }
@@ -217,8 +217,8 @@ var state = { me: 0, meta: null, cur: null };
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function el(id) { return document.getElementById(id); }
 var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-var STAGE = { draft: "Draft", in_signoff: "In sign-off", changes_requested: "Changes requested", approved: "Approved", released: "Released" };
-var GLYPH = { draft: "&#9998;", in_signoff: "&#9719;", changes_requested: "&#10007;", approved: "&#10003;", released: "&#10003;" };
+var STAGE = { draft: "Draft", awaiting_pm: "Waiting on PM", changes_requested: "Changes requested", approved: "Final", released: "Saved" };
+var GLYPH = { draft: "&#9998;", awaiting_pm: "&#9719;", changes_requested: "&#10007;", approved: "&#10003;", released: "&#10003;" };
 function pill(stage) { return '<span class="pill ' + stage + '">' + GLYPH[stage] + " " + STAGE[stage] + "</span>"; }
 function banner(cls, html) { el("banners").insertAdjacentHTML("beforeend", '<div class="msg ' + cls + '">' + html + "</div>"); }
 
@@ -254,7 +254,10 @@ function init() {
       state.me = m.me ? m.me.id : 0;
       document.querySelector(".test").style.display = "none";
     }
-    if (!m.signing_allowed) { banner("", "Signing is switched off until a secure sign-in is in place. You can generate, review and edit snapshots, but not sign or release them."); }
+    if (!m.signing_allowed) { banner("", "Sending to PMs is switched off until a secure sign-in is in place. You can generate, review and edit snapshots."); }
+    if (m.email_mode !== "live" && !m.dev) { banner("", m.email_mode === "test" ? "Test mode: emails to PMs go to the test inbox, not to the PMs." : "Email is switched off: PMs are not emailed yet."); }
+    if (m.dev) { document.querySelector(".who").insertAdjacentHTML("afterbegin", '<a href="/snapshots/dev/outbox" target="_blank" rel="noopener" style="color:var(--tan)">Test outbox</a>'); }
+    state.mineOnly = (m.my_entities || []).length > 0;
     el("gb").innerHTML = m.buildings.map(function (b) { return '<option value="' + b.entity + '">' + esc(b.entity + " – " + b.client) + "</option>"; }).join("");
     if (!m.dev) { el("gsrow").style.display = "none"; }
     el("gs").innerHTML = '<option value="">None, I will upload a PDF</option>' + m.samples.map(function (s) { return "<option>" + esc(s) + "</option>"; }).join("");
@@ -264,11 +267,16 @@ function init() {
 
 function refreshList() {
   return api("GET", "/api/snapshots").then(function (rows) {
-    el("list").innerHTML = rows.length ? rows.map(function (r) {
-      return '<button class="item' + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '" aria-current="' + (state.cur === r.id) + '"><span class="t">' + esc(r.entity + " – " + r.client) +
+    var mine = (state.meta && state.meta.my_entities) || [];
+    var shown = state.mineOnly ? rows.filter(function (r) { return mine.indexOf(r.entity) >= 0; }) : rows;
+    var toggle = mine.length ? '<div class="row" style="display:flex;gap:6px;margin:-4px 0 10px"><button class="pill' + (state.mineOnly ? " approved" : "") + '" id="fmine" style="cursor:pointer">My buildings</button>' +
+      '<button class="pill' + (state.mineOnly ? "" : " approved") + '" id="fall" style="cursor:pointer">All</button></div>' : "";
+    el("list").innerHTML = toggle + (shown.length ? shown.map(function (r) {
+      return '<button class="item' + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '" aria-current="' + (state.cur === r.id) + '"><span class="t">' + esc(r.entity + " \u2013 " + r.client) +
         '</span><span class="m"><span>' + MONTHS[r.month - 1] + " " + r.year + " &middot; v" + r.version + "</span>" + pill(r.stage) + "</span></button>";
-    }).join("") : '<div class="muted">No snapshots yet.</div>';
+    }).join("") : '<div class="muted">' + (state.mineOnly ? "No snapshots for your buildings yet." : "No snapshots yet.") + "</div>");
     Array.prototype.forEach.call(document.querySelectorAll(".item"), function (b) { b.onclick = function () { openSnap(b.getAttribute("data-id")); }; });
+    if (el("fmine")) { el("fmine").onclick = function () { state.mineOnly = true; refreshList(); }; el("fall").onclick = function () { state.mineOnly = false; refreshList(); }; }
   });
 }
 
@@ -281,10 +289,12 @@ function current(v, role) { return v.signoffs.filter(function (x) { return x.rol
 function teamNames(v, role) { return v.team.filter(function (a) { return a.role === role; }).map(function (a) { return a.name; }).join(" or "); }
 
 function steps(v) {
-  var s = v.stage, pm = current(v, "pm"), pmOk = pm && pm.decision === "approve";
-  var allTied = v.checks.every(function (c) { return c.status === "tied"; });
-  var done = { gen: true, chk: allTied, send: v.sent, pm: pmOk, fa: s === "approved" || s === "released", rel: s === "released" };
-  var order = [["gen", "Generated"], ["chk", "Checks tie"], ["send", "Sent by FA"], ["pm", "PM signs"], ["fa", "FA signs"], ["rel", "Released"]];
+  var s = v.stage, allTied = v.checks.every(function (c) { return c.status === "tied"; });
+  var notesDone = v.commentary.every(function (c) { return c.confirmed; });
+  var req = v.request && v.request.current ? v.request : null;
+  var done = { gen: true, chk: allTied, notes: notesDone, send: s === "awaiting_pm" || s === "approved" || s === "released",
+               pm: s === "approved" || s === "released", save: s === "released" };
+  var order = [["gen", "Generated"], ["chk", "Checks tie"], ["notes", "Notes confirmed"], ["send", "Sent to PM"], ["pm", "PM confirms"], ["save", "Saved"]];
   var nowSet = false;
   var html = order.map(function (x, i) {
     var cls = done[x[0]] ? "done" : (!nowSet ? (nowSet = true, "now") : "");
@@ -292,11 +302,11 @@ function steps(v) {
     return '<div class="step ' + cls + '"' + (cls === "now" ? ' aria-current="step"' : "") + '><span class="dot">' + mark + "</span>" + esc(x[1]) + "</div>";
   }).join("");
   var wait = "";
-  if (s === "changes_requested") { wait = "Changes requested. The FA edits the commentary and the snapshot goes back to the PM."; }
-  else if (v.sent && !pmOk) { wait = "Waiting on <b>" + esc(teamNames(v, "pm") || "the PM") + "</b> (Property Manager)"; }
-  else if (pmOk && !done.fa) { wait = "Waiting on <b>" + esc(teamNames(v, "fa") || "the FA") + "</b> (Financial Analyst)"; }
-  else if (!v.sent) { wait = "Draft. The FA reviews the commentary and sends it to sign-off."; }
-  else if (s === "approved" && v.release_off) { wait = "Approved by both. Release to SharePoint is switched off."; }
+  if (s === "awaiting_pm" && req) { wait = "Emailed to <b>" + esc(req.pms.join(" / ")) + "</b> (PM) on " + esc(req.sent) + ". Due by <b>" + esc(req.due) + "</b>" + (req.overdue ? ' &middot; <span style="color:var(--bad)">overdue</span>' : (req.reminded ? " &middot; reminder sent" : "")); }
+  else if (s === "changes_requested") { wait = "The PM asked for changes. Edit the notes, then send it again."; }
+  else if (s === "draft") { wait = notesDone ? "Ready. Confirm and send it to the PM." : "Draft. The FA confirms or edits each note, then sends it to the PM."; }
+  else if (s === "approved") { wait = "Final: confirmed by the PM." + (v.release_off ? " Saving to SharePoint is switched off." : ""); }
+  else if (s === "released") { wait = "Final and saved to the building's Monthly Financials folder."; }
   return '<div class="steps" role="list">' + html + "</div>" + (wait ? '<p class="waiting">' + wait + "</p>" : "");
 }
 
@@ -350,48 +360,51 @@ function commentaryHtml(v) {
 }
 
 function signHtml(v) {
+  var req = v.request && v.request.current ? v.request : null;
   function row(r, label) {
     var last = current(v, r);
-    var st = last
-      ? (last.decision === "approve" ? '<span class="pill approved">&#10003; Approved</span>' : '<span class="pill changes_requested">&#10007; Changes requested</span>')
-      : '<span class="pill">&#9719; Waiting</span>';
-    var who = last ? esc(last.name) + " &middot; " + esc(last.at) : esc(teamNames(v, r) || "Not assigned");
+    var st, who;
+    if (last && last.decision === "approve") {
+      st = '<span class="pill approved">&#10003; ' + (r === "fa" ? "Confirmed and sent" : "Confirmed by email") + "</span>";
+      who = esc(last.name) + " &middot; " + esc(last.at);
+    } else if (last) {
+      st = '<span class="pill changes_requested">&#10007; Asked for changes</span>';
+      who = esc(last.name) + " &middot; " + esc(last.at);
+    } else if (r === "pm" && req) {
+      st = '<span class="pill awaiting_pm">&#9719; Email sent, waiting</span>';
+      who = esc(req.pms.join(" / ")) + " &middot; due " + esc(req.due);
+    } else {
+      st = '<span class="pill">&#9719; Waiting</span>';
+      who = esc(teamNames(v, r) || "Not assigned");
+    }
     var q = last && last.note ? '<div class="quote">&ldquo;' + esc(last.note) + "&rdquo;</div>" : "";
     return '<div class="sig"><div class="r">' + label + '</div><div>' + st + '<div class="who2">' + who + "</div>" + q + "</div></div>";
   }
-  var h = row("pm", "Property Manager") + row("fa", "Financial Analyst");
-  if (v.stale) { h += '<p class="muted" style="margin:10px 0 0">' + v.stale + " earlier signature(s) no longer count because the snapshot changed.</p>"; }
+  var h = row("fa", "Financial Analyst") + row("pm", "Property Manager");
   if (v.problems && v.problems.length) { h += '<div class="msg err" style="margin-top:14px">' + v.problems.map(esc).join("<br>") + "</div>"; }
+  if (req && req.emails && req.emails.length) {
+    var bad = req.emails.filter(function (e) { return e.status === "failed"; });
+    if (bad.length) { h += '<div class="msg err" style="margin-top:14px">The email to ' + esc(bad[bad.length - 1].pm) + " did not go out: " + esc(bad[bad.length - 1].error || "unknown error") + ". Use Resend.</div>"; }
+  }
   if (v.stage === "released") {
-    return h + '<div class="msg okk" style="margin-top:14px"><b>Released.</b> Copied to:<div class="paths">' + v.released.files.map(esc).join("<br>") + "</div></div>";
+    return h + '<div class="msg okk" style="margin-top:14px"><b>Saved.</b><div class="paths">' + v.released.files.map(esc).join("<br>") + "</div></div>";
   }
   if (v.stage === "approved") {
-    if (v.release_blocked) {
-      h += '<div class="msg" style="margin-top:14px"><b>Approved by both. The copy to SharePoint is on hold.</b><div class="paths">' + esc(v.release_blocked.reason) + "</div></div>";
-    }
-    if (v.can.release) { return h + '<div class="decide"><button id="release" class="btn primary">' + (v.release_blocked ? "Try release again" : "Release to SharePoint") + "</button></div>"; }
-    if (v.release_blocked) { return h; }
-    if (v.release_off) {
-      return h + '<div class="msg info" style="margin-top:14px"><b>Approved by both.</b> Release to SharePoint is switched off, so nothing was copied yet.' +
-        (v.rehearsal ? '<div class="paths">It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") + "</div>" : "") + "</div>";
-    }
+    if (v.release_blocked) { h += '<div class="msg" style="margin-top:14px"><b>Final. Saving to SharePoint is on hold.</b><div class="paths">' + esc(v.release_blocked.reason) + "</div></div>"; }
+    else if (v.release_off) { h += '<div class="msg info" style="margin-top:14px"><b>Final.</b> Saving to SharePoint is switched off, so nothing was written yet.' + (v.rehearsal ? '<div class="paths">It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") + "</div>" : "") + "</div>"; }
+    if (v.can.release) { h += '<div class="decide"><button id="release" class="btn primary">' + (v.release_blocked ? "Try saving again" : "Save to SharePoint") + "</button></div>"; }
     return h;
   }
-  if (v.can.send) { h += '<div class="decide"><button id="send" class="btn primary">Send to sign-off</button><span class="muted">The PM signs first, then you.</span></div>'; }
-  var role = v.can.sign_pm ? "pm" : (v.can.sign_fa ? "fa" : "");
-  if (role) {
-    h += '<div class="decide"><label class="ct" for="sn" style="font-weight:600;color:var(--ink)">Your decision <span class="muted" style="font-weight:500">a note is needed to request changes</span></label>' +
-      '<textarea id="sn" rows="2" placeholder="Optional note"></textarea><div class="row">' +
-      '<button class="btn approve" id="appr" data-role="' + role + '">&#10003; Approve as ' + role.toUpperCase() + '</button>' +
-      '<button class="btn" id="rej" data-role="' + role + '">Request changes</button></div>' +
-      (role === "fa" ? '<span class="muted">Your approval releases it to the SharePoint folders.</span>' : "") + "</div>";
+  if (v.can.send) {
+    h += '<div class="decide"><button id="send" class="btn approve">&#10003; Confirm &amp; send to PM</button><span class="muted">Emails ' +
+      esc(teamNames(v, "pm") || "the PM") + " the snapshot with a link to confirm it. They have 48 hours." + (v.email_mode !== "live" ? " (Email is " + esc(v.email_mode) + ".)" : "") + "</span></div>";
   }
-  // normal waiting is progress, not a problem: quiet text; real blockers keep the warning box
+  if (v.can.resend) { h += '<div class="decide"><button id="send" class="btn">Resend the email</button><span class="muted">Sends a fresh link. The old one stops working; the 48-hour clock does not restart.</span></div>'; }
   var waitOnly = v.why_not.filter(function (w) { return /^Waiting for/.test(w); });
   var blockers = v.why_not.filter(function (w) { return !/^Waiting for/.test(w); });
   if (blockers.length) { h += '<div class="msg" style="margin-top:14px">' + blockers.map(esc).join("<br>") + "</div>"; }
   if (waitOnly.length) { h += '<p class="muted" style="margin:14px 0 0">&#9719; ' + waitOnly.map(esc).join(" ") + "</p>"; }
-  if (!v.can.send && !role && !v.why_not.length) {
+  if (!v.can.send && !v.can.resend && !v.why_not.length && v.stage !== "awaiting_pm") {
     h += '<p class="muted" style="margin:14px 0 0">Nothing for you to do on this one' + (v.my_roles.length ? "" : " (you are not on this building's team)") + ".</p>";
   }
   return h;
@@ -417,13 +430,8 @@ function act(method, url, body) { api(method, url, body).then(function () { retu
 
 function wire(v) {
   function on(id, fn) { var node = el(id); if (node) { node.onclick = fn; } }
-  function decide(decision) {
-    return function () { act("POST", "/api/snapshots/" + v.id + "/sign", { role: this.getAttribute("data-role"), decision: decision, note: el("sn").value }); };
-  }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });
-  on("appr", decide("approve"));
-  on("rej", decide("request_changes"));
   on("saveedit", function () {
     // board note only; note wording goes through each note's own button
     act("POST", "/api/snapshots/" + v.id + "/edit", { commentary: JSON.parse(JSON.stringify(v.commentary)), board_note: el("bn").value });

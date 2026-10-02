@@ -72,57 +72,63 @@ def run():
     C = "01 - Accounting General/Monthly Financial Snapshots"
     base = [C + "/2026/08-2026"]
 
+    # the final copy goes into the building's month folder ONLY (Jacob 2026-10-02): one target, no central copy
     # 204: <bldg>/Monthly Financials/<yyyy>/<NN - Month>
     t = Tree(base + ["204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August"])
     _, p, name = target(t, "204", 8)
-    assert p["targets"] == [C + "/2026/08-2026/" + name,
-                            "204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/" + name], p
+    assert p["targets"] == ["204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/" + name], p
     # 206: <bldg>/<yyyy>/<Month>
-    t = Tree(base + [C + "/2026/05-2026", "206 - 77 Bleecker Street Corp/2026/May", "206 - 77 Bleecker Street Corp/2025/May"])
+    t = Tree(base + ["206 - 77 Bleecker Street Corp/2026/May", "206 - 77 Bleecker Street Corp/2025/May"])
     _, p, name = target(t, "206", 5)
-    assert p["targets"][1] == "206 - 77 Bleecker Street Corp/2026/May/" + name and not p["blockers"], p
+    assert p["targets"] == ["206 - 77 Bleecker Street Corp/2026/May/" + name], p
     # 939: month folders straight under the building, each carrying its year
     t = Tree(base + ["939 - 305 Equities/07-2026", "939 - 305 Equities/08-2026"])
     _, p, name = target(t, "939", 8)
-    assert p["targets"][1] == "939 - 305 Equities/08-2026/" + name, p
+    assert p["targets"] == ["939 - 305 Equities/08-2026/" + name], p
     _, p, name = target(t, "939", 9)
-    assert p["targets"][1] == "939 - 305 Equities/09-2026/" + name and p["new_month_folder"], p
+    assert p["targets"] == ["939 - 305 Equities/09-2026/" + name] and p["new_month_folder"], p
     # statement folder spelled differently
     for spelled in ("Monthly financials", "Monthly FInancials", "Monthly Financial Reports", "Monthly Financial Statements"):
         t = Tree(base + ["724 - Cherokee Owners Corp/%s/2026/08-2026" % spelled, "724 - Cherokee Owners Corp/Audited Financials/2026"])
         _, p, name = target(t, "724", 8)
-        assert p["targets"][1] == "724 - Cherokee Owners Corp/%s/2026/08-2026/%s" % (spelled, name), (spelled, p)
+        assert p["targets"] == ["724 - Cherokee Owners Corp/%s/2026/08-2026/%s" % (spelled, name)], (spelled, p)
     # a new year: the statement folder exists, the year folder does not yet; style comes from last year
     t = Tree(base + ["148 - X/Monthly Financials/2025/12 - December"])
     _, p, name = target(t, "148", 1, year=2026)
-    assert p["targets"][1] == "148 - X/Monthly Financials/2026/01 - January/" + name, p
+    assert p["targets"] == ["148 - X/Monthly Financials/2026/01 - January/" + name], p
     # no place at all: refused with a clear message, nothing written
     t = Tree(base + ["850 - LC Lemle/Misc"])
     raises(lambda: target(t, "850", 8), "no place to put the snapshot")
-    # a vendor snapshot already in the building's month folder or the central folder: stop and ask
+    # the vendor's snapshot (and every other file) stays as it is; ours sits alongside under its own name
     vendor = "204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/444 East 86th Owners Corp Monthly FInancial Snapshot August 2026.pdf"
     t = Tree(base, files=[vendor])
     r, p, name = target(t, "204", 8, enabled=True)
-    assert p["blockers"] == [vendor]
-    raises(lambda: r.release(b"%PDF", name, "204", "x", 2026, 8), "already in SharePoint")
-    assert t.writes == []
-    t = Tree(base + ["204 - A/Monthly Financials/2026/08 - August"], files=[C + "/2026/08-2026/204- 444 East 86th Owners Corp Monthly FInancial Snapshot August 2026.pdf",
-                                                                           C + "/2026/08-2026/2040 - Other Building Snapshot.pdf"])
-    _, p, _ = target(t, "204", 8)
-    assert len(p["blockers"]) == 1 and "/204- 444" in p["blockers"][0], p  # building 2040 does not count as 204
+    assert p["blockers"] == []
+    assert r.release(b"%PDF", name, "204", "x", 2026, 8) == p["targets"] and t.writes == p["targets"]
+    assert t.files[vendor] == b"x"  # untouched
+    # an identical file name is never overwritten
+    raises(lambda: r.release(b"%PDF", name, "204", "x", 2026, 8), "already exists")
+    assert len(t.writes) == 1
     # duplicate month folders: the one already in use wins; two in use is refused
     t = Tree(base + ["204 - A/Monthly Financials/2026/03-March"], files=["204 - A/Monthly Financials/2026/03 - March/03-2026 Financials.pdf"])
     _, p, name = target(t, "204", 3)
-    assert p["targets"][1] == "204 - A/Monthly Financials/2026/03 - March/" + name, p
+    assert p["targets"] == ["204 - A/Monthly Financials/2026/03 - March/" + name], p
     t = Tree(base, files=["204 - A/Monthly Financials/2026/03 - March/a.pdf", "204 - A/Monthly Financials/2026/03-March/b.pdf"])
     raises(lambda: target(t, "204", 3), "More than one folder")
-    # enabled release writes exactly the two targets; dry run writes nothing
-    t = Tree(base + ["206 - B/2026/August"])
-    r, p, name = target(t, "206", 8, enabled=True)
-    assert r.release(b"%PDF", name, "206", "B", 2026, 8) == p["targets"] and t.writes == p["targets"]
+    # dry run writes nothing
     t = Tree(base + ["206 - B/2026/August"])
     r, p, name = target(t, "206", 8, enabled=False)
     assert r.release(b"%PDF", name, "206", "B", 2026, 8) == p["targets"] and t.writes == []
+    # sandbox root for testing: same path under a test folder; the real building folder is not written
+    os.environ["SNAPSHOT_RELEASE_ROOT"] = "01 - Accounting General/Snapshot Test"
+    try:
+        t = Tree(base + ["206 - B/2026/August"])
+        r, p, name = target(t, "206", 8, enabled=True)
+        assert p["targets"] == ["01 - Accounting General/Snapshot Test/206 - B/2026/August/" + name], p
+        r.release(b"%PDF", name, "206", "B", 2026, 8)
+        assert t.writes == p["targets"] and not any(w.startswith("206 - B/") for w in t.writes)
+    finally:
+        del os.environ["SNAPSHOT_RELEASE_ROOT"]
     print("snapshot release: all tests passed")
 
 

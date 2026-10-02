@@ -54,11 +54,12 @@ def build():
         user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
         role = db.Column(db.String(20), nullable=False)
 
-    bp, _, _ = snapshot_db.create_snapshot_blueprint(
+    bp, _, helpers = snapshot_db.create_snapshot_blueprint(
         db, {"User": User, "BuildingAssignment": BuildingAssignment},
         buildings_fn=lambda: [{"entity_code": "204", "building_name": "444 East 86th Owners Corp"}],
         msal_factory=FakeMsal)
     app.register_blueprint(bp)
+    app.snapshot_helpers = helpers
     with app.app_context():
         db.create_all()
         db.session.add_all([User(id=2, name="Kristy Paxinos", email="kpaxinos@centuryny.com"),
@@ -112,23 +113,25 @@ def run():
     pdf = open(os.path.join(SAMPLES, "204_2026-08_statement.pdf"), "rb").read()
     rid = c.post("/api/snapshots/generate", data={"entity": "204", "file": (io.BytesIO(pdf), "s.pdf")}).json["id"]
     confirm_all(lambda u: c.get(u).json, lambda u, b: c.post(u, json=b), rid)
+    # Kristy confirms and sends; her Microsoft identity is kept on the FA confirmation
     assert c.post("/api/snapshots/%s/send" % rid, json={}).status_code == 200
-    # Kristy cannot sign as PM
-    assert c.post("/api/snapshots/%s/sign" % rid, json={"role": "pm", "decision": "approve"}).status_code == 400
+    v = c.get("/api/snapshots/" + rid).json
+    fa = [s for s in v["signoffs"] if s["role"] == "fa"][0]
+    assert fa["via"]["email"] == "kpaxinos@centuryny.com" and fa["name"] == "Kristy Paxinos" and v["stage"] == "awaiting_pm"
 
-    # Jacob signs in on his own browser and signs as PM; his Microsoft email is kept on the signature
+    # Jacob (PM) is signed in elsewhere, but the portal gives him nothing to sign: the PM confirms from the email
     j = app.test_client()
     sign_in(j, "jsirotkin@centuryny.com")
-    assert j.post("/api/snapshots/%s/sign" % rid, json={"role": "pm", "decision": "approve", "note": "ok"}).status_code == 200
-    v = j.get("/api/snapshots/" + rid).json
-    pm = [s for s in v["signoffs"] if s["role"] == "pm"][0]
-    assert pm["via"]["email"] == "jsirotkin@centuryny.com" and pm["name"] == "Jacob Sirotkin"
-
-    # Kristy signs as FA: approved; release has no SharePoint here, so it refuses cleanly and nothing is half-done
-    # the approval stands even though SharePoint is not connected here; only the copy is held, with the reason
-    r = c.post("/api/snapshots/%s/sign" % rid, json={"role": "fa", "decision": "approve"})
-    assert r.status_code == 200, r.json
+    assert j.post("/api/snapshots/%s/sign" % rid, json={"role": "pm", "decision": "approve"}).status_code in (404, 405)
+    import re
+    outbox = app.snapshot_helpers["service"].mailer.outbox
+    assert [a.lower() for a in outbox[-1]["intended"]] == ["jsirotkin@centuryny.com"] and outbox[-1]["status"] == "off", outbox[-1]["intended"]  # off by default
+    link = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', outbox[-1]["html"]).group(1)
+    assert b"Confirmed" in app.test_client().post(link, data={"decision": "approve"}).data
     v = c.get("/api/snapshots/" + rid).json
+    pm = [s for s in v["signoffs"] if s["role"] == "pm"][0]
+    assert pm["name"] == "Jacob Sirotkin" and pm["via"]["method"] == "email-link"
+    # final even though SharePoint is not connected here; only the save is held, with the reason
     assert v["stage"] == "approved" and v["released"] is None and "SharePoint is not connected" in v["release_blocked"]["reason"], v
 
     # sign out clears the identity

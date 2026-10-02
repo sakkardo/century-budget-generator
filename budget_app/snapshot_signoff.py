@@ -4,11 +4,12 @@ Pure logic, no Flask or DB, so the rules can be tested alone. The DB layer (a la
 stores one SnapshotVersion row per generated/edited snapshot and one SnapshotSignoff row per
 signature, and calls these functions to decide what is allowed.
 
-Rules (Jacob, 2026-10-01)
+Rules (Jacob, 2026-10-01; order reversed 2026-10-02)
 - Required signers are the building's FA and PM (building_assignments, synced from Monday).
   They must be two different people: one person holding both roles cannot satisfy both.
-- The PM signs first. The FA signs last, and the FA's approval releases the snapshot to the
-  building's SharePoint folder.
+- The FA confirms first (in the portal, which emails the PM). The PM confirms last, from the
+  email, and the PM's approval makes the snapshot final and saves it to the building's
+  SharePoint month folder.
 - A signature is tied to the content hash of one exact version. Any change to the figures,
   commentary or board note makes a new version with a new hash, and old signatures stop counting.
 - Approve may carry a note. Request-changes must carry a note.
@@ -16,8 +17,8 @@ Rules (Jacob, 2026-10-01)
   leaves the app.
 - Failed blocking checks stop the snapshot from going to sign-off. Failed review checks need
   an acknowledgement note from the FA before it goes to sign-off.
-- Release needs: both roles signed on the current hash by two people, no open blocking checks.
-  It fires when the FA approval is recorded; the generator never releases anything on its own.
+- Saving needs: both roles signed on the current hash by two people, no open blocking checks.
+  It fires when the PM approval is recorded; the generator never saves anything on its own.
 """
 import hashlib
 import json
@@ -73,7 +74,7 @@ def can_sign(user_id, assignments):
 def record_signature(signoffs, user_id, assignments, role, decision, note, version_hash):
     """Return the new signoff entry or raise ValueError. decision: 'approve' | 'request_changes'.
 
-    The PM signs first. The FA signs last, and the FA's approval is the release signature.
+    The FA confirms first. The PM confirms last, and the PM's approval makes it final.
     """
     if role not in can_sign(user_id, assignments):
         raise ValueError("Only the building's %s can sign as %s." % (role.upper(), role.upper()))
@@ -81,11 +82,11 @@ def record_signature(signoffs, user_id, assignments, role, decision, note, versi
         raise ValueError("Decision must be approve or request_changes.")
     if decision == "request_changes" and not (note or "").strip():
         raise ValueError("Add a note saying what needs to change.")
-    if role == "fa" and decision == "approve":
-        pm_ok = any(s["role"] == "pm" and s["decision"] == "approve" and s["version_hash"] == version_hash
+    if role == "pm":
+        fa_ok = any(s["role"] == "fa" and s["decision"] == "approve" and s["version_hash"] == version_hash
                     for s in signoffs)
-        if not pm_ok:
-            raise ValueError("The PM signs first. The FA approval releases it to the client folder.")
+        if not fa_ok:
+            raise ValueError("The FA confirms this version first.")
     return {"user_id": user_id, "role": role, "decision": decision, "note": (note or "").strip(),
             "version_hash": version_hash}
 

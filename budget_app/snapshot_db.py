@@ -24,10 +24,11 @@ from sqlalchemy.exc import IntegrityError
 
 try:
     import snapshot_auth
+    import snapshot_mail
     import snapshot_routes
     import snapshot_service
 except ImportError:
-    from budget_app import snapshot_auth, snapshot_routes, snapshot_service
+    from budget_app import snapshot_auth, snapshot_mail, snapshot_routes, snapshot_service
 
 
 def _env_on(name):
@@ -91,9 +92,9 @@ def month_folder_like(siblings, month, year):
 
 
 class SharePointReleaser:
-    """Copy the approved PDF into the central snapshots folder and the building's own month folder.
-    Never overwrites, and stops if a snapshot for that month is already there (e.g. the vendor's).
-    Dry run (reads folders, writes nothing) unless enabled.
+    """Save the final PDF into the building's own Monthly Financials month folder. Never overwrites.
+    Dry run (reads folders, writes nothing) unless SNAPSHOT_RELEASE_ENABLED=1. SNAPSHOT_RELEASE_ROOT writes
+    under a sandbox folder for testing.
 
     Building layouts (2026-10-02 survey of 125): <bldg>/Monthly Financials/<yyyy>/<month> (most),
     <bldg>/<yyyy>/<month> (206 and 17 others), month folders straight under the building (939, 944),
@@ -164,29 +165,20 @@ class SharePointReleaser:
         return month_folder_like(months or prior, month, year), True
 
     def plan(self, name, entity, year, month):
-        """Where the PDF goes, plus anything that blocks the copy. Read-only."""
+        """Where the PDF goes (the building's month folder only, Jacob 2026-10-02). Read-only.
+        Existing files, vendor snapshots included, stay as they are; only an identical name stops the save."""
         bfolder = self._building_folder(entity)
         mdir, months, prior = self._month_dir(bfolder, year)
         mf, new_folder = self._month_folder(mdir, months, prior, year, month)
-        central_dir = "%s/%d/%02d-%d" % (self.CENTRAL, year, month, year)
-        bldg_dir = "%s/%s" % (mdir, mf)
-        blockers = []
-        # a snapshot already in the building's month folder (the vendor's names vary, so any 'snapshot' PDF counts)
-        for c in ([] if new_folder else self._children(bldg_dir)):
-            if not c.get("folder") and "snapshot" in c["name"].lower():
-                blockers.append("%s/%s" % (bldg_dir, c["name"]))
-        # in the central folder, only files that carry this building's number count (never match on a name word)
-        for c in self._children(central_dir):
-            if not c.get("folder") and re.match(r"^\s*%s\s*-" % re.escape(entity), c["name"]):
-                blockers.append("%s/%s" % (central_dir, c["name"]))
-        return {"targets": ["%s/%s" % (central_dir, name), "%s/%s" % (bldg_dir, name)],
-                "new_month_folder": bldg_dir if new_folder else None, "blockers": blockers}
+        target = "%s/%s/%s" % (mdir, mf, name)
+        root = (os.environ.get("SNAPSHOT_RELEASE_ROOT") or "").strip().strip("/")
+        if root:  # testing: same path, written under a sandbox folder instead of the real building folder
+            target = "%s/%s" % (root, target)
+        return {"targets": [target], "new_month_folder": "%s/%s" % (mdir, mf) if new_folder else None,
+                "blockers": [], "sandbox": root or None}
 
     def release(self, pdf, name, entity, client, year, month):
         plan = self.plan(name, entity, year, month)
-        if plan["blockers"]:
-            raise ValueError("A snapshot for this month is already in SharePoint: %s. Nothing was copied. "
-                             "Ask Jacob before replacing a vendor snapshot." % "; ".join(plan["blockers"]))
         for t in plan["targets"]:
             if self.graph.exists(t):
                 raise ValueError("A file with this name already exists at %s. Nothing was overwritten." % t)
@@ -242,7 +234,8 @@ class AppGraph:
             raise RuntimeError("Graph %s on PUT %s" % (e.code, path))
 
 
-def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None, identity_fn=None, msal_factory=None):
+def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None, identity_fn=None, msal_factory=None,
+                              token_fn=None, transport=None):
     """buildings_fn() -> [{"entity_code","building_name"}]; graph: see SharePointReleaser;
     identity_fn() -> user id or None (defaults to the signed century_fa_id cookie)."""
 
@@ -337,6 +330,16 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
             u = db.session.get(workflow_models["User"], uid)
             return u.name if u else "Unknown"
 
+        def email(self, uid):
+            u = db.session.get(workflow_models["User"], uid)
+            if not u or "," in (u.name or ""):
+                return None  # a shared record for two people has no one person's mailbox
+            return (u.email or "").strip() or None
+
+        def entities_for(self, uid):
+            BA = workflow_models["BuildingAssignment"]
+            return sorted({a.entity_code for a in db.session.query(BA).filter(BA.user_id == uid).all()})
+
         def users(self):
             return []
 
@@ -361,7 +364,9 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
     store = DbStore()
     directory = DbDirectory()
     releaser = SharePointReleaser(graph) if graph else _NoGraph()
-    service = snapshot_service.Service(store, releaser, directory)
+    if transport is None and token_fn is not None:
+        transport = snapshot_mail.GraphTransport(token_fn)
+    service = snapshot_service.Service(store, releaser, directory, mailer=snapshot_mail.Mailer(transport))
     def find_user_by_email(email):
         User = workflow_models["User"]
         u = db.session.query(User).filter(db.func.lower(User.email) == email.lower()).first()
@@ -377,7 +382,8 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
         return strong or _env_on("SNAPSHOT_ALLOW_PICKER_SIGNING")
 
     bp = snapshot_routes.create_blueprint(service, identity=identity, dev=False, signing_allowed=signing_allowed,
-                                          identity_detail=detail, signin_url="/auth/snapshot/login" if auth_bp else None)
+                                          identity_detail=detail, signin_url="/auth/snapshot/login" if auth_bp else None,
+                                          admin_key=lambda: os.environ.get("ADMIN_KEY", ""))
     if auth_bp is not None:
         bp.register_blueprint(auth_bp)
     return bp, {"SnapshotRecord": SnapshotRecord}, {"service": service, "store": store, "directory": directory}
@@ -387,4 +393,4 @@ class _NoGraph:
     dry_run = True
 
     def release(self, *a, **k):
-        raise ValueError("SharePoint is not connected, so nothing can be released.")
+        raise ValueError("SharePoint is not connected, so nothing can be saved.")

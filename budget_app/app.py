@@ -613,7 +613,8 @@ try:
     snap_bp, snap_models, snap_helpers = create_snapshot_blueprint(
         db, workflow_models, buildings_fn=lambda: load_buildings(),
         graph=AppGraph(lambda *a, **k: _graph_get(*a, **k), lambda: _graph_get_drive_id(),
-                       lambda: _get_graph_token()))
+                       lambda: _get_graph_token()),
+        token_fn=lambda: _get_graph_token())  # PM emails; still OFF until SNAPSHOT_EMAIL_MODE is set
     app.register_blueprint(snap_bp)
 except Exception as _e:
     logger.warning("Snapshot blueprint not registered: %s", _e)

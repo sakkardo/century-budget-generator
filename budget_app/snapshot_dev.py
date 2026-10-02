@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from flask import Flask, redirect
 
+import snapshot_mail
 import snapshot_routes
 import snapshot_service
 
@@ -18,9 +19,11 @@ def make_app(root=ROOT):
     root = os.path.abspath(root)
     store = snapshot_service.Store(os.path.join(root, "store.json"))
     service = snapshot_service.Service(store, snapshot_service.LocalReleaser(os.path.join(root, "sharepoint_test_copy")),
-                                       snapshot_service.StaticDirectory())
+                                       snapshot_service.StaticDirectory(),
+                                       mailer=snapshot_mail.Mailer(snapshot_mail.LocalTransport(), mode="live"))
     app = Flask(__name__)
     app.register_blueprint(snapshot_routes.create_blueprint(service))
+    app.snapshot_service = service  # tests read the outbox and drive the timer through this
     app.add_url_rule("/", "home", lambda: redirect("/snapshots"))
     return app
 
