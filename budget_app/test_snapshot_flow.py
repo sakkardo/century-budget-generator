@@ -42,9 +42,11 @@ def run():
     r = post("/api/snapshots/%s/send?as=2" % rid)
     assert r.status_code == 400 and "Confirm or edit every note" in r.json["error"], r.json
     notes = v["commentary"]
-    ph = [i for i, c in enumerate(notes) if "[" in c["text"]][0]
-    # a note with a [placeholder] cannot be confirmed as-is, and the PM cannot confirm notes
-    r = post("/api/snapshots/%s/note?as=2" % rid, {"index": ph})
+    # drafts never carry "[... to be confirmed ...]" placeholders (Jacob, 2026-10-02)
+    assert not any("[" in n["text"] or "confirm" in n["text"].lower() for n in notes), [n["text"] for n in notes]
+    ph = 2  # a note the FA rewrites below
+    # bracketed text typed by the FA still cannot reach the board, and the PM cannot confirm notes
+    r = post("/api/snapshots/%s/note?as=2" % rid, {"index": ph, "text": "Gas ran high [check with super]."})
     assert r.status_code == 400 and "placeholder" in r.json["error"], r.json
     assert post("/api/snapshots/%s/note?as=8" % rid, {"index": 0}).status_code == 400
     # confirming unchanged text keeps the version; editing makes a new one

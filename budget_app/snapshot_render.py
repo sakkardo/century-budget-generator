@@ -91,15 +91,14 @@ def draft_commentary(s):
         items = ", ".join("%s (%s)" % (i["name"], money(i["ytd_var"])) for i in c["worst_items"][:3])
         m = "Over budget by %s in %s. " % (money(abs(c["month_var"])), MONTH_NAMES[s["meta"]["month"] - 1]) if c["month_var"] < 0 else ""
         out.append({"title": "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"]))),
-                    "text": (m + ("Largest lines: %s. " % items if items else "")) +
-                            "[Cause to be confirmed by the FA.]", "draft": True})
+                    "text": (m + ("Largest lines: %s." % items if items else "")).strip(), "draft": True})
     for c in unposted:
         out.append({"title": "%s, nothing recorded year to date against a %s budget" % (c["name"], money(c["ytd_budget"])),
-                    "text": "[FA to confirm whether this is unposted or a true saving.]", "draft": True})
+                    "text": "No expense has been recorded on this line so far this year.", "draft": True})
     if under:
         u = under[0]
         out.append({"title": "Largest saving: %s, %s under budget" % (u["name"], money(u["ytd_var"])),
-                    "text": "This is %.0f%% of its year-to-date budget. [FA to confirm whether this is timing or a lasting saving.]" % (
+                    "text": "This is %.0f%% of its year-to-date budget." % (
                         100.0 * u["ytd_var"] / u["ytd_budget"] if u["ytd_budget"] else 0), "draft": True})
     return out
 
