@@ -181,6 +181,33 @@ def run():
         pass
     r = c3.post("/api/snapshots/204-2026-08/sign", json={"role": "pm", "decision": "approve"})
     assert r.status_code == 403 and "switched off" in r.json["error"], (r.status_code, r.json)
+    # pilot case: the vendor's snapshot is already in the month folder. The FA's approval must STAND,
+    # the copy is held with the reason shown, and nothing is written; once cleared, a retry releases it.
+    from test_snapshot_release import Tree
+    vendor = "204 - 444 East 86th Street Owners Corp/Monthly Financials/2026/08 - August/444 East 86th Monthly FInancial Snapshot August 2026.pdf"
+    tree = Tree(["01 - Accounting General/Monthly Financial Snapshots/2026/08-2026"], files=[vendor])
+    os.environ["SNAPSHOT_RELEASE_ENABLED"] = "1"
+    who4 = {"id": 2}
+    app4 = build(tree, who4)
+    del os.environ["SNAPSHOT_RELEASE_ENABLED"]
+    c4 = app4.test_client()
+    rid4 = c4.post("/api/snapshots/generate", data={"entity": "204", "file": (io.BytesIO(pdf204), "s.pdf")}).json["id"]
+    confirm_all(lambda u: c4.get(u).json, lambda u, b: c4.post(u, json=b), rid4)
+    assert c4.post("/api/snapshots/%s/send" % rid4, json={}).status_code == 200
+    who4["id"] = 8
+    assert c4.post("/api/snapshots/%s/sign" % rid4, json={"role": "pm", "decision": "approve"}).status_code == 200
+    who4["id"] = 2
+    r = c4.post("/api/snapshots/%s/sign" % rid4, json={"role": "fa", "decision": "approve"})
+    assert r.status_code == 200, r.json
+    v = c4.get("/api/snapshots/%s" % rid4).json
+    assert v["stage"] == "approved" and v["released"] is None and "already in SharePoint" in v["release_blocked"]["reason"], v["release_blocked"]
+    assert tree.writes == [] and v["can"]["release"] is True
+    r = c4.post("/api/snapshots/%s/release" % rid4, json={})
+    assert r.status_code == 400 and "already in SharePoint" in r.json["error"]  # retry reports the hold
+    del tree.files[vendor]  # the vendor file is dealt with
+    assert c4.post("/api/snapshots/%s/release" % rid4, json={}).status_code == 200
+    v = c4.get("/api/snapshots/%s" % rid4).json
+    assert v["stage"] == "released" and len(tree.writes) == 2 and v["release_blocked"] is None, (v["stage"], tree.writes)
     print("snapshot db: all tests passed")
 
 

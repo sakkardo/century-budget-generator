@@ -16,6 +16,7 @@ SNAPSHOT_ALLOW_PICKER_SIGNING=1 (pilot, trusted team only) or a stronger identit
 """
 import json
 import os
+import re
 import threading
 from datetime import datetime
 
@@ -33,9 +34,72 @@ def _env_on(name):
     return (os.environ.get(name) or "").strip() in ("1", "true", "yes")
 
 
+MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august",
+               "september", "october", "november", "december"]
+
+
+def month_of_folder(name):
+    """Month (1-12) a Monthly Financials folder stands for, or None.
+
+    Real spellings across the library (2026-10-02 survey of 125 buildings): '08 - August', '08.2026',
+    '08-August 2026', '08-2026', '8-2026', 'May', '08 August 2026', '04 - Apri' (typo), '8 -2026'.
+    A leading 1-2 digit number wins; otherwise a month name (3+ letters) anywhere in the name.
+    Four-digit years are never read as months. 'Prior Management' and the like return None.
+    """
+    by_name = None
+    for word in re.findall(r"[A-Za-z]{3,}", name):
+        w = word.lower()
+        for i, full in enumerate(MONTH_NAMES):
+            if full.startswith(w):  # 'Apri', 'Sept', 'August'; not 'Mayor'
+                by_name = i + 1
+                break
+        if by_name:
+            break
+    if by_name:
+        return by_name  # a written month beats a typo'd number ('01-February 2026' is February)
+    m = re.match(r"^\s*(\d{1,2})(?!\d)", name)
+    if m and 1 <= int(m.group(1)) <= 12:
+        return int(m.group(1))
+    return None
+
+
+def folder_year(name):
+    m = re.search(r"(?<!\d)((?:19|20)\d\d)(?!\d)", name)
+    return int(m.group(1)) if m else None
+
+
+def month_folder_like(siblings, month, year):
+    """Name a new month folder in the same style as the building's existing ones."""
+    def consistent(n):  # a sibling whose leading number agrees with its month (skip typos like '01-February')
+        lead = re.match(r"^\s*(\d{1,2})(?!\d)", n)
+        return not lead or int(lead.group(1)) == month_of_folder(n)
+    # prefer a consistent sibling from Jan-Sep: only a one-digit month shows whether the building zero-pads
+    for sib in sorted(siblings, key=lambda n: (not consistent(n), (month_of_folder(n) or 0) >= 10)):
+        m0 = month_of_folder(sib)
+        if not m0:
+            continue
+        out = sib
+        full0 = MONTH_NAMES[m0 - 1]
+        full = MONTH_NAMES[month - 1].capitalize()
+        pad = m0 >= 10 or bool(re.match(r"^\s*0\d", sib))  # '12 - December' alone: assume zero-padded
+        out = re.sub(r"^(\s*)\d{1,2}(?!\d)", lambda g: g.group(1) + ("%02d" % month if pad else str(month)), out)
+        out = re.sub(full0[:3] + r"[a-z]*", full, out, flags=re.I)
+        out = re.sub(r"(19|20)\d\d", str(year), out)
+        if month_of_folder(out) == month:
+            return out
+    return "%02d - %s" % (month, MONTH_NAMES[month - 1].capitalize())
+
+
 class SharePointReleaser:
-    """Copy the approved PDF into the central snapshots folder and the building's own
-    Monthly Financials month folder. Never overwrites. Dry run (writes nothing) unless enabled."""
+    """Copy the approved PDF into the central snapshots folder and the building's own month folder.
+    Never overwrites, and stops if a snapshot for that month is already there (e.g. the vendor's).
+    Dry run (reads folders, writes nothing) unless enabled.
+
+    Building layouts (2026-10-02 survey of 125): <bldg>/Monthly Financials/<yyyy>/<month> (most),
+    <bldg>/<yyyy>/<month> (206 and 17 others), month folders straight under the building (939, 944),
+    and statement folders spelled 'Monthly financials' / 'Monthly FInancials' / 'Monthly Financial Reports'
+    / 'Monthly Financial Statements'. A building with none of these is refused with a clear message.
+    """
 
     CENTRAL = "01 - Accounting General/Monthly Financial Snapshots"
 
@@ -49,36 +113,88 @@ class SharePointReleaser:
     def dry_run(self):
         return not self.enabled
 
+    def _children(self, path):
+        try:
+            return self.graph.list_children(path)
+        except RuntimeError as e:
+            if "404" in str(e):
+                return []
+            raise
+
     def _building_folder(self, entity):
-        for c in self.graph.list_children(""):
+        for c in self._children(""):
             if c.get("folder") and c["name"].startswith(entity + " - "):
                 return c["name"]
         raise ValueError("No SharePoint folder found for building %s." % entity)
 
-    def _month_folder(self, base, year, month):
-        """Month folder names vary by building ('08 - August', '08.2026'); match on the month number."""
-        names = [c["name"] for c in self.graph.list_children(base) if c.get("folder")]
-        for n in names:
-            digits = "".join(ch if ch.isdigit() else " " for ch in n).split()
-            if digits and int(digits[0]) == month:
-                return n
-        return "%02d - %s" % (month, snapshot_service.MONTHS[month - 1])
+    def _month_dir(self, bfolder, year):
+        """(folder that holds this year's month folders, [month folder names], prior-year names for styling)."""
+        kids = [c["name"] for c in self._children(bfolder) if c.get("folder")]
+        containers = [bfolder + "/" + n for n in kids if re.match(r"^\s*monthly\s+financial", n, re.I)] + [bfolder]
+        for cont in containers:
+            sub_kids = [c["name"] for c in self._children(cont) if c.get("folder")] if cont != bfolder else kids
+            if str(year) in sub_kids:
+                ydir = "%s/%d" % (cont, year)
+                months = [c["name"] for c in self._children(ydir) if c.get("folder")]
+                prior = [c["name"] for c in self._children("%s/%d" % (cont, year - 1)) if c.get("folder")] if str(year - 1) in sub_kids else []
+                return ydir, months, prior
+            direct = [n for n in sub_kids if month_of_folder(n) and folder_year(n) == year]
+            if direct:  # month folders sit right here, each carrying its year ('08-2026')
+                prior = [n for n in sub_kids if month_of_folder(n) and folder_year(n) == year - 1]
+                return cont, direct, prior
+        for cont in containers[:-1]:  # a statement folder exists but this year has not started yet
+            sub_kids = [c["name"] for c in self._children(cont) if c.get("folder")]
+            if any(re.match(r"^(19|20)\d\d$", n) for n in sub_kids):
+                prior = [c["name"] for c in self._children("%s/%d" % (cont, year - 1)) if c.get("folder")] if str(year - 1) in sub_kids else []
+                return "%s/%d" % (cont, year), [], prior
+        raise ValueError("Building folder \"%s\" has no Monthly Financials, year or month folders, "
+                         "so there is no place to put the snapshot. Nothing was copied." % bfolder)
+
+    def _month_folder(self, mdir, months, prior, year, month):
+        hits = [n for n in months if month_of_folder(n) == month]
+        if len(hits) > 1:
+            # duplicates exist in the real library ('03 - March' and '03-March'): use the one already in use
+            used = [n for n in hits if any(not c.get("folder") for c in self._children("%s/%s" % (mdir, n)))]
+            if len(used) == 1:
+                return used[0], False
+            raise ValueError("More than one folder for %s %d in %s: %s. Nothing was copied." % (
+                MONTH_NAMES[month - 1].capitalize(), year, mdir, ", ".join(hits)))
+        if hits:
+            return hits[0], False
+        return month_folder_like(months or prior, month, year), True
+
+    def plan(self, name, entity, year, month):
+        """Where the PDF goes, plus anything that blocks the copy. Read-only."""
+        bfolder = self._building_folder(entity)
+        mdir, months, prior = self._month_dir(bfolder, year)
+        mf, new_folder = self._month_folder(mdir, months, prior, year, month)
+        central_dir = "%s/%d/%02d-%d" % (self.CENTRAL, year, month, year)
+        bldg_dir = "%s/%s" % (mdir, mf)
+        blockers = []
+        # a snapshot already in the building's month folder (the vendor's names vary, so any 'snapshot' PDF counts)
+        for c in ([] if new_folder else self._children(bldg_dir)):
+            if not c.get("folder") and "snapshot" in c["name"].lower():
+                blockers.append("%s/%s" % (bldg_dir, c["name"]))
+        # in the central folder, only files that carry this building's number count (never match on a name word)
+        for c in self._children(central_dir):
+            if not c.get("folder") and re.match(r"^\s*%s\s*-" % re.escape(entity), c["name"]):
+                blockers.append("%s/%s" % (central_dir, c["name"]))
+        return {"targets": ["%s/%s" % (central_dir, name), "%s/%s" % (bldg_dir, name)],
+                "new_month_folder": bldg_dir if new_folder else None, "blockers": blockers}
 
     def release(self, pdf, name, entity, client, year, month):
-        bfolder = self._building_folder(entity)
-        mf = self._month_folder("%s/Monthly Financials/%d" % (bfolder, year), year, month)
-        targets = [
-            "%s/%d/%02d-%d/%s" % (self.CENTRAL, year, month, year, name),
-            "%s/Monthly Financials/%d/%s/%s" % (bfolder, year, mf, name),
-        ]
-        for t in targets:
+        plan = self.plan(name, entity, year, month)
+        if plan["blockers"]:
+            raise ValueError("A snapshot for this month is already in SharePoint: %s. Nothing was copied. "
+                             "Ask Jacob before replacing a vendor snapshot." % "; ".join(plan["blockers"]))
+        for t in plan["targets"]:
             if self.graph.exists(t):
                 raise ValueError("A file with this name already exists at %s. Nothing was overwritten." % t)
         if self.dry_run:
-            return targets
-        for t in targets:
-            self.graph.put_new(t, pdf)
-        return targets
+            return plan["targets"]
+        for t in plan["targets"]:
+            self.graph.put_new(t, pdf)  # Graph creates a missing month folder on upload
+        return plan["targets"]
 
 
 class AppGraph:

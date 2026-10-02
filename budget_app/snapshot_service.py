@@ -371,9 +371,14 @@ class Service:
         pdf = self.render(rec)
         try:
             files = self.releaser.release(pdf, name, rec["entity"], rec["client"], rec["year"], rec["month"])
-        except Exception:
+        except Exception as e:
+            # the approval stands; only the copy is held (vendor snapshot already there, SharePoint down, ...)
             rec["released"] = None
-            raise
+            reason = str(e) if isinstance(e, ValueError) else "SharePoint could not be reached (%s). Nothing was copied." % e
+            rec["release_blocked"] = {"at": now_s(), "reason": reason}
+            rec["log"].append({"at": now_s(), "who": "System", "what": "Approved, but the copy to SharePoint is on hold: " + reason})
+            return reason
+        rec.pop("release_blocked", None)
         if getattr(self.releaser, "dry_run", False):
             # release is switched off: remember where it WOULD go, but do not lock the snapshot as released
             rec["released"] = None
@@ -397,8 +402,10 @@ class Service:
                 raise ValueError(" ".join(why))
             if getattr(self.releaser, "dry_run", False):
                 raise ValueError("Release to SharePoint is switched off.")
+            reason = self._release(rec)
+            if reason:  # an explicit retry reports the hold straight back to the person who clicked
+                raise ValueError(reason)
             rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "Released after approval"})
-            self._release(rec)
         self._mutate(rid, fn)
 
     # ------------------------------------------------------------- views
@@ -438,7 +445,7 @@ class Service:
         return {
             "id": rec["id"], "entity": rec["entity"], "client": rec["client"], "building": s["meta"]["building"],
             "month": rec["month"], "year": rec["year"], "stage": stage, "version": v["n"], "sent": rec["sent"],
-            "released": rec["released"], "rehearsal": rec.get("rehearsal"),
+            "released": rec["released"], "rehearsal": rec.get("rehearsal"), "release_blocked": rec.get("release_blocked"),
             "release_off": bool(getattr(self.releaser, "dry_run", False)), "state": st["state"], "waiting_on": st["waiting_on"],
             "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"], "commentary": v["commentary"],
             "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,

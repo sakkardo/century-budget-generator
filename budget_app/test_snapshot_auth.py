@@ -125,9 +125,11 @@ def run():
     assert pm["via"]["email"] == "jsirotkin@centuryny.com" and pm["name"] == "Jacob Sirotkin"
 
     # Kristy signs as FA: approved; release has no SharePoint here, so it refuses cleanly and nothing is half-done
+    # the approval stands even though SharePoint is not connected here; only the copy is held, with the reason
     r = c.post("/api/snapshots/%s/sign" % rid, json={"role": "fa", "decision": "approve"})
-    assert r.status_code == 400 and "SharePoint is not connected" in r.json["error"], r.json
-    assert c.get("/api/snapshots/" + rid).json["stage"] == "in_signoff"
+    assert r.status_code == 200, r.json
+    v = c.get("/api/snapshots/" + rid).json
+    assert v["stage"] == "approved" and v["released"] is None and "SharePoint is not connected" in v["release_blocked"]["reason"], v
 
     # sign out clears the identity
     c.get("/auth/snapshot/logout")

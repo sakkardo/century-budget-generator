@@ -366,7 +366,11 @@ function signHtml(v) {
     return h + '<div class="msg okk" style="margin-top:14px"><b>Released.</b> Copied to:<div class="paths">' + v.released.files.map(esc).join("<br>") + "</div></div>";
   }
   if (v.stage === "approved") {
-    if (v.can.release) { return h + '<div class="decide"><button id="release" class="btn primary">Release to SharePoint</button></div>'; }
+    if (v.release_blocked) {
+      h += '<div class="msg" style="margin-top:14px"><b>Approved by both. The copy to SharePoint is on hold.</b><div class="paths">' + esc(v.release_blocked.reason) + "</div></div>";
+    }
+    if (v.can.release) { return h + '<div class="decide"><button id="release" class="btn primary">' + (v.release_blocked ? "Try release again" : "Release to SharePoint") + "</button></div>"; }
+    if (v.release_blocked) { return h; }
     if (v.release_off) {
       return h + '<div class="msg info" style="margin-top:14px"><b>Approved by both.</b> Release to SharePoint is switched off, so nothing was copied yet.' +
         (v.rehearsal ? '<div class="paths">It will go to:<br>' + v.rehearsal.files.map(esc).join("<br>") + "</div>" : "") + "</div>";
