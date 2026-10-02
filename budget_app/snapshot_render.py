@@ -4,6 +4,7 @@ render_pdf(snapshot, commentary, board_note, signoff) -> PDF bytes. Pure reportl
 """
 import io
 import os
+from xml.sax.saxutils import escape as xesc
 
 from reportlab.graphics.charts.lineplots import LinePlot
 from reportlab.graphics.shapes import Drawing, Rect, String
@@ -152,7 +153,8 @@ def _capital_chart(items, width):
 
 
 # ---------------------------------------------------------------- pdf
-def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DRAFT"):
+def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DRAFT", reviewed=None):
+    """reviewed: {"by", "at"} once the FA has confirmed every note; printed under the notes."""
     buf = io.BytesIO()
     W, H = letter
     m = s["meta"]
@@ -204,7 +206,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
 
     overall = next((c["text"] for c in commentary if c["title"] == "Overall"), "")
     if overall:
-        f += [Paragraph(overall, read), Spacer(1, 6)]
+        f += [Paragraph(xesc(overall), read), Spacer(1, 6)]
 
     sec_cash = sum(a["end"] for a in s["cash"]["accounts"] if not is_security_account(a["name"])) if s["cash"]["accounts"] else None
     inc, exp, noi, net = s["income"], s["expenses"], s["noi"], s["net_income"]
@@ -269,9 +271,13 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     for c in commentary:
         if c["title"] == "Overall":
             continue
-        f.append(KeepTogether([Paragraph("<b>%s</b>" % c["title"], body), Paragraph(c["text"], body), Spacer(1, 3)]))
+        f.append(KeepTogether([Paragraph("<b>%s</b>" % xesc(c["title"]), body), Paragraph(xesc(c["text"]), body), Spacer(1, 3)]))
+    if reviewed:
+        f.append(Paragraph("Commentary reviewed and confirmed by %s (Financial Analyst), %s." % (
+            xesc(reviewed["by"]), xesc(reviewed["at"].split(" ")[0] + " " + " ".join(reviewed["at"].split(" ")[1:3]).rstrip(","))), small))
+        f.append(Spacer(1, 6))
     if board_note:
-        f.append(Table([[Paragraph("<b>Note to the board.</b> %s" % board_note, body)]], colWidths=[cw],
+        f.append(Table([[Paragraph("<b>Note to the board.</b> %s" % xesc(board_note), body)]], colWidths=[cw],
                        style=[("BACKGROUND", (0, 0), (-1, -1), SOFT), ("BOX", (0, 0), (-1, -1), 0.5, RED), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
 
     f.append(PageBreak())

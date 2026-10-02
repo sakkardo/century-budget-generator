@@ -106,6 +106,11 @@ def _eastern_now():
         return datetime.now(timezone.utc), " UTC"
 
 
+def iso_now():
+    from datetime import timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 def now_s():
     t, suffix = _eastern_now()
     return t.strftime("%b %d, %Y %I:%M %p").replace(" 0", " ") + suffix
@@ -196,8 +201,12 @@ class Service:
         stg = self.stage(rec)
         label = {"released": "APPROVED", "approved": "APPROVED", "in_signoff": "IN REVIEW",
                  "changes_requested": "CHANGES REQUESTED"}.get(stg, "DRAFT")
-        return snapshot_render.render_pdf(v["snapshot"], v["commentary"], v["board_note"],
-                                          signoff=self._signoff_block(rec), status_label=label)
+        notes = v["commentary"]
+        reviewed = None
+        if notes and all(c.get("confirmed") for c in notes):
+            reviewed = max((c["confirmed"] for c in notes), key=lambda st: st.get("iso", ""))  # latest confirmation
+        return snapshot_render.render_pdf(v["snapshot"], notes, v["board_note"],
+                                          signoff=self._signoff_block(rec), status_label=label, reviewed=reviewed)
 
     # ------------------------------------------------------------- actions
     def generate(self, entity, pdf_bytes, user_id, source):
@@ -254,7 +263,7 @@ class Service:
                         raise ValueError("A note cannot be empty.")
                     if PLACEHOLDER.search(text):
                         raise ValueError("Replace the [bracketed] placeholder in \"%s\" before saving." % old.get("title"))
-                    n.update({"text": text, "confirmed": {"by": self._name(user_id), "at": now_s()}, "draft": False})
+                    n.update({"text": text, "confirmed": {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}, "draft": False})
                 notes.append(n)
             if [n["text"] for n in notes] == [o["text"] for o in cur["commentary"]] and board_note == cur["board_note"]:
                 return
@@ -284,7 +293,7 @@ class Service:
                 raise ValueError("A note cannot be empty.")
             if PLACEHOLDER.search(new_text):
                 raise ValueError("Replace the [bracketed] placeholder with the real cause before confirming.")
-            stamp = {"by": self._name(user_id), "at": now_s()}
+            stamp = {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}
             if new_text == note["text"]:
                 note["confirmed"], note["draft"] = stamp, False
                 rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": 'Confirmed note "%s"' % note["title"]})
