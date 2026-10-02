@@ -96,8 +96,19 @@ def unconfirmed(commentary):
     return [i for i, c in enumerate(commentary) if not c.get("confirmed")]
 
 
+def _eastern_now():
+    """Wall-clock time in New York (Railway runs in UTC). Falls back to UTC, labelled, if tz data is missing."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")), ""
+    except Exception:
+        from datetime import timezone
+        return datetime.now(timezone.utc), " UTC"
+
+
 def now_s():
-    return datetime.now().strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")
+    t, suffix = _eastern_now()
+    return t.strftime("%b %d, %Y %I:%M %p").replace(" 0", " ") + suffix
 
 
 class Store:

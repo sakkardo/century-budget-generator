@@ -1,6 +1,7 @@
 """Test the database-backed snapshot blueprint (SQLite in memory, fake SharePoint).
 Run: python budget_app/test_snapshot_db.py
 """
+import io
 import os
 import sys
 
@@ -98,7 +99,11 @@ def run():
 
     # sample statements are click-through only
     assert c.post("/api/snapshots/generate", data={"entity": "204", "sample": "x.pdf"}).status_code == 400
-    import io
+    # nobody signed in: generating is refused, and a form field cannot claim to be someone
+    who["id"] = None
+    r = c.post("/api/snapshots/generate", data={"entity": "204", "as": "2", "file": (io.BytesIO(pdf204), "s.pdf")})
+    assert r.status_code == 401, (r.status_code, r.json)
+    who["id"] = 2
     r = c.post("/api/snapshots/generate", data={"entity": "204", "file": (io.BytesIO(pdf204), "s.pdf")})
     assert r.status_code == 200, r.json
     rid = r.json["id"]

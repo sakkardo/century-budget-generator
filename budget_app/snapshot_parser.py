@@ -12,7 +12,9 @@ import fitz  # PyMuPDF
 NUM = r"-?\d[\d,]*"
 _NUM_RE = re.compile(NUM)
 # label, then 8 or more numbers separated by whitespace
-_ROW_RE = re.compile(r"^(?P<label>.*?[A-Za-z\)].*?)\s+(?P<nums>(?:%s\s+){7,}%s)\s*$" % (NUM, NUM))
+# exactly 8 figures per row; the label is everything before them, so a name that ends in a
+# number ("Owners Reserve 2") keeps its number instead of shifting every column by one
+_ROW_RE = re.compile(r"^(?P<label>.*?[A-Za-z\)].*?)\s+(?P<nums>(?:%s\s+){7}%s)\s*$" % (NUM, NUM))
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
@@ -154,8 +156,8 @@ def parse_cash(doc):
         t = _title(page)
         if t.startswith("Cash Journal"):
             for line in _lines(page):
-                m = re.match(r"^(?P<a>.*?[A-Za-z\)])\s+(?P<n>(?:%s\s+){3}%s)$" % (NUM, NUM), line)
-                if m:
+                m = re.match(r"^(?P<a>.*?[A-Za-z\)].*?)\s+(?P<n>(?:%s\s+){3}%s)$" % (NUM, NUM), line)
+                if m and not m.group("a").upper().startswith("CASH ACCOUNT TOTALS"):
                     b, d, c, e = [_n(x) for x in _NUM_RE.findall(m.group("n"))]
                     cash["accounts"].append({"name": m.group("a").strip(), "begin": b, "debit": d, "credit": c, "end": e})
                 m = re.match(r"^CASH ACCOUNT TOTALS:?\s+(%s)\s+(%s)\s+(%s)\s+(%s)$" % ((NUM,) * 4), line)
@@ -346,7 +348,7 @@ def run_checks(s, rows, monthly):
         near("cash_accounts", "Cash accounts add up to the Cash Journal total", "block",
              sum(a["end"] for a in cash["accounts"]), cash["total"]["end"])
         for a in cash["accounts"]:
-            if a["begin"] + a["debit"] + a["credit"] != a["end"]:
+            if abs(a["begin"] + a["debit"] + a["credit"] - a["end"]) > 2:  # whole-dollar rounding
                 ch.append({"id": "cash_roll_" + a["name"], "label": "Cash roll-forward: %s" % a["name"],
                            "severity": "review", "status": "mismatch", "expected": a["end"],
                            "actual": a["begin"] + a["debit"] + a["credit"], "detail": ""})

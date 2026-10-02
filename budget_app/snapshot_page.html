@@ -47,7 +47,9 @@ a { color:var(--ink) }
 
 /* layout */
 main { display:grid; grid-template-columns:300px minmax(0,1fr); gap:var(--gap-lg); padding:24px; max-width:1560px; margin:0 auto }
-@media (max-width:960px) { main { grid-template-columns:1fr; padding:16px } }
+@media (max-width:960px) { main { grid-template-columns:minmax(0,1fr); padding:16px } }
+main > * { min-width:0 }
+select.ctl { max-width:100%; text-overflow:ellipsis }
 .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow) }
 .pad { padding:20px }
 .label { font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--label); margin:0 0 12px }
@@ -321,12 +323,17 @@ function commentaryHtml(v) {
   var editable = v.can.edit;
   var total = v.commentary.length;
   var done = v.commentary.filter(function (c) { return c.confirmed; }).length;
-  var head = editable ? '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' : "";
+  var fa = teamNames(v, "fa") || "the FA";
+  var head = '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' +
+    (editable ? "" : '<p class="muted" style="margin:-6px 0 14px">' + esc(fa) + " (FA) edits or confirms each note. " +
+      (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
   var body = v.commentary.map(function (c, i) {
     var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
     var placeholder = /\[[^\]]+\]/.test(c.text || "");
     if (!editable) {
-      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + "</div><p style=\"margin:0\">" + esc(c.text) + "</p>" + (stamp ? '<div class="foot">' + stamp + "</div>" : "") + "</div>";
+      var wait = '<span class="pill">&#9719; Waiting on ' + esc(fa) + " to confirm</span>";
+      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + "</div><p style=\"margin:0\">" + esc(c.text) + "</p>" +
+        '<div class="foot">' + (stamp || wait) + "</div></div>";
     }
     var tag = c.confirmed ? "" : (c.draft ? '<span class="pill draftnote">Draft &middot; FA to confirm</span>' : '<span class="pill">Not confirmed</span>');
     var hint = !c.confirmed && placeholder ? '<span class="hint">Replace the [bracketed] text with the real cause, then save.</span>' : "";

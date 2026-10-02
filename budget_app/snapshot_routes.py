@@ -74,7 +74,13 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
                 data, source = open(p, "rb").read(), "sample statement " + os.path.basename(sample)
             else:
                 return err("Choose a sample statement or upload the monthly financial statement PDF.")
-            rid = service.generate(entity, data, int(request.form.get("as") or 0), source)
+            if dev:
+                who = int(request.form.get("as") or 0)
+            else:  # production: the signed-in person, never a form field
+                who = uid()
+                if not who:
+                    return err("Sign in with Microsoft first.", 401)
+            rid = service.generate(entity, data, who, source)
             return jsonify({"id": rid})
         except Exception as e:  # parse failures must reach the screen, not a 500 page
             return err(e)
