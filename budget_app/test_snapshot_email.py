@@ -15,7 +15,7 @@ class Fake:
     def __init__(self, fail=False):
         self.sent, self.fail = [], fail
 
-    def send(self, sender, to, cc, subject, body_html, attachments):
+    def send(self, sender, to, cc, subject, body_html, attachments, save_sent=True):
         if self.fail:
             raise RuntimeError("Graph sendMail 403 Forbidden")
         self.sent.append((sender, list(to), list(cc), subject))
@@ -79,6 +79,8 @@ def run():
         assert seen["auth"] == "Bearer tok" and msg["toRecipients"][0]["emailAddress"]["address"] == "pm@centuryny.com"
         assert msg["attachments"][0]["name"] == "a.pdf" and msg["attachments"][0]["contentBytes"] == "JVBERi0x"
         assert msg["body"]["contentType"] == "HTML" and seen["body"]["saveToSentItems"] is True
+        sm.GraphTransport(lambda: "tok").send("fa@centuryny.com", ["x@y"], [], "S", "b", [], save_sent=False)
+        assert seen["body"]["saveToSentItems"] is False
 
         def boom(req, timeout=None):
             raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)

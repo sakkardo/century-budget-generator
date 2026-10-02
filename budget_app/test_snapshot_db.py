@@ -24,7 +24,7 @@ class FakeTransport:
     def __init__(self):
         self.sent = []
 
-    def send(self, sender, to, cc, subject, body_html, attachments):
+    def send(self, sender, to, cc, subject, body_html, attachments, save_sent=True):
         self.sent.append({"sender": sender, "to": list(to), "cc": list(cc or []), "subject": subject, "html": body_html,
                           "attachments": [a["name"] for a in (attachments or [])]})
 

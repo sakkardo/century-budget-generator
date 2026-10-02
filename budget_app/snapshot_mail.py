@@ -24,7 +24,7 @@ class GraphTransport:
     def __init__(self, token_fn, timeout=30):
         self.token_fn, self.timeout = token_fn, timeout
 
-    def send(self, sender, to, cc, subject, body_html, attachments):
+    def send(self, sender, to, cc, subject, body_html, attachments, save_sent=True):
         msg = {
             "subject": subject,
             "body": {"contentType": "HTML", "content": body_html},
@@ -35,7 +35,7 @@ class GraphTransport:
                              "contentBytes": base64.b64encode(a["bytes"]).decode("ascii")} for a in (attachments or [])],
         }
         url = "https://graph.microsoft.com/v1.0/users/%s/sendMail" % urllib.parse.quote(sender)
-        req = urllib.request.Request(url, data=json.dumps({"message": msg, "saveToSentItems": True}).encode("utf-8"),
+        req = urllib.request.Request(url, data=json.dumps({"message": msg, "saveToSentItems": bool(save_sent)}).encode("utf-8"),
                                      method="POST", headers={"Authorization": "Bearer " + self.token_fn(),
                                                              "Content-Type": "application/json"})
         try:
@@ -86,7 +86,8 @@ class Mailer:
                           'would go to: %s</div>' % html.escape(", ".join(out["intended"])))
                 real_to, real_cc, subj, body = [self.test_to], [], "[TEST] " + subject, banner + body_html
             try:
-                self.transport.send(sender, real_to, real_cc, subj, body, attachments)
+                # test emails never leave a copy in the FA's Sent Items; live ones do
+                self.transport.send(sender, real_to, real_cc, subj, body, attachments, save_sent=(mode == "live"))
                 out["status"], out["to"] = ("test" if mode == "test" else "sent"), list(real_to) + list(real_cc)
             except Exception as e:
                 out["status"], out["error"] = "failed", str(e)[:300]
@@ -101,7 +102,7 @@ class Mailer:
 class LocalTransport:
     """Click-through: 'sends' into the mailer's outbox only (viewable at /snapshots/dev/outbox)."""
 
-    def send(self, sender, to, cc, subject, body_html, attachments):
+    def send(self, sender, to, cc, subject, body_html, attachments, save_sent=True):
         return None
 
 
