@@ -168,7 +168,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     h1 = st("h1", fn="Helvetica-Bold", fontSize=19, leading=22, textColor=INK)
     h2 = st("h2", fn="Helvetica-Bold", fontSize=11.5, leading=14, textColor=INK, spaceBefore=12, spaceAfter=5)
     body = st("b", fontSize=9, leading=12.5, textColor=INK)
-    read = st("read", fn="Times-Roman", fontSize=12, leading=15.5, textColor=INK)
+    read = st("read", fn="Helvetica", fontSize=11.5, leading=15.5, textColor=INK)  # one typeface throughout the report
     small = st("s", fontSize=7.5, leading=10, textColor=MUTE)
     cell = st("c", fontSize=8, leading=10, textColor=INK)
     cellr = st("cr", fontSize=8, leading=10, textColor=INK, alignment=2)
