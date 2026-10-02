@@ -9,6 +9,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 
 import snapshot_db
+from test_snapshot_flow import confirm_all
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tasks", "snapshot_samples")
 
@@ -104,6 +105,7 @@ def run():
     assert [s["stage"] for s in c.get("/api/snapshots").json] == ["draft"]
 
     # full sign-off through the database; release is a dry run (nothing written) while disabled
+    confirm_all(lambda u: c.get(u).json, lambda u, b: c.post(u, json=b), rid)
     assert P("/api/snapshots/%s/send" % rid).status_code == 200
     who["id"] = 8
     assert P("/api/snapshots/%s/sign" % rid, {"role": "pm", "decision": "approve"}).status_code == 200
@@ -153,6 +155,7 @@ def run():
             a.user_id = 101
         wm.session.commit()
     who2["id"] = 101
+    confirm_all(lambda u: c2.get(u).json, lambda u, b: c2.post(u, json=b), rid2)
     assert c2.post("/api/snapshots/%s/send" % rid2, json={}).status_code == 200
     who2["id"] = 17
     assert c2.post("/api/snapshots/%s/sign" % rid2, json={"role": "pm", "decision": "approve"}).status_code == 200

@@ -16,6 +16,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 import snapshot_auth
 import snapshot_db
+from test_snapshot_flow import confirm_all
 
 SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tasks", "snapshot_samples")
 
@@ -110,6 +111,7 @@ def run():
 
     pdf = open(os.path.join(SAMPLES, "204_2026-08_statement.pdf"), "rb").read()
     rid = c.post("/api/snapshots/generate", data={"entity": "204", "file": (io.BytesIO(pdf), "s.pdf")}).json["id"]
+    confirm_all(lambda u: c.get(u).json, lambda u, b: c.post(u, json=b), rid)
     assert c.post("/api/snapshots/%s/send" % rid, json={}).status_code == 200
     # Kristy cannot sign as PM
     assert c.post("/api/snapshots/%s/sign" % rid, json={"role": "pm", "decision": "approve"}).status_code == 400

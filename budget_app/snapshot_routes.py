@@ -96,6 +96,11 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         b = request.get_json(force=True)
         return action(lambda: service.acknowledge(rid, uid(), b["check_id"], b.get("note", "")))
 
+    @bp.route("/api/snapshots/<rid>/note", methods=["POST"])
+    def note(rid):
+        b = request.get_json(force=True)
+        return action(lambda: service.confirm_note(rid, uid(), int(b["index"]), b.get("text")))
+
     @bp.route("/api/snapshots/<rid>/send", methods=["POST"])
     def send(rid):
         return action(lambda: service.send(rid, uid()))

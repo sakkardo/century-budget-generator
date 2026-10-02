@@ -159,6 +159,17 @@ details.checks[open] summary .chev::after { content:" (hide)" }
 .com p { margin:0 }
 .edit-foot { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:4px }
 
+.note { border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:12px; display:grid; gap:8px; background:var(--surface) }
+.note.done { border-color:var(--ok-bd); background:#fbfefc }
+.note .ct { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-weight:600; color:var(--ink) }
+.note .foot { display:flex; align-items:center; gap:10px; flex-wrap:wrap }
+.note .foot .btn { min-height:38px; padding:0 14px }
+.note .stamp { font-size:13px; color:var(--ok); font-weight:600 }
+.note .hint { font-size:13px; color:var(--warn) }
+.progress { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--ink-2); margin:-4px 0 14px }
+.progress .barx { flex:1; height:6px; border-radius:99px; background:var(--surface-warm); overflow:hidden; border:1px solid var(--border) }
+.progress .barx i { display:block; height:100%; background:var(--ok) }
+
 /* history */
 details.hist summary { cursor:pointer; font-weight:600; color:var(--ink) }
 .log { display:grid; gap:6px; margin-top:12px; font-size:13px; color:var(--ink-2) }
@@ -308,16 +319,27 @@ function checksHtml(v) {
 
 function commentaryHtml(v) {
   var editable = v.can.edit;
+  var total = v.commentary.length;
+  var done = v.commentary.filter(function (c) { return c.confirmed; }).length;
+  var head = editable ? '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' : "";
   var body = v.commentary.map(function (c, i) {
-    var tag = c.draft ? '<span class="pill draftnote">Draft &middot; FA to confirm</span>' : "";
-    if (!editable) { return '<div class="com"><div class="ct">' + esc(c.title) + tag + "</div><p>" + esc(c.text) + "</p></div>"; }
-    return '<div class="com"><label class="ct" for="ci' + i + '">' + esc(c.title) + tag + '</label><textarea id="ci' + i + '" rows="3" data-ci="' + i + '">' + esc(c.text) + "</textarea></div>";
+    var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
+    var placeholder = /\[[^\]]+\]/.test(c.text || "");
+    if (!editable) {
+      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + "</div><p style=\"margin:0\">" + esc(c.text) + "</p>" + (stamp ? '<div class="foot">' + stamp + "</div>" : "") + "</div>";
+    }
+    var tag = c.confirmed ? "" : (c.draft ? '<span class="pill draftnote">Draft &middot; FA to confirm</span>' : '<span class="pill">Not confirmed</span>');
+    var hint = !c.confirmed && placeholder ? '<span class="hint">Replace the [bracketed] text with the real cause, then save.</span>' : "";
+    return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + tag + "</label>" +
+      '<textarea id="ci' + i + '" rows="3" data-ci="' + i + '" data-orig="' + esc(c.text) + '">' + esc(c.text) + "</textarea>" +
+      '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
+      (c.confirmed ? "&#10003; Confirmed" : "Confirm") + "</button>" + stamp + hint + "</div></div>";
   }).join("");
   var note = editable
-    ? '<div class="com"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea></div>"
+    ? '<div class="note"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">optional, prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" +
+      '<div class="foot"><button id="saveedit" class="btn">Save board note</button><span class="muted">Changing any wording makes a new version and clears signatures.</span></div></div>'
     : (v.board_note ? '<div class="msg info"><b>Note to the board:</b> ' + esc(v.board_note) + "</div>" : "");
-  var btn = editable ? '<div class="edit-foot"><button id="saveedit" class="btn">Save changes</button><span class="muted">Saving makes a new version and clears any signatures.</span></div>' : "";
-  return body + note + btn;
+  return head + body + note;
 }
 
 function signHtml(v) {
@@ -392,9 +414,25 @@ function wire(v) {
   on("appr", decide("approve"));
   on("rej", decide("request_changes"));
   on("saveedit", function () {
-    var com = JSON.parse(JSON.stringify(v.commentary));
-    Array.prototype.forEach.call(document.querySelectorAll("[data-ci]"), function (t) { com[Number(t.getAttribute("data-ci"))].text = t.value; });
-    act("POST", "/api/snapshots/" + v.id + "/edit", { commentary: com, board_note: el("bn").value });
+    // board note only; note wording goes through each note's own button
+    act("POST", "/api/snapshots/" + v.id + "/edit", { commentary: JSON.parse(JSON.stringify(v.commentary)), board_note: el("bn").value });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-ci]"), function (t) {
+    var i = Number(t.getAttribute("data-ci"));
+    var btn = document.querySelector('[data-ni="' + i + '"]');
+    t.oninput = function () {
+      var changed = t.value !== t.getAttribute("data-orig");
+      btn.disabled = false;
+      btn.className = "btn approve";
+      btn.innerHTML = changed ? "Save &amp; confirm" : (v.commentary[i].confirmed ? "&#10003; Confirmed" : "Confirm");
+      if (!changed && v.commentary[i].confirmed) { btn.disabled = true; btn.className = "btn"; }
+      var hint = t.parentNode.querySelector(".hint");
+      if (hint) { hint.style.display = /\[[^\]]+\]/.test(t.value) ? "" : "none"; }
+    };
+    btn.onclick = function () {
+      var changed = t.value !== t.getAttribute("data-orig");
+      act("POST", "/api/snapshots/" + v.id + "/note", changed ? { index: i, text: t.value } : { index: i });
+    };
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-ack]"), function (i) {
     i.onchange = function () { api("POST", "/api/snapshots/" + v.id + "/ack", { check_id: i.getAttribute("data-ack"), note: i.value }).then(function () { return openSnap(state.cur); }).catch(showErr); };

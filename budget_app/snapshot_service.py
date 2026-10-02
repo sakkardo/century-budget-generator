@@ -6,7 +6,9 @@ module wires them to generate / edit / send / sign / release. Swapping the Store
 the release for a SharePoint copy changes nothing in the rules.
 """
 import json
+import copy
 import os
+import re
 import threading
 from datetime import datetime
 
@@ -85,6 +87,13 @@ class LocalReleaser:
                 f.write(pdf)
             out.append(os.path.relpath(path, self.root).replace(os.sep, "/"))
         return out
+
+
+PLACEHOLDER = re.compile(r"\[[^\]]+\]")
+
+
+def unconfirmed(commentary):
+    return [i for i, c in enumerate(commentary) if not c.get("confirmed")]
 
 
 def now_s():
@@ -222,15 +231,61 @@ class Service:
             if user_id not in [a["user_id"] for a in self._team(rec["entity"]) if a["role"] == "fa"]:
                 raise ValueError(self._not_fa(rec, "edit the commentary and board note"))
             cur = self._cur(rec)
-            if commentary == cur["commentary"] and board_note == cur["board_note"]:
+            if len(commentary) != len(cur["commentary"]):
+                raise ValueError("The notes changed since you opened the page. Reload and try again.")
+            notes = []
+            for c, old in zip(commentary, cur["commentary"]):
+                n = copy.deepcopy(old)  # title and confirmation stamps come from the server, never the browser
+                text = (c.get("text") or "").strip()
+                if text != old.get("text"):
+                    # editing a note is the FA confirming it in their own words
+                    if not text:
+                        raise ValueError("A note cannot be empty.")
+                    if PLACEHOLDER.search(text):
+                        raise ValueError("Replace the [bracketed] placeholder in \"%s\" before saving." % old.get("title"))
+                    n.update({"text": text, "confirmed": {"by": self._name(user_id), "at": now_s()}, "draft": False})
+                notes.append(n)
+            if [n["text"] for n in notes] == [o["text"] for o in cur["commentary"]] and board_note == cur["board_note"]:
                 return
             v = dict(cur)
-            v.update({"n": cur["n"] + 1, "commentary": commentary, "board_note": board_note, "by": user_id, "at": now_s()})
+            v.update({"n": cur["n"] + 1, "commentary": notes, "board_note": board_note, "by": user_id, "at": now_s()})
             v["hash"] = self._hash(v)
             rec["versions"].append(v)
             stale = len([s for s in rec["signoffs"] if s["version_hash"] == cur["hash"]])
             rec["log"].append({"at": now_s(), "who": self._name(user_id),
                                "what": "Edited commentary (version %d)%s" % (v["n"], ", %d signature(s) cleared" % stale if stale else "")})
+        self._mutate(rid, fn)
+
+    def confirm_note(self, rid, user_id, index, text=None):
+        """FA confirms one note, as written or with new text. New text makes a new version (and clears
+        signatures, because the board will read different words); confirming unchanged text does not."""
+        def fn(rec):
+            if rec.get("released"):
+                raise ValueError("Released snapshots cannot be edited.")
+            if user_id not in [a["user_id"] for a in self._team(rec["entity"]) if a["role"] == "fa"]:
+                raise ValueError(self._not_fa(rec, "confirm the notes"))
+            cur = self._cur(rec)
+            if not 0 <= index < len(cur["commentary"]):
+                raise ValueError("That note no longer exists. Reload the page.")
+            note = cur["commentary"][index]
+            new_text = note["text"] if text is None else text.strip()
+            if not new_text:
+                raise ValueError("A note cannot be empty.")
+            if PLACEHOLDER.search(new_text):
+                raise ValueError("Replace the [bracketed] placeholder with the real cause before confirming.")
+            stamp = {"by": self._name(user_id), "at": now_s()}
+            if new_text == note["text"]:
+                note["confirmed"], note["draft"] = stamp, False
+                rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": 'Confirmed note "%s"' % note["title"]})
+                return
+            v = copy.deepcopy(cur)
+            v.update({"n": cur["n"] + 1, "by": user_id, "at": now_s()})
+            v["commentary"][index].update({"text": new_text, "confirmed": stamp, "draft": False})
+            v["hash"] = self._hash(v)
+            rec["versions"].append(v)
+            stale = len([s for s in rec["signoffs"] if s["version_hash"] == cur["hash"]])
+            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": 'Edited and confirmed note "%s" (version %d)%s' % (
+                note["title"], v["n"], ", %d signature(s) cleared" % stale if stale else "")})
         self._mutate(rid, fn)
 
     def acknowledge(self, rid, user_id, check_id, note):
@@ -251,7 +306,10 @@ class Service:
                 raise ValueError(" ".join(why))
             st = so.status(rec["signoffs"], self._team(rec["entity"]), v["hash"])
             if st["state"] in ("blocked_no_assignment", "blocked_needs_second_person"):
-                raise ValueError(self._blocked_text(st))
+                raise ValueError(self._blocked_text(st))  # a team problem first: confirming notes cannot fix it
+            left = unconfirmed(v["commentary"])
+            if left:
+                raise ValueError("Confirm or edit every note first (%d of %d still to confirm)." % (len(left), len(v["commentary"])))
             rec["sent"] = True
             rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "Sent to sign-off (version %d)" % v["n"]})
         self._mutate(rid, fn)
@@ -350,7 +408,8 @@ class Service:
         def approved(role):
             return any(x["role"] == role and x["decision"] == "approve" and x["version_hash"] == v["hash"] for x in rec["signoffs"])
         can = {"edit": "fa" in roles and not rec["released"],
-               "send": "fa" in roles and not rec["sent"] and ok and not st["state"].startswith("blocked") and not rec["released"],
+               "send": "fa" in roles and not rec["sent"] and ok and not unconfirmed(v["commentary"])
+                       and not st["state"].startswith("blocked") and not rec["released"],
                "sign_pm": "pm" in roles and rec["sent"] and not rec["released"] and not approved("pm"),
                "sign_fa": "fa" in roles and rec["sent"] and not rec["released"] and approved("pm") and not approved("fa"),
                "release": "fa" in roles and not rec["released"] and approved("pm") and approved("fa")
@@ -358,6 +417,9 @@ class Service:
         why_not = []
         if "fa" in roles and not rec["sent"]:
             why_not = list(why)
+            left = unconfirmed(v["commentary"])
+            if left:
+                why_not.append("Confirm or edit every note below before sending (%d of %d still to confirm)." % (len(left), len(v["commentary"])))
             if st["state"].startswith("blocked"):
                 why_not.append(self._blocked_text(st))
         if "fa" in roles and rec["sent"] and not can["sign_fa"] and not rec["released"]:
