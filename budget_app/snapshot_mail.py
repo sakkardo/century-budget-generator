@@ -150,7 +150,7 @@ def _ongoing(items, resolved):
                        for n, t, s in items)
         out += "</ul>"
     if resolved:
-        out += '<p style="font-size:13px;color:%s;margin:0 0 10px">Back within budget since last month: %s.</p>' % (
+        out += '<p style="font-size:13px;color:%s;margin:0 0 10px">No longer flagged since last month: %s.</p>' % (
             LABEL, html.escape(", ".join(resolved)))
     return out
 

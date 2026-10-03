@@ -193,7 +193,7 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
             notes += '<p class="muted" style="margin:14px 0 6px"><b>Ongoing items, explained previously</b></p><ul style="margin:0 0 10px;padding-left:18px">' + \
                 "".join("<li><b>%s</b> (since %s): %s</li>" % (html.escape(n), html.escape(s or "earlier"), html.escape(t)) for n, t, s in info["ongoing"]) + "</ul>"
         if info.get("resolved"):
-            notes += '<p class="muted">Back within budget since last month: %s.</p>' % html.escape(", ".join(info["resolved"]))
+            notes += '<p class="muted">No longer flagged since last month: %s.</p>' % html.escape(", ".join(info["resolved"]))
         board = '<p class="board"><b>Note to the board.</b> %s</p>' % html.escape(info["board_note"]) if info.get("board_note") else ""
         return ('<section class="card"><div class="eyebrow">%s &middot; %s</div><h1>%s</h1>'
                 '<p class="muted" style="margin:0">Reviewed by %s (FA). Please confirm by %s.</p></section>'

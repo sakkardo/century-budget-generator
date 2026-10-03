@@ -61,6 +61,19 @@ def _fav(v):
 WORSE_PCT = 0.10    # Jacob 2026-10-03: a known item is "worse" when it moved unfavorably by more than 10%
 WORSE_ABS = 5000    # ...and by more than $5,000 since it was explained
 CARRIED = ("income", "cat:", "unposted:", "saving:")  # 'overall' is always written fresh
+FLAG_YTD_PCT = 0.10  # Jacob 2026-10-03: an expense line gets a note only when it is more than 10% over its YTD budget
+FLAG_MTD_PCT = 0.15  # ...or more than 15% over this month's budget
+
+
+def _over_pct(var, budget):
+    """How far over budget, as a fraction (0 when favorable or there is no budget to measure against)."""
+    return -var / float(budget) if var < 0 and budget > 0 else 0.0
+
+
+def flagged(c):
+    """(ytd_pct, mtd_pct) when the expense line crosses either threshold, else None."""
+    y, m = _over_pct(c["ytd_var"], c["ytd_budget"]), _over_pct(c["month_var"], c["month_budget"])
+    return (y, m) if y > FLAG_YTD_PCT or m > FLAG_MTD_PCT else None
 
 
 def _note(key, title, facts, variance=0, label="", settled=False, draft=True):
@@ -103,9 +116,8 @@ def draft_commentary(s):
     out = []
     ytd_noi, ytd_net = s["noi"]["ytd_actual"], s["net_income"]["ytd_actual"]
     bud_noi = s["noi"]["ytd_budget"]
-    over = [c for c in s["categories"] if c["ytd_var"] <= -5000 or
-            (c["ytd_var"] < 0 and c["ytd_budget"] and -c["ytd_var"] / c["ytd_budget"] > 0.05)]
-    over.sort(key=lambda c: c["ytd_var"])
+    over = [c for c in s["categories"] if flagged(c)]
+    over.sort(key=lambda c: min(c["ytd_var"], c["month_var"]))
     under = sorted([c for c in s["categories"] if c["ytd_var"] > 0 and c["ytd_actual"] > 0], key=lambda c: -c["ytd_var"])
     unposted = [c for c in s["categories"] if c["ytd_actual"] == 0 and c["ytd_budget"] > 0]
 
@@ -132,9 +144,15 @@ def draft_commentary(s):
                              variance=total_var, label="Income", draft=False))
     for c in over[:3]:
         items = ", ".join("%s (%s)" % (i["name"], money(i["ytd_var"])) for i in c["worst_items"][:3])
-        m = "Over budget by %s in %s. " % (money(abs(c["month_var"])), MONTH_NAMES[s["meta"]["month"] - 1]) if c["month_var"] < 0 else ""
+        mname = MONTH_NAMES[s["meta"]["month"] - 1]
+        m = "Over budget by %s in %s. " % (money(abs(c["month_var"])), mname) if c["month_var"] < 0 else ""
         settled = c.get("annual_budget", 0) > 0 and c["ytd_budget"] >= c["annual_budget"] - 1 and c["month_actual"] == 0
-        out.append(_note("cat:" + c["name"], "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"]))),
+        if c["ytd_var"] < 0:
+            title = "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"])))
+        else:  # flagged on the month alone; the year is still within budget
+            title = "%s, %s over budget in %s" % (c["name"], money(abs(c["month_var"])), mname)
+            m = "Year to date it is still %s under budget. " % money(c["ytd_var"])
+        out.append(_note("cat:" + c["name"], title,
                          (m + ("Largest lines: %s." % items if items else "")).strip(), variance=c["ytd_var"], label=c["name"], settled=settled))
     for c in unposted:
         out.append(_note("unposted:" + c["name"], "%s, nothing recorded year to date against a %s budget" % (c["name"], money(c["ytd_budget"])),
@@ -286,8 +304,9 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     tot_rows = [1]
     for c in s["categories"]:
         fl = ""
-        if c["ytd_var"] < 0 and c["ytd_budget"] and -c["ytd_var"] / c["ytd_budget"] > 0.05:
-            fl = "%.0f%% over" % (100.0 * -c["ytd_var"] / c["ytd_budget"])
+        fg = flagged(c)
+        if fg:
+            fl = "%.0f%% over" % (100 * fg[0]) if fg[0] > FLAG_YTD_PCT else "%.0f%% over in %s" % (100 * fg[1], month_name[:3])
             flags.append(len(rows))
         rows.append(line(c["name"], c, False, fl))
     rows.append(line("Total expenses", exp, True)); tot_rows.append(len(rows) - 1)
@@ -308,7 +327,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         ts += [("FONT", (1, r), (-1, r), "Helvetica-Bold", 8), ("LINEABOVE", (0, r), (-1, r), 0.8, INK)]
     tbl.setStyle(TableStyle(ts))
     f += [tbl, Spacer(1, 4),
-          Paragraph("Green is favorable to budget and red is unfavorable. A line is flagged only when it is more than 5 percent over its year-to-date budget. Figures are whole dollars from the monthly financial statement.", small)]
+          Paragraph("Green is favorable to budget and red is unfavorable. A line is flagged only when it is more than 10 percent over its year-to-date budget or more than 15 percent over this month's budget. Figures are whole dollars from the monthly financial statement.", small)]
 
     # ---- page 2
     # New and worse items in full; known items that have not moved in one compact table (they don't repeat each month)
@@ -341,7 +360,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         f.append(ot)
     if resolved:
         f.append(Spacer(1, 4))
-        f.append(Paragraph("Back within budget since last month: %s." % xesc(", ".join(resolved)), small))
+        f.append(Paragraph("No longer flagged since last month: %s." % xesc(", ".join(resolved)), small))
     if reviewed:
         f.append(Paragraph("Commentary reviewed and confirmed by %s (Financial Analyst), %s." % (
             xesc(reviewed["by"]), xesc(reviewed["at"].split(" ")[0] + " " + " ".join(reviewed["at"].split(" ")[1:3]).rstrip(","))), small))

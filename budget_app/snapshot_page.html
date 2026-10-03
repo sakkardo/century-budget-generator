@@ -448,7 +448,7 @@ function commentaryHtml(v) {
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
       (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
   }).join("");
-  var resolved = (v.resolved && v.resolved.length) ? '<p class="muted" style="margin:0 0 14px">Back within budget since last month: ' + esc(v.resolved.join(", ")) + ".</p>" : "";
+  var resolved = (v.resolved && v.resolved.length) ? '<p class="muted" style="margin:0 0 14px">No longer flagged since last month: ' + esc(v.resolved.join(", ")) + ".</p>" : "";
   var note = editable
     ? '<div class="note"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">optional, prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" +
       '<div class="foot"><button id="saveedit" class="btn">Save board note</button><span class="muted">Changing any wording makes a new version and clears signatures.</span></div></div>'
