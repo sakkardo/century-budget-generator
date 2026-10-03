@@ -59,7 +59,7 @@ select.ctl { max-width:100%; text-overflow:ellipsis }
 
 /* rail */
 aside { display:grid; gap:var(--gap); align-content:start; position:sticky; top:76px }
-@media (max-width:960px) { aside { position:static } }
+@media (max-width:960px) { aside { position:static; order:1 } }  /* narrow screens: the review queue comes first */
 .list { display:grid; gap:8px }
 .item { all:unset; box-sizing:border-box; cursor:pointer; display:grid; gap:4px; padding:12px 14px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); transition:border-color .15s, box-shadow .15s }
 .item:hover { border-color:var(--tan); box-shadow:var(--lift) }
