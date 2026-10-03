@@ -141,6 +141,20 @@ def _notes(notes):
         html.escape(t), html.escape(x)) for t, x in notes)
 
 
+def _ongoing(items, resolved):
+    out = ""
+    if items:
+        out += ('<p style="margin:14px 0 6px;font-size:13px;color:%s"><b>Ongoing items, explained previously</b></p>'
+                '<ul style="margin:0 0 10px;padding-left:18px;font-size:13px;line-height:1.5">' % INK)
+        out += "".join("<li><b>%s</b> (since %s): %s</li>" % (html.escape(n), html.escape(s or "earlier"), html.escape(t))
+                       for n, t, s in items)
+        out += "</ul>"
+    if resolved:
+        out += '<p style="font-size:13px;color:%s;margin:0 0 10px">Back within budget since last month: %s.</p>' % (
+            LABEL, html.escape(", ".join(resolved)))
+    return out
+
+
 def pm_request(info, reminder=False):
     """info: building, entity, month_label, fa_name, pm_name, kpis[(label,value,sub)], notes[(title,text)],
     board_note, link, due_label."""
@@ -154,6 +168,7 @@ def pm_request(info, reminder=False):
             html.escape(info["pm_name"].split(" ")[0]), html.escape(lead))
         + _kpis(info["kpis"])
         + '<h2 style="font-size:15px;margin:20px 0 8px;color:%s">What changed</h2>' % INK + _notes(info["notes"])
+        + _ongoing(info.get("ongoing") or [], info.get("resolved") or [])
         + ('<p style="font-size:13px;background:#f7e3e2;border:1px solid %s;padding:10px 12px;border-radius:6px">'
            '<b>Note to the board.</b> %s</p>' % (BRAND, html.escape(info["board_note"])) if info.get("board_note") else "")
         + '<p style="font-size:13px;color:%s;margin:16px 0 0">The full two-page snapshot is attached.</p>' % LABEL

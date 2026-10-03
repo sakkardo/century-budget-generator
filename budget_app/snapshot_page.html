@@ -334,29 +334,39 @@ function commentaryHtml(v) {
   var total = v.commentary.length;
   var done = v.commentary.filter(function (c) { return c.confirmed; }).length;
   var fa = teamNames(v, "fa") || "the FA";
+  var cont = v.commentary.filter(function (c) { return c.status === "continuing" && !c.confirmed; }).length;
   var head = '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' +
+    (editable && cont ? '<div class="foot" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:-4px 0 14px"><button class="btn approve" id="bulkcont" style="min-height:38px">&#10003; Confirm all continuing (' + cont + ')</button><span class="muted">Items you explained before that have not moved. Their reasons carry forward.</span></div>' : "") +
     (editable ? "" : '<p class="muted" style="margin:-6px 0 14px">' + esc(fa) + " (FA) edits or confirms each note. " +
       (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
+  function statusPill(c) {
+    if (c.key === "overall") { return ""; }
+    if (c.status === "continuing") { return '<span class="pill">Continuing since ' + esc(c.since || "earlier") + "</span>"; }
+    if (c.status === "worse") { return '<span class="pill changes_requested">Moved: up $' + Math.round(c.moved || 0).toLocaleString("en-US") + " since " + esc(c.since || "earlier") + "</span>"; }
+    return '<span class="pill draftnote">New this month</span>';
+  }
   var body = v.commentary.map(function (c, i) {
     var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
-    var placeholder = /\[[^\]]+\]/.test(c.text || "");
+    var facts = c.facts ? '<p class="muted" style="margin:0">' + esc(c.facts) + "</p>" : "";
+    var prior = c.status === "worse" && c.prior_text ? '<p class="muted" style="margin:0"><i>Your ' + esc(c.since || "earlier") + " note:</i> " + esc(c.prior_text) + "</p>" : "";
     if (!editable) {
       var wait = '<span class="pill">&#9719; Waiting on ' + esc(fa) + " to confirm</span>";
-      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + "</div><p style=\"margin:0\">" + esc(c.text) + "</p>" +
-        '<div class="foot">' + (stamp || wait) + "</div></div>";
+      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + statusPill(c) + "</div>" + facts +
+        (c.text ? '<p style="margin:0">' + esc(c.text) + "</p>" : "") + '<div class="foot">' + (stamp || wait) + "</div></div>";
     }
-    var tag = c.confirmed ? "" : (c.draft ? '<span class="pill draftnote">Draft &middot; FA to confirm</span>' : '<span class="pill">Not confirmed</span>');
-    var hint = !c.confirmed && placeholder ? '<span class="hint">Replace the [bracketed] text with the real cause, then save.</span>' : "";
-    return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + tag + "</label>" +
-      '<textarea id="ci' + i + '" rows="3" data-ci="' + i + '" data-orig="' + esc(c.text) + '">' + esc(c.text) + "</textarea>" +
+    var orig = c.text || "";
+    var ph = c.key === "overall" ? "Optional: add context for the board" : (c.status === "new" ? "Add the reason (optional; the line above prints either way)" : "Reason");
+    return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + statusPill(c) + "</label>" + facts + prior +
+      '<textarea id="ci' + i + '" rows="2" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" +
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
-      (c.confirmed ? "&#10003; Confirmed" : "Confirm") + "</button>" + stamp + hint + "</div></div>";
+      (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
   }).join("");
+  var resolved = (v.resolved && v.resolved.length) ? '<p class="muted" style="margin:0 0 14px">Back within budget since last month: ' + esc(v.resolved.join(", ")) + ".</p>" : "";
   var note = editable
     ? '<div class="note"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">optional, prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" +
       '<div class="foot"><button id="saveedit" class="btn">Save board note</button><span class="muted">Changing any wording makes a new version and clears signatures.</span></div></div>'
     : (v.board_note ? '<div class="msg info"><b>Note to the board:</b> ' + esc(v.board_note) + "</div>" : "");
-  return head + body + note;
+  return head + body + resolved + note;
 }
 
 function signHtml(v) {
@@ -431,6 +441,7 @@ function act(method, url, body) { api(method, url, body).then(function () { retu
 function wire(v) {
   function on(id, fn) { var node = el(id); if (node) { node.onclick = fn; } }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
+  on("bulkcont", function () { act("POST", "/api/snapshots/" + v.id + "/notes/confirm-continuing"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });
   on("saveedit", function () {
     // board note only; note wording goes through each note's own button

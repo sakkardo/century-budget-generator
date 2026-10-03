@@ -264,8 +264,8 @@ class Service:
         reviewed = None
         if notes and all(c.get("confirmed") for c in notes):
             reviewed = max((c["confirmed"] for c in notes), key=lambda st: st.get("iso", ""))  # latest confirmation
-        return snapshot_render.render_pdf(v["snapshot"], notes, v["board_note"],
-                                          signoff=self._signoff_block(rec), status_label=lbl, reviewed=reviewed)
+        return snapshot_render.render_pdf(v["snapshot"], notes, v["board_note"], signoff=self._signoff_block(rec),
+                                          status_label=lbl, reviewed=reviewed, resolved=v.get("resolved"))
 
     def _mutate(self, rid, fn):
         def wrapper(rec):
@@ -315,9 +315,10 @@ class Service:
         snap = snapshot_parser.build_snapshot(pdf_bytes)
         m = snap["meta"]
         rid = "%s-%d-%02d" % (entity, m["year"], m["month"])
-        commentary = snapshot_render.draft_commentary(snap)
+        prior, prior_month = self._prior_notes(entity, m["year"], m["month"])
+        commentary, resolved = snapshot_render.classify_notes(snapshot_render.draft_commentary(snap), prior, prior_month)
         version = {"n": 1, "snapshot": snap, "commentary": commentary, "board_note": "", "acks": {},
-                   "by": user_id, "at": now_s(), "source": source}
+                   "resolved": resolved, "by": user_id, "at": now_s(), "source": source}
         version["hash"] = self._hash(version)
 
         def fn(rec):
@@ -336,6 +337,30 @@ class Service:
         self.store.mutate(rid, fn)
         return rid
 
+    def _prior_notes(self, entity, year, month):
+        """Confirmed notes from this building's most recent earlier snapshot in the same budget year.
+        January (or a building's first month in the system) has none, so every item is new."""
+        rows = [r for r in self.store.summaries() if r["entity"] == entity and r["year"] == year and r["month"] < month]
+        if not rows:
+            return {}, None
+        prev = max(rows, key=lambda r: r["month"])
+        rec = self.store.get(prev["id"])
+        label = MONTHS[prev["month"] - 1]
+        notes = {}
+        for n in self._cur(rec)["commentary"]:
+            if n.get("key") and n.get("confirmed"):
+                notes[n["key"]] = dict(n, since=n.get("since") or label)
+        return notes, label
+
+    def _confirm_stamp(self, note, user_id, reexplained):
+        """Confirm a note. Re-explaining it (new, worse, or rewritten) moves the basis to today's variance;
+        confirming a continuing note keeps the basis it was explained at, so slow creep is still caught."""
+        note["confirmed"] = {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}
+        note["draft"] = False
+        if reexplained or "basis" not in note:
+            note["basis"] = note.get("variance", 0)
+        return note
+
     def _editable(self, rec):
         if rec.get("released") or self.stage(rec) == "approved":
             raise ValueError("This snapshot is final and cannot be edited.")
@@ -352,15 +377,16 @@ class Service:
             for c, old in zip(commentary, cur["commentary"]):
                 n = copy.deepcopy(old)  # title and confirmation stamps come from the server, never the browser
                 text = (c.get("text") or "").strip()
-                if text != old.get("text"):
+                if text != (old.get("text") or ""):
                     # editing a note is the FA confirming it in their own words
-                    if not text:
+                    if not text and not old.get("facts"):
                         raise ValueError("A note cannot be empty.")
                     if PLACEHOLDER.search(text):
                         raise ValueError("Replace the [bracketed] placeholder in \"%s\" before saving." % old.get("title"))
-                    n.update({"text": text, "confirmed": {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}, "draft": False})
+                    n["text"] = text
+                    self._confirm_stamp(n, user_id, reexplained=True)
                 notes.append(n)
-            if [n["text"] for n in notes] == [o["text"] for o in cur["commentary"]] and board_note == cur["board_note"]:
+            if [n.get("text") for n in notes] == [o.get("text") for o in cur["commentary"]] and board_note == cur["board_note"]:
                 return
             self._new_version(rec, user_id, notes=notes, board_note=board_note, what="Edited commentary")
         self._mutate(rid, fn)
@@ -394,20 +420,37 @@ class Service:
             if not 0 <= index < len(cur["commentary"]):
                 raise ValueError("That note no longer exists. Reload the page.")
             note = cur["commentary"][index]
-            new_text = note["text"] if text is None else text.strip()
-            if not new_text:
+            old_text = note.get("text") or ""
+            new_text = old_text if text is None else text.strip()
+            if not new_text and not note.get("facts"):
                 raise ValueError("A note cannot be empty.")
             if PLACEHOLDER.search(new_text):
                 raise ValueError("Replace the [bracketed] placeholder with the real cause before confirming.")
-            stamp = {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}
-            if new_text == note["text"]:
-                note["confirmed"], note["draft"] = stamp, False
+            if new_text == old_text:
+                self._confirm_stamp(note, user_id, reexplained=note.get("status") != "continuing")
                 rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": 'Confirmed note "%s"' % note["title"]})
                 return
             notes = copy.deepcopy(cur["commentary"])
-            notes[index].update({"text": new_text, "confirmed": stamp, "draft": False})
+            notes[index]["text"] = new_text
+            self._confirm_stamp(notes[index], user_id, reexplained=True)
             self._new_version(rec, user_id, notes=notes, what='Edited and confirmed note "%s"' % note["title"])
         self._mutate(rid, fn)
+
+    def confirm_continuing(self, rid, user_id):
+        """One click: confirm every continuing note whose explanation is unchanged (FA only)."""
+        def fn(rec):
+            self._editable(rec)
+            if not self._is_fa(rec, user_id):
+                raise ValueError(self._not_fa(rec, "confirm the notes"))
+            todo = [n for n in self._cur(rec)["commentary"] if n.get("status") == "continuing" and not n.get("confirmed")]
+            if not todo:
+                raise ValueError("There are no continuing notes left to confirm.")
+            for n in todo:
+                self._confirm_stamp(n, user_id, reexplained=False)
+            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "Confirmed %d continuing note(s): %s" % (
+                len(todo), ", ".join(n.get("label") or n["title"] for n in todo))})
+            return len(todo)
+        return self._mutate(rid, fn)
 
     def acknowledge(self, rid, user_id, check_id, note):
         def fn(rec):
@@ -483,7 +526,10 @@ class Service:
                      ("Net income YTD", m(s["net_income"]["ytd_actual"]), "Budget " + m(s["net_income"]["ytd_budget"])),
                      ("%s NOI" % MONTHS[rec["month"] - 1], m(s["noi"]["month_actual"]), "Budget " + m(s["noi"]["month_budget"])),
                      ("Cash excl. security", m(cash_x) if cash_x is not None else "n/a", "At month end")],
-            "notes": [(c["title"], c["text"]) for c in v["commentary"]], "board_note": v["board_note"],
+            "notes": [(c["title"], snapshot_render.note_body(c)) for c in v["commentary"] if c.get("status") != "continuing"],
+            "ongoing": [(c.get("label") or c["title"], (c.get("text") or c.get("facts") or "").strip(), c.get("since") or "")
+                        for c in v["commentary"] if c.get("status") == "continuing"],
+            "resolved": v.get("resolved") or [], "board_note": v["board_note"],
             "link": link, "due_label": label(due), "portal_link": self._portal_link(rec),
         }
 
@@ -763,6 +809,6 @@ class Service:
             "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],
-            "request": request, "email_mode": self.mailer.mode,
+            "request": request, "email_mode": self.mailer.mode, "resolved": v.get("resolved") or [],
             "source": v["source"], "generated_at": v["at"],
         }

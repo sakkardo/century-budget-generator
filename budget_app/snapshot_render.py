@@ -54,8 +54,52 @@ def _fav(v):
 
 
 # ---------------------------------------------------------------- commentary
+# A note is a dict: key (stable id across months), title, label (item name), facts (system sentence, refreshed every
+# month), text (the FA's explanation), variance (this month's YTD variance for the item), settled (the whole year's
+# budget is already booked and nothing posted this month: insurance, tax instalments), status (new / worse /
+# continuing), since (month first explained), basis (variance when the explanation was written).
+WORSE_PCT = 0.10    # Jacob 2026-10-03: a known item is "worse" when it moved unfavorably by more than 10%
+WORSE_ABS = 5000    # ...and by more than $5,000 since it was explained
+CARRIED = ("income", "cat:", "unposted:", "saving:")  # 'overall' is always written fresh
+
+
+def _note(key, title, facts, variance=0, label="", settled=False, draft=True):
+    return {"key": key, "title": title, "label": label or title, "facts": facts, "text": "", "variance": variance,
+            "settled": settled, "status": "new", "draft": draft}
+
+
+def note_body(n):
+    """What prints for a note: the refreshed facts, then the FA's explanation."""
+    return " ".join(x for x in ((n.get("facts") or "").strip(), (n.get("text") or "").strip()) if x)
+
+
+def classify_notes(notes, prior, prior_month):
+    """Compare this month's notes with the building's confirmed notes from the previous month.
+
+    prior: {key: note} confirmed last month. Returns (notes, resolved_labels). Continuing and worse notes carry the
+    previous explanation; continuing keeps the original basis so slow creep is still measured from what was explained.
+    """
+    keys = {n["key"] for n in notes}
+    for n in notes:
+        p = prior.get(n["key"]) if n["key"].startswith(CARRIED) else None
+        if not p:
+            n["status"] = "new"
+            continue
+        basis = p.get("basis", p.get("variance", 0))
+        n.update({"text": p.get("text", ""), "prior_text": p.get("text", ""), "since": p.get("since") or prior_month,
+                  "basis": basis, "draft": False})
+        drop = basis - n["variance"]  # positive = moved unfavorably (more over budget, or a smaller saving)
+        if n.get("settled") or not (drop > WORSE_ABS and drop > WORSE_PCT * abs(basis)):
+            n["status"] = "continuing"
+        else:
+            n["status"], n["moved"] = "worse", drop
+    resolved = [p.get("label") or p.get("title") for k, p in prior.items()
+                if k not in keys and k.startswith(("income", "cat:", "unposted:"))]
+    return notes, resolved
+
+
 def draft_commentary(s):
-    """Rule-based first draft of the 'what changed' notes. The FA edits before sign-off."""
+    """Rule-based first draft of the 'what changed' notes. The FA adds the reason and confirms before sign-off."""
     out = []
     ytd_noi, ytd_net = s["noi"]["ytd_actual"], s["net_income"]["ytd_actual"]
     bud_noi = s["noi"]["ytd_budget"]
@@ -75,31 +119,31 @@ def draft_commentary(s):
         if nonop_inc:
             parts.append("%s of non-operating income" % money(nonop_inc))
         head += " After %s, net income is %s." % (" and ".join(parts), money(ytd_net))
-    out.append({"title": "Overall", "text": head, "draft": False})
+    out.append(_note("overall", "Overall", head, draft=False))
 
     if s["income_drivers"]:
         d = s["income_drivers"][0]
         total_var = s["income"]["ytd_var"]
         if total_var and abs(d["ytd_var"]) >= abs(total_var) * 0.5 and abs(total_var) > 5000:
             rest = total_var - d["ytd_var"]
-            out.append({"title": "Income, %s %s budget year to date" % (
-                money(abs(total_var)), "above" if total_var > 0 else "below"),
-                "text": "%s accounts for %s of the difference. Without it, income is %s %s budget." % (
-                    d["name"], money(abs(d["ytd_var"])), money(abs(rest)), "above" if rest > 0 else "below"),
-                "draft": False})
+            out.append(_note("income", "Income, %s %s budget year to date" % (money(abs(total_var)), "above" if total_var > 0 else "below"),
+                             "%s accounts for %s of the difference. Without it, income is %s %s budget." % (
+                                 d["name"], money(abs(d["ytd_var"])), money(abs(rest)), "above" if rest > 0 else "below"),
+                             variance=total_var, label="Income", draft=False))
     for c in over[:3]:
         items = ", ".join("%s (%s)" % (i["name"], money(i["ytd_var"])) for i in c["worst_items"][:3])
         m = "Over budget by %s in %s. " % (money(abs(c["month_var"])), MONTH_NAMES[s["meta"]["month"] - 1]) if c["month_var"] < 0 else ""
-        out.append({"title": "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"]))),
-                    "text": (m + ("Largest lines: %s." % items if items else "")).strip(), "draft": True})
+        settled = c.get("annual_budget", 0) > 0 and c["ytd_budget"] >= c["annual_budget"] - 1 and c["month_actual"] == 0
+        out.append(_note("cat:" + c["name"], "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"]))),
+                         (m + ("Largest lines: %s." % items if items else "")).strip(), variance=c["ytd_var"], label=c["name"], settled=settled))
     for c in unposted:
-        out.append({"title": "%s, nothing recorded year to date against a %s budget" % (c["name"], money(c["ytd_budget"])),
-                    "text": "No expense has been recorded on this line so far this year.", "draft": True})
+        out.append(_note("unposted:" + c["name"], "%s, nothing recorded year to date against a %s budget" % (c["name"], money(c["ytd_budget"])),
+                         "No expense has been recorded on this line so far this year.", variance=c["ytd_var"], label=c["name"]))
     if under:
         u = under[0]
-        out.append({"title": "Largest saving: %s, %s under budget" % (u["name"], money(u["ytd_var"])),
-                    "text": "This is %.0f%% of its year-to-date budget." % (
-                        100.0 * u["ytd_var"] / u["ytd_budget"] if u["ytd_budget"] else 0), "draft": True})
+        out.append(_note("saving:" + u["name"], "Largest saving: %s, %s under budget" % (u["name"], money(u["ytd_var"])),
+                         "This is %.0f%% of its year-to-date budget." % (100.0 * u["ytd_var"] / u["ytd_budget"] if u["ytd_budget"] else 0),
+                         variance=u["ytd_var"], label=u["name"]))
     return out
 
 
@@ -152,8 +196,9 @@ def _capital_chart(items, width):
 
 
 # ---------------------------------------------------------------- pdf
-def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DRAFT", reviewed=None):
-    """reviewed: {"by", "at"} once the FA has confirmed every note; printed under the notes."""
+def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DRAFT", reviewed=None, resolved=None):
+    """reviewed: {"by", "at"} once the FA has confirmed every note; printed under the notes.
+    resolved: labels of items explained last month that are no longer over budget."""
     buf = io.BytesIO()
     W, H = letter
     m = s["meta"]
@@ -203,7 +248,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
     f += [head, Spacer(1, 6), Paragraph(building, h1), Spacer(1, 4)]
 
-    overall = next((c["text"] for c in commentary if c["title"] == "Overall"), "")
+    overall = next((note_body(c) for c in commentary if c.get("key") == "overall" or c["title"] == "Overall"), "")
     if overall:
         f += [Paragraph(xesc(overall), read), Spacer(1, 6)]
 
@@ -266,11 +311,37 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
           Paragraph("Green is favorable to budget and red is unfavorable. A line is flagged only when it is more than 5 percent over its year-to-date budget. Figures are whole dollars from the monthly financial statement.", small)]
 
     # ---- page 2
+    # New and worse items in full; known items that have not moved in one compact table (they don't repeat each month)
+    items = [c for c in commentary if not (c.get("key") == "overall" or c["title"] == "Overall")]
+    fresh = [c for c in items if c.get("status") != "continuing"]
+    ongoing = [c for c in items if c.get("status") == "continuing"]
     f.append(Paragraph("What changed", h2))
-    for c in commentary:
-        if c["title"] == "Overall":
-            continue
-        f.append(KeepTogether([Paragraph("<b>%s</b>" % xesc(c["title"]), body), Paragraph(xesc(c["text"]), body), Spacer(1, 3)]))
+    if not fresh:
+        f.append(Paragraph("Nothing new this month. The items below were explained in earlier snapshots.", body))
+    for c in fresh:
+        tag = ""
+        if c.get("status") == "worse":
+            tag = ' <font color="#A4262C" size="7.5">MOVED: explained in %s, %s more since</font>' % (
+                xesc(c.get("since") or "an earlier month"), money(c.get("moved", 0)))
+        f.append(KeepTogether([Paragraph("<b>%s</b>%s" % (xesc(c["title"]), tag), body), Paragraph(xesc(note_body(c)), body), Spacer(1, 3)]))
+    if ongoing:
+        f.append(Spacer(1, 4))
+        f.append(Paragraph("<b>Ongoing items, explained previously</b>", body))
+        orow = [["Item", "YTD variance", "Explained", "Explanation"]]
+        for c in ongoing:
+            orow.append([Paragraph(xesc(c.get("label") or c["title"]), cell), num(c.get("variance", 0)),
+                         Paragraph(xesc(c.get("since") or ""), cell),
+                         Paragraph(xesc((c.get("text") or "").strip() or (c.get("facts") or "")), cell)])
+        ot = Table(orow, colWidths=[cw * 0.2, cw * 0.13, cw * 0.13, cw * 0.54])
+        ot.setStyle(TableStyle([("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
+                                ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                                ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -1), 0.3, LINE),
+                                ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (0, -1), 0),
+                                ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+        f.append(ot)
+    if resolved:
+        f.append(Spacer(1, 4))
+        f.append(Paragraph("Back within budget since last month: %s." % xesc(", ".join(resolved)), small))
     if reviewed:
         f.append(Paragraph("Commentary reviewed and confirmed by %s (Financial Analyst), %s." % (
             xesc(reviewed["by"]), xesc(reviewed["at"].split(" ")[0] + " " + " ".join(reviewed["at"].split(" ")[1:3]).rstrip(","))), small))

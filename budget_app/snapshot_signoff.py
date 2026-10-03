@@ -28,7 +28,8 @@ REQUIRED_ROLES = ("fa", "pm")
 
 def content_hash(snapshot, commentary, board_note=""):
     """Stable hash of everything the board will see."""
-    notes = [{"title": c.get("title"), "text": c.get("text")} if isinstance(c, dict) else c for c in (commentary or [])]
+    notes = [{"title": c.get("title"), "facts": c.get("facts"), "text": c.get("text"),
+              "ongoing": c.get("status") == "continuing"} if isinstance(c, dict) else c for c in (commentary or [])]
     payload = {"figures": _figures(snapshot), "commentary": notes, "board_note": board_note or ""}
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
