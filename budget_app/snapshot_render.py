@@ -12,7 +12,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepTogether, PageBreak, PageTemplate,
+from reportlab.platypus import (BaseDocTemplate, CondPageBreak, Frame, Image, KeepTogether, PageBreak, PageTemplate,
                                 Paragraph, Spacer, Table, TableStyle)
 
 try:
@@ -181,8 +181,8 @@ def _capital_chart(items, width):
     items = [i for i in items if i["ytd"]]
     if not items:
         return None
-    items = sorted(items, key=lambda i: -i["ytd"])[:6]
-    rowh = 16
+    items = sorted(items, key=lambda i: -i["ytd"])[:4]  # the table above lists every project; the chart shows the biggest
+    rowh = 13
     d = Drawing(width, rowh * len(items) + 4)
     top = max(i["ytd"] for i in items)
     barmax = width - 190
@@ -350,7 +350,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         f.append(Table([[Paragraph("<b>Note to the board.</b> %s" % xesc(board_note), body)]], colWidths=[cw],
                        style=[("BACKGROUND", (0, 0), (-1, -1), SOFT), ("BOX", (0, 0), (-1, -1), 0.5, RED), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
 
-    f.append(PageBreak())
+    f.append(CondPageBreak(2.2 * inch))  # new page only when capital would not fit; no half-empty pages
     f.append(Paragraph("Capital expenditures", h2))
     cap = [c for c in s["capital"]]
     if cap:
@@ -364,7 +364,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                                 ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
                                 ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINE),
                                 ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 8), ("LINEABOVE", (0, -1), (-1, -1), 0.8, INK),
-                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
         f.append(ct)
         ch = _capital_chart(cap, cw)
         if ch:
@@ -390,7 +390,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                                 ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
                                 ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINE),
                                 ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 8), ("LINEABOVE", (0, -1), (-1, -1), 0.8, INK),
-                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
         left.append(at)
         kinds = {}
         for a in cash["accounts"]:
@@ -415,30 +415,35 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                                 ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
                                 ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -1), 0.3, LINE),
                                 ("FONT", (0, 3), (-1, 3), "Helvetica-Bold", 8),
-                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5)]))
+                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
         right.append(rt)
     ctab = Table([[left or "", right or ""]], colWidths=[cw * 0.56, cw * 0.44])
     ctab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     f.append(ctab)
-    cc = _cash_chart(s, cw, 84)
+    cc = _cash_chart(s, cw, 74)
     if cc:
         f += [Spacer(1, 6), Paragraph("Cash at month end, last twelve months (excluding security deposits)", small), cc]
 
-    # tie-out checklist
+    # tie-out checklist: one line when everything ties; the full list (failures first) only when something does not
     f.append(Paragraph("Ties to the statement", h2))
-    labels = {"Month": "this month", "YTD": "year to date"}
+    all_tied = bool(s["checks"]) and all(c["status"] == "tied" for c in s["checks"])
+    if all_tied:
+        f.append(Paragraph('<font color="#2F6B4F"><b>All %d checks tied.</b></font> Every total on this snapshot matches '
+                           "the Yardi statement it was built from." % len(s["checks"]), small))
+        f.append(Spacer(1, 4))
     cells = []
-    for c in s["checks"]:
+    for c in ([] if all_tied else sorted(s["checks"], key=lambda c: c["status"] == "tied")):
         ok = c["status"] == "tied"
         tag = '<font color="%s"><b>%s</b></font>' % ("#2F6B4F" if ok else "#A4262C", "Tied" if ok else "Check")
         cells.append(Paragraph("%s &nbsp;%s" % (tag, c["label"]), st("ck", fontSize=6.8, leading=8.4, textColor=INK)))
-    if len(cells) % 2:
+    while len(cells) % 3:
         cells.append("")
-    half = len(cells) // 2
-    ck = Table([[cells[i], cells[i + half]] for i in range(half)], colWidths=[cw / 2.0, cw / 2.0])
-    ck.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                            ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-    f.append(ck)
+    third = len(cells) // 3  # three columns: fewer lines, same checks
+    if third:
+        ck = Table([[cells[i], cells[i + third], cells[i + 2 * third]] for i in range(third)], colWidths=[cw / 3.0] * 3)
+        ck.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+        f.append(ck)
 
     # sign-off block
     f.append(Spacer(1, 6))
@@ -448,8 +453,11 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         if who.get("signed_at"):
             return "%s: %s, %s" % (role, who["name"], who["signed_at"])
         return "%s: %s, awaiting sign-off" % (role, who.get("name") or "not assigned")
-    f.append(Table([[Paragraph("<b>Prepared and reviewed by Century Management</b><br/>%s<br/>%s" % (
-        sline("Financial Analyst", so.get("fa")), sline("Property Manager", so.get("pm"))), body)]], colWidths=[cw],
-        style=[("BOX", (0, 0), (-1, -1), 0.5, LINE), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+    # one row: who prepared it, then the FA and the PM side by side
+    f.append(Table([[Paragraph("<b>Prepared and reviewed by Century Management</b>", body),
+                     Paragraph(sline("Financial Analyst", so.get("fa")), body), Paragraph(sline("Property Manager", so.get("pm")), body)]],
+                   colWidths=[cw * 0.3, cw * 0.35, cw * 0.35],
+                   style=[("BOX", (0, 0), (-1, -1), 0.5, LINE), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                          ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
     doc.build(f)
     return buf.getvalue()

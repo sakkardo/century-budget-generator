@@ -177,6 +177,31 @@ details.hist summary { cursor:pointer; font-weight:600; color:var(--ink) }
 .log { display:grid; gap:6px; margin-top:12px; font-size:13px; color:var(--ink-2) }
 .log time { color:var(--label); font-variant-numeric:tabular-nums; margin-right:6px }
 
+/* rail: navigation + grouped queue */
+.navbtn { justify-content:flex-start; min-height:40px; background:var(--surface) }
+.navbtn.on { border-color:var(--ink); box-shadow:inset 3px 0 0 var(--ink) }
+.grp { font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--label); display:flex; justify-content:space-between; margin:10px 0 2px }
+.grp:first-of-type { margin-top:0 }
+.grp.act { color:var(--brand) }
+.item.act { border-left:3px solid var(--brand) }
+
+/* home: the review queue leads; everything else is secondary */
+.home { display:grid; gap:var(--gap-lg) }
+.focus { border:1px solid var(--border); border-top:4px solid var(--brand); border-radius:var(--radius-lg); background:var(--surface); box-shadow:var(--lift); padding:22px 24px }
+.focus h1 { margin:2px 0 4px; font-size:24px; color:var(--ink) }
+.rq { display:grid; gap:10px; margin-top:16px }
+.rcard { display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:14px 16px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface-warm) }
+.rcard .t { font-weight:700; color:var(--ink); font-size:15px }
+.rcard .btn { margin-left:auto }
+.calm { display:flex; gap:12px; align-items:center; margin-top:14px; padding:14px 16px; border-radius:var(--radius); background:var(--ok-bg); border:1px solid var(--ok-bd); color:var(--ok); font-weight:600 }
+.later { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:var(--gap-lg) }
+.mini { display:grid; gap:6px }
+.mini button { all:unset; cursor:pointer; display:flex; justify-content:space-between; gap:8px; padding:8px 0; border-top:1px solid var(--border); font-size:13.5px; color:var(--ink-2) }
+.mini button:hover b { text-decoration:underline }
+.mini button b { color:var(--ink); font-weight:600 }
+.newpanel { max-width:640px }
+.newpanel .newform { border-top:1px solid var(--border) }
+
 .empty { display:grid; place-items:center; text-align:center; gap:6px; padding:72px 24px; color:var(--label) }
 .empty b { color:var(--ink); font-size:16px }
 @media (prefers-reduced-motion:reduce) { * { transition:none !important } }
@@ -191,28 +216,34 @@ details.hist summary { cursor:pointer; font-weight:600; color:var(--ink) }
 </header>
 <main>
   <aside aria-label="Snapshots">
+    <button id="gohome" class="btn block navbtn">&#8962; Review queue</button>
+    <button id="gonew" class="btn block navbtn">+ New snapshot</button>
     <div class="panel pad">
-      <p class="label">Snapshots</p>
       <div id="list" class="list"></div>
-    </div>
-    <div class="panel pad">
-      <p class="label">New snapshot</p>
-      <label class="field"><span>Building</span><select id="gb" class="ctl"></select></label>
-      <label class="field" id="gsrow"><span>Sample statement</span><select id="gs" class="ctl"></select></label>
-      <div class="field"><span>Monthly financial statement</span>
-        <label class="drop" for="gf"><input id="gf" type="file" accept="application/pdf"><b id="gfname">Choose the statement PDF</b><span>from the building's Monthly Financials folder</span></label>
-      </div>
-      <button id="gen" class="btn primary block">Generate snapshot</button>
-      <div id="genmsg" style="margin-top:10px"></div>
     </div>
   </aside>
   <section aria-live="polite">
     <div id="banners" class="banners"></div>
-    <div id="detail"><div class="panel empty"><b>No snapshot open</b>Pick one on the left, or generate one from a statement.</div></div>
+    <div id="detail"></div>
+    <div id="newview" hidden>
+      <div class="panel newpanel">
+        <div class="head"><div><div class="eyebrow">Upload</div><h1>New snapshot</h1>
+          <div class="muted">Save the monthly financial statement in the building's Monthly Financials folder first, then upload it here. The snapshot opens for review right away.</div></div></div>
+        <div class="pad newform">
+          <label class="field"><span>Building</span><select id="gb" class="ctl"></select></label>
+          <label class="field" id="gsrow"><span>Sample statement</span><select id="gs" class="ctl"></select></label>
+          <div class="field"><span>Monthly financial statement</span>
+            <label class="drop" for="gf"><input id="gf" type="file" accept="application/pdf"><b id="gfname">Choose the statement PDF</b><span>from the building's Monthly Financials folder</span></label>
+          </div>
+          <button id="gen" class="btn primary block">Generate snapshot</button>
+          <div id="genmsg" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 <script>
-var state = { me: 0, meta: null, cur: null };
+var state = { me: 0, meta: null, cur: null, view: "home", rows: [] };
 
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function el(id) { return document.getElementById(id); }
@@ -261,28 +292,84 @@ function init() {
     el("gb").innerHTML = m.buildings.map(function (b) { return '<option value="' + b.entity + '">' + esc(b.entity + " – " + b.client) + "</option>"; }).join("");
     if (!m.dev) { el("gsrow").style.display = "none"; }
     el("gs").innerHTML = '<option value="">None, I will upload a PDF</option>' + m.samples.map(function (s) { return "<option>" + esc(s) + "</option>"; }).join("");
+    show("home");
     refreshList();
   });
 }
+
+// the queue: what needs review comes first, then what waits on the PM, then what is final
+var GROUPS = [
+  { key: "act", label: "Needs review", stages: ["changes_requested", "draft"] },
+  { key: "wait", label: "Waiting on PM", stages: ["awaiting_pm"] },
+  { key: "done", label: "Final", stages: ["approved", "released"] }
+];
+function grouped(rows) {
+  var newest = function (a, b) { return (b.year * 12 + b.month) - (a.year * 12 + a.month) || (a.entity < b.entity ? -1 : 1); };
+  return GROUPS.map(function (g) {
+    var rs = rows.filter(function (r) { return g.stages.indexOf(r.stage) >= 0; }).sort(function (a, b) {
+      return g.stages.indexOf(a.stage) - g.stages.indexOf(b.stage) || newest(a, b);
+    });
+    return { key: g.key, label: g.label, rows: rs };
+  });
+}
+function when(r) { return MONTHS[r.month - 1] + " " + r.year; }
 
 function refreshList() {
   return api("GET", "/api/snapshots").then(function (rows) {
     var mine = (state.meta && state.meta.my_entities) || [];
     var shown = state.mineOnly ? rows.filter(function (r) { return mine.indexOf(r.entity) >= 0; }) : rows;
-    var toggle = mine.length ? '<div class="row" style="display:flex;gap:6px;margin:-4px 0 10px"><button class="pill' + (state.mineOnly ? " approved" : "") + '" id="fmine" style="cursor:pointer">My buildings</button>' +
+    state.rows = shown;
+    var toggle = mine.length ? '<div class="row" style="display:flex;gap:6px;margin:0 0 12px"><button class="pill' + (state.mineOnly ? " approved" : "") + '" id="fmine" style="cursor:pointer">My buildings</button>' +
       '<button class="pill' + (state.mineOnly ? "" : " approved") + '" id="fall" style="cursor:pointer">All</button></div>' : "";
-    el("list").innerHTML = toggle + (shown.length ? shown.map(function (r) {
-      return '<button class="item' + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '" aria-current="' + (state.cur === r.id) + '"><span class="t">' + esc(r.entity + " \u2013 " + r.client) +
-        '</span><span class="m"><span>' + MONTHS[r.month - 1] + " " + r.year + " &middot; v" + r.version + "</span>" + pill(r.stage) + "</span></button>";
-    }).join("") : '<div class="muted">' + (state.mineOnly ? "No snapshots for your buildings yet." : "No snapshots yet.") + "</div>");
+    var body = grouped(shown).filter(function (g) { return g.rows.length; }).map(function (g) {
+      return '<div class="grp' + (g.key === "act" ? " act" : "") + '"><span>' + g.label + "</span><span>" + g.rows.length + "</span></div>" + g.rows.map(function (r) {
+        return '<button class="item' + (g.key === "act" ? " act" : "") + (state.cur === r.id ? " on" : "") + '" data-id="' + r.id + '" aria-current="' + (state.cur === r.id) + '"><span class="t">' + esc(r.entity + " \u2013 " + r.client) +
+          '</span><span class="m"><span>' + when(r) + " &middot; v" + r.version + "</span>" + pill(r.stage) + "</span></button>";
+      }).join("");
+    }).join("");
+    el("list").innerHTML = toggle + (body || '<div class="muted">' + (state.mineOnly ? "No snapshots for your buildings yet." : "No snapshots yet.") + "</div>");
     Array.prototype.forEach.call(document.querySelectorAll(".item"), function (b) { b.onclick = function () { openSnap(b.getAttribute("data-id")); }; });
     if (el("fmine")) { el("fmine").onclick = function () { state.mineOnly = true; refreshList(); }; el("fall").onclick = function () { state.mineOnly = false; refreshList(); }; }
+    if (state.view === "home") { renderHome(); }
   });
 }
 
+function show(view) {
+  state.view = view;
+  if (view !== "snap") { state.cur = null; }
+  el("newview").hidden = view !== "new";
+  el("detail").hidden = view === "new";
+  el("gohome").classList.toggle("on", view === "home");
+  el("gonew").classList.toggle("on", view === "new");
+}
+
+function renderHome() {
+  var g = grouped(state.rows || []);
+  var act = g[0].rows, wait = g[1].rows, done = g[2].rows;
+  var cards = act.map(function (r) {
+    var why = r.stage === "changes_requested" ? "The PM asked for changes. Update the notes and send it back." : "Confirm or edit each note, then send it to the PM.";
+    return '<div class="rcard"><div><div class="t">' + esc(r.entity + " \u2013 " + r.client) + '</div><div class="muted">' + when(r) + " &middot; " + why + "</div></div>" +
+      pill(r.stage) + '<button class="btn primary" data-open="' + r.id + '">Review now &rarr;</button></div>';
+  }).join("");
+  function mini(title, rs, note) {
+    return '<div class="panel pad"><p class="label">' + title + " (" + rs.length + ")</p>" + (rs.length ? '<div class="mini">' + rs.map(function (r) {
+      return '<button data-open="' + r.id + '"><b>' + esc(r.entity + " \u2013 " + r.client) + "</b><span>" + when(r) + "</span></button>";
+    }).join("") + "</div>" : '<div class="muted">' + note + "</div>") + "</div>";
+  }
+  el("detail").innerHTML = '<div class="home"><div class="focus"><div class="eyebrow">' + (state.mineOnly ? "Your buildings" : "All buildings") + "</div>" +
+    "<h1>" + (act.length ? act.length + (act.length === 1 ? " snapshot needs" : " snapshots need") + " your review" : "Nothing needs your review") + "</h1>" +
+    (act.length ? '<div class="rq">' + cards + "</div>"
+      : '<div class="calm">&#10003; You are all caught up. New statements show up here after they are uploaded.</div>') + "</div>" +
+    '<div class="later">' + mini("Waiting on the PM", wait, "Nothing is with a PM right now.") + mini("Final", done, "No final snapshots yet.") + "</div></div>";
+  Array.prototype.forEach.call(document.querySelectorAll("[data-open]"), function (b) { b.onclick = function () { openSnap(b.getAttribute("data-open")); }; });
+}
+
+function goHome() { show("home"); renderHome(); refreshList(); }
+
 function openSnap(id) {
+  show("snap");
   state.cur = id;
-  return api("GET", "/api/snapshots/" + id).then(function (v) { render(v); refreshList(); });
+  return api("GET", "/api/snapshots/" + id).then(function (v) { render(v); refreshList(); window.scrollTo(0, 0); });
 }
 
 function current(v, role) { return v.signoffs.filter(function (x) { return x.role === role && x.current; }).pop(); }
@@ -470,7 +557,9 @@ function wire(v) {
 }
 
 if (el("as")) { el("as").onchange = function () { state.me = Number(el("as").value); if (state.cur) { openSnap(state.cur); } }; }
-if (el("reset")) { el("reset").onclick = function () { api("POST", "/api/snapshots/reset").then(function () { state.cur = null; el("detail").innerHTML = '<div class="panel empty"><b>No snapshot open</b>Pick one on the left, or generate one from a statement.</div>'; refreshList(); }); }; }
+if (el("reset")) { el("reset").onclick = function () { api("POST", "/api/snapshots/reset").then(goHome); }; }
+el("gohome").onclick = goHome;
+el("gonew").onclick = function () { show("new"); refreshList(); };
 el("gf").onchange = function () { el("gfname").textContent = el("gf").files[0] ? el("gf").files[0].name : "Choose the statement PDF"; };
 el("gen").onclick = function () {
   var fd = new FormData();
