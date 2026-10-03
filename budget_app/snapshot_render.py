@@ -76,6 +76,13 @@ def flagged(c):
     return (y, m) if y > FLAG_YTD_PCT or m > FLAG_MTD_PCT else None
 
 
+def income_flagged(d):
+    """Same thresholds for income, in either direction: a big shortfall or a big windfall both get a note."""
+    y = abs(d["ytd_var"]) / float(d["ytd_budget"]) if d["ytd_budget"] > 0 else 0.0
+    m = abs(d["month_var"]) / float(d["month_budget"]) if d["month_budget"] > 0 else 0.0
+    return (y, m) if y > FLAG_YTD_PCT or m > FLAG_MTD_PCT else None
+
+
 def _note(key, title, facts, variance=0, label="", settled=False, draft=True):
     return {"key": key, "title": title, "label": label or title, "facts": facts, "text": "", "variance": variance,
             "settled": settled, "status": "new", "draft": draft}
@@ -133,15 +140,22 @@ def draft_commentary(s):
         head += " After %s, net income is %s." % (" and ".join(parts), money(ytd_net))
     out.append(_note("overall", "Overall", head, draft=False))
 
-    if s["income_drivers"]:
-        d = s["income_drivers"][0]
-        total_var = s["income"]["ytd_var"]
-        if total_var and abs(d["ytd_var"]) >= abs(total_var) * 0.5 and abs(total_var) > 5000:
-            rest = total_var - d["ytd_var"]
-            out.append(_note("income", "Income, %s %s budget year to date" % (money(abs(total_var)), "above" if total_var > 0 else "below"),
-                             "%s accounts for %s of the difference. Without it, income is %s %s budget." % (
-                                 d["name"], money(abs(d["ytd_var"])), money(abs(rest)), "above" if rest > 0 else "below"),
-                             variance=total_var, label="Income", draft=False))
+    inc = s["income"]
+    inc_fl = income_flagged(inc)
+    if inc_fl:
+        total_var, ab = inc["ytd_var"], lambda v: "above" if v > 0 else "below"
+        if inc_fl[0] > FLAG_YTD_PCT:
+            title = "Income, %s %s budget year to date" % (money(abs(total_var)), ab(total_var))
+        else:  # flagged on the month alone
+            title = "Income, %s %s budget in %s" % (money(abs(inc["month_var"])), ab(inc["month_var"]), MONTH_NAMES[s["meta"]["month"] - 1])
+        drv = s["income_drivers"]
+        if drv and total_var and abs(drv[0]["ytd_var"]) >= abs(total_var) * 0.5:
+            d, rest = drv[0], total_var - drv[0]["ytd_var"]
+            facts = "%s accounts for %s of the year-to-date difference. Without it, income is %s %s budget." % (
+                d["name"], money(abs(d["ytd_var"])), money(abs(rest)), ab(rest))
+        else:
+            facts = ("Largest differences year to date: %s." % ", ".join("%s (%s)" % (d["name"], money(d["ytd_var"])) for d in drv[:3])) if drv else ""
+        out.append(_note("income", title, facts, variance=total_var, label="Income", draft=False))
     for c in over[:3]:
         items = ", ".join("%s (%s)" % (i["name"], money(i["ytd_var"])) for i in c["worst_items"][:3])
         mname = MONTH_NAMES[s["meta"]["month"] - 1]

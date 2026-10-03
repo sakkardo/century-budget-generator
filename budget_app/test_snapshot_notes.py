@@ -62,6 +62,12 @@ def run():
     assert r.flagged(cat(2000, 100000, -1600, 10000))          # 16% over this month alone, YTD favorable
     assert not r.flagged(cat(-500, 0, -500, 0))                # nothing budgeted: no percentage to judge
     assert not r.flagged(cat(-60000, 1000000, 0, 0))           # big dollars but only 6%: no note
+    # income: same thresholds, either direction (a windfall is news too)
+    assert r.income_flagged(cat(11000, 100000, 0, 10000)) and r.income_flagged(cat(-11000, 100000, 0, 10000))
+    assert r.income_flagged(cat(0, 100000, -1600, 10000))      # 16% short this month
+    assert not r.income_flagged(cat(46840, 3851162, 22922, 496492))  # 148 August: 1.2% / 4.6%, no note
+    inc204 = [n for n in r.draft_commentary(s204) if n["key"] == "income"]
+    assert inc204 and inc204[0]["title"] == "Income, $800,436 above budget year to date", inc204  # 13% above
 
     # ---- real two-month run on 148: July all new; August carries July's explanations
     root = tempfile.mkdtemp()
@@ -73,22 +79,35 @@ def run():
     assert {n["status"] for n in v["commentary"]} == {"new"}, [n["status"] for n in v["commentary"]]
     idx = {n["key"]: i for i, n in enumerate(v["commentary"])}
     assert "cat:Insurance" not in idx and "cat:Supplies" in idx  # insurance is 6% over: under the new threshold
-    reasons = {"income": "Non-recurring income from the refinance closing.",
-               "cat:Supplies": "Bulk purchase of cleaning supplies ahead of the summer."}
+    assert "income" not in idx                                   # 0.7% YTD, 4.9% in July
+    reasons = {"cat:Supplies": "Bulk purchase of cleaning supplies ahead of the summer."}
     for k, i in idx.items():
         body = {"index": i, "text": reasons[k]} if k in reasons else {"index": i}
         assert P("/api/snapshots/%s/note?as=2" % rj, body).status_code == 200
     # a later month can only see what July CONFIRMED, so July must be fully confirmed first
     assert all(n.get("confirmed") for n in c.get("/api/snapshots/%s?as=2" % rj).json["commentary"])
 
+    # Under the 10%/15% rule nothing 148 flagged in July is still flagged in August, so add one item "explained in
+    # July" on top of the real lookup to exercise carry-forward on real August figures (utilities: -54,000 -> -55,239).
+    svc = app.snapshot_service
+    real_prior = svc._prior_notes
+    def with_utilities(entity, year, month):
+        notes, label = real_prior(entity, year, month)
+        if notes:
+            notes["cat:Utility Expenses"] = {"key": "cat:Utility Expenses", "label": "Utility Expenses", "title": "Utility Expenses",
+                                             "text": "Steam ran high during the cold winter.", "basis": -54000, "variance": -54000,
+                                             "since": "July", "confirmed": {"by": "Kristy"}}
+        return notes, label
+    svc._prior_notes = with_utilities
+
     ra = c.post("/api/snapshots/generate", data={"entity": "148", "sample": "148_2026-08_statement.pdf", "as": "2"}).json["id"]
     v = c.get("/api/snapshots/%s?as=2" % ra).json
     byk = {n["key"]: n for n in v["commentary"]}
-    assert byk["income"]["status"] == "continuing" and byk["income"]["since"] == "July"
-    assert byk["income"]["text"] == reasons["income"]
-    assert byk["cat:Utility Expenses"]["status"] == "new"                       # 11% YTD, 16% in August
+    ut = byk["cat:Utility Expenses"]                                            # moved $1,239 (2%): not worse
+    assert ut["status"] == "continuing" and ut["since"] == "July" and ut["text"] == "Steam ran high during the cold winter."
     pf = byk["cat:Professional Fees"]                                           # 53% over in August, YTD favorable
     assert pf["status"] == "new" and pf["title"] == "Professional Fees, $7,927 over budget in August", pf["title"]
+    assert "income" not in byk                                                  # 1.2% YTD, 4.6% in August
     assert byk["saving:Payroll Expenses"]["status"] == "new" and byk["overall"]["status"] == "new"
     assert "cat:Supplies" not in byk and v["resolved"] == ["Supplies"], v["resolved"]  # 9% YTD now: drops off
 
@@ -99,30 +118,30 @@ def run():
     assert P("/api/snapshots/%s/notes/confirm-continuing?as=8" % ra).status_code == 400  # PM cannot
     v = c.get("/api/snapshots/%s?as=2" % ra).json
     byk = {n["key"]: n for n in v["commentary"]}
-    assert byk["income"]["basis"] == 23918  # still measured from July's explained amount
+    assert byk["cat:Utility Expenses"]["basis"] == -54000  # still measured from July's explained amount
     assert not v["can"]["send"]
-    i_util = [i for i, n in enumerate(v["commentary"]) if n["key"] == "cat:Utility Expenses"][0]
-    assert P("/api/snapshots/%s/note?as=2" % ra, {"index": i_util, "text": "Steam ran high in the cold winter; August bill also included a catch-up."}).status_code == 200
+    i_pf = [i for i, n in enumerate(v["commentary"]) if n["key"] == "cat:Professional Fees"][0]
+    assert P("/api/snapshots/%s/note?as=2" % ra, {"index": i_pf, "text": "The annual audit fee was billed in August."}).status_code == 200
     v = c.get("/api/snapshots/%s?as=2" % ra).json
     for i, n in enumerate(v["commentary"]):
         if not n.get("confirmed"):
             assert P("/api/snapshots/%s/note?as=2" % ra, {"index": i}).status_code == 200
     v = c.get("/api/snapshots/%s?as=2" % ra).json
     byk = {n["key"]: n for n in v["commentary"]}
-    assert byk["cat:Utility Expenses"]["basis"] == -55239  # explained: basis is today's variance
+    assert byk["cat:Professional Fees"]["basis"] == 1253  # explained: basis is today's variance
     assert v["can"]["send"]
 
-    # the board report: new notes in full, income only in the compact ongoing table
+    # the board report: new notes in full, utilities only in the compact ongoing table
     t = "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % ra).data, filetype="pdf"))
-    assert "Ongoing items, explained previously" in t and "refinance closing" in t
-    assert "catch-up" in t and "No longer flagged since last month: Supplies" in t
+    assert "Ongoing items, explained previously" in t and "cold winter" in t
+    assert "audit fee" in t and "No longer flagged since last month: Supplies" in t
     assert "more than 10 percent over its year-to-date budget or more than 15 percent" in " ".join(t.split())
     wc = t.split("What changed", 1)[1].split("Ongoing items", 1)[0]
-    assert "Income, $46,840 above budget" not in wc  # not repeated as a full note
+    assert "Utility Expenses, $55,239 over budget" not in wc and "audit fee" in wc  # continuing not repeated in full
     # the PM email carries the same split
     assert P("/api/snapshots/%s/send?as=2" % ra).status_code == 200
     mail = app.snapshot_service.mailer.outbox[-1]["html"]
-    assert "Ongoing items, explained previously" in mail and "refinance closing" in mail
+    assert "Ongoing items, explained previously" in mail and "cold winter" in mail
     link = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', mail).group(1)
     assert b"Ongoing items, explained previously" in c.get(link).data
 
