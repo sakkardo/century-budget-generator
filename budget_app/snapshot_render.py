@@ -348,9 +348,9 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     items = [c for c in commentary if not (c.get("key") == "overall" or c["title"] == "Overall")]
     fresh = [c for c in items if c.get("status") != "continuing"]
     ongoing = [c for c in items if c.get("status") == "continuing"]
-    f.append(Paragraph("What changed", h2))
+    f.append(Paragraph("New notes", h2))
     if not fresh:
-        f.append(Paragraph("Nothing new this month. The items below were explained in earlier snapshots.", body))
+        f.append(Paragraph("No new notes this month. Earlier explanations are listed under Previous notes.", body))
     for c in fresh:
         tag = ""
         if c.get("status") == "worse":
@@ -358,8 +358,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                 xesc(c.get("since") or "an earlier month"), money(c.get("moved", 0)))
         f.append(KeepTogether([Paragraph("<b>%s</b>%s" % (xesc(c["title"]), tag), body), Paragraph(xesc(note_body(c)), body), Spacer(1, 3)]))
     if ongoing:
-        f.append(Spacer(1, 4))
-        f.append(Paragraph("<b>Ongoing items, explained previously</b>", body))
+        f.append(Paragraph("Previous notes", h2))
         orow = [["Item", "YTD variance", "Explained", "Explanation"]]
         for c in ongoing:
             orow.append([Paragraph(xesc(c.get("label") or c["title"]), cell), num(c.get("variance", 0)),

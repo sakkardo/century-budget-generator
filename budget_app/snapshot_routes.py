@@ -190,7 +190,7 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
             html.escape(x) for x in k) for k in info["kpis"])
         notes = "".join('<p class="note"><b>%s</b><br>%s</p>' % (html.escape(t), html.escape(x)) for t, x in info["notes"])
         if info.get("ongoing"):
-            notes += '<p class="muted" style="margin:14px 0 6px"><b>Ongoing items, explained previously</b></p><ul style="margin:0 0 10px;padding-left:18px">' + \
+            notes += '<h2 style="margin-top:18px">Previous notes</h2><ul style="margin:0 0 10px;padding-left:18px">' + \
                 "".join("<li><b>%s</b> (since %s): %s</li>" % (html.escape(n), html.escape(s or "earlier"), html.escape(t)) for n, t, s in info["ongoing"]) + "</ul>"
         if info.get("resolved"):
             notes += '<p class="muted">No longer flagged since last month: %s.</p>' % html.escape(", ".join(info["resolved"]))
@@ -198,7 +198,7 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         return ('<section class="card"><div class="eyebrow">%s &middot; %s</div><h1>%s</h1>'
                 '<p class="muted" style="margin:0">Reviewed by %s (FA). Please confirm by %s.</p></section>'
                 '<section class="card"><div class="kpis">%s</div></section>'
-                '<section class="card"><h2>What changed</h2>%s%s'
+                '<section class="card"><h2>New notes</h2>%s%s'
                 '<p style="margin:12px 0 0"><a class="pdf" href="/snapshot/confirm/%s/%s/pdf" target="_blank" rel="noopener">'
                 'Open the full snapshot (PDF)</a></p></section>') % (
             html.escape(info["entity"]), html.escape(info["month_label"]), html.escape(info["building"]),

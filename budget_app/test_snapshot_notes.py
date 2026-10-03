@@ -133,17 +133,17 @@ def run():
 
     # the board report: new notes in full, utilities only in the compact ongoing table
     t = "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % ra).data, filetype="pdf"))
-    assert "Ongoing items, explained previously" in t and "cold winter" in t
+    assert "Previous notes" in t and "cold winter" in t and "Ongoing items" not in t
     assert "audit fee" in t and "No longer flagged since last month: Supplies" in t
     assert "more than 10 percent over its year-to-date budget or more than 15 percent" in " ".join(t.split())
-    wc = t.split("What changed", 1)[1].split("Ongoing items", 1)[0]
+    wc = t.split("New notes", 1)[1].split("Previous notes", 1)[0]
     assert "Utility Expenses, $55,239 over budget" not in wc and "audit fee" in wc  # continuing not repeated in full
     # the PM email carries the same split
     assert P("/api/snapshots/%s/send?as=2" % ra).status_code == 200
     mail = app.snapshot_service.mailer.outbox[-1]["html"]
-    assert "Ongoing items, explained previously" in mail and "cold winter" in mail
+    assert "New notes" in mail and "Previous notes" in mail and "cold winter" in mail
     link = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', mail).group(1)
-    assert b"Ongoing items, explained previously" in c.get(link).data
+    assert b"Previous notes" in c.get(link).data and b"What changed" not in c.get(link).data
 
     # January starts fresh (no prior month in the same year)
     assert app.snapshot_service._prior_notes("148", 2026, 1) == ({}, None)

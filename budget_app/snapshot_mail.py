@@ -144,7 +144,7 @@ def _notes(notes):
 def _ongoing(items, resolved):
     out = ""
     if items:
-        out += ('<p style="margin:14px 0 6px;font-size:13px;color:%s"><b>Ongoing items, explained previously</b></p>'
+        out += ('<h2 style="font-size:15px;margin:20px 0 8px;color:%s">Previous notes</h2>'
                 '<ul style="margin:0 0 10px;padding-left:18px;font-size:13px;line-height:1.5">' % INK)
         out += "".join("<li><b>%s</b> (since %s): %s</li>" % (html.escape(n), html.escape(s or "earlier"), html.escape(t))
                        for n, t, s in items)
@@ -167,7 +167,7 @@ def pm_request(info, reminder=False):
             LABEL, html.escape(info["entity"]), html.escape(info["month_label"]), INK, html.escape(info["building"]),
             html.escape(info["pm_name"].split(" ")[0]), html.escape(lead))
         + _kpis(info["kpis"])
-        + '<h2 style="font-size:15px;margin:20px 0 8px;color:%s">What changed</h2>' % INK + _notes(info["notes"])
+        + '<h2 style="font-size:15px;margin:20px 0 8px;color:%s">New notes</h2>' % INK + _notes(info["notes"])
         + _ongoing(info.get("ongoing") or [], info.get("resolved") or [])
         + ('<p style="font-size:13px;background:#f7e3e2;border:1px solid %s;padding:10px 12px;border-radius:6px">'
            '<b>Note to the board.</b> %s</p>' % (BRAND, html.escape(info["board_note"])) if info.get("board_note") else "")

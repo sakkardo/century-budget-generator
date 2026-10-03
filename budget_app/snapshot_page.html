@@ -423,16 +423,15 @@ function commentaryHtml(v) {
   var fa = teamNames(v, "fa") || "the FA";
   var cont = v.commentary.filter(function (c) { return c.status === "continuing" && !c.confirmed; }).length;
   var head = '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' +
-    (editable && cont ? '<div class="foot" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:-4px 0 14px"><button class="btn approve" id="bulkcont" style="min-height:38px">&#10003; Confirm all continuing (' + cont + ')</button><span class="muted">Items you explained before that have not moved. Their reasons carry forward.</span></div>' : "") +
     (editable ? "" : '<p class="muted" style="margin:-6px 0 14px">' + esc(fa) + " (FA) edits or confirms each note. " +
       (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
   function statusPill(c) {
     if (c.key === "overall") { return ""; }
-    if (c.status === "continuing") { return '<span class="pill">Continuing since ' + esc(c.since || "earlier") + "</span>"; }
+    if (c.status === "continuing") { return '<span class="pill">Explained in ' + esc(c.since || "an earlier month") + "</span>"; }
     if (c.status === "worse") { return '<span class="pill changes_requested">Moved: up $' + Math.round(c.moved || 0).toLocaleString("en-US") + " since " + esc(c.since || "earlier") + "</span>"; }
     return '<span class="pill draftnote">New this month</span>';
   }
-  var body = v.commentary.map(function (c, i) {
+  function noteHtml(c, i) {
     var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
     var facts = c.facts ? '<p class="muted" style="margin:0">' + esc(c.facts) + "</p>" : "";
     var prior = c.status === "worse" && c.prior_text ? '<p class="muted" style="margin:0"><i>Your ' + esc(c.since || "earlier") + " note:</i> " + esc(c.prior_text) + "</p>" : "";
@@ -447,7 +446,14 @@ function commentaryHtml(v) {
       '<textarea id="ci' + i + '" rows="2" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" +
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
       (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
-  }).join("");
+  }
+  function group(prev) {
+    return v.commentary.map(function (c, i) { return (c.status === "continuing") === prev ? noteHtml(c, i) : ""; }).join("");
+  }
+  var news = group(false), prevs = group(true);
+  var body = (news || '<p class="muted" style="margin:0 0 14px">No new notes this month.</p>') +
+    (prevs ? '<p class="label" style="margin:22px 0 4px">Previous notes</p><p class="muted" style="margin:0 0 12px">Explained in an earlier month and not materially changed since. The reasons carry forward.</p>' +
+      (editable && cont ? '<div class="foot" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 14px"><button class="btn approve" id="bulkcont" style="min-height:38px">&#10003; Confirm all previous notes (' + cont + ")</button></div>" : "") + prevs : "");
   var resolved = (v.resolved && v.resolved.length) ? '<p class="muted" style="margin:0 0 14px">No longer flagged since last month: ' + esc(v.resolved.join(", ")) + ".</p>" : "";
   var note = editable
     ? '<div class="note"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">optional, prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" +
@@ -513,7 +519,7 @@ function render(v) {
     '<div id="err"></div><div class="cols"><div class="stack">' +
     '<div class="panel pad"><p class="label">Sign-off</p>' + signHtml(v) + "</div>" +
     '<div class="panel pad">' + checksHtml(v) + "</div>" +
-    '<div class="panel pad"><p class="label">What changed</p>' + commentaryHtml(v) + "</div>" +
+    '<div class="panel pad"><p class="label">New notes</p>' + commentaryHtml(v) + "</div>" +
     '<div class="panel pad"><details class="hist"><summary>History (' + v.log.length + ")</summary><div class=\"log\">" +
     v.log.map(function (l) { return "<div><time>" + esc(l.at) + "</time><b>" + esc(l.who) + "</b> " + esc(l.what) + "</div>"; }).join("") + "</div></details></div>" +
     '</div><div class="panel preview"><div class="bar"><p class="label" style="margin:0">What the board will see</p><a href="/api/snapshots/' + v.id + '/pdf" target="_blank" rel="noopener">Open PDF</a></div>' +
