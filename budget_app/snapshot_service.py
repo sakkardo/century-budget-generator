@@ -51,6 +51,8 @@ class StaticDirectory:
         "302": {"client": "205 Water Street Condominium", "team": [
             {"user_id": 101, "name": "Jennifer Murman", "role": "fa"}, {"user_id": 102, "name": "Giovanni Lizarazo", "role": "fa"},
             {"user_id": 17, "name": "George Matos", "role": "pm"}]},
+        "148": {"client": "130 East 18th Owners Corp", "team": [
+            {"user_id": 2, "name": "Kristy Paxinos", "role": "fa"}, {"user_id": 8, "name": "Jacob Sirotkin", "role": "pm"}]},
         "999": {"client": "TEST - one person is FA and PM", "team": [
             {"user_id": 2, "name": "Kristy Paxinos", "role": "fa"}, {"user_id": 2, "name": "Kristy Paxinos", "role": "pm"}]},
     }

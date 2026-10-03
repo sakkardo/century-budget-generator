@@ -21,6 +21,8 @@ EXPECTED = {
     "302_2026-08": {"income": 1059953, "expenses": 989208, "noi": 70744, "net": 120897, "cash_end": 740075},
     "206_2026-05": {"cash_end": 7512030, "accounts": 11},
     "206_2026-08": {"cash_end": 6708639, "accounts": 11},
+    # history page INCLUDES the security account here; "Collateral Security" is not deposits
+    "148_2026-08": {"income": 3898002, "expenses": 4080768, "noi": -182766, "net": -487376, "cash_end": 4231204, "accounts": 11},
 }
 
 
@@ -54,6 +56,8 @@ def run():
     s = p.build_snapshot(open(os.path.join(SAMPLES, "206_2026-05_statement.pdf"), "rb").read())
     acct = {a["name"]: a for a in s["cash"]["accounts"]}
     assert acct["Principal - Owners Reserve 2"]["end"] == 43949, sorted(acct)
+    assert p.is_security_account("Bank United - Security Acct") and p.is_security_account("Master Security Account")
+    assert not p.is_security_account("NCB - Collateral Security")
     print("snapshot parser: all tests passed")
 
 

@@ -22,12 +22,15 @@ _TOP_SECTIONS = ("INCOME", "EXPENSES", "NON-OPERATING INCOME & EXPENSES", "ADJUS
 
 
 def is_security_account(name):
-    return "security" in name.lower()
+    """Tenant security-deposit cash ('Master Security Account', 'Bank United - Security Acct').
+    Loan collateral ('NCB - Collateral Security', 148) is the building's money, not deposits."""
+    n = name.lower()
+    return "security" in n and "collateral" not in n
 
 
 def account_kind(name):
     n = name.lower()
-    if "security" in n:
+    if is_security_account(name):
         return "security"
     if "money market" in n:
         return "money market"
@@ -353,10 +356,13 @@ def run_checks(s, rows, monthly):
                            "severity": "review", "status": "mismatch", "expected": a["end"],
                            "actual": a["begin"] + a["debit"] + a["credit"], "detail": ""})
     if cash["history"] and cash["total"]:
-        # The 12-month history page leaves out security-deposit accounts.
-        near("cash_history", "Cash history page ends at the Cash Journal total (excluding security deposits)", "review",
-             sum(a["end"] for a in cash["accounts"] if not is_security_account(a["name"])), cash["history"][-1],
-             "The 'Summary Cash Balance' page disagrees with its own Cash Journal.")
+        # The 12-month history page leaves out security-deposit accounts in some buildings (204, 302, 206)
+        # and includes them in others (148). It must match the Cash Journal one way or the other.
+        excl = sum(a["end"] for a in cash["accounts"] if not is_security_account(a["name"]))
+        hist = cash["history"][-1]
+        target = cash["total"]["end"] if abs(hist - cash["total"]["end"]) <= 2 else excl
+        near("cash_history", "Cash history page ends at the Cash Journal total", "review", target, hist,
+             "The 'Summary Cash Balance' page disagrees with its own Cash Journal (with or without security deposits).")
     arr = cash["arrears"]
     if len(arr) == 3:
         near("arrears", "Receivable plus prepaid equals total arrears (current month)", "block",
