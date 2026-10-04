@@ -105,8 +105,13 @@ class LocalReleaser:
 PLACEHOLDER = re.compile(r"\[[^\]]+\]")
 
 
+def active(commentary):
+    """Notes that print: everything the FA has not removed."""
+    return [c for c in commentary if not c.get("removed")]
+
+
 def unconfirmed(commentary):
-    return [i for i, c in enumerate(commentary) if not c.get("confirmed")]
+    return [i for i, c in enumerate(commentary) if not c.get("confirmed") and not c.get("removed")]
 
 
 def _eastern(dt=None):
@@ -260,7 +265,7 @@ class Service:
         stg = self.stage(rec)
         lbl = {"released": "APPROVED", "approved": "APPROVED", "awaiting_pm": "IN REVIEW",
                "changes_requested": "CHANGES REQUESTED"}.get(stg, "DRAFT")
-        notes = v["commentary"]
+        notes = active(v["commentary"])
         reviewed = None
         if notes and all(c.get("confirmed") for c in notes):
             reviewed = max((c["confirmed"] for c in notes), key=lambda st: st.get("iso", ""))  # latest confirmation
@@ -348,7 +353,7 @@ class Service:
         label = MONTHS[prev["month"] - 1]
         notes = {}
         for n in self._cur(rec)["commentary"]:
-            if n.get("key") and n.get("confirmed"):
+            if n.get("key") and n.get("confirmed") and not n.get("removed"):
                 notes[n["key"]] = dict(n, since=n.get("since") or label)
         return notes, label
 
@@ -420,6 +425,8 @@ class Service:
             if not 0 <= index < len(cur["commentary"]):
                 raise ValueError("That note no longer exists. Reload the page.")
             note = cur["commentary"][index]
+            if note.get("removed"):
+                raise ValueError("This note was removed. Restore it first.")
             old_text = note.get("text") or ""
             new_text = old_text if text is None else text.strip()
             if not new_text and not note.get("facts"):
@@ -442,7 +449,8 @@ class Service:
             self._editable(rec)
             if not self._is_fa(rec, user_id):
                 raise ValueError(self._not_fa(rec, "confirm the notes"))
-            todo = [n for n in self._cur(rec)["commentary"] if n.get("status") == "continuing" and not n.get("confirmed")]
+            todo = [n for n in self._cur(rec)["commentary"]
+                    if n.get("status") == "continuing" and not n.get("confirmed") and not n.get("removed")]
             if not todo:
                 raise ValueError("There are no continuing notes left to confirm.")
             for n in todo:
@@ -451,6 +459,31 @@ class Service:
                 len(todo), ", ".join(n.get("label") or n["title"] for n in todo))})
             return len(todo)
         return self._mutate(rid, fn)
+
+    def remove_note(self, rid, user_id, index, restore=False):
+        """FA drops a suggested note from the snapshot (or brings it back). The note is kept, marked removed, so the
+        history shows who took it out; it no longer prints, emails or counts toward 'every note confirmed'.
+        The board reads different content either way, so this makes a new version and clears signatures."""
+        def fn(rec):
+            self._editable(rec)
+            if not self._is_fa(rec, user_id):
+                raise ValueError(self._not_fa(rec, "remove notes"))
+            cur = self._cur(rec)
+            if not 0 <= index < len(cur["commentary"]):
+                raise ValueError("That note no longer exists. Reload the page.")
+            notes = copy.deepcopy(cur["commentary"])
+            n = notes[index]
+            if n.get("key") == "overall" or n.get("title") == "Overall":
+                raise ValueError("The overall summary is the snapshot's headline and cannot be removed.")
+            if bool(n.get("removed")) != restore:
+                return  # already in the requested state
+            if restore:
+                n.pop("removed", None)
+                n.pop("confirmed", None)  # back in the report: the FA confirms it again
+            else:
+                n["removed"] = {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}
+            self._new_version(rec, user_id, notes=notes, what='%s note "%s"' % ("Restored" if restore else "Removed", n["title"]))
+        self._mutate(rid, fn)
 
     def acknowledge(self, rid, user_id, check_id, note):
         def fn(rec):
@@ -476,7 +509,7 @@ class Service:
                 raise ValueError(self._blocked_text(st))  # a team problem first: confirming notes cannot fix it
             left = unconfirmed(v["commentary"])
             if left:
-                raise ValueError("Confirm or edit every note first (%d of %d still to confirm)." % (len(left), len(v["commentary"])))
+                raise ValueError("Confirm or edit every note first (%d of %d still to confirm)." % (len(left), len(active(v["commentary"]))))
             pms, missing = self._pm_recipients(rec)
             if not pms:
                 raise ValueError("No PM email on file for %s (%s). Add it before sending." % (
@@ -526,9 +559,9 @@ class Service:
                      ("Net income YTD", m(s["net_income"]["ytd_actual"]), "Budget " + m(s["net_income"]["ytd_budget"])),
                      ("%s NOI" % MONTHS[rec["month"] - 1], m(s["noi"]["month_actual"]), "Budget " + m(s["noi"]["month_budget"])),
                      ("Cash excl. security", m(cash_x) if cash_x is not None else "n/a", "At month end")],
-            "notes": [(c["title"], snapshot_render.note_body(c)) for c in v["commentary"] if c.get("status") != "continuing"],
+            "notes": [(c["title"], snapshot_render.note_body(c)) for c in active(v["commentary"]) if c.get("status") != "continuing"],
             "ongoing": [(c.get("label") or c["title"], (c.get("text") or c.get("facts") or "").strip(), c.get("since") or "")
-                        for c in v["commentary"] if c.get("status") == "continuing"],
+                        for c in active(v["commentary"]) if c.get("status") == "continuing"],
             "resolved": v.get("resolved") or [], "board_note": v["board_note"],
             "link": link, "due_label": label(due), "portal_link": self._portal_link(rec),
         }
@@ -787,7 +820,7 @@ class Service:
             why_not = list(why)
             left = unconfirmed(v["commentary"])
             if left:
-                why_not.append("Confirm or edit every note below before sending (%d of %d still to confirm)." % (len(left), len(v["commentary"])))
+                why_not.append("Confirm or edit every note below before sending (%d of %d still to confirm)." % (len(left), len(active(v["commentary"]))))
             if st["state"].startswith("blocked"):
                 why_not.append(self._blocked_text(st))
             if not pms:

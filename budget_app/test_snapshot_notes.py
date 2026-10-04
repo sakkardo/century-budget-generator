@@ -145,6 +145,45 @@ def run():
     link = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', mail).group(1)
     assert b"Previous notes" in c.get(link).data and b"What changed" not in c.get(link).data
 
+    # ---- the FA can remove a suggested note (and restore it); removed notes never print, email or carry forward
+    rr = c.post("/api/snapshots/generate", data={"entity": "204", "sample": "204_2026-08_statement.pdf", "as": "2"}).json["id"]
+    v = c.get("/api/snapshots/%s?as=2" % rr).json
+    keys = [n["key"] for n in v["commentary"]]
+    i_rep, i_all = keys.index("cat:Repairs"), keys.index("overall")
+    assert P("/api/snapshots/%s/note/remove?as=8" % rr, {"index": i_rep}).status_code == 400   # PM cannot
+    assert P("/api/snapshots/%s/note/remove?as=2" % rr, {"index": i_all}).status_code == 400   # the headline stays
+    assert P("/api/snapshots/%s/note/remove?as=2" % rr, {"index": i_rep}).status_code == 200
+    v = c.get("/api/snapshots/%s?as=2" % rr).json
+    rep = v["commentary"][i_rep]
+    assert rep["removed"]["by"] == "Kristy Paxinos" and v["version"] == 2           # a new version, with who removed it
+    assert "Removed note" in v["log"][0]["what"]  # newest first
+    assert P("/api/snapshots/%s/note?as=2" % rr, {"index": i_rep}).status_code == 400  # cannot confirm a removed note
+    for i, n in enumerate(v["commentary"]):
+        if not n.get("removed") and not n.get("confirmed"):
+            assert P("/api/snapshots/%s/note?as=2" % rr, {"index": i}).status_code == 200
+    v = c.get("/api/snapshots/%s?as=2" % rr).json
+    assert v["can"]["send"], v["why_not"]                                           # removed note does not block sending
+    t = "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rr).data, filetype="pdf"))
+    assert "Repairs, $53,205 over budget" not in t and "Utility Expenses, $113,797 over budget" in t
+    assert P("/api/snapshots/%s/send?as=2" % rr).status_code == 200
+    mail = app.snapshot_service.mailer.outbox[-1]["html"]
+    assert "Repairs, $53,205" not in mail and "Utility Expenses, $113,797" in mail
+    # a removed note is not "explained": next month it is suggested again as new
+    sept_prior, _ = real_prior("204", 2026, 9)
+    assert "cat:Repairs" not in sept_prior and "cat:Utility Expenses" in sept_prior
+    # restore brings it back unconfirmed (the FA reviews it again) and pulls the snapshot back to draft
+    assert P("/api/snapshots/%s/note/restore?as=2" % rr, {"index": i_rep}).status_code == 200
+    v = c.get("/api/snapshots/%s?as=2" % rr).json
+    rep = v["commentary"][i_rep]
+    assert not rep.get("removed") and not rep.get("confirmed") and not v["can"]["send"]
+    assert "Repairs, $53,205 over budget" in "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rr).data, filetype="pdf"))
+    # removing changes what the board reads, so the content hash changes
+    from snapshot_signoff import content_hash
+    notes = [dict(n) for n in v["commentary"]]
+    h_all = content_hash(s204, notes)
+    notes[i_rep]["removed"] = {"by": "K"}
+    assert content_hash(s204, notes) != h_all
+
     # January starts fresh (no prior month in the same year)
     assert app.snapshot_service._prior_notes("148", 2026, 1) == ({}, None)
     print("snapshot notes: all tests passed")

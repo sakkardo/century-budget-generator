@@ -138,6 +138,16 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         b = request.get_json(force=True)
         return guarded(lambda: service.confirm_note(rid, uid(), int(b["index"]), b.get("text")))
 
+    @bp.route("/api/snapshots/<rid>/note/remove", methods=["POST"])
+    def note_remove(rid):
+        b = request.get_json(force=True)
+        return guarded(lambda: service.remove_note(rid, uid(), int(b["index"])))
+
+    @bp.route("/api/snapshots/<rid>/note/restore", methods=["POST"])
+    def note_restore(rid):
+        b = request.get_json(force=True)
+        return guarded(lambda: service.remove_note(rid, uid(), int(b["index"]), restore=True))
+
     @bp.route("/api/snapshots/<rid>/notes/confirm-continuing", methods=["POST"])
     def confirm_continuing(rid):
         return guarded(lambda: {"confirmed": service.confirm_continuing(rid, uid())})

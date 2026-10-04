@@ -168,6 +168,13 @@ details.checks[open] summary .chev::after { content:" (hide)" }
 .note .foot .btn { min-height:38px; padding:0 14px }
 .note .stamp { font-size:13px; color:var(--ok); font-weight:600 }
 .note .hint { font-size:13px; color:var(--warn) }
+.note .foot .btn.rm { background:transparent; color:var(--bad); border-color:var(--bad-bd) }
+.note .foot .btn.rm:hover { background:var(--bad-bg); box-shadow:none }
+details.removed { margin:4px 0 14px; border:1px dashed var(--rule); border-radius:var(--radius); padding:10px 14px }
+details.removed summary { cursor:pointer; font-weight:600; color:var(--ink) }
+.gone { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0 0; margin-top:10px; border-top:1px solid var(--border) }
+.gone b { color:var(--ink-2); text-decoration:line-through; font-weight:600 }
+.gone .btn { min-height:36px; padding:0 14px }
 .progress { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--ink-2); margin:-4px 0 14px }
 .progress .barx { flex:1; height:6px; border-radius:99px; background:var(--surface-warm); overflow:hidden; border:1px solid var(--border) }
 .progress .barx i { display:block; height:100%; background:var(--ok) }
@@ -418,10 +425,11 @@ function checksHtml(v) {
 
 function commentaryHtml(v) {
   var editable = v.can.edit;
-  var total = v.commentary.length;
-  var done = v.commentary.filter(function (c) { return c.confirmed; }).length;
+  var live = v.commentary.filter(function (c) { return !c.removed; });
+  var total = live.length;
+  var done = live.filter(function (c) { return c.confirmed; }).length;
   var fa = teamNames(v, "fa") || "the FA";
-  var cont = v.commentary.filter(function (c) { return c.status === "continuing" && !c.confirmed; }).length;
+  var cont = live.filter(function (c) { return c.status === "continuing" && !c.confirmed; }).length;
   var head = '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' +
     (editable ? "" : '<p class="muted" style="margin:-6px 0 14px">' + esc(fa) + " (FA) edits or confirms each note. " +
       (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
@@ -445,11 +453,18 @@ function commentaryHtml(v) {
     return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + statusPill(c) + "</label>" + facts + prior +
       '<textarea id="ci' + i + '" rows="2" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" +
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
-      (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
+      (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" +
+      (c.key === "overall" ? "" : '<button class="btn rm" data-rm="' + i + '" title="Leave this note out of the snapshot">Remove</button>') + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
   }
   function group(prev) {
-    return v.commentary.map(function (c, i) { return (c.status === "continuing") === prev ? noteHtml(c, i) : ""; }).join("");
+    return v.commentary.map(function (c, i) { return !c.removed && (c.status === "continuing") === prev ? noteHtml(c, i) : ""; }).join("");
   }
+  var gone = v.commentary.map(function (c, i) {
+    return c.removed ? '<div class="gone"><div><b>' + esc(c.title) + '</b><div class="muted">Removed by ' + esc(c.removed.by) + " &middot; " + esc(c.removed.at) + "</div></div>" +
+      (editable ? '<button class="btn" data-rs="' + i + '">Restore</button>' : "") + "</div>" : "";
+  }).join("");
+  var removedHtml = gone && editable ? '<details class="removed"><summary>Removed notes (' + v.commentary.filter(function (c) { return c.removed; }).length +
+    ')<span class="muted"> &middot; not on the snapshot</span></summary>' + gone + "</details>" : "";
   var news = group(false), prevs = group(true);
   var body = (news || '<p class="muted" style="margin:0 0 14px">No new notes this month.</p>') +
     (prevs ? '<p class="label" style="margin:22px 0 4px">Previous notes</p><p class="muted" style="margin:0 0 12px">Explained in an earlier month and not materially changed since. The reasons carry forward.</p>' +
@@ -459,7 +474,7 @@ function commentaryHtml(v) {
     ? '<div class="note"><label class="ct" for="bn">Note to the board <span class="muted" style="font-weight:500">optional, prints on the snapshot</span></label><textarea id="bn" rows="2">' + esc(v.board_note) + "</textarea>" +
       '<div class="foot"><button id="saveedit" class="btn">Save board note</button><span class="muted">Changing any wording makes a new version and clears signatures.</span></div></div>'
     : (v.board_note ? '<div class="msg info"><b>Note to the board:</b> ' + esc(v.board_note) + "</div>" : "");
-  return head + body + resolved + note;
+  return head + body + removedHtml + resolved + note;
 }
 
 function signHtml(v) {
@@ -534,6 +549,12 @@ function act(method, url, body) { api(method, url, body).then(function () { retu
 function wire(v) {
   function on(id, fn) { var node = el(id); if (node) { node.onclick = fn; } }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-rm]"), function (b) {
+    b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/remove", { index: Number(b.getAttribute("data-rm")) }); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-rs]"), function (b) {
+    b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/restore", { index: Number(b.getAttribute("data-rs")) }); };
+  });
   on("bulkcont", function () { act("POST", "/api/snapshots/" + v.id + "/notes/confirm-continuing"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });
   on("saveedit", function () {
