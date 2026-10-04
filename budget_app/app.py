@@ -2742,6 +2742,18 @@ def _fetch_monday_buildings():
     return buildings
 
 
+def _monday_people(raw):
+    """One Monday people cell -> the people in it. Monday lists joint assignments as
+    "Jennifer Murman, Giovanni Lizarazo"; each person gets their own assignment (Jacob 2026-10-04:
+    both on all). Only split when every piece is a full name, so "John Smith, Jr." stays whole."""
+    import re
+    raw = (raw or "").strip()
+    parts = [p.strip() for p in re.split(r",|&", raw) if p.strip()]
+    if len(parts) > 1 and all(len(p.split()) >= 2 for p in parts):
+        return parts
+    return [raw] if raw else []
+
+
 def _apply_monday_sync(data):
     """Apply a buildings list to the DB — upsert Users + BuildingAssignments,
     and refresh buildings.csv. Commits the session.
@@ -2763,11 +2775,9 @@ def _apply_monday_sync(data):
     # Collect all unique people names from the data
     people = {}  # name -> set of roles
     for bldg in data:
-        pm = (bldg.get("pm") or "").strip()
-        fa = (bldg.get("fa") or "").strip()
-        if pm:
+        for pm in _monday_people(bldg.get("pm")):
             people.setdefault(pm, set()).add("pm")
-        if fa:
+        for fa in _monday_people(bldg.get("fa")):
             people.setdefault(fa, set()).add("fa")
 
     # Ensure all people exist as users
@@ -2802,15 +2812,15 @@ def _apply_monday_sync(data):
         if not entity_code:
             continue
 
-        pm_name = (bldg.get("pm") or "").strip()
-        fa_name = (bldg.get("fa") or "").strip()
+        pm_names = _monday_people(bldg.get("pm"))
+        fa_names = _monday_people(bldg.get("fa"))
 
         existing_assignments = BuildingAssignment.query.filter_by(entity_code=entity_code).all()
         for a in existing_assignments:
             should_keep = False
-            if a.role == "pm" and a.user and a.user.name == pm_name:
+            if a.role == "pm" and a.user and a.user.name in pm_names:
                 should_keep = True
-            if a.role == "fa" and a.user and a.user.name == fa_name:
+            if a.role == "fa" and a.user and a.user.name in fa_names:
                 should_keep = True
             if not should_keep:
                 db.session.delete(a)
@@ -2818,27 +2828,17 @@ def _apply_monday_sync(data):
 
         db.session.flush()
 
-        if pm_name:
-            pm_user = User.query.filter_by(name=pm_name).first()
-            if pm_user:
+        for role, names in (("pm", pm_names), ("fa", fa_names)):
+            for person in names:
+                person_user = User.query.filter_by(name=person).first()
+                if not person_user:
+                    continue
                 existing = BuildingAssignment.query.filter_by(
-                    entity_code=entity_code, user_id=pm_user.id, role="pm"
+                    entity_code=entity_code, user_id=person_user.id, role=role
                 ).first()
                 if not existing:
                     db.session.add(BuildingAssignment(
-                        entity_code=entity_code, user_id=pm_user.id, role="pm"
-                    ))
-                    stats["assignments_created"] += 1
-
-        if fa_name:
-            fa_user = User.query.filter_by(name=fa_name).first()
-            if fa_user:
-                existing = BuildingAssignment.query.filter_by(
-                    entity_code=entity_code, user_id=fa_user.id, role="fa"
-                ).first()
-                if not existing:
-                    db.session.add(BuildingAssignment(
-                        entity_code=entity_code, user_id=fa_user.id, role="fa"
+                        entity_code=entity_code, user_id=person_user.id, role=role
                     ))
                     stats["assignments_created"] += 1
 
