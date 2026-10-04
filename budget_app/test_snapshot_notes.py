@@ -143,7 +143,8 @@ def run():
     mail = app.snapshot_service.mailer.outbox[-1]["html"]
     assert "New notes" in mail and "Previous notes" in mail and "cold winter" in mail
     link = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', mail).group(1)
-    assert b"Previous notes" in c.get(link).data and b"What changed" not in c.get(link).data
+    page = c.get(link).data
+    assert b"/page/1.png" in page and b"Confirm this snapshot" in page  # the PM reads the report itself
 
     # ---- the FA can remove a suggested note (and restore it); removed notes never print, email or carry forward
     rr = c.post("/api/snapshots/generate", data={"entity": "204", "sample": "204_2026-08_statement.pdf", "as": "2"}).json["id"]

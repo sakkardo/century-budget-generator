@@ -84,7 +84,7 @@ def run():
     mail = svc.mailer.outbox[n0:]
     assert len(mail) == 1 and mail[0]["kind"] == "pm_request" and mail[0]["intended"] == ["jsirotkin@centuryny.com"]
     assert mail[0]["sender"] == "kpaxinos@centuryny.com" and mail[0]["attachments"] == ["204 - 444 East 86th Owners Corp Monthly Financial Snapshot August 2026.pdf"]
-    assert "$49,853" in mail[0]["html"] and "Review and confirm" in mail[0]["html"]
+    assert "$49,853" in mail[0]["html"] and "Review the August snapshot" in mail[0]["html"]
     v = c.get("/api/snapshots/%s?as=2" % rid).json
     assert v["stage"] == "awaiting_pm" and v["can"]["resend"] and not v["can"]["send"] and v["request"]["pms"] == ["Jacob Sirotkin"]
     link1 = last_link(svc.mailer.outbox)
@@ -93,6 +93,11 @@ def run():
     for _ in range(3):
         r = c.get(link1)
         assert r.status_code == 200 and b"Confirm this snapshot" in r.data
+        assert b"/page/1.png" in r.data and b"/page/2.png" in r.data and b"/page/3.png" not in r.data  # the report, both pages
+    png = c.get(link1 + "/page/1.png")
+    assert png.status_code == 200 and png.mimetype == "image/png" and png.data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert c.get(link1 + "/page/3.png").status_code == 404
+    assert b"not valid" in c.get(link1[:-4] + "XXXX/page/1.png").data  # a bad link shows no report
     assert stage(rid) == "awaiting_pm"
     assert c.get(link1 + "/pdf").data[:4] == b"%PDF"
     assert b"not valid" in c.get(link1[:-4] + "XXXX").data

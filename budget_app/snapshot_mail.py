@@ -171,8 +171,9 @@ def pm_request(info, reminder=False):
         + _ongoing(info.get("ongoing") or [], info.get("resolved") or [])
         + ('<p style="font-size:13px;background:#f7e3e2;border:1px solid %s;padding:10px 12px;border-radius:6px">'
            '<b>Note to the board.</b> %s</p>' % (BRAND, html.escape(info["board_note"])) if info.get("board_note") else "")
-        + '<p style="font-size:13px;color:%s;margin:16px 0 0">The full two-page snapshot is attached.</p>' % LABEL
-        + _button(info["link"], "Review and confirm")
+        + _button(info["link"], "Review the %s snapshot" % html.escape(info["month_label"].split(" ")[0]))
+        + '<p style="font-size:13px;color:%s;margin:0 0 6px">The button opens the full snapshot with Confirm at the bottom. '
+          'A PDF copy is attached for your records.</p>' % LABEL
         + '<p style="font-size:13px;color:%s;margin:0">Please confirm by <b>%s</b>. On that page you can also ask %s for changes. '
           'The link is for you only and works once.</p>' % (LABEL, html.escape(info["due_label"]), html.escape(info["fa_name"]))
     )

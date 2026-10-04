@@ -5,9 +5,11 @@ PM email link: /snapshot/confirm/<rid>/<token>. No sign-in; the one-time link is
   GET only shows the page (mail scanners open links); the decision is a POST.
 Timer: POST /api/snapshots/cron/tick with X-Admin-Key (hourly Railway cron).
 """
+import collections
 import html
 import os
 import string
+import threading
 
 from flask import Blueprint, Response, has_request_context, jsonify, request
 
@@ -194,26 +196,39 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
     def msg(kind, title, text):
         return page_out(title, '<div class="msg %s"><h1>%s</h1><p style="margin:0">%s</p></div>' % (kind, html.escape(title), text))
 
+    # The PM reads the report itself, as page images of the exact version they are confirming: images look the same on
+    # every phone and desktop (an embedded PDF often shows only page 1 on iPhone). Cached per version and stage.
+    page_cache, page_lock = collections.OrderedDict(), threading.Lock()
+
+    def report_pages(rec):
+        import fitz
+        v = rec["versions"][-1]
+        key = (rec["id"], v["hash"], service.stage(rec), len(rec["signoffs"]))
+        with page_lock:
+            if key in page_cache:
+                page_cache.move_to_end(key)
+                return page_cache[key]
+        doc = fitz.open(stream=service.render(rec), filetype="pdf")
+        pages = [p.get_pixmap(dpi=150).tobytes("png") for p in doc]  # 1275px wide: sharp on phones and retina screens
+        with page_lock:
+            page_cache[key] = pages
+            while len(page_cache) > 24:
+                page_cache.popitem(last=False)
+        return pages
+
     def summary(st, rid, raw):
         info = st["info"]
-        kp = "".join('<div class="kpi"><div class="l">%s</div><div class="v">%s</div><div class="s">%s</div></div>' % tuple(
-            html.escape(x) for x in k) for k in info["kpis"])
-        notes = "".join('<p class="note"><b>%s</b><br>%s</p>' % (html.escape(t), html.escape(x)) for t, x in info["notes"])
-        if info.get("ongoing"):
-            notes += '<h2 style="margin-top:18px">Previous notes</h2><ul style="margin:0 0 10px;padding-left:18px">' + \
-                "".join("<li><b>%s</b> (since %s): %s</li>" % (html.escape(n), html.escape(s or "earlier"), html.escape(t)) for n, t, s in info["ongoing"]) + "</ul>"
-        if info.get("resolved"):
-            notes += '<p class="muted">No longer flagged since last month: %s.</p>' % html.escape(", ".join(info["resolved"]))
-        board = '<p class="board"><b>Note to the board.</b> %s</p>' % html.escape(info["board_note"]) if info.get("board_note") else ""
+        base = "/snapshot/confirm/%s/%s" % (html.escape(rid, quote=True), html.escape(raw, quote=True))
+        n = len(report_pages(st["rec"]))
+        imgs = "".join('<a href="%s/page/%d.png" target="_blank" rel="noopener" class="pg"><img src="%s/page/%d.png" '
+                       'alt="Snapshot page %d of %d" loading="%s"></a>' % (base, i, base, i, i, n, "eager" if i == 1 else "lazy")
+                       for i in range(1, n + 1))
         return ('<section class="card"><div class="eyebrow">%s &middot; %s</div><h1>%s</h1>'
-                '<p class="muted" style="margin:0">Reviewed by %s (FA). Please confirm by %s.</p></section>'
-                '<section class="card"><div class="kpis">%s</div></section>'
-                '<section class="card"><h2>New notes</h2>%s%s'
-                '<p style="margin:12px 0 0"><a class="pdf" href="/snapshot/confirm/%s/%s/pdf" target="_blank" rel="noopener">'
-                'Open the full snapshot (PDF)</a></p></section>') % (
+                '<p class="muted" style="margin:0">Reviewed by %s (FA). Please read the %d pages below, then confirm at the bottom by %s.</p></section>'
+                '<section class="report">%s<p class="muted" style="margin:0;text-align:center">Tap a page to enlarge it, or '
+                '<a class="pdf" href="%s/pdf" target="_blank" rel="noopener">open it as a PDF</a>.</p></section>') % (
             html.escape(info["entity"]), html.escape(info["month_label"]), html.escape(info["building"]),
-            html.escape(info["fa_name"]), html.escape(info["due_label"]), kp, notes, board,
-            html.escape(rid, quote=True), html.escape(raw, quote=True))
+            html.escape(info["fa_name"]), n, html.escape(info["due_label"]), imgs, base)
 
     def explain(st):
         s = st["state"]
@@ -259,6 +274,17 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         if decision == "approve":
             return msg("ok", "Confirmed. Thank you.", "The snapshot is final and is being saved to the building's Monthly Financials folder. You can close this page.")
         return msg("", "Sent back for changes", "Your note was sent to the FA. You will get a new email when it is updated.")
+
+    @bp.route("/snapshot/confirm/<rid>/<raw>/page/<int:n>.png")
+    def confirm_page_png(rid, raw, n):
+        st = service.link_state(rid, raw)
+        if st["state"] in ("unknown", "replaced"):
+            return explain(st)
+        pages = report_pages(st["rec"])
+        if not 1 <= n <= len(pages):
+            return err("No such page.", 404)
+        return Response(pages[n - 1], mimetype="image/png",
+                        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex", "Referrer-Policy": "no-referrer"})
 
     @bp.route("/snapshot/confirm/<rid>/<raw>/pdf")
     def confirm_pdf(rid, raw):
