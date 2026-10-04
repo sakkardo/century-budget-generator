@@ -36,6 +36,13 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
 .mark { width:34px; height:34px; border-radius:7px; background:var(--brand); color:#fff; display:grid; place-items:center; font-weight:800 }
 .top h1 { font-size:clamp(24px, 3.2vw, 34px); line-height:1.15; letter-spacing:-.4px }
 .top p { margin:6px 0 0; max-width:62ch }
+.start { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:6px }
+.startbtn { all:unset; box-sizing:border-box; cursor:pointer; display:inline-flex; align-items:center; gap:12px; min-height:52px; padding:0 22px 0 16px; border-radius:99px; background:var(--brand); color:#fff; font-weight:700; font-size:16px; box-shadow:0 6px 18px rgba(164,38,44,.28); transition:transform .15s, box-shadow .15s }
+.startbtn:hover { transform:translateY(-1px); box-shadow:0 10px 24px rgba(164,38,44,.32) }
+.startbtn:focus-visible, .startalt:focus-visible { outline:2px solid var(--ink); outline-offset:3px }
+.startbtn .tri { width:30px; height:30px; border-radius:50%; background:rgba(255,255,255,.2); display:grid; place-items:center }
+.startbtn .tri::before { content:""; border-style:solid; border-width:7px 0 7px 11px; border-color:transparent transparent transparent #fff; margin-left:3px }
+.startalt { all:unset; cursor:pointer; font-size:14px; font-weight:600; color:var(--ink); text-decoration:underline; text-underline-offset:3px }
 .example { font-size:13px; color:var(--label); border:1px solid var(--border); background:var(--surface); border-radius:99px; padding:6px 12px }
 
 /* main grid */
@@ -264,6 +271,11 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
       <div class="brand"><span class="mark" aria-hidden="true">C</span><span class="eyebrow">Century Management &middot; How it works</span></div>
       <h1>The Monthly Financial Snapshot, start to finish</h1>
       <p>From the Yardi statement to a confirmed, signed two-page snapshot in the building's Monthly Financials folder. The FA reviews it, the PM confirms it, and nothing is final until both have.</p>
+      <div class="start">
+        <button class="startbtn" id="startv"><span class="tri" aria-hidden="true"></span><span id="startlab">Play the walkthrough</span></button>
+        <button class="startalt" id="starts">Play without sound</button>
+        <span class="muted">About 3 minutes &middot; sound is clearest in Microsoft Edge</span>
+      </div>
     </div>
     <span class="example">Example: 204 &middot; 444 East 86th Owners Corp &middot; August 2026</span>
   </header>
@@ -528,7 +540,7 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
       <div class="caption" id="caption"></div>
       <div class="controls">
         <button class="ctl" id="prev" aria-label="Previous step">&larr; Back</button>
-        <button class="ctl primary" id="play">Pause</button>
+        <button class="ctl primary" id="play">Play</button>
         <button class="ctl" id="next" aria-label="Next step">Next &rarr;</button>
         <span class="timer" aria-hidden="true"><i id="tbar"></i></span>
         <span class="count" id="count">1 / 10</span>
@@ -554,7 +566,7 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
   var stage = document.getElementById("stage"), rail = document.getElementById("rail");
   var cap = document.getElementById("caption"), tbar = document.getElementById("tbar");
   var playBtn = document.getElementById("play"), count = document.getElementById("count");
-  var DUR = 9500, cur = 0, playing = true, elapsed = 0, last = null;
+  var DUR = 9500, cur = 0, playing = false, elapsed = 0, last = null;
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var NAMES = { fa: "FA", sys: "Snapshot portal", pm: "PM", sp: "SharePoint" };
   var synth = window.speechSynthesis, narrate = false, speaking = false, voice = null, voices = [];
@@ -579,6 +591,14 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
     vsel.value = String(voices.indexOf(keep));
     voice = keep;
   }
+  function setNarrate(on) {
+    narrate = !!(on && synth);
+    if (nbtn) {
+      nbtn.setAttribute("aria-pressed", String(narrate));
+      nbtn.innerHTML = narrate ? "&#128266; Narration on" : "&#128264; Narration off";
+    }
+    if (!narrate && synth) { synth.cancel(); speaking = false; }
+  }
   function speak(text) {
     if (!synth) { return; }
     synth.cancel();
@@ -600,10 +620,8 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
     if ("onvoiceschanged" in synth) { synth.onvoiceschanged = loadVoices; }
     vsel.onchange = function () { voice = voices[Number(vsel.value)] || null; if (narrate) { speak(scenes[cur].getAttribute("data-say")); } };
     nbtn.onclick = function () {
-      narrate = !narrate;
-      nbtn.setAttribute("aria-pressed", String(narrate));
-      nbtn.innerHTML = narrate ? "&#128266; Narration on" : "&#128264; Narration off";
-      if (narrate) { go(cur); if (!playing) { setPlaying(true); } } else { synth.cancel(); speaking = false; }
+      setNarrate(!narrate);
+      if (narrate) { if (!playing) { setPlaying(true); } go(cur); }
     };
     window.addEventListener("pagehide", function () { synth.cancel(); });
   }
@@ -690,6 +708,19 @@ h1, h2, h3 { color:var(--ink); text-wrap:balance; margin:0 }
     if (e.animationName === "collapse") { e.target.style.display = "none"; }
   });
 
+  // the big button at the top: start from step 1, with the voice on (the click is what lets the browser speak)
+  function start(sound) {
+    setNarrate(sound);
+    setPlaying(true);
+    go(0);
+    document.getElementById("startlab").textContent = "Start over";
+    stage.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }
+  document.getElementById("startv").onclick = function () { start(true); };
+  document.getElementById("starts").onclick = function () { start(false); };
+  if (!synth) { document.getElementById("starts").hidden = true; }
+
+  setPlaying(false);
   go(0);
   requestAnimationFrame(frame);
 })();
