@@ -103,6 +103,30 @@ def run():
     c2.set_cookie("century_fa_id", "8")
     assert c2.get("/api/snapshots/meta?as=8").json["me"] is None
 
+    # ---- the walkthrough page: any Century account may read it; it never grants portal access
+    v = app.test_client()
+    r = v.get("/snapshots/how-it-works")
+    assert r.status_code == 302 and r.headers["Location"] == "/auth/snapshot/login?next=/snapshots/how-it-works"
+    FakeMsal.next_claims = {"tid": TENANT, "preferred_username": "teammate@centuryny.com", "oid": "o-t", "name": "Teammate"}
+    assert v.get("/auth/snapshot/login?next=/snapshots/how-it-works").status_code == 302
+    r = v.get("/auth/snapshot/callback?code=x&state=abc")
+    assert r.headers["Location"] == "/snapshots/how-it-works", r.headers["Location"]  # back to the page, no users row needed
+    page = v.get("/snapshots/how-it-works")
+    assert page.status_code == 200 and b"<title>Monthly Snapshot Walkthrough</title>" in page.data and page.data.startswith(b"<!doctype html>")
+    assert v.get("/api/snapshots/meta").json["me"] is None                     # a viewer is not a portal user
+    assert v.get("/api/snapshots").status_code == 401
+    # another tenant cannot view it
+    o = app.test_client()
+    FakeMsal.next_claims = {"tid": "other-tenant", "preferred_username": "x@evil.com", "oid": "o-x", "name": "X"}
+    o.get("/auth/snapshot/login?next=/snapshots/how-it-works")
+    assert "signin=failed" in o.get("/auth/snapshot/callback?code=x&state=abc").headers["Location"]
+    assert o.get("/snapshots/how-it-works").status_code == 302
+    # next= only accepts known pages (no open redirect); an outsider without next still gets "unknown"
+    e = app.test_client()
+    FakeMsal.next_claims = {"tid": TENANT, "preferred_username": "teammate@centuryny.com", "oid": "o-t", "name": "Teammate"}
+    e.get("/auth/snapshot/login?next=https://evil.example/")
+    assert "signin=unknown" in e.get("/auth/snapshot/callback?code=x&state=abc").headers["Location"]
+
     # Kristy signs in (email match is case-insensitive) and the cookie is http-only
     r = sign_in(c, "KPaxinos@CenturyNY.com")
     assert r.headers["Location"] == "/snapshots"

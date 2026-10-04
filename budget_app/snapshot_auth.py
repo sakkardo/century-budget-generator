@@ -9,15 +9,21 @@ written in the code). It is keyed from AZURE_CLIENT_SECRET, which only the serve
 
 Needs one tenant setting (Jacob's click): add this Web redirect URI to the Azure app registration
     https://<public domain>/auth/snapshot/callback
+
+Viewer pages (/snapshots/how-it-works): any account in the Century tenant may read them, even without a users row.
+Such a "viewer" cookie carries no user id, so it never grants portal access.
 """
 import hashlib
 import os
 
-from flask import Blueprint, jsonify, make_response, redirect, request
+from flask import Blueprint, Response, jsonify, make_response, redirect, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 COOKIE = "century_snapshot_signin"
 FLOW_COOKIE = "century_snapshot_flow"
+NEXT_COOKIE = "century_snapshot_next"
+VIEW_PAGES = ("/snapshots/how-it-works",)  # read-only pages any signed-in Century account may open
+HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_AGE = 12 * 3600
 SCOPES = ["User.Read"]
 
@@ -85,6 +91,12 @@ def create_auth(find_user_by_email, msal_factory=None):
         # the handshake (state, nonce, PKCE verifier) rides in its own short-lived cookie signed with the server-only key
         resp.set_cookie(FLOW_COOKIE, _signer().dumps(flow), max_age=600, httponly=True, samesite="Lax",
                         secure=bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")))
+        nxt = request.args.get("next")
+        if nxt in VIEW_PAGES:  # only known pages: never an open redirect
+            resp.set_cookie(NEXT_COOKIE, nxt, max_age=600, httponly=True, samesite="Lax",
+                            secure=bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")))
+        else:
+            resp.set_cookie(NEXT_COOKIE, "", max_age=0)
         return resp
 
     @bp.route("/auth/snapshot/callback")
@@ -107,17 +119,44 @@ def create_auth(find_user_by_email, msal_factory=None):
             return redirect("/snapshots?signin=failed")
         email = (claims.get("preferred_username") or claims.get("email") or "").strip().lower()
         uid = find_user_by_email(email) if email else None
+        dest = request.cookies.get(NEXT_COOKIE)
+        dest = dest if dest in VIEW_PAGES else "/snapshots"
+        if not uid and email and dest in VIEW_PAGES:
+            # a Century account without a budget-app user: may read the viewer page, nothing else
+            resp = make_response(redirect(dest))
+            resp.set_cookie(FLOW_COOKIE, "", max_age=0)
+            resp.set_cookie(NEXT_COOKIE, "", max_age=0)
+            resp.set_cookie(COOKIE, _signer().dumps({"viewer": email, "oid": claims.get("oid"), "name": claims.get("name")}),
+                            max_age=MAX_AGE, httponly=True, samesite="Lax",
+                            secure=request.is_secure or bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")))
+            return resp
         if not uid:
             resp = make_response(redirect("/snapshots?signin=unknown"))
             resp.set_cookie(COOKIE, "", max_age=0)
             resp.set_cookie(FLOW_COOKIE, "", max_age=0)
             return resp
         token = _signer().dumps({"uid": uid, "email": email, "oid": claims.get("oid"), "name": claims.get("name")})
-        resp = make_response(redirect("/snapshots"))
+        resp = make_response(redirect(dest))
         resp.set_cookie(FLOW_COOKIE, "", max_age=0)
+        resp.set_cookie(NEXT_COOKIE, "", max_age=0)
         resp.set_cookie(COOKIE, token, max_age=MAX_AGE, httponly=True, secure=request.is_secure or bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")),
                         samesite="Lax")
         return resp
+
+    @bp.route("/snapshots/how-it-works")
+    def how_it_works():
+        """The animated walkthrough, for Century staff: any account in the Century tenant."""
+        data = read_cookie()
+        if not (data and (data.get("uid") or data.get("viewer"))):
+            if not configured() or not _signer():
+                return jsonify({"error": "Microsoft sign-in is not configured on this server."}), 503
+            return redirect("/auth/snapshot/login?next=/snapshots/how-it-works")
+        with open(os.path.join(HERE, "snapshot_walkthrough.html"), encoding="utf-8") as f:
+            body = f.read()
+        page = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>'
+                + body + "</body></html>")
+        return Response(page, mimetype="text/html", headers={"Cache-Control": "private, no-cache", "X-Robots-Tag": "noindex"})
 
     @bp.route("/auth/snapshot/logout", methods=["GET", "POST"])
     def logout():
