@@ -127,6 +127,21 @@ def run():
     e.get("/auth/snapshot/login?next=https://evil.example/")
     assert "signin=unknown" in e.get("/auth/snapshot/callback?code=x&state=abc").headers["Location"]
 
+    # ---- the short FA address: "/" opens the portal; sign-in comes back to the address it started on
+    os.environ["RAILWAY_PUBLIC_DOMAIN"] = "century-budget-generator-production.up.railway.app"
+    try:
+        s = app.test_client()
+        r = s.get("/", base_url="https://century-snapshots.up.railway.app")
+        assert r.status_code == 302 and r.headers["Location"] == "/snapshots", r.headers.get("Location")
+        with app.test_request_context("/auth/snapshot/login", base_url="https://century-snapshots.up.railway.app"):
+            assert snapshot_auth._redirect_uri() == "https://century-snapshots.up.railway.app/auth/snapshot/callback"
+        with app.test_request_context("/auth/snapshot/login", base_url="https://century-budget-generator-production.up.railway.app"):
+            assert snapshot_auth._redirect_uri() == "https://century-budget-generator-production.up.railway.app/auth/snapshot/callback"
+        with app.test_request_context("/auth/snapshot/login", base_url="https://evil.example"):  # spoofed host: fall back
+            assert snapshot_auth._redirect_uri() == "https://century-budget-generator-production.up.railway.app/auth/snapshot/callback"
+    finally:
+        os.environ.pop("RAILWAY_PUBLIC_DOMAIN", None)
+
     # Kristy signs in (email match is case-insensitive) and the cookie is http-only
     r = sign_in(c, "KPaxinos@CenturyNY.com")
     assert r.headers["Location"] == "/snapshots"

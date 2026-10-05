@@ -40,8 +40,24 @@ def _signer():
     return URLSafeTimedSerializer(k, salt="snapshot-signin") if k else None
 
 
+SNAPSHOT_HOST = "century-snapshots.up.railway.app"  # the short address for FAs (2026-10-05); "/" there opens the portal
+
+
+def _known_hosts():
+    """Addresses this app answers on. Sign-in comes back to the one the person started on (its cookies live there).
+    Each needs its callback listed on the Azure app registration."""
+    hosts = {SNAPSHOT_HOST}
+    if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
+        hosts.add(os.environ["RAILWAY_PUBLIC_DOMAIN"])
+    hosts.update(h.strip() for h in os.environ.get("SNAPSHOT_HOSTS", "").split(",") if h.strip())
+    return hosts
+
+
 def _redirect_uri():
     dom = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    host = (request.host or "").split(":")[0].lower() if request else ""
+    if dom and host in _known_hosts():
+        return "https://%s/auth/snapshot/callback" % host  # only known names: a spoofed Host header can't redirect sign-in
     if dom:
         return "https://%s/auth/snapshot/callback" % dom
     return request.url_root.rstrip("/") + "/auth/snapshot/callback"
@@ -142,6 +158,13 @@ def create_auth(find_user_by_email, msal_factory=None):
         resp.set_cookie(COOKIE, token, max_age=MAX_AGE, httponly=True, secure=request.is_secure or bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN")),
                         samesite="Lax")
         return resp
+
+    @bp.before_app_request
+    def short_address_home():
+        """On the short FA address, the bare link opens the snapshot portal instead of the budget app."""
+        if request.path == "/" and (request.host or "").split(":")[0].lower() == SNAPSHOT_HOST:
+            return redirect("/snapshots")
+        return None
 
     @bp.route("/snapshots/how-it-works")
     def how_it_works():

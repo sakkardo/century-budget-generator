@@ -18,7 +18,8 @@ SAMPLES = os.path.join(HERE, "..", "tasks", "snapshot_samples")
 
 
 def _public_base():
-    dom = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    # SNAPSHOT_PUBLIC_DOMAIN puts the short FA address in email links (set it once its sign-in callback is in Azure)
+    dom = os.environ.get("SNAPSHOT_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_PUBLIC_DOMAIN")
     if dom:
         return "https://" + dom
     return request.url_root.rstrip("/") if has_request_context() else ""
