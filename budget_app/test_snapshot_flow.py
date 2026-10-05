@@ -188,6 +188,19 @@ def run():
     assert r.status_code == 400
     # the click-through outbox page lists the emails
     assert b"Test outbox" in c.get("/snapshots/dev/outbox").data
+
+    # ---- admin (Jacob, by email): sees all, deletes non-final snapshots, resends from the FA's mailbox
+    svc2 = app.snapshot_service
+    assert svc2.is_admin(8) and not svc2.is_admin(2) and not svc2.is_admin(0)
+    assert c.get("/api/snapshots/meta?as=8").json["is_admin"] is True and c.get("/api/snapshots/meta?as=2").json["is_admin"] is False
+    rd = c.post("/api/snapshots/generate", data={"entity": "302", "sample": "302_2026-08_statement.pdf", "as": "101"}).json["id"]
+    assert c.delete("/api/snapshots/%s?as=2" % rd).status_code == 400              # not an admin
+    assert c.get("/api/snapshots/%s?as=8" % rd).json["can"]["delete"] is True
+    assert c.delete("/api/snapshots/%s?as=8" % rd).status_code == 200
+    assert c.get("/api/snapshots/%s?as=8" % rd).status_code == 404
+    final_id = [r["id"] for r in c.get("/api/snapshots?as=8").json if r["stage"] in ("approved", "released")]
+    if final_id:
+        assert c.delete("/api/snapshots/%s?as=8" % final_id[0]).status_code == 400  # final snapshots are kept
     print("snapshot flow: all tests passed")
 
 

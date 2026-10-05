@@ -281,7 +281,8 @@ function init() {
       var q = location.search;
       var who = document.querySelector(".who");
       if (m.me) {
-        who.innerHTML = '<span>Signed in as <b>' + esc(m.me.name) + '</b></span>' + (m.signout_url ? '<a href="' + m.signout_url + '">Sign out</a>' : "");
+        who.innerHTML = '<span>Signed in as <b>' + esc(m.me.name) + '</b>' + (m.is_admin ? ' <span class="pill approved" style="margin-left:6px">Admin</span>' : "") + "</span>" +
+          (m.signout_url ? '<a href="' + m.signout_url + '">Sign out</a>' : "");
       } else if (m.signin_url) {
         who.innerHTML = '<a class="signin" href="' + m.signin_url + '">' + MSLOGO + "Sign in with Microsoft</a>";
       } else {
@@ -295,7 +296,7 @@ function init() {
     if (!m.signing_allowed) { banner("", "Sending to PMs is switched off until a secure sign-in is in place. You can generate, review and edit snapshots."); }
     if (m.email_mode !== "live" && !m.dev) { banner("", m.email_mode === "test" ? "Test mode: emails to PMs go to the test inbox, not to the PMs." : "Email is switched off: PMs are not emailed yet."); }
     if (m.dev) { document.querySelector(".who").insertAdjacentHTML("afterbegin", '<a href="/snapshots/dev/outbox" target="_blank" rel="noopener" style="color:var(--tan)">Test outbox</a>'); }
-    state.mineOnly = (m.my_entities || []).length > 0;
+    state.mineOnly = !m.is_admin && (m.my_entities || []).length > 0;  // admins start on every building
     el("gb").innerHTML = m.buildings.map(function (b) { return '<option value="' + b.entity + '">' + esc(b.entity + " – " + b.client) + "</option>"; }).join("");
     if (!m.dev) { el("gsrow").style.display = "none"; }
     el("gs").innerHTML = '<option value="">None, I will upload a PDF</option>' + m.samples.map(function (s) { return "<option>" + esc(s) + "</option>"; }).join("");
@@ -530,7 +531,9 @@ function signHtml(v) {
 
 function render(v) {
   var html = '<div class="panel"><div class="head"><div><div class="eyebrow">' + esc(v.entity) + " &middot; " + MONTHS[v.month - 1] + " " + v.year + "</div><h1>" + esc(v.building || v.client) + "</h1>" +
-    '<div class="muted">Version ' + v.version + " &middot; generated " + esc(v.generated_at) + " from " + esc(v.source) + "</div></div>" + pill(v.stage) + "</div>" + steps(v) + "</div>" +
+    '<div class="muted">Version ' + v.version + " &middot; generated " + esc(v.generated_at) + " from " + esc(v.source) + "</div></div>" +
+    '<div style="display:flex;gap:10px;align-items:center">' + pill(v.stage) + (v.can.delete ? '<button id="delsnap" class="btn" style="min-height:34px;color:var(--bad);border-color:var(--bad-bd)">Delete snapshot</button>' : "") + "</div>" +
+    "</div>" + steps(v) + "</div>" +
     '<div id="err"></div><div class="cols"><div class="stack">' +
     '<div class="panel pad"><p class="label">Sign-off</p>' + signHtml(v) + "</div>" +
     '<div class="panel pad">' + checksHtml(v) + "</div>" +
@@ -554,6 +557,10 @@ function wire(v) {
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rs]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/restore", { index: Number(b.getAttribute("data-rs")) }); };
+  });
+  on("delsnap", function () {
+    if (!window.confirm("Delete the " + MONTHS[v.month - 1] + " " + v.year + " snapshot for " + v.entity + "? This cannot be undone, and any PM link for it stops working.")) { return; }
+    api("DELETE", "/api/snapshots/" + v.id).then(goHome).catch(showErr);
   });
   on("bulkcont", function () { act("POST", "/api/snapshots/" + v.id + "/notes/confirm-continuing"); });
   on("send", function () { act("POST", "/api/snapshots/" + v.id + "/send"); });

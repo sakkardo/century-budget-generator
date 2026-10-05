@@ -64,7 +64,8 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
                         "signing_allowed": True if signing_allowed is None else bool(signing_allowed()),
                         "signin_url": signin_url, "signout_url": "/auth/snapshot/logout" if signin_url else None,
                         "users": service.directory.users(), "buildings": service.directory.buildings() if (dev or me) else [],
-                        "my_entities": mine, "email_mode": service.mailer.mode, "samples": samples})
+                        "my_entities": mine, "email_mode": service.mailer.mode, "samples": samples,
+                        "is_admin": bool(me and service.is_admin(me))})
 
     @bp.route("/api/snapshots")
     def listing():
@@ -79,6 +80,10 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
             return jsonify(service.view(rid, uid()))
         except ValueError as e:
             return err(e, 404)
+
+    @bp.route("/api/snapshots/<rid>", methods=["DELETE"])
+    def delete(rid):
+        return guarded(lambda: service.delete(rid, uid()))
 
     @bp.route("/api/snapshots/<rid>/pdf")
     def pdf(rid):

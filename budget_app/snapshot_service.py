@@ -191,6 +191,12 @@ class Store:
     def reset(self):
         self._save({"records": {}})
 
+    def delete(self, rid):
+        with self.lock:
+            data = self._load()
+            data["records"].pop(rid, None)
+            self._save(data)
+
 
 class Service:
     def __init__(self, store, releaser, directory, mailer=None, base_url=None, escalate_to=None):
@@ -223,6 +229,26 @@ class Service:
 
     def _is_fa(self, rec, uid):
         return uid in [a["user_id"] for a in self._team(rec["entity"]) if a["role"] == "fa"]
+
+    def is_admin(self, uid):
+        """Admins see and manage every snapshot (Jacob 2026-10-05). They never confirm notes as the FA or
+        approve as the PM for someone else, so the two-person check stays real."""
+        admins = os.environ.get("SNAPSHOT_ADMIN_EMAILS", "jsirotkin@centuryny.com")
+        email = (self._email(uid) or "").lower()
+        return bool(uid and email and email in [a.strip().lower() for a in admins.split(",") if a.strip()])
+
+    def delete(self, rid, user_id):
+        """Admin removes a snapshot that is not final (test runs, a wrong upload). Final ones are kept as the record.
+        Any PM link for it stops working, because the record it points to is gone."""
+        rec = self.store.get(rid)
+        if not rec:
+            raise ValueError("Snapshot not found.")
+        if not self.is_admin(user_id):
+            raise ValueError("Only an admin can delete a snapshot.")
+        if rec.get("released") or self.stage(rec) in ("approved", "released"):
+            raise ValueError("This snapshot is final, so it is kept as the record and cannot be deleted.")
+        self.store.delete(rid)
+        return {"deleted": rid}
 
     def _approved(self, rec, role, h=None):
         h = h or self._cur(rec)["hash"]
@@ -498,8 +524,12 @@ class Service:
         """FA confirms the snapshot and the PM is emailed a one-time link. Also used to resend."""
         def fn(rec):
             self._editable(rec)
+            sender = user_id
             if not self._is_fa(rec, user_id):
-                raise ValueError(self._not_fa(rec, "send it to the PM"))
+                old_req = rec.get("pm_request") or {}
+                if not (self.is_admin(user_id) and self.stage(rec) == "awaiting_pm" and old_req.get("by")):
+                    raise ValueError(self._not_fa(rec, "send it to the PM"))
+                sender = old_req["by"]  # admin resend: same FA mailbox and name as the first email
             v = self._cur(rec)
             ok, why = so.readiness(v["snapshot"], v["acks"])
             if not ok:
@@ -514,9 +544,11 @@ class Service:
             if not pms:
                 raise ValueError("No PM email on file for %s (%s). Add it before sending." % (
                     rec["entity"], ", ".join(m["name"] for m in missing) or "no PM assigned"))
-            if not self._email(user_id):
+            if not self._email(sender):
                 raise ValueError("No email on file for you, so the PM's email cannot be sent from your mailbox.")
             resend = bool(self._approved(rec, "fa"))
+            if sender != user_id and not resend:
+                raise ValueError(self._not_fa(rec, "send it to the PM"))
             if not resend:
                 entry = so.record_signature(rec["signoffs"], user_id, self._team(rec["entity"]), "fa", "approve", "", v["hash"])
                 entry["at"] = now_s()
@@ -529,16 +561,17 @@ class Service:
             if resend and old and old["version_hash"] == v["hash"] and not old.get("closed"):
                 sent = datetime.fromisoformat(old["sent_iso"])  # resending keeps the original 48h clock
             raw = {pm["user_id"]: secrets.token_urlsafe(32) for pm in pms}
-            rec["pm_request"] = {"version_hash": v["hash"], "sent_iso": sent.isoformat(), "by": user_id,
+            rec["pm_request"] = {"version_hash": v["hash"], "sent_iso": sent.isoformat(), "by": sender,
                                  "expires_iso": (utcnow() + LINK_LIFETIME).isoformat(),
                                  "tokens": [{"hash": _hash_token(raw[pm["user_id"]]), "pm_id": pm["user_id"]} for pm in pms],
                                  "reminded_iso": (old or {}).get("reminded_iso") if resend else None,
                                  "escalated_iso": (old or {}).get("escalated_iso") if resend else None,
                                  "emails": [], "closed": None}
             rec["sent"] = True
-            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "%s to %s (version %d)" % (
-                "Resent" if resend else "Confirmed and sent", ", ".join(p["name"] for p in pms), v["n"])})
-            return {"pms": pms, "raw": raw, "fa": user_id}
+            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": "%s to %s (version %d)%s" % (
+                "Resent" if resend else "Confirmed and sent", ", ".join(p["name"] for p in pms), v["n"],
+                " from %s's mailbox (admin)" % self._name(sender) if sender != user_id else "")})
+            return {"pms": pms, "raw": raw, "fa": sender}
         out = self._mutate(rid, fn)
         self._email_pms(rid, out["pms"], out["raw"], out["fa"], reminder=False)  # after the commit
         return out
@@ -813,7 +846,8 @@ class Service:
         can = {"edit": is_fa and not final,
                "send": is_fa and stage in ("draft", "changes_requested") and ok and not unconfirmed(v["commentary"])
                        and not st["state"].startswith("blocked") and bool(pms),
-               "resend": is_fa and stage == "awaiting_pm",
+               "resend": (is_fa or self.is_admin(as_user)) and stage == "awaiting_pm",
+               "delete": self.is_admin(as_user) and not final and not rec.get("released"),
                "release": is_fa and stage == "approved" and not getattr(self.releaser, "dry_run", False)}
         why_not = []
         if is_fa and stage in ("draft", "changes_requested"):
@@ -843,5 +877,6 @@ class Service:
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],
             "request": request, "email_mode": self.mailer.mode, "resolved": v.get("resolved") or [],
+            "is_admin": self.is_admin(as_user),
             "source": v["source"], "generated_at": v["at"],
         }

@@ -289,6 +289,14 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
         def reset(self):
             raise ValueError("Reset is only available in the click-through.")
 
+        def delete(self, rid):
+            try:
+                db.session.query(SnapshotRecord).filter_by(id=rid).delete()
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                raise
+
     class DbDirectory:
         def __init__(self):
             self._problems = {}
