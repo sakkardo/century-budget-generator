@@ -457,8 +457,13 @@ function commentaryHtml(v) {
       (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" +
       (c.key === "overall" ? "" : '<button class="btn rm" data-rm="' + i + '" title="Leave this note out of the snapshot">Remove</button>') + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
   }
-  function group(prev) {
-    return v.commentary.map(function (c, i) { return !c.removed && (c.status === "continuing") === prev ? noteHtml(c, i) : ""; }).join("");
+  function group(prev, scope) {
+    return v.commentary.map(function (c, i) {
+      return !c.removed && (c.status === "continuing") === prev && (scope === undefined || (c.scope || null) === scope) ? noteHtml(c, i) : "";
+    }).join("");
+  }
+  function sub(label, hint, html) {
+    return html ? '<p class="label" style="margin:16px 0 8px">' + label + (hint ? ' <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">&middot; ' + hint + "</span>" : "") + "</p>" + html : "";
   }
   var gone = v.commentary.map(function (c, i) {
     return c.removed ? '<div class="gone"><div><b>' + esc(c.title) + '</b><div class="muted">Removed by ' + esc(c.removed.by) + " &middot; " + esc(c.removed.at) + "</div></div>" +
@@ -466,7 +471,10 @@ function commentaryHtml(v) {
   }).join("");
   var removedHtml = gone && editable ? '<details class="removed"><summary>Removed notes (' + v.commentary.filter(function (c) { return c.removed; }).length +
     ')<span class="muted"> &middot; not on the snapshot</span></summary>' + gone + "</details>" : "";
-  var news = group(false), prevs = group(true);
+  // new notes: the headline, then year-to-date items, then items over this month only (usually timing)
+  var news = group(false, null) + sub("Year to date", "", group(false, "ytd")) +
+    sub("This month only", "over this month, within budget for the year (usually timing)", group(false, "month"));
+  var prevs = group(true);
   var body = (news || '<p class="muted" style="margin:0 0 14px">No new notes this month.</p>') +
     (prevs ? '<p class="label" style="margin:22px 0 4px">Previous notes</p><p class="muted" style="margin:0 0 12px">Explained in an earlier month and not materially changed since. The reasons carry forward.</p>' +
       (editable && cont ? '<div class="foot" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 14px"><button class="btn approve" id="bulkcont" style="min-height:38px">&#10003; Confirm all previous notes (' + cont + ")</button></div>" : "") + prevs : "");

@@ -69,6 +69,26 @@ def run():
     inc204 = [n for n in r.draft_commentary(s204) if n["key"] == "income"]
     assert inc204 and inc204[0]["title"] == "Income, $800,436 above budget year to date", inc204  # 13% above
 
+    # ---- year-to-date vs this-month-only notes (Jacob 2026-10-05): lead with what triggered the note, grouped on the report
+    d204 = {n["key"]: n for n in r.draft_commentary(s204)}
+    u = d204["cat:Utility Expenses"]
+    assert u["scope"] == "ytd" and u["facts"].startswith("17% over budget year to date ($113,797). August alone was $33,083 over (30%).") , u["facts"]
+    assert d204["overall"]["scope"] is None and d204["income"]["scope"] == "ytd"
+    assert r.note_scope({"key": "cat:X", "title": "X, $5 over budget in August"}) == "month"        # older notes: read from the title
+    assert r.note_scope({"key": "cat:X", "title": "X, $5 over budget year to date"}) == "ytd"
+    s148 = build_snapshot(open(os.path.join(SAMPLES, "148_2026-08_statement.pdf"), "rb").read())
+    d148 = r.draft_commentary(s148)
+    keys = [n["key"] for n in d148]
+    pf = [n for n in d148 if n["key"] == "cat:Professional Fees"][0]
+    assert pf["scope"] == "month" and pf["facts"].startswith("$7,927 over budget in August (53%). Year to date it is still $1,253 under budget."), pf["facts"]
+    assert keys.index("cat:Utility Expenses") < keys.index("cat:Professional Fees")                 # year-to-date items first
+    t148 = " ".join(" ".join(p.get_text() for p in fitz.open(stream=r.render_pdf(s148, d148), filetype="pdf")).split())
+    assert t148.index("YEAR TO DATE") < t148.index("Utility Expenses, $55,239") < t148.index("THIS MONTH ONLY") < t148.index("Professional Fees, $7,927")
+    import snapshot_mail
+    body = snapshot_mail._notes([("Overall", "x", None), ("Pro Fees", "y", "month"), ("Utilities", "z", "ytd")])
+    assert body.index("Overall") < body.index("Year to date") < body.index("Utilities") < body.index("This month only") < body.index("Pro Fees")
+    assert "R&amp;M" in snapshot_mail._notes([("R&M", "two-part tuples still work")])
+
     # ---- real two-month run on 148: July all new; August carries July's explanations
     root = tempfile.mkdtemp()
     app = snapshot_dev.make_app(root)

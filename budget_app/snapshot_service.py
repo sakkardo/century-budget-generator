@@ -622,7 +622,8 @@ class Service:
                      ("Net income YTD", m(s["net_income"]["ytd_actual"]), "Budget " + m(s["net_income"]["ytd_budget"])),
                      ("%s NOI" % MONTHS[rec["month"] - 1], m(s["noi"]["month_actual"]), "Budget " + m(s["noi"]["month_budget"])),
                      ("Cash excl. security", m(cash_x) if cash_x is not None else "n/a", "At month end")],
-            "notes": [(c["title"], snapshot_render.note_body(c)) for c in active(v["commentary"]) if c.get("status") != "continuing"],
+            "notes": [(c["title"], snapshot_render.note_body(c), snapshot_render.note_scope(c))
+                      for c in active(v["commentary"]) if c.get("status") != "continuing"],
             "ongoing": [(c.get("label") or c["title"], (c.get("text") or c.get("facts") or "").strip(), c.get("since") or "")
                         for c in active(v["commentary"]) if c.get("status") == "continuing"],
             "resolved": v.get("resolved") or [], "board_note": v["board_note"],
@@ -902,7 +903,8 @@ class Service:
             "month": rec["month"], "year": rec["year"], "stage": stage, "version": v["n"], "sent": rec["sent"],
             "released": rec["released"], "rehearsal": rec.get("rehearsal"), "release_blocked": rec.get("release_blocked"),
             "release_off": bool(getattr(self.releaser, "dry_run", False)), "state": st["state"], "waiting_on": st["waiting_on"],
-            "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"], "commentary": v["commentary"],
+            "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"],
+            "commentary": [dict(c, scope=snapshot_render.note_scope(c)) for c in v["commentary"]],
             "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],

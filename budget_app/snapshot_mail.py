@@ -137,8 +137,19 @@ def _kpis(kpis):
 
 
 def _notes(notes):
-    return "".join('<p style="margin:0 0 12px;font-size:14px;line-height:1.5"><b>%s</b><br>%s</p>' % (
-        html.escape(t), html.escape(x)) for t, x in notes)
+    """notes: (title, text) or (title, text, scope). Grouped like the report: the headline, then 'Year to date', then
+    'This month only'."""
+    def p(t, x):
+        return '<p style="margin:0 0 12px;font-size:14px;line-height:1.5"><b>%s</b><br>%s</p>' % (html.escape(t), html.escape(x))
+    rows = [tuple(n) + (None,) * (3 - len(n)) for n in notes]
+    out = "".join(p(t, x) for t, x, sc in rows if sc is None)
+    for code, label, hint in (("ytd", "Year to date", ""), ("month", "This month only", "Over budget this month but within budget for the year, usually timing.")):
+        group = [(t, x) for t, x, sc in rows if sc == code]
+        if group:
+            out += ('<p style="margin:14px 0 6px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:%s"><b>%s</b>%s</p>' % (
+                LABEL, label, ('<span style="text-transform:none;letter-spacing:0"> &middot; %s</span>' % hint) if hint else ""))
+            out += "".join(p(t, x) for t, x in group)
+    return out
 
 
 def _ongoing(items, resolved):
