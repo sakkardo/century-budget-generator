@@ -211,6 +211,36 @@ class Service:
         return [a.strip() for a in v.split(",") if a.strip()]
 
     # ------------------------------------------------------------- helpers
+    def _team_rec(self, rec):
+        """The building's team for this snapshot. A practice run can route the PM role to someone else (an admin),
+        so the real PM is never emailed; it applies to this snapshot only, never to the building."""
+        team = self._team(rec["entity"])
+        ov = rec.get("pm_override")
+        if not ov:
+            return team
+        return [a for a in team if a["role"] != "pm"] + [{"user_id": ov["user_id"], "name": self._name(ov["user_id"]), "role": "pm"}]
+
+    def set_pm_override(self, rid, user_id, to_user):
+        """Admin: send this snapshot's PM email to `to_user` instead of the building's PM (or back, with None)."""
+        def fn(rec):
+            if not self.is_admin(user_id):
+                raise ValueError("Only an admin can change who receives the PM email.")
+            if self.stage(rec) not in ("draft", "changes_requested"):
+                raise ValueError("Change the PM before the snapshot is sent.")
+            if to_user is None:
+                rec.pop("pm_override", None)
+                what = "PM email back to the building's PM"
+            else:
+                if to_user in [a["user_id"] for a in self._team(rec["entity"]) if a["role"] == "fa"]:
+                    raise ValueError("The PM must be a different person from the FA.")
+                if not self._email(to_user):
+                    raise ValueError("That person has no email on file.")
+                real = [a["name"] for a in self._team(rec["entity"]) if a["role"] == "pm"]
+                rec["pm_override"] = {"user_id": to_user, "instead_of": real, "by": user_id, "at": now_s()}
+                what = "Practice run: PM email goes to %s instead of %s" % (self._name(to_user), " / ".join(real) or "the PM")
+            rec["log"].append({"at": now_s(), "who": self._name(user_id), "what": what})
+        self._mutate(rid, fn)
+
     def _team(self, entity):
         return self.directory.team(entity)
 
@@ -228,7 +258,7 @@ class Service:
         return (e or "").strip() or None
 
     def _is_fa(self, rec, uid):
-        return uid in [a["user_id"] for a in self._team(rec["entity"]) if a["role"] == "fa"]
+        return uid in [a["user_id"] for a in self._team_rec(rec) if a["role"] == "fa"]
 
     def is_admin(self, uid):
         """Admins see and manage every snapshot (Jacob 2026-10-05). They never confirm notes as the FA or
@@ -256,7 +286,7 @@ class Service:
 
     def _signoff_block(self, rec):
         out = {}
-        team = self._team(rec["entity"])
+        team = self._team_rec(rec)
         for role in ("fa", "pm"):
             sig = self._approved(rec, role)
             if sig:
@@ -309,7 +339,7 @@ class Service:
 
     def _not_fa(self, rec, what):
         """Why this person cannot act as FA. Names the data problem when the building has no usable FA."""
-        team = self._team(rec["entity"])
+        team = self._team_rec(rec)
         if not any(a["role"] == "fa" for a in team):
             probs = self.directory.problems(rec["entity"])
             return "This building has no FA assigned who can sign. " + " ".join(probs)
@@ -332,7 +362,7 @@ class Service:
     def _pm_recipients(self, rec):
         """PMs who can receive the email: assigned, a real person record, an email on file."""
         out, missing = [], []
-        for a in self._team(rec["entity"]):
+        for a in self._team_rec(rec):
             if a["role"] != "pm":
                 continue
             e = self._email(a["user_id"])
@@ -534,7 +564,7 @@ class Service:
             ok, why = so.readiness(v["snapshot"], v["acks"])
             if not ok:
                 raise ValueError(" ".join(why))
-            st = so.status(rec["signoffs"], self._team(rec["entity"]), v["hash"])
+            st = so.status(rec["signoffs"], self._team_rec(rec), v["hash"])
             if st["state"] in ("blocked_no_assignment", "blocked_needs_second_person"):
                 raise ValueError(self._blocked_text(st))  # a team problem first: confirming notes cannot fix it
             left = unconfirmed(v["commentary"])
@@ -550,7 +580,7 @@ class Service:
             if sender != user_id and not resend:
                 raise ValueError(self._not_fa(rec, "send it to the PM"))
             if not resend:
-                entry = so.record_signature(rec["signoffs"], user_id, self._team(rec["entity"]), "fa", "approve", "", v["hash"])
+                entry = so.record_signature(rec["signoffs"], user_id, self._team_rec(rec), "fa", "approve", "", v["hash"])
                 entry["at"] = now_s()
                 if via:
                     entry["via"] = via
@@ -676,7 +706,7 @@ class Service:
             req = rec["pm_request"]
             _, tok = self._find_token(rec, raw)
             v = self._cur(rec)
-            entry = so.record_signature(rec["signoffs"], tok["pm_id"], self._team(rec["entity"]), "pm", decision, note, v["hash"])
+            entry = so.record_signature(rec["signoffs"], tok["pm_id"], self._team_rec(rec), "pm", decision, note, v["hash"])
             entry["at"] = now_s()
             entry["via"] = dict({"method": "email-link"}, **(meta or {}))
             rec["signoffs"].append(entry)
@@ -834,7 +864,7 @@ class Service:
         if not rec:
             raise ValueError("Snapshot not found.")
         v = self._cur(rec)
-        team = self._team(rec["entity"])
+        team = self._team_rec(rec)
         st = so.status(rec["signoffs"], team, v["hash"])
         ok, why = so.readiness(v["snapshot"], v["acks"])
         roles = so.can_sign(as_user, team)
@@ -878,5 +908,6 @@ class Service:
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],
             "request": request, "email_mode": self.mailer.mode, "resolved": v.get("resolved") or [],
             "is_admin": self.is_admin(as_user),
+            "pm_override": dict(rec["pm_override"], name=self._name(rec["pm_override"]["user_id"])) if rec.get("pm_override") else None,
             "source": v["source"], "generated_at": v["at"],
         }

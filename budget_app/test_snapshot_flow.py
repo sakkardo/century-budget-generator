@@ -198,6 +198,24 @@ def run():
     assert c.get("/api/snapshots/%s?as=8" % rd).json["can"]["delete"] is True
     assert c.delete("/api/snapshots/%s?as=8" % rd).status_code == 200
     assert c.get("/api/snapshots/%s?as=8" % rd).status_code == 404
+    # practice run: the PM email goes to the admin instead of the building's PM (302's PM is George Matos)
+    rp = c.post("/api/snapshots/generate", data={"entity": "302", "sample": "302_2026-08_statement.pdf", "as": "101"}).json["id"]
+    assert c.post("/api/snapshots/%s/pm-override?as=101" % rp, json={"user_id": 8}).status_code == 400   # FA is not admin
+    assert c.post("/api/snapshots/%s/pm-override?as=8" % rp, json={"user_id": 101}).status_code == 400   # PM can't be the FA
+    assert c.post("/api/snapshots/%s/pm-override?as=8" % rp, json={"user_id": 8}).status_code == 200
+    v = c.get("/api/snapshots/%s?as=101" % rp).json
+    assert v["pm_override"]["name"] == "Jacob Sirotkin" and v["pm_override"]["instead_of"] == ["George Matos"]
+    assert [a["name"] for a in v["team"] if a["role"] == "pm"] == ["Jacob Sirotkin"]
+    for i, n in enumerate(v["commentary"]):
+        c.post("/api/snapshots/%s/note?as=101" % rp, json={"index": i})
+    n0 = len(svc2.mailer.outbox)
+    assert c.post("/api/snapshots/%s/send?as=101" % rp, json={}).status_code == 200
+    sent = svc2.mailer.outbox[n0:]
+    assert sent and all("jsirotkin@centuryny.com" in m["intended"] and not any("gmatos" in a for a in m["intended"]) for m in sent),         [m["intended"] for m in sent]  # never George
+    assert c.post("/api/snapshots/%s/pm-override?as=8" % rp, json={"user_id": None}).status_code == 400  # already sent
+    plink = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', sent[-1]["html"]).group(1)
+    assert b"Confirmed. Thank you." in c.post(plink, data={"decision": "approve"}).data   # Jacob confirms as the practice PM
+    assert stage(rp) in ("approved", "released")
     final_id = [r["id"] for r in c.get("/api/snapshots?as=8").json if r["stage"] in ("approved", "released")]
     if final_id:
         assert c.delete("/api/snapshots/%s?as=8" % final_id[0]).status_code == 400  # final snapshots are kept

@@ -543,6 +543,10 @@ function render(v) {
     '</div><div class="panel preview"><div class="bar"><p class="label" style="margin:0">What the board will see</p><a href="/api/snapshots/' + v.id + '/pdf" target="_blank" rel="noopener">Open PDF</a></div>' +
     '<iframe title="Snapshot preview" src="/api/snapshots/' + v.id + "/pdf?v=" + Date.now() + '#toolbar=0&view=FitH"></iframe></div></div>';
   el("detail").innerHTML = html;
+  if (v.pm_override) {
+    el("detail").insertAdjacentHTML("afterbegin", '<div class="msg info" style="margin-bottom:var(--gap)"><b>Practice run.</b> The PM email for this snapshot goes to ' +
+      esc(v.pm_override.name) + " instead of " + esc((v.pm_override.instead_of || []).join(" / ") || "the building's PM") + ".</div>");
+  }
   wire(v);
 }
 

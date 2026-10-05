@@ -82,6 +82,12 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         except ValueError as e:
             return err(e, 404)
 
+    @bp.route("/api/snapshots/<rid>/pm-override", methods=["POST"])
+    def pm_override(rid):
+        b = request.get_json(force=True)
+        to = b.get("user_id")
+        return guarded(lambda: service.set_pm_override(rid, uid(), int(to) if to else None))
+
     @bp.route("/api/snapshots/<rid>", methods=["DELETE"])
     def delete(rid):
         return guarded(lambda: service.delete(rid, uid()))
