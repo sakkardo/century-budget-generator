@@ -169,6 +169,23 @@ details.checks[open] summary .chev::after { content:" (hide)" }
 .note .stamp { font-size:13px; color:var(--ok); font-weight:600 }
 .note .hint { font-size:13px; color:var(--warn) }
 .pill.sugg { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
+.facts { display:flex; gap:8px; align-items:flex-start; justify-content:space-between }
+.ficons { display:flex; gap:4px; flex:none }
+.ico { all:unset; cursor:pointer; width:28px; height:28px; display:grid; place-items:center; border-radius:6px; color:var(--label); border:1px solid transparent }
+.ico:hover { color:var(--ink); border-color:var(--border); background:var(--surface-warm) }
+.ico.del:hover { color:var(--bad); border-color:var(--bad-bd); background:var(--bad-bg) }
+.ico:focus-visible { outline:2px solid var(--ink); outline-offset:1px }
+.linkbtn { all:unset; cursor:pointer; color:var(--info); text-decoration:underline; font-size:12.5px }
+.edited { font-size:11px; color:var(--warn); font-weight:600 }
+.factsedit { display:grid; gap:6px }
+.ngrp { border-radius:var(--radius); padding:10px 12px 2px; margin:14px 0 10px; border:1px solid var(--border) }
+.ngrp-ytd { background:#eef3fd; border-left:4px solid #1f3f8f }
+.ngrp-month { background:#fdf4e1; border-left:4px solid #b26b00 }
+.ngrph { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; margin:0 0 10px; font-size:12.5px }
+.ngrph b { font-size:11.5px; letter-spacing:1.4px; text-transform:uppercase }
+.ngrp-ytd .ngrph { color:#1f3f8f } .ngrp-month .ngrph { color:#7a4a00 }
+.pill.tag-ytd { background:#e6eefb; border-color:#bccdf2; color:#1f3f8f }
+.pill.tag-month { background:#fcefd2; border-color:#f0d49a; color:#7a4a00 }
 details.ev { border-top:1px solid var(--border); padding-top:6px; font-size:12.5px }
 details.ev summary { cursor:pointer; color:var(--ink); font-weight:600; font-size:13px }
 .eva { margin-top:10px }
@@ -469,6 +486,10 @@ function commentaryHtml(v) {
       (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
   function statusPill(c) {
     if (c.key === "overall") { return ""; }
+    var scopeTag = c.scope === "month" ? '<span class="pill tag-month">This month only</span>' : (c.scope === "ytd" ? '<span class="pill tag-ytd">Year to date</span>' : "");
+    return scopeTag + statusPill2(c);
+  }
+  function statusPill2(c) {
     if (c.status === "continuing") { return '<span class="pill">Explained in ' + esc(c.since || "an earlier month") + "</span>"; }
     if (c.status === "worse") { return '<span class="pill changes_requested">Moved: up $' + Math.round(c.moved || 0).toLocaleString("en-US") + " since " + esc(c.since || "earlier") + "</span>"; }
     return '<span class="pill draftnote">New this month</span>';
@@ -476,6 +497,14 @@ function commentaryHtml(v) {
   function noteHtml(c, i) {
     var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
     var facts = c.facts ? '<p class="muted" style="margin:0">' + esc(c.facts) + "</p>" : "";
+    if (editable) {  // the figures line is the system's wording; the FA can reword it, drop it, or bring the original back
+      var undo = c.facts_original !== undefined ? ' <button class="linkbtn" data-fr="' + i + '">' + (c.facts ? "Restore original" : "Restore the figures line") + "</button>" : "";
+      facts = c.facts
+        ? '<div class="facts" data-fwrap="' + i + '"><p class="muted" style="margin:0">' + esc(c.facts) + (c.facts_edited ? ' <span class="edited">edited</span>' : "") + undo + "</p>" +
+          '<span class="ficons"><button class="ico" data-fe="' + i + '" title="Edit this line" aria-label="Edit the figures line"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3"/><path d="M13.5 6.5l3 3"/></svg></button>' +
+          '<button class="ico del" data-fx="' + i + '" title="Remove this line" aria-label="Remove the figures line"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg></button></span></div>'
+        : (undo ? '<p class="muted" style="margin:0"><i>Figures line removed.</i>' + undo + "</p>" : "");
+    }
     facts += c.suggested && !c.confirmed ? '<div><span class="pill sugg">&#10022; Suggested from the GL &middot; check before confirming</span></div>' : "";
     var ev = evidenceHtml(c.evidence);
     var prior = c.status === "worse" && c.prior_text ? '<p class="muted" style="margin:0"><i>Your ' + esc(c.since || "earlier") + " note:</i> " + esc(c.prior_text) + "</p>" : "";
@@ -497,8 +526,8 @@ function commentaryHtml(v) {
       return !c.removed && (c.status === "continuing") === prev && (scope === undefined || (c.scope || null) === scope) ? noteHtml(c, i) : "";
     }).join("");
   }
-  function sub(label, hint, html) {
-    return html ? '<p class="label" style="margin:16px 0 8px">' + label + (hint ? ' <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">&middot; ' + hint + "</span>" : "") + "</p>" + html : "";
+  function sub(label, hint, html, cls) {  // coloured bands so the two groups can't be confused
+    return html ? '<section class="ngrp ' + cls + '"><div class="ngrph"><b>' + label + "</b><span>" + hint + "</span></div>" + html + "</section>" : "";
   }
   var gone = v.commentary.map(function (c, i) {
     return c.removed ? '<div class="gone"><div><b>' + esc(c.title) + '</b><div class="muted">Removed by ' + esc(c.removed.by) + " &middot; " + esc(c.removed.at) + "</div></div>" +
@@ -507,8 +536,8 @@ function commentaryHtml(v) {
   var removedHtml = gone && editable ? '<details class="removed"><summary>Removed notes (' + v.commentary.filter(function (c) { return c.removed; }).length +
     ')<span class="muted"> &middot; not on the snapshot</span></summary>' + gone + "</details>" : "";
   // new notes: the headline, then year-to-date items, then items over this month only (usually timing)
-  var news = group(false, null) + sub("Year to date", "", group(false, "ytd")) +
-    sub("This month only", "over this month, within budget for the year (usually timing)", group(false, "month"));
+  var news = group(false, null) + sub("Year to date", "Over budget for the year so far", group(false, "ytd"), "ngrp-ytd") +
+    sub("This month only", "Over this month, within budget for the year (usually timing)", group(false, "month"), "ngrp-month");
   var prevs = group(true);
   var body = (news || '<p class="muted" style="margin:0 0 14px">No new notes this month.</p>') +
     (prevs ? '<p class="label" style="margin:22px 0 4px">Previous notes</p><p class="muted" style="margin:0 0 12px">Explained in an earlier month and not materially changed since. The reasons carry forward.</p>' +
@@ -618,6 +647,22 @@ function wire(v) {
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rs]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/restore", { index: Number(b.getAttribute("data-rs")) }); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-fe]"), function (b) {
+    b.onclick = function () {
+      var i = Number(b.getAttribute("data-fe")), wrap = document.querySelector('[data-fwrap="' + i + '"]');
+      wrap.outerHTML = '<div class="factsedit"><textarea id="fx' + i + '" rows="3">' + esc(v.commentary[i].facts) + '</textarea>' +
+        '<div class="foot"><button class="btn approve" id="fxs' + i + '">Save line</button><button class="btn" id="fxc' + i + '">Cancel</button></div></div>';
+      el("fxs" + i).onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/facts", { index: i, facts: el("fx" + i).value }); };
+      el("fxc" + i).onclick = function () { openSnap(state.cur); };
+      el("fx" + i).focus();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-fx]"), function (b) {
+    b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/facts", { index: Number(b.getAttribute("data-fx")), facts: "" }); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-fr]"), function (b) {
+    b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/facts", { index: Number(b.getAttribute("data-fr")), restore: true }); };
   });
   on("suggest", function () {
     var b = el("suggest"); b.disabled = true; b.innerHTML = "Reading the GL and writing suggestions&hellip;";

@@ -66,7 +66,9 @@ FLAG_MTD_PCT = 0.15  # ...or more than 15% over this month's budget
 
 
 SCOPES = (("ytd", "Year to date"), ("month", "This month only"))
-SCOPE_HINT = {"month": "Over budget this month but within budget for the year, usually timing."}
+SCOPE_HINT = {"ytd": "Over budget for the year so far.",
+              "month": "Over budget this month but within budget for the year, usually timing."}
+SCOPE_COLORS = {"ytd": ("#E6EEFB", "#1F3F8F"), "month": ("#FCEFD2", "#7A4A00")}  # band fill, band text
 
 
 def note_scope(n):
@@ -384,13 +386,19 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     f.append(Paragraph("New notes", h2))
     if not fresh:
         f.append(Paragraph("No new notes this month. Earlier explanations are listed under Previous notes.", body))
-    sub = st("sub", fn="Helvetica-Bold", fontSize=8, leading=11, textColor=MUTE, spaceBefore=3, spaceAfter=2)
+    sub = st("sub", fn="Helvetica-Bold", fontSize=8, leading=10, textColor=MUTE)
     for code, label in SCOPES:
         group = [c for c in fresh if note_scope(c) == code]
         if not group:
             continue
         hint = SCOPE_HINT.get(code)
-        f.append(Paragraph(label.upper() + ('<font name="Helvetica" size="7.5">&nbsp;&nbsp;%s</font>' % xesc(hint) if hint else ""), sub))
+        fill, ink = SCOPE_COLORS[code]
+        band = Paragraph('<font color="%s"><b>%s</b>&nbsp;&nbsp;<font name="Helvetica" size="7.5">%s</font></font>' % (
+            ink, label.upper(), xesc(hint or "")), sub)
+        f.append(Table([[band]], colWidths=[cw], style=[
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(fill)), ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(ink)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("TOPPADDING", (0, 0), (-1, -1), 1.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
+        f.append(Spacer(1, 2))
         for c in group:
             tag = ""
             if c.get("status") == "worse":
@@ -519,7 +527,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         f.append(ck)
 
     # sign-off block
-    f.append(Spacer(1, 6))
+    f.append(Spacer(1, 3))
     so = signoff or {}
     def sline(role, who):
         who = who or {}

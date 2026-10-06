@@ -84,6 +84,11 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         except ValueError as e:
             return err(e, 404)
 
+    @bp.route("/api/snapshots/<rid>/note/facts", methods=["POST"])
+    def note_facts(rid):
+        b = request.get_json(force=True)
+        return guarded(lambda: service.edit_facts(rid, uid(), int(b["index"]), b.get("facts"), bool(b.get("restore"))))
+
     @bp.route("/api/snapshots/<rid>/suggest", methods=["POST"])
     def suggest(rid):
         return guarded(lambda: service.suggest(rid, uid()))

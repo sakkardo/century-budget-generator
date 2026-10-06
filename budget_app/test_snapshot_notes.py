@@ -89,6 +89,27 @@ def run():
     assert body.index("Overall") < body.index("Year to date") < body.index("Utilities") < body.index("This month only") < body.index("Pro Fees")
     assert "R&amp;M" in snapshot_mail._notes([("R&M", "two-part tuples still work")])
 
+    # ---- the FA can edit, remove and restore a note's figures line (Jacob 2026-10-06)
+    fapp = snapshot_dev.make_app(tempfile.mkdtemp())
+    fc = fapp.test_client()
+    fr = fc.post("/api/snapshots/generate", data={"entity": "204", "sample": "204_2026-08_statement.pdf", "as": "2"}).json["id"]
+    fv = fc.get("/api/snapshots/%s?as=2" % fr).json
+    iu = [n["key"] for n in fv["commentary"]].index("cat:Utility Expenses")
+    orig = fv["commentary"][iu]["facts"]
+    F = lambda b, who="2": fc.post("/api/snapshots/%s/note/facts?as=%s" % (fr, who), json=b)
+    assert F({"index": iu, "facts": "Gas heating drove it."}, who="8").status_code == 400          # admin is not the FA
+    assert F({"index": iu, "facts": "Gas heating drove it."}).status_code == 200
+    n = fc.get("/api/snapshots/%s?as=2" % fr).json["commentary"][iu]
+    assert n["facts"] == "Gas heating drove it." and n["facts_original"] == orig and n["facts_edited"]["by"] == "Kristy Paxinos"
+    assert F({"index": iu, "facts": ""}).status_code == 200                                         # trash: the line is gone
+    pdf_t = " ".join(" ".join(p.get_text() for p in fitz.open(stream=fc.get("/api/snapshots/%s/pdf?as=2" % fr).data, filetype="pdf")).split())
+    assert "Gas heating drove it." not in pdf_t and orig[:30] not in pdf_t
+    assert F({"index": iu, "restore": True}).status_code == 200                                     # undo brings the original back
+    n = fc.get("/api/snapshots/%s?as=2" % fr).json["commentary"][iu]
+    assert n["facts"] == orig and "facts_original" not in n and "facts_edited" not in n
+    assert "Restored the figures line" in fc.get("/api/snapshots/%s?as=2" % fr).json["log"][0]["what"]
+    assert F({"index": iu, "facts": "[TBD]"}).status_code == 400
+
     # ---- real two-month run on 148: July all new; August carries July's explanations
     root = tempfile.mkdtemp()
     app = snapshot_dev.make_app(root)

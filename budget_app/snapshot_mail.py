@@ -143,11 +143,13 @@ def _notes(notes):
         return '<p style="margin:0 0 12px;font-size:14px;line-height:1.5"><b>%s</b><br>%s</p>' % (html.escape(t), html.escape(x))
     rows = [tuple(n) + (None,) * (3 - len(n)) for n in notes]
     out = "".join(p(t, x) for t, x, sc in rows if sc is None)
-    for code, label, hint in (("ytd", "Year to date", ""), ("month", "This month only", "Over budget this month but within budget for the year, usually timing.")):
+    for code, label, hint, fill, ink in (("ytd", "Year to date", "Over budget for the year so far.", "#E6EEFB", "#1F3F8F"),
+                                         ("month", "This month only", "Over budget this month but within budget for the year, usually timing.", "#FCEFD2", "#7A4A00")):
         group = [(t, x) for t, x, sc in rows if sc == code]
         if group:
-            out += ('<p style="margin:14px 0 6px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:%s"><b>%s</b>%s</p>' % (
-                LABEL, label, ('<span style="text-transform:none;letter-spacing:0"> &middot; %s</span>' % hint) if hint else ""))
+            out += ('<p style="margin:16px 0 8px;padding:6px 10px;background:%s;border-left:3px solid %s;font-size:11px;'
+                    'letter-spacing:1.2px;text-transform:uppercase;color:%s"><b>%s</b>'
+                    '<span style="text-transform:none;letter-spacing:0"> &middot; %s</span></p>' % (fill, ink, ink, label, hint))
             out += "".join(p(t, x) for t, x in group)
     return out
 

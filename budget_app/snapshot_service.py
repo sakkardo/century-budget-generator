@@ -545,6 +545,39 @@ class Service:
             self._new_version(rec, user_id, notes=notes, what='%s note "%s"' % ("Restored" if restore else "Removed", n["title"]))
         self._mutate(rid, fn)
 
+    def edit_facts(self, rid, user_id, index, facts=None, restore=False):
+        """FA edits or removes a note's figures line (the system sentence), or restores the original (Jacob 2026-10-06).
+        It prints on the snapshot, so any change is a new version; the original is kept for Restore."""
+        def fn(rec):
+            self._editable(rec)
+            if not self._is_fa(rec, user_id):
+                raise ValueError(self._not_fa(rec, "edit the notes"))
+            cur = self._cur(rec)
+            if not 0 <= index < len(cur["commentary"]):
+                raise ValueError("That note no longer exists. Reload the page.")
+            notes = copy.deepcopy(cur["commentary"])
+            n = notes[index]
+            if n.get("removed"):
+                raise ValueError("This note was removed. Restore it first.")
+            if restore:
+                if "facts_original" not in n:
+                    return
+                n["facts"] = n.pop("facts_original")
+                n.pop("facts_edited", None)
+                what = 'Restored the figures line on "%s"' % n["title"]
+            else:
+                new = (facts or "").strip()
+                if PLACEHOLDER.search(new):
+                    raise ValueError("Replace the [bracketed] text before saving.")
+                if new == (n.get("facts") or ""):
+                    return
+                n.setdefault("facts_original", n.get("facts") or "")
+                n["facts"] = new
+                n["facts_edited"] = {"by": self._name(user_id), "at": now_s()}
+                what = '%s the figures line on "%s"' % ("Removed" if not new else "Edited", n["title"])
+            self._new_version(rec, user_id, notes=notes, what=what)
+        self._mutate(rid, fn)
+
     def suggest(self, rid, user_id):
         """Draft suggested reasons from the GL for this snapshot's new and moved notes (Jennifer Murman, 2026-10-05).
         Fills only notes the FA hasn't written, confirmed or removed, as a new version; the FA still confirms each one."""
