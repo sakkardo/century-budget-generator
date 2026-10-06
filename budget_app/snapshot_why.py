@@ -29,6 +29,12 @@ For each note write a suggested reason in 1 or 2 plain sentences:
 - Budgets exist only for this month ("this_month"), year to date, the full year, and the months still ahead
   ("budget_rest_of_year"). There is no budget for earlier individual months: never state or imply one, and never
   apply this month's budget to another month (not "a monthly budget of $X" for July when X is August's).
+- So only the year to date and this month can be called "over budget" or "above budget". Describe earlier months by
+  their actual spending compared with other months ("about $90,000 in July and August, well above the spring months",
+  "a one-time $9,688 in March"), never as "over budget in July" or "over budget most months".
+- Vendors and descriptions are known only for this month's entries. Name a vendor only for this month; describe
+  earlier months by account and amount ("Steam was about $85,000 in March"), never by vendor.
+- Don't speculate about reversals, catch-up billing or errors unless an entry's remark says so.
 - Do not repeat the variance amount from the title; the reader already sees it.
 - An account with "month_complete": false has only part of its month in the evidence; don't describe its entries as
   the whole month.
