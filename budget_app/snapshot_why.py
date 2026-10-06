@@ -26,6 +26,9 @@ For each note write a suggested reason in 1 or 2 plain sentences:
 - Say WHY the line is over budget: which accounts, which months, which vendors or kinds of work.
 - Use only facts in the evidence. Never invent causes, vendors, dates or amounts. Round to whole dollars.
 - When you infer (for example a bill covering more than one month), say "appears to".
+- Budgets exist only for this month ("this_month"), year to date, the full year, and the months still ahead
+  ("budget_rest_of_year"). There is no budget for earlier individual months: never state or imply one, and never
+  apply this month's budget to another month (not "a monthly budget of $X" for July when X is August's).
 - Do not repeat the variance amount from the title; the reader already sees it.
 - An account with "month_complete": false has only part of its month in the evidence; don't describe its entries as
   the whole month.
@@ -57,7 +60,10 @@ def note_evidence(s, note):
         out.append({
             "account": a["name"], "acct": a.get("acct"),
             "ytd_actual": a["ytd_actual"], "ytd_budget": a["ytd_budget"], "ytd_var": a["ytd_var"],
-            "month_actual": a["month_actual"], "month_budget": a["month_budget"], "month_var": a["month_var"],
+            # the statement gives a budget for THIS month only (plus year to date, full year and months ahead);
+            # label it with the month so it is never read as every month's budget
+            "this_month": {"month": MONTHS[month - 1], "actual": a["month_actual"], "budget": a["month_budget"],
+                           "variance": a["month_var"]},
             "annual_budget": a["annual_budget"],
             "actual_by_month": {MONTHS[i][:3]: v for i, v in enumerate(months)},
             "budget_rest_of_year": {MONTHS[month + i][:3]: v for i, v in enumerate(a.get("budget_ahead") or [])},

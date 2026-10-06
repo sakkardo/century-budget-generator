@@ -57,6 +57,9 @@ def run():
     ev = w.note_evidence(s204, [n for n in notes if n["key"] == "cat:Utility Expenses"][0])
     assert [a["account"] for a in ev["accounts"]] == ["Gas - Heating", "Water/Sewer", "Fuel", "Electricity"]  # worst first
     assert ev["accounts"][0]["actual_by_month"]["Aug"] == 90400 and ev["month"] == "August"
+    # this month's budget is labelled with its month, never a bare "month_budget" the AI could apply to other months
+    assert ev["accounts"][0]["this_month"] == {"month": "August", "actual": 90400, "budget": 60200, "variance": -30200}
+    assert "month_budget" not in ev["accounts"][0] and "never apply this month's budget to another month" in " ".join(w.SYSTEM.split())
     blob = json.dumps(w.build_request(s204, notes))
     for resident in ("Horshinski", "Prokop", "Kirkwood", "Lattanzio"):                # names from 204's receipts and arrears
         assert resident not in blob, resident
