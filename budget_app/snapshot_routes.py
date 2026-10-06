@@ -78,6 +78,8 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         if blocked:
             return blocked
         try:
+            if request.args.get("preview") == "fa":
+                return jsonify(service.fa_preview(rid, uid()))
             return jsonify(service.view(rid, uid()))
         except ValueError as e:
             return err(e, 404)

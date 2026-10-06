@@ -902,6 +902,21 @@ class Service:
     def list(self):
         return sorted(self.store.summaries(), key=lambda r: (r["entity"], r["year"], r["month"]))
 
+    def fa_preview(self, rid, admin_id):
+        """Admin: the snapshot exactly as the building's FA sees it (Jacob 2026-10-06). Read-only: the page shows it
+        with inactive buttons, and every action still checks the real signed-in user."""
+        if not self.is_admin(admin_id):
+            raise ValueError("Only an admin can see the FA's view.")
+        rec = self.store.get(rid)
+        if not rec:
+            raise ValueError("Snapshot not found.")
+        fas = [a for a in self._team_rec(rec) if a["role"] == "fa"]
+        if not fas:
+            raise ValueError("This building has no FA assigned.")
+        out = self.view(rid, fas[0]["user_id"])
+        out["preview_of"] = " or ".join(a["name"] for a in fas)
+        return out
+
     def view(self, rid, as_user):
         rec = self.store.get(rid)
         if not rec:

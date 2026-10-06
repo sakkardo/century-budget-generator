@@ -389,7 +389,7 @@ function goHome() { show("home"); renderHome(); refreshList(); }
 function openSnap(id) {
   show("snap");
   state.cur = id;
-  return api("GET", "/api/snapshots/" + id).then(function (v) { render(v); refreshList(); window.scrollTo(0, 0); });
+  return api("GET", "/api/snapshots/" + id + (state.preview ? "?preview=fa" : "")).then(function (v) { render(v); refreshList(); window.scrollTo(0, 0); });
 }
 
 function current(v, role) { return v.signoffs.filter(function (x) { return x.role === role && x.current; }).pop(); }
@@ -575,7 +575,10 @@ function signHtml(v) {
 function render(v) {
   var html = '<div class="panel"><div class="head"><div><div class="eyebrow">' + esc(v.entity) + " &middot; " + MONTHS[v.month - 1] + " " + v.year + "</div><h1>" + esc(v.building || v.client) + "</h1>" +
     '<div class="muted">Version ' + v.version + " &middot; generated " + esc(v.generated_at) + " from " + esc(v.source) + "</div></div>" +
-    '<div style="display:flex;gap:10px;align-items:center">' + pill(v.stage) + (v.can.delete ? '<button id="delsnap" class="btn" style="min-height:34px;color:var(--bad);border-color:var(--bad-bd)">Delete snapshot</button>' : "") + "</div>" +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' + pill(v.stage) +
+    (v.preview_of ? '<button id="fapreview" class="btn" style="min-height:34px">Back to admin view</button>'
+      : (v.is_admin && !v.can.edit ? '<button id="fapreview" class="btn" style="min-height:34px">&#128065; See the FA&rsquo;s view</button>' : "")) +
+    (v.can.delete && !v.preview_of ? '<button id="delsnap" class="btn" style="min-height:34px;color:var(--bad);border-color:var(--bad-bd)">Delete snapshot</button>' : "") + "</div>" +
     "</div>" + steps(v) + "</div>" +
     '<div id="err"></div><div class="cols"><div class="stack">' +
     '<div class="panel pad"><p class="label">Sign-off</p>' + signHtml(v) + "</div>" +
@@ -598,6 +601,17 @@ function act(method, url, body) { api(method, url, body).then(function () { retu
 
 function wire(v) {
   function on(id, fn) { var node = el(id); if (node) { node.onclick = fn; } }
+  on("fapreview", function () { state.preview = !v.preview_of; openSnap(v.id); });
+  if (v.preview_of) {
+    // the FA's screen, as they see it; nothing here acts on their behalf
+    el("detail").insertAdjacentHTML("afterbegin", '<div class="msg info" style="margin-bottom:var(--gap)"><b>Preview of ' + esc(v.preview_of) +
+      "&rsquo;s screen (FA).</b> This is exactly what they see. Buttons are inactive here; only the FA can confirm and send.</div>");
+    Array.prototype.forEach.call(document.querySelectorAll("#detail button, #detail textarea, #detail input"), function (n) {
+      if (n.id === "fapreview") { return; }
+      if (n.tagName === "BUTTON") { n.disabled = true; n.title = "Preview: only the FA can do this"; } else { n.readOnly = true; }
+    });
+    return;
+  }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rm]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/remove", { index: Number(b.getAttribute("data-rm")) }); };

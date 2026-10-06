@@ -216,6 +216,15 @@ def run():
     plink = re.search(r'(/snapshot/confirm/[A-Za-z0-9-]+/[A-Za-z0-9_-]+)"', sent[-1]["html"]).group(1)
     assert b"Confirmed. Thank you." in c.post(plink, data={"decision": "approve"}).data   # Jacob confirms as the practice PM
     assert stage(rp) in ("approved", "released")
+    # admin preview: the FA's own view of a snapshot, read-only
+    rv = c.post("/api/snapshots/generate", data={"entity": "148", "sample": "148_2026-08_statement.pdf", "as": "2"}).json["id"]
+    adm = c.get("/api/snapshots/%s?as=8" % rv).json
+    pv = c.get("/api/snapshots/%s?as=8&preview=fa" % rv).json
+    fa = c.get("/api/snapshots/%s?as=2" % rv).json
+    assert not adm["can"]["edit"] and pv["can"]["edit"] == fa["can"]["edit"] is True and pv["preview_of"] == "Kristy Paxinos"
+    assert pv["why_not"] == fa["why_not"] and pv["my_roles"] == fa["my_roles"]
+    assert c.get("/api/snapshots/%s?as=2&preview=fa" % rv).status_code == 404               # only admins get previews
+    assert c.post("/api/snapshots/%s/note?as=8" % rv, json={"index": 0}).status_code == 400  # the preview never grants actions
     final_id = [r["id"] for r in c.get("/api/snapshots?as=8").json if r["stage"] in ("approved", "released")]
     if final_id:
         assert c.delete("/api/snapshots/%s?as=8" % final_id[0]).status_code == 400  # final snapshots are kept
