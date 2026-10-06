@@ -440,7 +440,9 @@ function evidenceHtml(e) {
   if (!e || !e.accounts || !e.accounts.length) { return ""; }
   var m = function (n) { return (n < 0 ? "-$" : "$") + Math.round(Math.abs(n)).toLocaleString("en-US"); };
   var rows = e.accounts.map(function (a) {
-    var months = Object.keys(a.actual_by_month || {}), vals = months.map(function (k) { return a.actual_by_month[k]; });
+    // calendar order: the server's JSON comes back with its keys sorted alphabetically (Apr, Aug, Feb...)
+    var months = MONTHS.map(function (n) { return n.slice(0, 3); }).filter(function (k) { return (a.actual_by_month || {})[k] !== undefined; });
+    var vals = months.map(function (k) { return a.actual_by_month[k]; });
     var top = Math.max.apply(null, vals.concat([1]));
     var bars = months.length ? '<div class="evbars">' + months.map(function (k, i) {
       return '<span title="' + k + " " + m(vals[i]) + '"><i style="height:' + Math.max(2, Math.round(40 * Math.max(0, vals[i]) / top)) + 'px"></i><b>' + k[0] + "</b></span>";
