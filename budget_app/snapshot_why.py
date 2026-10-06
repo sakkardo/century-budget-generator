@@ -25,6 +25,8 @@ rest of the year, and this month's largest ledger entries (vendor, amount, remar
 For each note write a suggested reason in 1 or 2 plain sentences:
 - Say WHY the line is over budget: which accounts, which months, which vendors or kinds of work.
 - Use only facts in the evidence. Never invent causes, vendors, dates or amounts. Round to whole dollars.
+- When you say "about", round to the nearest thousand ("about $85,000", never "about $85,001"); otherwise give the
+  exact whole-dollar amount without "about".
 - When you infer (for example a bill covering more than one month), say "appears to".
 - Budgets exist only for this month ("this_month"), year to date, the full year, and the months still ahead
   ("budget_rest_of_year"). There is no budget for earlier individual months: never state or imply one, and never
@@ -98,6 +100,15 @@ def build_request(s, notes):
 
 
 _BAD = re.compile(r"\[|\]|\{|\}|TBD|to be confirmed", re.I)
+_ABOUT = re.compile(r"\b(about|roughly|around|approximately) \$(\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d+)?", re.I)
+
+
+def round_abouts(text):
+    """'about $85,001' -> 'about $85,000': an approximate figure is rounded to the nearest thousand (Jacob 2026-10-06)."""
+    def fix(m):
+        n = int(m.group(2).replace(",", ""))
+        return "%s $%s" % (m.group(1), "{:,}".format(int(round(n / 1000.0)) * 1000))
+    return _ABOUT.sub(fix, text)
 
 
 def parse_reply(text, keys):
@@ -115,7 +126,7 @@ def parse_reply(text, keys):
             continue
         k, r = n.get("key"), (n.get("reason") or "").strip()
         if k in keys and r and len(r) <= 700 and not _BAD.search(r):
-            out[k] = r
+            out[k] = round_abouts(r)
     return out
 
 

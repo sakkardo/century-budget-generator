@@ -72,6 +72,11 @@ def run():
     assert w.parse_reply('{"notes":[{"key":"cat:Z","reason":"x"}]}', keys) == {}              # unknown key dropped
     assert w.parse_reply('{"notes":[{"key":"cat:A","reason":"[Cause to be confirmed]"}]}', keys) == {}  # placeholder dropped
     assert w.parse_reply('```json\n{"notes":[{"key":"cat:B","reason":"Ok."}]}\n```', keys) == {"cat:B": "Ok."}
+    # "about" figures round to the nearest thousand; exact figures stay exact
+    assert w.round_abouts("Steam was about $85,001 in March and $70,101 in April.") == "Steam was about $85,000 in March and $70,101 in April."
+    assert w.round_abouts("roughly $27,600 a month; nearly $1,499") == "roughly $28,000 a month; nearly $1,499"  # "nearly" isn't neutral
+    assert w.round_abouts("about $950 and about $89,000") == "about $950 and about $89,000"   # under $1,000 / already round
+    assert w.parse_reply('{"notes":[{"key":"cat:A","reason":"About $85,001 in March."}]}', keys) == {"cat:A": "About $85,000 in March."}
 
     # ---- the portal: suggestions fill only empty, unconfirmed notes, as a new version; the FA still confirms
     app = snapshot_dev.make_app(tempfile.mkdtemp())
