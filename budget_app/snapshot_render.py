@@ -7,7 +7,7 @@ import os
 from xml.sax.saxutils import escape as xesc
 
 from reportlab.graphics.charts.lineplots import LinePlot
-from reportlab.graphics.shapes import Drawing, Rect, String
+from reportlab.graphics.shapes import Drawing
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
@@ -16,9 +16,9 @@ from reportlab.platypus import (BaseDocTemplate, CondPageBreak, Frame, Image, Ke
                                 Paragraph, Spacer, Table, TableStyle)
 
 try:
-    from snapshot_parser import account_kind, is_security_account
+    from snapshot_parser import account_kind
 except ImportError:
-    from budget_app.snapshot_parser import account_kind, is_security_account
+    from budget_app.snapshot_parser import account_kind
 
 RED = colors.HexColor("#A4262C")
 INK = colors.HexColor("#221F1F")
@@ -244,24 +244,6 @@ def _cash_chart(s, width, height):
     return d
 
 
-def _capital_chart(items, width):
-    items = [i for i in items if i["ytd"]]
-    if not items:
-        return None
-    items = sorted(items, key=lambda i: -i["ytd"])[:4]  # the table above lists every project; the chart shows the biggest
-    rowh = 13
-    d = Drawing(width, rowh * len(items) + 4)
-    top = max(i["ytd"] for i in items)
-    barmax = width - 190
-    for k, it in enumerate(items):
-        y = rowh * (len(items) - 1 - k) + 4
-        d.add(String(0, y + 3, it["project"][:28], fontSize=8, fontName="Helvetica", fillColor=INK))
-        w = max(2, barmax * it["ytd"] / top)
-        d.add(Rect(120, y, w, 12, fillColor=RED, strokeColor=None))
-        d.add(String(124 + w, y + 3, money(it["ytd"]), fontSize=8, fontName="Helvetica", fillColor=MUTE))
-    return d
-
-
 # ---------------------------------------------------------------- pdf
 def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DRAFT", reviewed=None, resolved=None):
     """reviewed: {"by", "at"} once the FA has confirmed every note; printed under the notes.
@@ -280,7 +262,6 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     h1 = st("h1", fn="Helvetica-Bold", fontSize=19, leading=22, textColor=INK)
     h2 = st("h2", fn="Helvetica-Bold", fontSize=11.5, leading=14, textColor=INK, spaceBefore=12, spaceAfter=5)
     body = st("b", fontSize=9, leading=12.5, textColor=INK)
-    read = st("read", fn="Helvetica", fontSize=11.5, leading=15.5, textColor=INK)  # one typeface throughout the report
     small = st("s", fontSize=7.5, leading=10, textColor=MUTE)
     cell = st("c", fontSize=8, leading=10, textColor=INK)
     cellr = st("cr", fontSize=8, leading=10, textColor=INK, alignment=2)
@@ -292,9 +273,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         canvas.line(0, H - 4, W, H - 4)
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(MUTE)
-        blocked = [c for c in s["checks"] if c["status"] != "tied"]
-        tie = "All %d statement checks tied" % len(s["checks"]) if not blocked else "%d of %d checks need attention" % (len(blocked), len(s["checks"]))
-        canvas.drawString(gutter, 0.45 * inch, "%s  |  Monthly Financial Snapshot, %s  |  %s" % (building, title, tie))
+        canvas.drawString(gutter, 0.45 * inch, "%s  |  Monthly Financial Snapshot, %s" % (building, title))
         canvas.drawRightString(W - gutter, 0.45 * inch, "Page %d" % doc.page)
         if status_label != "APPROVED":
             canvas.setFont("Helvetica-Bold", 8)
@@ -313,24 +292,22 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
     head = Table([[logo, Paragraph("<b>Monthly Financial Snapshot</b><br/>%s" % title, st("hr", fontSize=10, leading=13, textColor=MUTE, alignment=2))]],
                  colWidths=[cw * 0.5, cw * 0.5])
     head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    f += [head, Spacer(1, 6), Paragraph(building, h1), Spacer(1, 4)]
+    f += [head, Spacer(1, 6), Paragraph(building, h1), Spacer(1, 8)]
 
-    overall = next((note_body(c) for c in commentary if c.get("key") == "overall" or c["title"] == "Overall"), "")
-    if overall:
-        f += [Paragraph(xesc(overall), read), Spacer(1, 6)]
-
-    sec_cash = sum(a["end"] for a in s["cash"]["accounts"] if not is_security_account(a["name"])) if s["cash"]["accounts"] else None
     inc, exp, noi, net = s["income"], s["expenses"], s["noi"], s["net_income"]
 
     def kpi(label, value, sub):
         return [Paragraph(label.upper(), st("kl", fontSize=6.5, leading=8, textColor=MUTE)),
                 Paragraph("<b>%s</b>" % value, st("kv", fontSize=15, leading=18, textColor=INK)),
                 Paragraph(sub, st("kd", fontSize=7, leading=9, textColor=MUTE))]
-    k = [kpi("Net operating income, YTD", money(noi["ytd_actual"]), "Budget %s (%s)" % (money(noi["ytd_budget"]), vtxt(noi["ytd_var"]))),
-         kpi("Net income, YTD", money(net["ytd_actual"]), "Budget %s (%s)" % (money(net["ytd_budget"]), vtxt(net["ytd_var"]))),
-         kpi("%s net operating income" % month_name, money(noi["month_actual"]), "Budget %s (%s)" % (money(noi["month_budget"]), vtxt(noi["month_var"]))),
-         kpi("Cash, excluding security deposits", money(sec_cash) if sec_cash is not None else "n/a", "At month end")]
-    kt = Table([k], colWidths=[cw / 4.0] * 4)
+
+    def signed(v, show_plus=True):  # green when positive (favorable), red when negative (Jacob 2026-10-06)
+        txt = ("+" if v > 0 and show_plus else "") + money(v)
+        return '<font color="%s">%s</font>' % ("#2F6B4F" if v > 0 else ("#A4262C" if v < 0 else "#221F1F"), txt)
+    k = [kpi("Income, YTD variance", signed(inc["ytd_var"]), "Actual %s, budget %s" % (money(inc["ytd_actual"]), money(inc["ytd_budget"]))),
+         kpi("Expenses, YTD variance", signed(exp["ytd_var"]), "Actual %s, budget %s" % (money(exp["ytd_actual"]), money(exp["ytd_budget"]))),
+         kpi("Net operating income, YTD", signed(noi["ytd_actual"], False), "Budget %s (%s)" % (money(noi["ytd_budget"]), vtxt(noi["ytd_var"])))]
+    kt = Table([k], colWidths=[cw / 3.0] * 3)
     kt.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, LINE), ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE),
                             ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 7),
                             ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
@@ -447,98 +424,83 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                                 ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 8), ("LINEABOVE", (0, -1), (-1, -1), 0.8, INK),
                                 ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
         f.append(ct)
-        ch = _capital_chart(cap, cw)
-        if ch:
-            f += [Spacer(1, 6), ch]
     else:
         f.append(Paragraph("No capital or other non-operating expenses are recorded this year to date.", body))
     ca = s["capital_assessment"]
     if ca and (ca["ytd_actual"] or ca["ytd_budget"]):
         f.append(Paragraph("Capital assessment collected year to date: %s (budget %s)." % (money(ca["ytd_actual"]), money(ca["ytd_budget"])), body))
 
-    # cash + arrears
+    # cash, arrears and payables: three sections (Jacob 2026-10-06)
+    def ledger(rows, widths, total=False, bold_row=None):
+        t = Table(rows, colWidths=widths, hAlign="LEFT")
+        ts = [("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
+              ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+              ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2 if total else -1), 0.3, LINE),
+              ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]
+        if total:
+            ts += [("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 8), ("LINEABOVE", (0, -1), (-1, -1), 0.8, INK)]
+        if bold_row is not None:
+            ts += [("FONT", (0, bold_row), (-1, bold_row), "Helvetica-Bold", 8)]
+        t.setStyle(TableStyle(ts))
+        return t
+
     cash = s["cash"]
-    f.append(Paragraph("Cash, arrears and payables", h2))
-    left = []
+    mlab = lambda off: MONTH_NAMES[(m["month"] - 1 - off) % 12][:3]
+    months3 = ["", mlab(2), mlab(1), mlab(0)]
     if cash["accounts"]:
+        f.append(Paragraph("Cash", h2))
         arow = [["Account", "Start of month", "Month end"]]
         for a in cash["accounts"]:
             if a["end"] or a["begin"]:
                 arow.append([Paragraph(a["name"], cell), num(a["begin"]), num(a["end"])])
         arow.append(["Total", num(cash["total"]["begin"]), num(cash["total"]["end"])])
-        at = Table(arow, colWidths=[cw * 0.26, cw * 0.14, cw * 0.14])
-        at.setStyle(TableStyle([("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
-                                ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                                ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINE),
-                                ("FONT", (0, -1), (-1, -1), "Helvetica-Bold", 8), ("LINEABOVE", (0, -1), (-1, -1), 0.8, INK),
-                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
-        left.append(at)
+        f.append(ledger(arow, [cw * 0.4, cw * 0.15, cw * 0.15], total=True))
         kinds = {}
         for a in cash["accounts"]:
             kinds[account_kind(a["name"])] = kinds.get(account_kind(a["name"]), 0) + a["end"]
         order = [("operating", "Operating"), ("reserve", "Reserves"), ("money market", "Money market"),
                  ("other", "Other"), ("security", "Security deposits")]
         parts = ["%s %s" % (lab, money(kinds[k])) for k, lab in order if kinds.get(k)]
-        left.append(Spacer(1, 3))
-        left.append(Paragraph(" &nbsp;|&nbsp; ".join(parts), small))
-    right = []
+        f += [Spacer(1, 3), Paragraph(" &nbsp;|&nbsp; ".join(parts), small)]
+        cc = _cash_chart(s, cw, 74)
+        if cc:
+            f += [Spacer(1, 6), Paragraph("Cash at month end, last twelve months (excluding security deposits)", small), cc]
     if len(cash["arrears"]) == 3:
         ar = cash["arrears"]
-        mlab = lambda off: MONTH_NAMES[(m["month"] - 1 - off) % 12][:3]
-        rrow = [["", mlab(2), mlab(1), mlab(0)],
-                ["Receivable"] + [num(x) for x in ar["Accounts Receivable"]],
-                ["Prepaid"] + [num(x) for x in ar["Prepaid"]],
-                ["Net arrears"] + [num(x) for x in ar["Total Arrears"]]]
-        if cash["ap"]:
-            rrow.append(["Accounts payable"] + [num(x) for x in cash["ap"]])
-        rt = Table(rrow, colWidths=[cw * 0.14, cw * 0.1, cw * 0.1, cw * 0.1])
-        rt.setStyle(TableStyle([("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
-                                ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                                ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -1), 0.3, LINE),
-                                ("FONT", (0, 3), (-1, 3), "Helvetica-Bold", 8),
-                                ("LEFTPADDING", (0, 0), (0, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.8), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.8)]))
-        right.append(rt)
-    ctab = Table([[left or "", right or ""]], colWidths=[cw * 0.56, cw * 0.44])
-    ctab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-    f.append(ctab)
-    cc = _cash_chart(s, cw, 74)
-    if cc:
-        f += [Spacer(1, 6), Paragraph("Cash at month end, last twelve months (excluding security deposits)", small), cc]
+        f.append(Paragraph("Arrears", h2))
+        f.append(ledger([months3,
+                         ["Receivable"] + [num(x) for x in ar["Accounts Receivable"]],
+                         ["Prepaid"] + [num(x) for x in ar["Prepaid"]],
+                         ["Net arrears"] + [num(x) for x in ar["Total Arrears"]]],
+                        [cw * 0.4, cw * 0.15, cw * 0.15, cw * 0.15], bold_row=3))
+    if cash["ap"]:
+        f.append(Paragraph("Payables", h2))
+        f.append(ledger([months3, ["Accounts payable"] + [num(x) for x in cash["ap"]]],
+                        [cw * 0.4, cw * 0.15, cw * 0.15, cw * 0.15]))
 
-    # tie-out checklist: one line when everything ties; the full list (failures first) only when something does not
-    f.append(Paragraph("Ties to the statement", h2))
-    all_tied = bool(s["checks"]) and all(c["status"] == "tied" for c in s["checks"])
-    if all_tied:
-        f.append(Paragraph('<font color="#2F6B4F"><b>All %d checks tied.</b></font> Every total on this snapshot matches '
-                           "the Yardi statement it was built from." % len(s["checks"]), small))
-        f.append(Spacer(1, 4))
-    cells = []
-    for c in ([] if all_tied else sorted(s["checks"], key=lambda c: c["status"] == "tied")):
-        ok = c["status"] == "tied"
-        tag = '<font color="%s"><b>%s</b></font>' % ("#2F6B4F" if ok else "#A4262C", "Tied" if ok else "Check")
-        cells.append(Paragraph("%s &nbsp;%s" % (tag, c["label"]), st("ck", fontSize=6.8, leading=8.4, textColor=INK)))
-    while len(cells) % 3:
-        cells.append("")
-    third = len(cells) // 3  # three columns: fewer lines, same checks
-    if third:
-        ck = Table([[cells[i], cells[i + third], cells[i + 2 * third]] for i in range(third)], colWidths=[cw / 3.0] * 3)
-        ck.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                                ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-        f.append(ck)
-
-    # sign-off block
-    f.append(Spacer(1, 3))
+    # sign-off: one panel per signer, name over a signature line, then the date signed (Jacob 2026-10-06)
     so = signoff or {}
-    def sline(role, who):
+    lab = st("sl", fn="Helvetica-Bold", fontSize=6.5, leading=8, textColor=MUTE)
+    nm = st("sn", fn="Helvetica-Bold", fontSize=10.5, leading=13, textColor=INK)
+    when = st("sw", fontSize=8, leading=10, textColor=INK)
+
+    def panel(role, who):
         who = who or {}
+        name = xesc(who.get("name") or "Not assigned")
         if who.get("signed_at"):
-            return "%s: %s, %s" % (role, who["name"], who["signed_at"])
-        return "%s: %s, awaiting sign-off" % (role, who.get("name") or "not assigned")
-    # one row: who prepared it, then the FA and the PM side by side
-    f.append(Table([[Paragraph("<b>Prepared and reviewed by Century Management</b>", body),
-                     Paragraph(sline("Financial Analyst", so.get("fa")), body), Paragraph(sline("Property Manager", so.get("pm")), body)]],
-                   colWidths=[cw * 0.3, cw * 0.35, cw * 0.35],
-                   style=[("BOX", (0, 0), (-1, -1), 0.5, LINE), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                          ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+            status = '<font color="#2F6B4F"><b>Signed</b></font> %s' % xesc(who["signed_at"])
+        else:
+            status = '<font color="#6D6564">Awaiting sign-off</font>'
+        return [Paragraph(role.upper(), lab), Paragraph(name, nm), Paragraph(status, when)]
+    fa_p, pm_p = panel("Financial Analyst", so.get("fa")), panel("Property Manager", so.get("pm"))
+    gap = cw * 0.08
+    sign = Table([[fa_p[0], "", pm_p[0]], [fa_p[1], "", pm_p[1]], [fa_p[2], "", pm_p[2]]],
+                 colWidths=[(cw - gap) / 2, gap, (cw - gap) / 2],
+                 style=[("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                        ("BOTTOMPADDING", (0, 1), (-1, 1), 5), ("TOPPADDING", (0, 2), (-1, 2), 4),
+                        ("LINEBELOW", (0, 1), (0, 1), 0.8, INK), ("LINEBELOW", (2, 1), (2, 1), 0.8, INK)])
+    f.append(KeepTogether([Paragraph("Sign-off", h2), Spacer(1, 6), sign, Spacer(1, 8),
+                           Paragraph("Prepared and reviewed by Century Management.", small)]))
     doc.build(f)
     return buf.getvalue()

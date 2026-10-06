@@ -54,6 +54,13 @@ def run():
     old_shape = [{"title": "Overall", "text": "Year to date..."}, {"title": "Utilities", "text": "Gas ran high."}]
     pdf = r.render_pdf(s204, old_shape)
     assert "Gas ran high." in fitz.open(stream=pdf, filetype="pdf")[0].get_text()
+    # report layout per Jacob's 724 review (2026-10-06): three YTD boxes, no tie-out text, separate cash/arrears/payables
+    whole = " ".join(" ".join(p.get_text() for p in fitz.open(stream=pdf, filetype="pdf")).split())
+    for want in ("INCOME, YTD VARIANCE", "EXPENSES, YTD VARIANCE", "NET OPERATING INCOME, YTD", "Arrears", "Payables",
+                 "Sign-off", "FINANCIAL ANALYST", "PROPERTY MANAGER"):
+        assert want in whole, want
+    for gone in ("Ties to the statement", "checks tied", "CASH, EXCLUDING", "Cash, arrears and payables", "Year to date..."):
+        assert gone not in whole, gone
 
     # ---- which lines get a note (Jacob 2026-10-03): >10% over YTD budget, or >15% over this month's budget
     cat = lambda yv, yb, mv, mb: {"ytd_var": yv, "ytd_budget": yb, "month_var": mv, "month_budget": mb}
