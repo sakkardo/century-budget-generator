@@ -82,6 +82,10 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         except ValueError as e:
             return err(e, 404)
 
+    @bp.route("/api/snapshots/<rid>/suggest", methods=["POST"])
+    def suggest(rid):
+        return guarded(lambda: service.suggest(rid, uid()))
+
     @bp.route("/api/snapshots/<rid>/pm-override", methods=["POST"])
     def pm_override(rid):
         b = request.get_json(force=True)
@@ -122,6 +126,11 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
             if not dev and not who:
                 return err("Sign in with Microsoft first.", 401)
             rid = service.generate(entity, data, who, source)
+            if os.environ.get("SNAPSHOT_WHY_AUTO", "").lower() in ("1", "true", "on"):
+                try:  # suggested reasons straight away; a failure here never loses the snapshot
+                    service.suggest(rid, who)
+                except Exception:
+                    pass
             return jsonify({"id": rid})
         except Exception as e:  # parse failures must reach the screen, not a 500 page
             return err(e)

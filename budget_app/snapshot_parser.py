@@ -191,6 +191,121 @@ def parse_cash(doc):
     return cash
 
 
+# ---------------------------------------------------------------- GL evidence (why a line is off budget)
+_MONEY = r"-?[\d,]+\.\d\d"
+_GL_HEAD = re.compile(r"^(?P<acct>\d{4}-\d{4})-(?P<name>.+?)\s+%s\s+%s\s+%s\s+== Beginning Balance ==" % (_MONEY, _MONEY, _MONEY))
+_GL_LINE = re.compile(r"^(?P<date>\d\d/\d\d/\d{4})\s+(?P<who>.+?)\s+(?P<ctrl>[A-Z]-\d+)\s+(?P<dr>%s)\s+(?P<cr>%s)\s+%s\s*(?P<note>.*)$"
+                      % (_MONEY, _MONEY, _MONEY))
+_GL_NET = re.compile(r"^Net Changes\s+(?P<dr>%s)\s+(?P<cr>%s)" % (_MONEY, _MONEY))
+
+
+def _f(s):
+    return float(s.replace(",", ""))
+
+
+def _norm(label):
+    return re.sub(r"[^a-z0-9]+", " ", (label or "").lower()).strip()
+
+
+def parse_general_ledger(doc):
+    """This month's General Ledger: {account number: {acct, name, net, lines: [{date, vendor, ctrl, amount, note}]}}.
+    Every account is read here; the caller keeps expense accounts only (receipts carry resident names).
+    Two accounts can share a name (309 has two 'Real Estate Tax'), so they are keyed by number."""
+    accts, cur = {}, None
+    for page in doc:
+        if not _title(page).startswith("General Ledger"):
+            continue
+        for line in _lines(page):
+            m = _GL_HEAD.match(line)
+            if m:
+                cur = accts.setdefault(m.group("acct"), {"acct": m.group("acct"), "name": m.group("name").strip(),
+                                                         "net": None, "lines": []})
+                continue
+            if cur is None:
+                continue
+            m = _GL_NET.match(line)
+            if m:
+                cur["net"] = round(_f(m.group("dr")) - _f(m.group("cr")), 2)
+                continue
+            m = _GL_LINE.match(line)
+            if m:
+                who = re.sub(r"\s*\([^)]*\)\s*$", "", m.group("who")).strip()  # "The Metro Group Inc. (metrgro)"
+                cur["lines"].append({"date": m.group("date")[:5], "vendor": who, "ctrl": m.group("ctrl"),
+                                     "amount": round(_f(m.group("dr")) - _f(m.group("cr")), 2), "note": m.group("note").strip()})
+    for a in accts.values():  # a 'Net Changes' line split across pages: fall back to the entries themselves
+        if a["net"] is None:
+            a["net"] = round(sum(l["amount"] for l in a["lines"]), 2)
+    return accts
+
+
+def _gl_by_name(gl):
+    """Accounts that share a name are one line on the income statement: merge them."""
+    out = {}
+    for a in gl.values():
+        k = _norm(a["name"])
+        if k in out:
+            out[k] = {"acct": out[k]["acct"] + ", " + a["acct"], "name": a["name"], "net": round(out[k]["net"] + a["net"], 2),
+                      "lines": out[k]["lines"] + a["lines"]}
+        else:
+            out[k] = dict(a)
+    return out
+
+
+def parse_budget_analysis_rows(doc):
+    """Every 'Budget Analysis Detail' row in order: (label, [Jan..Dec, forecast, annual budget, variance]).
+    Months up to the statement month are actuals; later months are the budget."""
+    out, pending = [], None
+    for page in doc:
+        if not _title(page).startswith("Budget Analysis Detail"):
+            continue
+        for line in _lines(page):
+            if line.startswith("TOTAL") and line.endswith("&"):
+                pending = line
+                continue
+            m = re.match(r"^(?P<label>.*?[A-Za-z\)])\s+(?P<nums>(?:%s\s+){14}%s)\s*$" % (NUM, NUM), line)
+            if not m:
+                continue
+            label = m.group("label").strip()
+            if pending:
+                label, pending = pending + " " + label, None
+            out.append((label, [_n(x) for x in _NUM_RE.findall(m.group("nums"))]))
+    return out
+
+
+def gl_evidence(doc, rows, categories, line_items, month):
+    """Per expense category: its accounts with month-by-month actuals and this month's largest ledger entries.
+    Only accounts that sit under an EXPENSES category are kept, so no receipts or resident names are stored."""
+    by_name = _gl_by_name(parse_general_ledger(doc))
+    ba_rows = parse_budget_analysis_rows(doc)
+    start = next((i for i, (l, _) in enumerate(ba_rows) if l.upper() == "TOTAL INCOME"), 0)
+    ba = {}
+    for label, nums in ba_rows[start:]:
+        ba.setdefault(_norm(label), nums)
+    out, checked, tied = {}, 0, 0
+    for cat_name, cat_row in categories:
+        accts = []
+        for it in line_items(cat_row):
+            if not (it["ytd_actual"] or it["ytd_budget"] or it["month_actual"]):
+                continue
+            g, b = by_name.get(_norm(it["label"])), ba.get(_norm(it["label"]))
+            ok = None
+            if g is not None:
+                checked += 1
+                ok = abs(round(g["net"]) - it["month_actual"]) <= 1  # the entries we hold are this line's whole month
+                tied += ok
+            elif it["month_actual"] == 0:
+                ok = True  # nothing posted this month, nothing to show
+            lines = sorted((g or {}).get("lines", []), key=lambda l: -abs(l["amount"]))[:8]
+            accts.append({"name": it["label"], "acct": (g or {}).get("acct"), "month_complete": ok,
+                          "month_actual": it["month_actual"], "month_budget": it["month_budget"], "month_var": it["month_var"],
+                          "ytd_actual": it["ytd_actual"], "ytd_budget": it["ytd_budget"], "ytd_var": it["ytd_var"],
+                          "annual_budget": it["annual_budget"],
+                          "months": b[:month] if b else None, "budget_ahead": b[month:12] if b else None,
+                          "lines": lines})
+        out[cat_name] = accts
+    return {"categories": out, "month": month, "tie": {"checked": checked, "tied": tied}}
+
+
 def _is_parent(rows_totals, idx):
     """A total is a parent subtotal if consecutive earlier totals sum to it."""
     r = rows_totals[idx]
@@ -294,6 +409,10 @@ def build_snapshot(pdf_bytes):
         "cash": cash,
     }
     snap["checks"] = run_checks(snap, rows, monthly)
+    try:  # evidence for suggested reasons; a statement it can't read still makes a snapshot
+        snap["gl"] = gl_evidence(doc, rows, [(c["name"], r) for c, r in zip(cats, categories)], line_items, meta["month"] or 12)
+    except Exception:
+        snap["gl"] = None
     return snap
 
 

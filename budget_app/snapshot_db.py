@@ -289,6 +289,13 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
         def reset(self):
             raise ValueError("Reset is only available in the click-through.")
 
+        def release(self):
+            """End the read transaction before slow work (the AI call): never hold a connection open across it."""
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
         def delete(self, rid):
             try:
                 db.session.query(SnapshotRecord).filter_by(id=rid).delete()

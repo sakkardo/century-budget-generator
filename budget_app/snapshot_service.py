@@ -24,8 +24,9 @@ try:
     import snapshot_parser
     import snapshot_render
     import snapshot_signoff as so
+    import snapshot_why
 except ImportError:
-    from budget_app import snapshot_mail, snapshot_parser, snapshot_render
+    from budget_app import snapshot_mail, snapshot_parser, snapshot_render, snapshot_why
     from budget_app import snapshot_signoff as so
 
 MONTHS = snapshot_render.MONTH_NAMES
@@ -204,6 +205,7 @@ class Service:
         self.mailer = mailer or snapshot_mail.Mailer()
         self.base_url = base_url or (lambda: "")
         self._escalate_to = escalate_to
+        self.why = snapshot_why.ClaudeDrafter()  # drafts suggested reasons from the GL; tests swap in a fake
 
     @property
     def escalate_to(self):
@@ -445,6 +447,7 @@ class Service:
                     if PLACEHOLDER.search(text):
                         raise ValueError("Replace the [bracketed] placeholder in \"%s\" before saving." % old.get("title"))
                     n["text"] = text
+                    n.pop("suggested", None)
                     self._confirm_stamp(n, user_id, reexplained=True)
                 notes.append(n)
             if [n.get("text") for n in notes] == [o.get("text") for o in cur["commentary"]] and board_note == cur["board_note"]:
@@ -495,6 +498,7 @@ class Service:
                 return
             notes = copy.deepcopy(cur["commentary"])
             notes[index]["text"] = new_text
+            notes[index].pop("suggested", None)
             self._confirm_stamp(notes[index], user_id, reexplained=True)
             self._new_version(rec, user_id, notes=notes, what='Edited and confirmed note "%s"' % note["title"])
         self._mutate(rid, fn)
@@ -540,6 +544,44 @@ class Service:
                 n["removed"] = {"by": self._name(user_id), "at": now_s(), "iso": iso_now()}
             self._new_version(rec, user_id, notes=notes, what='%s note "%s"' % ("Restored" if restore else "Removed", n["title"]))
         self._mutate(rid, fn)
+
+    def suggest(self, rid, user_id):
+        """Draft suggested reasons from the GL for this snapshot's new and moved notes (Jennifer Murman, 2026-10-05).
+        Fills only notes the FA hasn't written, confirmed or removed, as a new version; the FA still confirms each one."""
+        rec = self.store.get(rid)
+        if not rec:
+            raise ValueError("Snapshot not found.")
+        if self.stage(rec) not in ("draft", "changes_requested"):
+            raise ValueError("Reasons can only be suggested before the snapshot is sent.")
+        if not (self._is_fa(rec, user_id) or self.is_admin(user_id)):
+            raise ValueError(self._not_fa(rec, "ask for suggested reasons"))
+        v = self._cur(rec)
+        if not (v["snapshot"].get("gl") or {}).get("categories"):
+            raise ValueError("This snapshot was made before the GL was read. Generate it again from the statement to get suggested reasons.")
+        items = snapshot_why.build_request(v["snapshot"], active(v["commentary"]))
+        if not items:
+            return {"suggested": 0}
+        if not self.why.available:
+            raise ValueError("Suggested reasons aren't available on this server (no AI key).")
+        h = v["hash"]
+        getattr(self.store, "release", lambda: None)()  # no database transaction open during the AI call
+        reasons = self.why(items)
+
+        def fn(rec):
+            cur = self._cur(rec)
+            if cur["hash"] != h:
+                raise ValueError("The snapshot changed while the reasons were being written. Try again.")
+            notes = copy.deepcopy(cur["commentary"])
+            done = 0
+            for n in notes:
+                if n.get("key") in reasons and snapshot_why.eligible(n):
+                    n["text"] = reasons[n["key"]]
+                    n["suggested"] = {"by": "Claude", "at": now_s(), "model": self.why.model}
+                    done += 1
+            if done:
+                self._new_version(rec, user_id, notes=notes, what="Suggested reasons from the GL for %d note(s)" % done)
+            return {"suggested": done}
+        return self._mutate(rid, fn)
 
     def acknowledge(self, rid, user_id, check_id, note):
         def fn(rec):
@@ -879,6 +921,9 @@ class Service:
                        and not st["state"].startswith("blocked") and bool(pms),
                "resend": (is_fa or self.is_admin(as_user)) and stage == "awaiting_pm",
                "delete": self.is_admin(as_user) and not final and not rec.get("released"),
+               "suggest": (is_fa or self.is_admin(as_user)) and stage in ("draft", "changes_requested")
+                          and bool((s.get("gl") or {}).get("categories")) and self.why.available
+                          and bool(snapshot_why.build_request(s, active(v["commentary"]))),
                "release": is_fa and stage == "approved" and not getattr(self.releaser, "dry_run", False)}
         why_not = []
         if is_fa and stage in ("draft", "changes_requested"):
@@ -904,7 +949,8 @@ class Service:
             "released": rec["released"], "rehearsal": rec.get("rehearsal"), "release_blocked": rec.get("release_blocked"),
             "release_off": bool(getattr(self.releaser, "dry_run", False)), "state": st["state"], "waiting_on": st["waiting_on"],
             "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"],
-            "commentary": [dict(c, scope=snapshot_render.note_scope(c)) for c in v["commentary"]],
+            "commentary": [dict(c, scope=snapshot_render.note_scope(c), evidence=snapshot_why.note_evidence(s, c))
+                           for c in v["commentary"]],
             "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],

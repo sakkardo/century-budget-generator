@@ -168,6 +168,18 @@ details.checks[open] summary .chev::after { content:" (hide)" }
 .note .foot .btn { min-height:38px; padding:0 14px }
 .note .stamp { font-size:13px; color:var(--ok); font-weight:600 }
 .note .hint { font-size:13px; color:var(--warn) }
+.pill.sugg { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
+details.ev { border-top:1px solid var(--border); padding-top:6px; font-size:12.5px }
+details.ev summary { cursor:pointer; color:var(--ink); font-weight:600; font-size:13px }
+.eva { margin-top:10px }
+.evh { display:flex; justify-content:space-between; gap:8px; color:var(--ink) }
+.evh .bad { color:var(--bad); font-variant-numeric:tabular-nums }
+.evbars { display:flex; align-items:flex-end; gap:4px; height:52px; margin:4px 0 2px }
+.evbars span { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:2px }
+.evbars i { display:block; width:100%; background:var(--tan); border-radius:3px 3px 0 0 }
+.evbars b { font-size:10px; font-weight:500; color:var(--label) }
+.evl { display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-top:1px solid var(--border); color:var(--ink-2) }
+.evl span:last-child { font-variant-numeric:tabular-nums; white-space:nowrap }
 .note .foot .btn.rm { background:transparent; color:var(--bad); border-color:var(--bad-bd) }
 .note .foot .btn.rm:hover { background:var(--bad-bg); box-shadow:none }
 details.removed { margin:4px 0 14px; border:1px dashed var(--rule); border-radius:var(--radius); padding:10px 14px }
@@ -424,6 +436,24 @@ function checksHtml(v) {
   return '<details class="checks"' + (bad.length ? " open" : "") + "><summary>" + head + '<span class="chev">Details</span></summary><div class="chklist">' + rows + "</div></details>";
 }
 
+function evidenceHtml(e) {
+  if (!e || !e.accounts || !e.accounts.length) { return ""; }
+  var m = function (n) { return (n < 0 ? "-$" : "$") + Math.round(Math.abs(n)).toLocaleString("en-US"); };
+  var rows = e.accounts.map(function (a) {
+    var months = Object.keys(a.actual_by_month || {}), vals = months.map(function (k) { return a.actual_by_month[k]; });
+    var top = Math.max.apply(null, vals.concat([1]));
+    var bars = months.length ? '<div class="evbars">' + months.map(function (k, i) {
+      return '<span title="' + k + " " + m(vals[i]) + '"><i style="height:' + Math.max(2, Math.round(40 * Math.max(0, vals[i]) / top)) + 'px"></i><b>' + k[0] + "</b></span>";
+    }).join("") + "</div>" : "";
+    var lines = (a.this_month_entries || []).slice(0, 5).map(function (l) {
+      return '<div class="evl"><span>' + esc(l.date + " " + l.vendor + (l.remark ? " \u00b7 " + l.remark : "")) + "</span><span>" + m(l.amount) + "</span></div>";
+    }).join("");
+    return '<div class="eva"><div class="evh"><b>' + esc(a.account) + '</b><span class="bad">' + m(a.ytd_var) + " YTD</span></div>" + bars +
+      (lines ? '<div class="muted" style="margin:4px 0 2px">' + esc(e.month) + " entries" + (a.month_complete === false ? " (partial)" : "") + "</div>" + lines : "") + "</div>";
+  }).join("");
+  return '<details class="ev"><summary>From the GL</summary>' + rows + "</details>";
+}
+
 function commentaryHtml(v) {
   var editable = v.can.edit;
   var live = v.commentary.filter(function (c) { return !c.removed; });
@@ -432,6 +462,7 @@ function commentaryHtml(v) {
   var fa = teamNames(v, "fa") || "the FA";
   var cont = live.filter(function (c) { return c.status === "continuing" && !c.confirmed; }).length;
   var head = '<div class="progress"><span>' + done + " of " + total + ' notes confirmed</span><span class="barx"><i style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></i></span></div>' +
+    (v.can.suggest ? '<div class="foot" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:-4px 0 14px"><button class="btn" id="suggest" style="min-height:38px">&#10022; Suggest reasons from the GL</button><span class="muted">Drafts a reason for each new note from the ledger. You check and confirm each one.</span></div>' : "") +
     (editable ? "" : '<p class="muted" style="margin:-6px 0 14px">' + esc(fa) + " (FA) edits or confirms each note. " +
       (state.me ? "You can read them here." : "Sign in with Microsoft to edit or confirm them if you are the FA.") + "</p>");
   function statusPill(c) {
@@ -443,16 +474,18 @@ function commentaryHtml(v) {
   function noteHtml(c, i) {
     var stamp = c.confirmed ? '<span class="stamp">&#10003; Confirmed by ' + esc(c.confirmed.by) + " &middot; " + esc(c.confirmed.at) + "</span>" : "";
     var facts = c.facts ? '<p class="muted" style="margin:0">' + esc(c.facts) + "</p>" : "";
+    facts += c.suggested && !c.confirmed ? '<div><span class="pill sugg">&#10022; Suggested from the GL &middot; check before confirming</span></div>' : "";
+    var ev = evidenceHtml(c.evidence);
     var prior = c.status === "worse" && c.prior_text ? '<p class="muted" style="margin:0"><i>Your ' + esc(c.since || "earlier") + " note:</i> " + esc(c.prior_text) + "</p>" : "";
     if (!editable) {
       var wait = '<span class="pill">&#9719; Waiting on ' + esc(fa) + " to confirm</span>";
       return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + statusPill(c) + "</div>" + facts +
-        (c.text ? '<p style="margin:0">' + esc(c.text) + "</p>" : "") + '<div class="foot">' + (stamp || wait) + "</div></div>";
+        (c.text ? '<p style="margin:0">' + esc(c.text) + "</p>" : "") + ev + '<div class="foot">' + (stamp || wait) + "</div></div>";
     }
     var orig = c.text || "";
     var ph = c.key === "overall" ? "Optional: add context for the board" : (c.status === "new" ? "Add the reason (optional; the line above prints either way)" : "Reason");
     return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + statusPill(c) + "</label>" + facts + prior +
-      '<textarea id="ci' + i + '" rows="2" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" +
+      '<textarea id="ci' + i + '" rows="' + (orig.length > 160 ? 4 : 2) + '" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" + ev +
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
       (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" +
       (c.key === "overall" ? "" : '<button class="btn rm" data-rm="' + i + '" title="Leave this note out of the snapshot">Remove</button>') + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
@@ -569,6 +602,10 @@ function wire(v) {
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rs]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/restore", { index: Number(b.getAttribute("data-rs")) }); };
+  });
+  on("suggest", function () {
+    var b = el("suggest"); b.disabled = true; b.innerHTML = "Reading the GL and writing suggestions&hellip;";
+    api("POST", "/api/snapshots/" + v.id + "/suggest").then(function () { return openSnap(state.cur); }).catch(function (e) { b.disabled = false; b.innerHTML = "&#10022; Suggest reasons from the GL"; showErr(e); });
   });
   on("delsnap", function () {
     if (!window.confirm("Delete the " + MONTHS[v.month - 1] + " " + v.year + " snapshot for " + v.entity + "? This cannot be undone, and any PM link for it stops working.")) { return; }
