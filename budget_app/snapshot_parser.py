@@ -238,6 +238,24 @@ def parse_general_ledger(doc):
     return accts
 
 
+_RECEIPT_NOTE = re.compile(r";ACH;|^BILT;|;CHK;|;CC;", re.I)
+
+
+def is_receipt(line):
+    """A resident payment posted to an expense account (legal-fee recoveries and the like): 'R-' control numbers, or
+    remarks like 'BILT;BL54591949;ACH;T0020728'. These carry residents' names, so they never become evidence."""
+    return line["ctrl"].startswith("R-") or bool(_RECEIPT_NOTE.search(line.get("note") or ""))
+
+
+def ledger_by_account(doc):
+    """{normalised account name: {net, lines}} for one statement: the cacheable piece of an earlier month."""
+    out = {}
+    for k, a in _gl_by_name(parse_general_ledger(doc)).items():
+        lines = sorted([l for l in a["lines"] if not is_receipt(l)], key=lambda l: -abs(l["amount"]))[:8]
+        out[k] = {"name": a["name"], "net": a["net"], "lines": lines}
+    return out
+
+
 def _gl_by_name(gl):
     """Accounts that share a name are one line on the income statement: merge them."""
     out = {}
@@ -295,7 +313,7 @@ def gl_evidence(doc, rows, categories, line_items, month):
                 tied += ok
             elif it["month_actual"] == 0:
                 ok = True  # nothing posted this month, nothing to show
-            lines = sorted((g or {}).get("lines", []), key=lambda l: -abs(l["amount"]))[:8]
+            lines = sorted([l for l in (g or {}).get("lines", []) if not is_receipt(l)], key=lambda l: -abs(l["amount"]))[:8]
             accts.append({"name": it["label"], "acct": (g or {}).get("acct"), "month_complete": ok,
                           "month_actual": it["month_actual"], "month_budget": it["month_budget"], "month_var": it["month_var"],
                           "ytd_actual": it["ytd_actual"], "ytd_budget": it["ytd_budget"], "ytd_var": it["ytd_var"],

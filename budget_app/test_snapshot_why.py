@@ -78,6 +78,21 @@ def run():
     assert w.round_abouts("about $950 and about $89,000") == "about $950 and about $89,000"   # under $1,000 / already round
     assert w.parse_reply('{"notes":[{"key":"cat:A","reason":"About $85,001 in March."}]}', keys) == {"cat:A": "About $85,000 in March."}
 
+    # ---- privacy: resident receipts never become evidence; legal-case names never reach the AI
+    import snapshot_parser as sp
+    assert sp.is_receipt({"ctrl": "R-5113159", "note": ""}) and sp.is_receipt({"ctrl": "K-1", "note": "BILT;BL54591949;ACH;T0020728"})
+    assert not sp.is_receipt({"ctrl": "K-1187550", "note": "Apt 27F leak from expansion join"})
+    red = w.redact([{"evidence": {"accounts": [{"this_month_entries": [{"remark": "v. Wendy Patitucci"}],
+                                                 "drivers": [{"entries": [{"remark": "v. Michael Mariani; General"}]}]}]}}])
+    a0 = red[0]["evidence"]["accounts"][0]
+    assert a0["this_month_entries"][0]["remark"] == "v. [party]" and a0["drivers"][0]["entries"][0]["remark"] == "v. [party]; General"
+
+    # ---- the months that drove a year-to-date note (724's real figures)
+    assert w.spike_months([32758, 2600, 4000, 4700, 3000, 2310, 14639, 3422] + [0] * 4, 8) == [1, 7]   # Supplies: Jan, Jul
+    assert w.spike_months([500, 0, 56574, 1200, 1900, 3555, 9745, -50000] + [0] * 4, 8)[0] == 3       # Prof fees: March first
+    assert w.spike_months([1000] * 12, 8) == []                                                        # steady: none
+    assert w.spike_months([0, 0, 900, 0, 0, 0, 0, 0] + [0] * 4, 8) == []                              # under $1,000: none
+
     # ---- the portal: suggestions fill only empty, unconfirmed notes, as a new version; the FA still confirms
     app = snapshot_dev.make_app(tempfile.mkdtemp())
     svc = app.snapshot_service
@@ -108,6 +123,33 @@ def run():
     i_util = keys.index("cat:Utility Expenses")
     assert P("/api/snapshots/%s/note?as=2" % rid, {"index": i_util, "text": "Gas heating ran high in July and August."}).status_code == 200
     assert "suggested" not in c.get("/api/snapshots/%s?as=2" % rid).json["commentary"][i_util]
+    # ---- earlier months' statements: driver entries are fetched once per month, stored with the version, redacted for the AI
+    class FakePrior:
+        def __init__(self):
+            self.calls = []
+
+        def ledger(self, entity, year, month):
+            self.calls.append((entity, year, month))
+            if month == 4:
+                raise RuntimeError("SharePoint hiccup")      # one bad month must not stop the others
+            return {w.norm("Steam"): {"name": "Steam", "net": {3: 85001, 1: 0}.get(month, 0),
+                                      "lines": [{"date": "03/15", "vendor": "Con Edison", "ctrl": "K-1", "amount": 85001.0,
+                                                 "note": "v. Jane Roe steam bill"}]}}
+    rid3 = c.post("/api/snapshots/generate", data={"entity": "148", "sample": "148_2026-08_statement.pdf", "as": "2"}).json["id"]
+    svc.why, svc.prior = FakeDrafter(), FakePrior()
+    v3 = c.get("/api/snapshots/%s?as=2" % rid3).json
+    assert P("/api/snapshots/%s/suggest?as=2" % rid3).status_code == 200
+    months_asked = sorted(m for _, _, m in svc.prior.calls)
+    assert months_asked and len(months_asked) == len(set(months_asked)) and all(m < 8 for m in months_asked)   # each month once, never August
+    v4 = c.get("/api/snapshots/%s?as=2" % rid3).json
+    steam = [a for a in [n for n in v4["commentary"] if n["key"] == "cat:Utility Expenses"][0]["evidence"]["accounts"] if a["account"] == "Steam"][0]
+    mar = [d for d in steam["drivers"] if d["month"] == "Mar"][0]
+    assert mar["complete"] and mar["entries"][0]["vendor"] == "Con Edison"                       # stored with the version
+    assert mar["entries"][0]["remark"] == "v. Jane Roe steam bill"                               # the FA sees the full remark
+    sent = json.dumps(svc.why.calls[-1])
+    assert "Jane Roe" not in sent and "v. [party] steam bill" in sent                           # the AI never does
+    svc.prior = None
+
     # a bad reply changes nothing
     rid2 = c.post("/api/snapshots/generate", data={"entity": "148", "sample": "148_2026-08_statement.pdf", "as": "2"}).json["id"]
     svc.why = FakeDrafter(reply="sorry, no JSON here")

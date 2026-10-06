@@ -206,6 +206,7 @@ class Service:
         self.base_url = base_url or (lambda: "")
         self._escalate_to = escalate_to
         self.why = snapshot_why.ClaudeDrafter()  # drafts suggested reasons from the GL; tests swap in a fake
+        self.prior = None  # earlier months' statements (SharePoint): .ledger(entity, year, month) -> {account: {net, lines}}
 
     @property
     def escalate_to(self):
@@ -455,10 +456,12 @@ class Service:
             self._new_version(rec, user_id, notes=notes, board_note=board_note, what="Edited commentary")
         self._mutate(rid, fn)
 
-    def _new_version(self, rec, user_id, notes=None, board_note=None, what="Edited"):
+    def _new_version(self, rec, user_id, notes=None, board_note=None, what="Edited", snapshot=None):
         cur = self._cur(rec)
         v = copy.deepcopy(cur)
         v.update({"n": cur["n"] + 1, "by": user_id, "at": now_s()})
+        if snapshot is not None:
+            v["snapshot"] = snapshot
         if notes is not None:
             v["commentary"] = notes
         if board_note is not None:
@@ -597,7 +600,19 @@ class Service:
         if not self.why.available:
             raise ValueError("Suggested reasons aren't available on this server (no AI key).")
         h = v["hash"]
-        getattr(self.store, "release", lambda: None)()  # no database transaction open during the AI call
+        getattr(self.store, "release", lambda: None)()  # no database transaction open during SharePoint or AI calls
+        snap = v["snapshot"]
+        need = snapshot_why.driver_requests(snap, active(v["commentary"]))
+        if need and self.prior is not None:  # the months that drove each year-to-date note, from their own statements
+            ledgers = {}
+            for m in need:
+                try:
+                    ledgers[m] = self.prior.ledger(rec["entity"], rec["year"], m)
+                except Exception:
+                    ledgers[m] = None  # a month we can't find just falls back to this month's evidence
+            snap = copy.deepcopy(snap)
+            snap["gl"]["drivers"] = snapshot_why.build_drivers(snap, need, ledgers)
+            items = snapshot_why.build_request(snap, active(v["commentary"]))
         reasons = self.why(items)
 
         def fn(rec):
@@ -612,7 +627,8 @@ class Service:
                     n["suggested"] = {"by": "Claude", "at": now_s(), "model": self.why.model}
                     done += 1
             if done:
-                self._new_version(rec, user_id, notes=notes, what="Suggested reasons from the GL for %d note(s)" % done)
+                self._new_version(rec, user_id, notes=notes, snapshot=snap,
+                                  what="Suggested reasons from the GL for %d note(s)" % done)
             return {"suggested": done}
         return self._mutate(rid, fn)
 

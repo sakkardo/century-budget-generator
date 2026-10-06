@@ -123,15 +123,16 @@ class SharePointReleaser:
             raise
 
     def _building_folder(self, entity):
-        for c in self._children(""):
-            if c.get("folder") and c["name"].startswith(entity + " - "):
+        for c in self._children(""):  # "879- The 22 Bond Street Condo" has no space before the dash
+            if c.get("folder") and re.match(r"^%s\s*-\s*" % re.escape(entity), c["name"]):
                 return c["name"]
         raise ValueError("No SharePoint folder found for building %s." % entity)
 
     def _month_dir(self, bfolder, year):
         """(folder that holds this year's month folders, [month folder names], prior-year names for styling)."""
         kids = [c["name"] for c in self._children(bfolder) if c.get("folder")]
-        containers = [bfolder + "/" + n for n in kids if re.match(r"^\s*monthly\s+financial", n, re.I)] + [bfolder]
+        # not "Monthly Financial Snapshots" (our own folder, 2026-10-05): it holds snapshots, not statements
+        containers = [bfolder + "/" + n for n in kids if re.match(r"^\s*monthly\s+financial(?!\s+snapshot)", n, re.I)] + [bfolder]
         for cont in containers:
             sub_kids = [c["name"] for c in self._children(cont) if c.get("folder")] if cont != bfolder else kids
             if str(year) in sub_kids:
@@ -189,6 +190,48 @@ class SharePointReleaser:
         return plan["targets"]
 
 
+class PriorStatements:
+    """Earlier months' statements from the building's Monthly Financials folder, read for the months that drove a
+    year-to-date note (Jacob 2026-10-06). Read-only; each month's ledger is parsed once and kept in memory."""
+
+    SKIP = re.compile(r"invoice|bank|\badp\b|master_control|avid|snapshot|scanned|payroll|receivable|\brec\b", re.I)
+    PREFER = re.compile(r"financ|report|statement", re.I)
+
+    def __init__(self, graph, releaser):
+        self.graph, self.releaser = graph, releaser
+        self._cache, self._lock = {}, threading.Lock()
+
+    def ledger(self, entity, year, month):
+        key = (str(entity), int(year), int(month))
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
+        out = self._read(*key)
+        with self._lock:
+            self._cache[key] = out
+        return out
+
+    def _read(self, entity, year, month):
+        import fitz
+        try:
+            import snapshot_parser
+        except ImportError:
+            from budget_app import snapshot_parser
+        bfolder = self.releaser._building_folder(entity)
+        mdir, months, _prior = self.releaser._month_dir(bfolder, year)
+        for folder in [f for f in months if month_of_folder(f) == month]:  # 724 has both "03-2026" and "3-2026"
+            files = [c["name"] for c in self.graph.list_children("%s/%s" % (mdir, folder))
+                     if not c.get("folder") and c["name"].lower().endswith(".pdf") and not self.SKIP.search(c["name"])]
+            for name in sorted(files, key=lambda n: not self.PREFER.search(n)):
+                doc = fitz.open(stream=self.graph.download("%s/%s/%s" % (mdir, folder, name)), filetype="pdf")
+                meta = snapshot_parser._statement_meta(doc)
+                if meta["month"] == month and meta["year"] == year:  # the statement itself says which month it is
+                    led = snapshot_parser.ledger_by_account(doc)
+                    if led:
+                        return led
+        return None
+
+
 class AppGraph:
     """Adapter over the app's own Graph helpers (app-only token, default document library)."""
 
@@ -218,6 +261,12 @@ class AppGraph:
             if "Graph 404" in str(e):
                 return False
             raise
+
+    def download(self, path):
+        import urllib.request
+        url = "https://graph.microsoft.com/v1.0/%s:/content" % self._root(path)
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + self._token()})
+        return urllib.request.urlopen(req, timeout=120).read()
 
     def put_new(self, path, data):
         """Create the file; Graph refuses (409) if it already exists, so nothing is ever replaced."""
@@ -382,6 +431,8 @@ def create_snapshot_blueprint(db, workflow_models, buildings_fn=None, graph=None
     if transport is None and token_fn is not None:
         transport = snapshot_mail.GraphTransport(token_fn)
     service = snapshot_service.Service(store, releaser, directory, mailer=snapshot_mail.Mailer(transport))
+    if graph:
+        service.prior = PriorStatements(graph, releaser)
     def find_user_by_email(email):
         User = workflow_models["User"]
         u = db.session.query(User).filter(db.func.lower(User.email) == email.lower()).first()
