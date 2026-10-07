@@ -408,6 +408,10 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         f.append(Table([[Paragraph("<b>Note to the board.</b> %s" % xesc(board_note), body)]], colWidths=[cw],
                        style=[("BACKGROUND", (0, 0), (-1, -1), SOFT), ("BOX", (0, 0), (-1, -1), 0.5, RED), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
 
+    # one column grid for every page-2 table: full width, equal figure columns anchored to the right margin,
+    # so the same column lines up from table to table (Jacob 2026-10-06)
+    grid = lambda n: [cw - n * cw * 0.15] + [cw * 0.15] * n
+
     f.append(CondPageBreak(2.2 * inch))  # new page only when capital would not fit; no half-empty pages
     f.append(Paragraph("Capital expenditures", h2))
     cap = [c for c in s["capital"]]
@@ -417,7 +421,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
             crow.append([c["project"], num(c["month"]), num(c["ytd"]), num(c["budget_ytd"]), num(c["annual_budget"])])
         ne = s["nonop_expense"] or {}
         crow.append(["Total", num(ne.get("month_actual", 0)), num(ne.get("ytd_actual", 0)), num(ne.get("ytd_budget", 0)), num(sum(c["annual_budget"] for c in cap))])
-        ct = Table(crow, colWidths=[cw * 0.4, cw * 0.14, cw * 0.15, cw * 0.15, cw * 0.16])
+        ct = Table(crow, colWidths=grid(4))
         ct.setStyle(TableStyle([("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
                                 ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
                                 ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINE),
@@ -454,7 +458,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
             if a["end"] or a["begin"]:
                 arow.append([Paragraph(a["name"], cell), num(a["begin"]), num(a["end"])])
         arow.append(["Total", num(cash["total"]["begin"]), num(cash["total"]["end"])])
-        f.append(ledger(arow, [cw * 0.4, cw * 0.15, cw * 0.15], total=True))
+        f.append(ledger(arow, grid(2), total=True))
         kinds = {}
         for a in cash["accounts"]:
             kinds[account_kind(a["name"])] = kinds.get(account_kind(a["name"]), 0) + a["end"]
@@ -472,11 +476,11 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                          ["Receivable"] + [num(x) for x in ar["Accounts Receivable"]],
                          ["Prepaid"] + [num(x) for x in ar["Prepaid"]],
                          ["Net arrears"] + [num(x) for x in ar["Total Arrears"]]],
-                        [cw * 0.4, cw * 0.15, cw * 0.15, cw * 0.15], bold_row=3))
+                        grid(3), bold_row=3))
     if cash["ap"]:
         f.append(Paragraph("Payables", h2))
         f.append(ledger([months3, ["Accounts payable"] + [num(x) for x in cash["ap"]]],
-                        [cw * 0.4, cw * 0.15, cw * 0.15, cw * 0.15]))
+                        grid(3)))
 
     # sign-off: one panel per signer, name over a signature line, then the date signed (Jacob 2026-10-06)
     so = signoff or {}
