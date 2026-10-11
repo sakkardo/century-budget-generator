@@ -466,7 +466,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                  ("other", "Other"), ("security", "Security deposits")]
         parts = ["%s %s" % (lab, money(kinds[k])) for k, lab in order if kinds.get(k)]
         f += [Spacer(1, 3), Paragraph(" &nbsp;|&nbsp; ".join(parts), small)]
-        cc = _cash_chart(s, cw, 74)
+        cc = _cash_chart(s, cw, 62)
         if cc:
             f += [Spacer(1, 6), Paragraph("Cash at month end, last twelve months (excluding security deposits)", small), cc]
     if len(cash["arrears"]) == 3:
@@ -504,7 +504,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
                         ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
                         ("BOTTOMPADDING", (0, 1), (-1, 1), 5), ("TOPPADDING", (0, 2), (-1, 2), 4),
                         ("LINEBELOW", (0, 1), (0, 1), 0.8, INK), ("LINEBELOW", (2, 1), (2, 1), 0.8, INK)])
-    f.append(KeepTogether([Paragraph("Sign-off", h2), Spacer(1, 6), sign, Spacer(1, 8),
+    f.append(KeepTogether([Paragraph("Sign-off", h2), Spacer(1, 2), sign, Spacer(1, 4),
                            Paragraph("Prepared and reviewed by Century Management.", small)]))
     doc.build(f)
     return buf.getvalue()

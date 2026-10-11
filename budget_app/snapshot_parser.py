@@ -129,6 +129,27 @@ def parse_income_statement(doc):
     return rows
 
 
+def fiscal_start(doc):
+    """First month (1-12) of the statement's year, read from the Budget Analysis Detail column header:
+    'Account Description Jan Actual ...' (calendar year) or 'Jul Actual' / 'Dec Actual' (fiscal years: 872, 927, 934,
+    938, 360). The monthly columns run from this month, so the statement month sits at period(), not at month - 1."""
+    for page in doc:
+        if not _title(page).startswith("Budget Analysis Detail"):
+            continue
+        for line in _lines(page)[:10]:
+            if line.startswith("Account Description"):
+                m = re.search(r"\b(%s)\b" % "|".join(MONTHS), line)
+                if m:
+                    return MONTHS.index(m.group(1)) + 1
+        break
+    return 1
+
+
+def period(month, start):
+    """Months of the statement's year through `month` (the column count Jan..Sep is 9; Jul..Sep is 3)."""
+    return (month - start) % 12 + 1 if month else None
+
+
 def parse_budget_analysis(doc):
     """Monthly actuals Jan..current month from 'Budget Analysis Detail'."""
     out = {}
@@ -147,7 +168,7 @@ def parse_budget_analysis(doc):
             if pending:
                 label, pending = pending + " " + label, None
             nums = [_n(x) for x in _NUM_RE.findall(m.group("nums"))]
-            out.setdefault(label, nums[:8])
+            out.setdefault(label, nums[:12])  # Jan..Dec; months after the statement month are budget (callers slice [:m])
     return out
 
 
@@ -290,9 +311,11 @@ def parse_budget_analysis_rows(doc):
     return out
 
 
-def gl_evidence(doc, rows, categories, line_items, month):
+def gl_evidence(doc, rows, categories, line_items, month, first=1):
     """Per expense category: its accounts with month-by-month actuals and this month's largest ledger entries.
-    Only accounts that sit under an EXPENSES category are kept, so no receipts or resident names are stored."""
+    Only accounts that sit under an EXPENSES category are kept, so no receipts or resident names are stored.
+    `months` runs from the year's first month (`first`, 1 = January); `month` is the calendar statement month."""
+    p = period(month, first)
     by_name = _gl_by_name(parse_general_ledger(doc))
     ba_rows = parse_budget_analysis_rows(doc)
     start = next((i for i, (l, _) in enumerate(ba_rows) if l.upper() == "TOTAL INCOME"), 0)
@@ -318,10 +341,10 @@ def gl_evidence(doc, rows, categories, line_items, month):
                           "month_actual": it["month_actual"], "month_budget": it["month_budget"], "month_var": it["month_var"],
                           "ytd_actual": it["ytd_actual"], "ytd_budget": it["ytd_budget"], "ytd_var": it["ytd_var"],
                           "annual_budget": it["annual_budget"],
-                          "months": b[:month] if b else None, "budget_ahead": b[month:12] if b else None,
+                          "months": b[:p] if b else None, "budget_ahead": b[p:12] if b else None,
                           "lines": lines})
         out[cat_name] = accts
-    return {"categories": out, "month": month, "tie": {"checked": checked, "tied": tied}}
+    return {"categories": out, "month": month, "first": first, "tie": {"checked": checked, "tied": tied}}
 
 
 def _is_parent(rows_totals, idx):
@@ -340,6 +363,7 @@ def _is_parent(rows_totals, idx):
 def build_snapshot(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     meta = _statement_meta(doc)
+    meta["fiscal_start"] = fiscal_start(doc)
     rows = parse_income_statement(doc)
     monthly = parse_budget_analysis(doc)
     cash = parse_cash(doc)
@@ -428,7 +452,7 @@ def build_snapshot(pdf_bytes):
     }
     snap["checks"] = run_checks(snap, rows, monthly)
     try:  # evidence for suggested reasons; a statement it can't read still makes a snapshot
-        snap["gl"] = gl_evidence(doc, rows, [(c["name"], r) for c, r in zip(cats, categories)], line_items, meta["month"] or 12)
+        snap["gl"] = gl_evidence(doc, rows, [(c["name"], r) for c, r in zip(cats, categories)], line_items, meta["month"] or 12, meta["fiscal_start"])
     except Exception:
         snap["gl"] = None
     return snap
@@ -473,7 +497,7 @@ def run_checks(s, rows, monthly):
              sum(c["ytd"] for c in s["capital"]), s["nonop_expense"]["ytd_actual"])
 
     # Budget Analysis (monthly) must agree with the Income Statement
-    m = s["meta"]["month"]
+    m = period(s["meta"]["month"], s["meta"].get("fiscal_start") or 1)  # columns run from the year's first month
     mo = monthly.get("TOTAL INCOME")
     if mo and m:
         near("trend_income_ytd", "Monthly income detail adds up to YTD income", "block", sum(mo[:m]), s["income"]["ytd_actual"])

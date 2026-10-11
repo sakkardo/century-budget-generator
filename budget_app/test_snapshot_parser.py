@@ -52,6 +52,25 @@ def run():
                 for line in p._lines(pg):
                     if len(p._NUM_RE.findall(line)) >= 6 and not re.match(r"^\d+ of \d+$", line):
                         assert p._split_row(line), (name, line)
+    # past August and fiscal years (2026-10-11): the monthly detail kept only 8 months, and fiscal-year statements
+    # (columns from Jul or Dec) were read as if January came first. Every statement must tie, whatever its year start.
+    import glob
+    tasks = os.path.join(SAMPLES, "..")
+    stmts = glob.glob(os.path.join(tasks, "september_2026_statements", "*.pdf")) + glob.glob(os.path.join(tasks, "august_2026_statements", "*.pdf"))
+    starts = {}
+    for f in stmts:
+        s = p.build_snapshot(open(f, "rb").read())
+        bad = [c["label"] for c in s["checks"] if c["status"] != "tied"]
+        assert not bad, (os.path.basename(f), bad)
+        starts[os.path.basename(f)[:3] + "-%02d" % s["meta"]["month"]] = s["meta"]["fiscal_start"]
+    if stmts:
+        expect = {"934-09": 12, "872-09": 7, "927-09": 7, "938-09": 7, "360-08": 12, "204-09": 1, "204-08": 1}
+        assert all(starts.get(k, v) == v for k, v in expect.items()), starts
+        s934 = p.build_snapshot(open(glob.glob(os.path.join(tasks, "september_2026_statements", "934_*.pdf"))[0], "rb").read())
+        assert p.period(9, 12) == 10 and p.period(9, 7) == 3 and p.period(9, 1) == 9
+        assert s934["gl"]["first"] == 12 and all(len(a["months"]) == 10 for c in s934["gl"]["categories"].values() for a in c if a["months"])
+    else:
+        print("skip (September/August statements not present)")
     # 206: an account whose name ends in a number keeps it, and its balance is counted
     s = p.build_snapshot(open(os.path.join(SAMPLES, "206_2026-05_statement.pdf"), "rb").read())
     acct = {a["name"]: a for a in s["cash"]["accounts"]}

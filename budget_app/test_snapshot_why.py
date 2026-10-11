@@ -91,6 +91,10 @@ def run():
     assert w.spike_months([32758, 2600, 4000, 4700, 3000, 2310, 14639, 3422] + [0] * 4, 8) == [1, 7]   # Supplies: Jan, Jul
     assert w.spike_months([500, 0, 56574, 1200, 1900, 3555, 9745, -50000] + [0] * 4, 8)[0] == 3       # Prof fees: March first
     assert w.spike_months([1000] * 12, 8) == []                                                        # steady: none
+    # fiscal years: positions map back to calendar months; months in the previous calendar year are not fetched
+    fis = {"meta": {"month": 9}, "gl": {"month": 9, "first": 12, "categories": {}}}
+    lab = w._labeler(fis["gl"])
+    assert [lab(i) for i in (0, 1, 9)] == ["Dec", "Jan", "Sep"]
     assert w.spike_months([0, 0, 900, 0, 0, 0, 0, 0] + [0] * 4, 8) == []                              # under $1,000: none
 
     # ---- the portal: suggestions fill only empty, unconfirmed notes, as a new version; the FA still confirms

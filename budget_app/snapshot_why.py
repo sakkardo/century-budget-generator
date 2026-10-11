@@ -95,6 +95,7 @@ def note_evidence(s, note):
         return None
     accts = gl["categories"].get(key[4:]) or []
     month = gl.get("month") or s["meta"]["month"]
+    lab = _labeler(gl)
     by = "month_var" if note.get("scope") == "month" else "ytd_var"
     driving = sorted([a for a in accts if a[by] < 0], key=lambda a: a[by])[:MAX_ACCOUNTS]
     if not driving:
@@ -110,8 +111,8 @@ def note_evidence(s, note):
             "this_month": {"month": MONTHS[month - 1], "actual": a["month_actual"], "budget": a["month_budget"],
                            "variance": a["month_var"]},
             "annual_budget": a["annual_budget"],
-            "actual_by_month": {MONTHS[i][:3]: v for i, v in enumerate(months)},
-            "budget_rest_of_year": {MONTHS[month + i][:3]: v for i, v in enumerate(a.get("budget_ahead") or [])},
+            "actual_by_month": {lab(i): v for i, v in enumerate(months)},
+            "budget_rest_of_year": {lab(len(months) + i): v for i, v in enumerate(a.get("budget_ahead") or [])},
             "month_complete": a.get("month_complete"),
             "this_month_entries": [{"date": l["date"], "vendor": l["vendor"], "amount": l["amount"], "remark": l["note"]}
                                    for l in a.get("lines", [])[:MAX_LINES]],
@@ -137,19 +138,29 @@ def build_request(s, notes):
     return redact(items)
 
 
+def _labeler(gl):
+    """Column position (0 = the year's first month) -> 'Jan'.. label. Fiscal years start in another month."""
+    first = gl.get("first") or 1
+    return lambda i: MONTHS[(first - 1 + i) % 12][:3]
+
+
 def driver_requests(s, notes):
-    """{month: [account names]}: the earlier months whose own statements explain each year-to-date note."""
+    """{calendar month: [account names]}: the earlier months whose own statements explain each year-to-date note.
+    Fiscal-year months that fall in the previous calendar year are left out (their statements sit under that year)."""
     gl = s.get("gl") or {}
     month = gl.get("month") or s["meta"]["month"]
+    first, lab = gl.get("first") or 1, _labeler(gl)
     need = {}
     for n in notes:
         if not eligible(n) or n.get("scope") == "month":
             continue
         ev = note_evidence(s, n)
         for a in (ev or {}).get("accounts", []):
-            months = [a["actual_by_month"].get(MONTHS[i][:3], 0) for i in range(12)]
-            for m in spike_months(months, month):
-                need.setdefault(m, set()).add(a["account"])
+            months = [a["actual_by_month"].get(lab(i), 0) for i in range(12)]
+            for pos in spike_months(months, (month - first) % 12 + 1):
+                cal = (first - 1 + pos - 1) % 12 + 1
+                if cal < month:
+                    need.setdefault(cal, set()).add(a["account"])
     return need
 
 
@@ -166,7 +177,7 @@ def build_drivers(s, need, ledgers):
             g = led.get(norm(name))
             if not g:
                 continue
-            total = (month_vals.get(norm(name)) or [0] * 12)[m - 1]
+            total = (month_vals.get(norm(name)) or [0] * 12)[(m - (gl.get("first") or 1)) % 12]
             out.setdefault(norm(name), []).append({
                 "month": MONTHS[m - 1][:3], "total": total, "complete": abs(round(g["net"]) - total) <= 1,
                 "entries": [{"date": l["date"], "vendor": l["vendor"], "amount": l["amount"], "remark": l["note"]}
