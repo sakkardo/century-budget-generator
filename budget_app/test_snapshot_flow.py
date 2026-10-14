@@ -75,6 +75,19 @@ def run():
     confirm_all(lambda u: c.get(u).json, post, rid, "?as=2")
     assert c.get("/api/snapshots/%s?as=2" % rid).json["can"]["send"]
 
+    # ---- PM hold (Jacob 2026-10-14): FAs confirm, nothing goes to PMs, the snapshot stays on the portal
+    os.environ["SNAPSHOT_PM_HOLD"] = "1"
+    try:
+        v = c.get("/api/snapshots/%s?as=2" % rid).json
+        assert not v["can"]["send"] and v["pm_hold"] and v["stage"] == "draft"
+        n0 = len(svc.mailer.outbox)
+        r = post("/api/snapshots/%s/send?as=2" % rid)
+        assert r.status_code == 400 and "on hold" in r.json["error"], r.json
+        assert len(svc.mailer.outbox) == n0 and c.get("/api/snapshots/%s?as=2" % rid).json["stage"] == "draft"
+    finally:
+        del os.environ["SNAPSHOT_PM_HOLD"]
+    assert c.get("/api/snapshots/%s?as=2" % rid).json["can"]["send"]  # lifting the hold brings the button back
+
     # ---- FA confirms and sends; the PM gets one email with the PDF and a link
     assert post("/api/snapshots/%s/send?as=8" % rid).status_code == 400  # only the FA sends
     assert post("/api/snapshots/%s/sign?as=8" % rid, {"role": "pm", "decision": "approve"}).status_code in (404, 405)  # no portal signing

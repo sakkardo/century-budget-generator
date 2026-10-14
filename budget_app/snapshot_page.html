@@ -601,6 +601,7 @@ function signHtml(v) {
     h += '<div class="decide"><button id="send" class="btn approve">&#10003; Confirm &amp; send to PM</button><span class="muted">Emails ' +
       esc(teamNames(v, "pm") || "the PM") + " the snapshot with a link to confirm it. They have 48 hours." + (v.email_mode !== "live" ? " (Email is " + esc(v.email_mode) + ".)" : "") + "</span></div>";
   }
+  if (v.pm_hold) { h += '<div class="msg okk" style="margin-top:14px"><b>&#10003; Notes confirmed.</b> Sending to the PM is on hold for now, so this snapshot stays here on the portal.</div>'; }
   if (v.can.resend) { h += '<div class="decide"><button id="send" class="btn">Resend the email</button><span class="muted">Sends a fresh link. The old one stops working; the 48-hour clock does not restart.</span></div>'; }
   var waitOnly = v.why_not.filter(function (w) { return /^Waiting for/.test(w); });
   var blockers = v.why_not.filter(function (w) { return !/^Waiting for/.test(w); });

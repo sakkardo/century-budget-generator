@@ -138,6 +138,12 @@ def iso_now():
     return utcnow().isoformat()
 
 
+def pm_hold():
+    """SNAPSHOT_PM_HOLD=1: FAs confirm notes, but nothing is sent to PMs (Jacob 2026-10-14). Snapshots stay on the
+    portal, confirmed, until the hold is lifted."""
+    return os.environ.get("SNAPSHOT_PM_HOLD", "").strip().lower() in ("1", "true", "on", "yes")
+
+
 def now_s():
     return label(utcnow())
 
@@ -643,6 +649,8 @@ class Service:
     # ------------------------------------------------------------- FA: confirm & send to PM
     def send_to_pm(self, rid, user_id, via=None):
         """FA confirms the snapshot and the PM is emailed a one-time link. Also used to resend."""
+        if pm_hold():
+            raise ValueError("Sending to PMs is on hold for now. Your confirmed notes are saved here.")
         def fn(rec):
             self._editable(rec)
             sender = user_id
@@ -982,14 +990,15 @@ class Service:
         pms, missing = self._pm_recipients(rec)
         can = {"edit": is_fa and not final,
                "send": is_fa and stage in ("draft", "changes_requested") and ok and not unconfirmed(v["commentary"])
-                       and not st["state"].startswith("blocked") and bool(pms),
-               "resend": (is_fa or self.is_admin(as_user)) and stage == "awaiting_pm",
+                       and not st["state"].startswith("blocked") and bool(pms) and not pm_hold(),
+               "resend": (is_fa or self.is_admin(as_user)) and stage == "awaiting_pm" and not pm_hold(),
                "delete": self.is_admin(as_user) and not final and not rec.get("released"),
                "suggest": (is_fa or self.is_admin(as_user)) and stage in ("draft", "changes_requested")
                           and bool((s.get("gl") or {}).get("categories")) and self.why.available
                           and bool(snapshot_why.build_request(s, active(v["commentary"]))),
                "release": is_fa and stage == "approved" and not getattr(self.releaser, "dry_run", False)}
         why_not = []
+        held = pm_hold() and is_fa and stage in ("draft", "changes_requested") and not unconfirmed(v["commentary"])
         if is_fa and stage in ("draft", "changes_requested"):
             why_not = list(why)
             left = unconfirmed(v["commentary"])
@@ -1015,7 +1024,7 @@ class Service:
             "stale": st["stale_count"], "checks": s["checks"], "acks": v["acks"],
             "commentary": [dict(c, scope=snapshot_render.note_scope(c), evidence=snapshot_why.note_evidence(s, c))
                            for c in v["commentary"]],
-            "board_note": v["board_note"], "can": can, "why_not": why_not, "my_roles": roles,
+            "board_note": v["board_note"], "can": can, "why_not": why_not, "pm_hold": held, "my_roles": roles,
             "team": team, "problems": self.directory.problems(rec["entity"]), "log": rec["log"][::-1],
             "signoffs": [dict(x, name=self._name(x["user_id"]), current=(x["version_hash"] == v["hash"])) for x in rec["signoffs"]],
             "request": request, "email_mode": self.mailer.mode, "resolved": v.get("resolved") or [],
