@@ -325,6 +325,7 @@ function init() {
       state.me = m.me ? m.me.id : 0;
       document.querySelector(".test").style.display = "none";
     }
+    if (m.moved_to) { banner("err", '<b>Snapshots have moved.</b> Use <a href="' + esc(m.moved_to) + '">' + esc(m.moved_to) + "</a> from now on. This page is read-only: you can look, but nothing can be changed here."); }
     if (!m.signing_allowed) { banner("", "Sending to PMs is switched off until a secure sign-in is in place. You can generate, review and edit snapshots."); }
     if (m.email_mode !== "live" && !m.dev) { banner("", m.email_mode === "test" ? "Test mode: emails to PMs go to the test inbox, not to the PMs." : "Email is switched off: PMs are not emailed yet."); }
     if (m.dev) { document.querySelector(".who").insertAdjacentHTML("afterbegin", '<a href="/snapshots/dev/outbox" target="_blank" rel="noopener" style="color:var(--tan)">Test outbox</a>'); }

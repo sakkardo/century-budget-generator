@@ -46,6 +46,28 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
             return err("Sign in with Microsoft first.", 401)
         return None
 
+    # ------------------------------------------------------------------ read-only after the move
+    def moved_to():
+        """SNAPSHOT_MOVED_TO = the new portal's address. Set on switch-over day: everything stays viewable,
+        nothing can be changed here, and the hourly timer does nothing (the new portal sends the reminders)."""
+        return (os.environ.get("SNAPSHOT_MOVED_TO") or "").strip()
+
+    @bp.before_request
+    def read_only_after_move():
+        dest = moved_to()
+        if not dest or request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        if request.path == "/api/snapshots/cron/tick":
+            return jsonify({"reminded": 0, "escalated": 0, "saved": 0, "read_only": True})
+        text = "Snapshots have moved to %s. Nothing was changed here." % dest
+        if request.path.startswith("/snapshot/confirm/"):
+            return Response('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+                            '<div style="font:16px system-ui;max-width:560px;margin:40px auto;padding:0 16px">'
+                            '<h1 style="font-size:20px">This link has moved</h1><p>Snapshots have moved to '
+                            '<a href="%s">%s</a>. Nothing was changed here. Use the newest email you received.</p></div>'
+                            % (html.escape(dest), html.escape(dest)), status=423, mimetype="text/html")
+        return jsonify({"error": text, "moved_to": dest}), 423
+
     # ------------------------------------------------------------------ portal
     @bp.route("/snapshots")
     def page():
@@ -66,7 +88,7 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
                         "signin_url": signin_url, "signout_url": "/auth/snapshot/logout" if signin_url else None,
                         "users": service.directory.users(), "buildings": service.directory.buildings() if (dev or me) else [],
                         "my_entities": mine, "email_mode": service.mailer.mode, "samples": samples,
-                        "is_admin": bool(me and service.is_admin(me))})
+                        "is_admin": bool(me and service.is_admin(me)), "moved_to": moved_to() or None})
 
     @bp.route("/api/snapshots")
     def listing():
