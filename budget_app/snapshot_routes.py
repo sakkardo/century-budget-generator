@@ -190,6 +190,11 @@ def create_blueprint(service, identity=None, dev=True, signing_allowed=None, ide
         b = request.get_json(force=True)
         return guarded(lambda: service.confirm_note(rid, uid(), int(b["index"]), b.get("text")))
 
+    @bp.route("/api/snapshots/<rid>/note/tag", methods=["POST"])
+    def note_tag(rid):
+        b = request.get_json(force=True)
+        return guarded(lambda: service.set_tag(rid, uid(), int(b["index"]), b.get("tag", "")))
+
     @bp.route("/api/snapshots/<rid>/note/remove", methods=["POST"])
     def note_remove(rid):
         b = request.get_json(force=True)

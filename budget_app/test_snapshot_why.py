@@ -2,6 +2,7 @@
 Run: python budget_app/test_snapshot_why.py
 """
 import glob
+import fitz
 import json
 import os
 import sys
@@ -77,6 +78,9 @@ def run():
     assert w.round_abouts("roughly $27,600 a month; nearly $1,499") == "roughly $28,000 a month; nearly $1,499"  # "nearly" isn't neutral
     assert w.round_abouts("about $950 and about $89,000") == "about $950 and about $89,000"   # under $1,000 / already round
     assert w.parse_reply('{"notes":[{"key":"cat:A","reason":"About $85,001 in March."}]}', keys) == {"cat:A": "About $85,000 in March."}
+    assert w.parse_reply('{"notes":[{"key":"cat:A","reason":"Annual bill.","tag":"Timing"},{"key":"cat:B","reason":"x","tag":"Bogus"}]}', keys, tags=True) == \
+        {"cat:A": {"reason": "Annual bill.", "tag": "Timing"}, "cat:B": {"reason": "x", "tag": ""}}
+    assert "at most 35 words" in w.SYSTEM and "reclass" in w.SYSTEM
 
     # ---- privacy: resident receipts never become evidence; legal-case names never reach the AI
     import snapshot_parser as sp
@@ -153,6 +157,26 @@ def run():
     sent = json.dumps(svc.why.calls[-1])
     assert "Jane Roe" not in sent and "v. [party] steam bill" in sent                           # the AI never does
     svc.prior = None
+
+    # a suggested tag lands on the note; the FA sets or clears it, which makes a new version
+    class TagDrafter(FakeDrafter):
+        def __call__(self, items):
+            self.calls.append(items)
+            return w.parse_reply(self.reply, {i["key"] for i in items}, tags=True)
+    rt = c.post("/api/snapshots/generate", data={"entity": "204", "sample": "204_2026-08_statement.pdf", "as": "2"}).json["id"]
+    svc.why = TagDrafter(reply='{"notes":[{"key":"cat:Repairs","reason":"Chiller and boiler repairs.","tag":"One-time"}]}')
+    assert P("/api/snapshots/%s/suggest?as=2" % rt).status_code == 200
+    vt = c.get("/api/snapshots/%s?as=2" % rt).json
+    it = [n["key"] for n in vt["commentary"]].index("cat:Repairs")
+    assert vt["commentary"][it]["tag"] == "One-time" and vt["commentary"][it]["suggested"]["tag"] == "One-time"
+    assert P("/api/snapshots/%s/note/tag?as=17" % rt, {"index": it, "tag": "Ongoing"}).status_code == 400   # not the FA
+    assert P("/api/snapshots/%s/note/tag?as=2" % rt, {"index": it, "tag": "Bogus"}).status_code == 400
+    n0 = c.get("/api/snapshots/%s?as=2" % rt).json["version"]
+    assert P("/api/snapshots/%s/note/tag?as=2" % rt, {"index": it, "tag": "Ongoing"}).status_code == 200
+    vt = c.get("/api/snapshots/%s?as=2" % rt).json
+    assert vt["commentary"][it]["tag"] == "Ongoing" and vt["version"] == n0 + 1
+    pdf_t = " ".join(" ".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rt).data, filetype="pdf")).split())
+    assert "Repairs: $53k over budget for the year \u00b7 Ongoing" in pdf_t and "Chiller and boiler repairs." in pdf_t, pdf_t[:3000]
 
     # a bad reply changes nothing
     rid2 = c.post("/api/snapshots/generate", data={"entity": "148", "sample": "148_2026-08_statement.pdf", "as": "2"}).json["id"]

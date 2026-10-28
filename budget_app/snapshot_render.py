@@ -31,6 +31,16 @@ MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "
                "October", "November", "December"]
 
 
+def money_k(n):
+    """Board figures, rounded (Jacob 2026-10-28): $850, $74k, $1.2M. The sign is said in words, never shown."""
+    n = abs(n)
+    if n >= 999500:
+        return "$%.1fM" % (n / 1e6)
+    if n >= 1000:
+        return "$%dk" % int(round(n / 1000.0))
+    return "$%d" % int(round(n))
+
+
 def money(n, sign=False):
     if n is None:
         return ""
@@ -66,8 +76,10 @@ FLAG_MTD_PCT = 0.15  # ...or more than 15% over this month's budget
 
 
 SCOPES = (("ytd", "Year to date"), ("month", "This month only"))
+TABLE_COLS = (0.23, 0.095, 0.095, 0.095, 0.115, 0.115, 0.115, 0.14)  # last column: the "% over" flag
+FLAG_FONT = 7
 SCOPE_HINT = {"ytd": "Over budget for the year so far.",
-              "month": "Over budget this month but within budget for the year, usually timing."}
+              "month": "Over budget this month; for the year it is under budget or less than 10% over."}
 SCOPE_COLORS = {"ytd": ("#E6EEFB", "#1F3F8F"), "month": ("#FCEFD2", "#7A4A00")}  # band fill, band text
 
 
@@ -102,14 +114,24 @@ def income_flagged(d):
     return (y, m) if y > FLAG_YTD_PCT or m > FLAG_MTD_PCT else None
 
 
-def _note(key, title, facts, variance=0, label="", settled=False, draft=True, scope="ytd"):
+TAGS = ("One-time", "Ongoing", "Timing", "Under review")  # the FA's one-word read for the board
+
+
+def _note(key, title, facts, variance=0, label="", settled=False, draft=True, scope="ytd", tag=""):
     return {"key": key, "title": title, "label": label or title, "facts": facts, "text": "", "variance": variance,
-            "settled": settled, "status": "new", "draft": draft, "scope": scope}
+            "settled": settled, "status": "new", "draft": draft, "scope": scope, "tag": tag}
 
 
 def note_body(n):
-    """What prints for a note: the refreshed facts, then the FA's explanation."""
-    return " ".join(x for x in ((n.get("facts") or "").strip(), (n.get("text") or "").strip()) if x)
+    """What prints for a note (Jacob 2026-10-28): the FA's reason in 1-2 sentences; the system's figures line only
+    when there is no reason. Vendor-level evidence stays on the FA portal."""
+    return (n.get("text") or "").strip() or (n.get("facts") or "").strip()
+
+
+def board_title(n):
+    """'Repairs: $74k over budget for the year  ·  One-time'."""
+    tag = n.get("tag") if n.get("tag") in TAGS else ""
+    return "%s  \u00b7  %s" % (n["title"], tag) if tag else n["title"]
 
 
 def classify_notes(notes, prior, prior_month):
@@ -162,55 +184,53 @@ def draft_commentary(s):
 
     inc = s["income"]
     inc_fl = income_flagged(inc)
+    mname = MONTH_NAMES[s["meta"]["month"] - 1]
+    ab = lambda v: "above" if v > 0 else "below"
     if inc_fl:
-        total_var, ab = inc["ytd_var"], lambda v: "above" if v > 0 else "below"
-        mname = MONTH_NAMES[s["meta"]["month"] - 1]
+        total_var = inc["ytd_var"]
         ytd_scope = inc_fl[0] > FLAG_YTD_PCT
         if ytd_scope:
-            title = "Income, %s %s budget year to date" % (money(abs(total_var)), ab(total_var))
-            lead = "%.0f%% %s budget year to date (%s)." % (100 * inc_fl[0], ab(total_var), money(abs(total_var)))
+            title = "Income: %s %s budget for the year" % (money_k(total_var), ab(total_var))
+            lead = "%.0f%% %s budget for the year." % (100 * inc_fl[0], ab(total_var))
             if inc_fl[1] > FLAG_MTD_PCT:
-                lead += " %s alone was %s %s (%.0f%%)." % (mname, money(abs(inc["month_var"])), ab(inc["month_var"]), 100 * inc_fl[1])
+                lead += " %s alone was %s %s budget." % (mname, money_k(inc["month_var"]), ab(inc["month_var"]))
         else:  # flagged on the month alone
-            title = "Income, %s %s budget in %s" % (money(abs(inc["month_var"])), ab(inc["month_var"]), mname)
-            lead = "%s %s budget in %s (%.0f%%). Year to date it is %s %s budget." % (
-                money(abs(inc["month_var"])), ab(inc["month_var"]), mname, 100 * inc_fl[1], money(abs(total_var)), ab(total_var))
+            title = "Income: %s %s budget in %s" % (money_k(inc["month_var"]), ab(inc["month_var"]), mname)
+            lead = "%.0f%% %s budget in %s; for the year it is %s %s budget." % (
+                100 * inc_fl[1], ab(inc["month_var"]), mname, money_k(total_var), ab(total_var))
         drv = s["income_drivers"]
         if drv and total_var and abs(drv[0]["ytd_var"]) >= abs(total_var) * 0.5:
             d, rest = drv[0], total_var - drv[0]["ytd_var"]
-            facts = "%s accounts for %s of the year-to-date difference. Without it, income is %s %s budget." % (
-                d["name"], money(abs(d["ytd_var"])), money(abs(rest)), ab(rest))
+            facts = "%s accounts for %s of it; all other income is %s %s budget." % (d["name"], money_k(d["ytd_var"]), money_k(rest), ab(rest))
         else:
-            facts = ("Largest differences year to date: %s." % ", ".join("%s (%s)" % (d["name"], money(d["ytd_var"])) for d in drv[:3])) if drv else ""
+            facts = ("Largest differences: %s." % ", ".join("%s (%s %s)" % (d["name"], money_k(d["ytd_var"]), ab(d["ytd_var"])) for d in drv[:3])) if drv else ""
         out.append(_note("income", title, (lead + " " + facts).strip(), variance=total_var, label="Income", draft=False,
                          scope="ytd" if ytd_scope else "month"))
     for c in over[:3]:
-        items = ", ".join("%s (%s)" % (i["name"], money(i["ytd_var"])) for i in c["worst_items"][:3])
-        mname = MONTH_NAMES[s["meta"]["month"] - 1]
         ypct, mpct = flagged(c)
         settled = c.get("annual_budget", 0) > 0 and c["ytd_budget"] >= c["annual_budget"] - 1 and c["month_actual"] == 0
         if ypct > FLAG_YTD_PCT:  # judged on the year: lead with the year, the month is context
             scope = "ytd"
-            title = "%s, %s over budget year to date" % (c["name"], money(abs(c["ytd_var"])))
-            facts = "%.0f%% over budget year to date (%s)." % (100 * ypct, money(abs(c["ytd_var"])))
+            title = "%s: %s over budget for the year" % (c["name"], money_k(c["ytd_var"]))
+            facts = "%.0f%% over budget for the year." % (100 * ypct)
             if c["month_var"] < 0:
-                facts += " %s alone was %s over" % (mname, money(abs(c["month_var"]))) + (" (%.0f%%)." % (100 * mpct) if mpct else ".")
-            if items:
-                facts += " Largest lines year to date: %s." % items
-        else:  # over this month only; the year is still within budget
+                facts += " %s alone was %s over." % (mname, money_k(c["month_var"]))
+        else:  # over this month only; the year is under budget or less than 10% over
             scope = "month"
-            title = "%s, %s over budget in %s" % (c["name"], money(abs(c["month_var"])), mname)
-            facts = "%s over budget in %s (%.0f%%). Year to date it is still %s %s budget." % (
-                money(abs(c["month_var"])), mname, 100 * mpct, money(abs(c["ytd_var"])), "under" if c["ytd_var"] >= 0 else "over")
+            title = "%s: %s over budget in %s" % (c["name"], money_k(c["month_var"]), mname)
+            yv = c["ytd_var"]
+            facts = "%.0f%% over budget in %s; for the year it is %s." % (
+                100 * mpct, mname, "on budget" if not yv else "%s %s budget" % (money_k(yv), "under" if yv > 0 else "over"))
         out.append(_note("cat:" + c["name"], title, facts, variance=c["ytd_var"], label=c["name"], settled=settled, scope=scope))
-    for c in unposted:
-        out.append(_note("unposted:" + c["name"], "%s, nothing recorded year to date against a %s budget" % (c["name"], money(c["ytd_budget"])),
-                         "No expense has been recorded on this line so far this year.", variance=c["ytd_var"], label=c["name"]))
-    if under:
+    for c in unposted:  # usually timing (not billed yet); the FA confirms before the board reads it
+        out.append(_note("unposted:" + c["name"], "%s: nothing recorded this year" % c["name"],
+                         "%s was budgeted so far this year and nothing has been billed yet." % money_k(c["ytd_budget"]),
+                         variance=c["ytd_var"], label=c["name"], tag="Under review"))
+    if under:  # under budget is often timing (a bill not posted yet), so it is not called a saving until the FA says so
         u = under[0]
-        out.append(_note("saving:" + u["name"], "Largest saving: %s, %s under budget" % (u["name"], money(u["ytd_var"])),
-                         "This is %.0f%% of its year-to-date budget." % (100.0 * u["ytd_var"] / u["ytd_budget"] if u["ytd_budget"] else 0),
-                         variance=u["ytd_var"], label=u["name"]))
+        out.append(_note("saving:" + u["name"], "%s: %s under budget for the year" % (u["name"], money_k(u["ytd_var"])),
+                         "%.0f%% below budget so far." % (100.0 * u["ytd_var"] / u["ytd_budget"] if u["ytd_budget"] else 0),
+                         variance=u["ytd_var"], label=u["name"], tag="Under review"))
     return out
 
 
@@ -343,12 +363,13 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
         rows.append(line("Non-operating and capital expense", s["nonop_expense"]))
     rows.append(line("Net income", net, True)); tot_rows.append(len(rows) - 1)
 
-    tbl = Table(rows, colWidths=[cw * 0.25, cw * 0.1, cw * 0.1, cw * 0.1, cw * 0.12, cw * 0.12, cw * 0.12, cw * 0.09], repeatRows=1)
+    tbl = Table(rows, colWidths=[cw * w for w in TABLE_COLS], repeatRows=1)
     ts = [("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
           ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
           ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINE),
           ("TOPPADDING", (0, 0), (-1, -1), 2.2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
-          ("LEFTPADDING", (0, 0), (0, -1), 0), ("TEXTCOLOR", (-1, 1), (-1, -1), RED), ("FONT", (-1, 1), (-1, -1), "Helvetica-Bold", 7)]
+          ("LEFTPADDING", (0, 0), (0, -1), 0), ("TEXTCOLOR", (-1, 1), (-1, -1), RED), ("FONT", (-1, 1), (-1, -1), "Helvetica-Bold", FLAG_FONT),
+          ("LEFTPADDING", (-1, 0), (-1, -1), 3), ("RIGHTPADDING", (-1, 0), (-1, -1), 0)]
     for r in tot_rows:
         ts += [("FONT", (1, r), (-1, r), "Helvetica-Bold", 8), ("LINEABOVE", (0, r), (-1, r), 0.8, INK)]
     tbl.setStyle(TableStyle(ts))
@@ -381,7 +402,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
             if c.get("status") == "worse":
                 tag = ' <font color="#A4262C" size="7.5">MOVED: explained in %s, %s more since</font>' % (
                     xesc(c.get("since") or "an earlier month"), money(c.get("moved", 0)))
-            f.append(KeepTogether([Paragraph("<b>%s</b>%s" % (xesc(c["title"]), tag), body), Paragraph(xesc(note_body(c)), body), Spacer(1, 3)]))
+            f.append(KeepTogether([Paragraph("<b>%s</b>%s" % (xesc(board_title(c)), tag), body), Paragraph(xesc(note_body(c)), body), Spacer(1, 3)]))
     if ongoing:
         f.append(Paragraph("Previous notes", h2))
         orow = [["Item", "YTD variance", "Explained", "Explanation"]]
@@ -389,7 +410,7 @@ def render_pdf(s, commentary=None, board_note="", signoff=None, status_label="DR
             orow.append([Paragraph(xesc(c.get("label") or c["title"]) + (" (this month)" if note_scope(c) == "month" else ""), cell),
                          num(c.get("variance", 0)),
                          Paragraph(xesc(c.get("since") or ""), cell),
-                         Paragraph(xesc((c.get("text") or "").strip() or (c.get("facts") or "")), cell)])
+                         Paragraph(xesc(note_body(c)), cell)])
         ot = Table(orow, colWidths=[cw * 0.2, cw * 0.13, cw * 0.13, cw * 0.54])
         ot.setStyle(TableStyle([("FONT", (0, 0), (-1, -1), "Helvetica", 8), ("FONT", (0, 0), (-1, 0), "Helvetica", 6.5),
                                 ("TEXTCOLOR", (0, 0), (-1, 0), MUTE), ("ALIGN", (1, 0), (1, -1), "RIGHT"),

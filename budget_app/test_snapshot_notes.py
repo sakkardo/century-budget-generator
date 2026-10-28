@@ -74,12 +74,29 @@ def run():
     assert r.income_flagged(cat(0, 100000, -1600, 10000))      # 16% short this month
     assert not r.income_flagged(cat(46840, 3851162, 22922, 496492))  # 148 August: 1.2% / 4.6%, no note
     inc204 = [n for n in r.draft_commentary(s204) if n["key"] == "income"]
-    assert inc204 and inc204[0]["title"] == "Income, $800,436 above budget year to date", inc204  # 13% above
+    assert inc204 and inc204[0]["title"] == "Income: $800k above budget for the year", inc204  # 13% above
 
     # ---- year-to-date vs this-month-only notes (Jacob 2026-10-05): lead with what triggered the note, grouped on the report
     d204 = {n["key"]: n for n in r.draft_commentary(s204)}
     u = d204["cat:Utility Expenses"]
-    assert u["scope"] == "ytd" and u["facts"].startswith("17% over budget year to date ($113,797). August alone was $33,083 over (30%).") , u["facts"]
+    assert u["scope"] == "ytd" and u["facts"] == "17% over budget for the year. August alone was $33k over.", u["facts"]
+    # short board notes (Jacob 2026-10-28): rounded figures, no line-item lists, the FA's reason prints instead of the
+    # figures line, a tag rides on the title, and under-budget lines are "under review" until the FA says otherwise
+    assert r.money_k(-74365) == "$74k" and r.money_k(850) == "$850" and r.money_k(1234567) == "$1.2M" and r.money_k(999600) == "$1.0M"
+    assert "Largest lines" not in " ".join(n["facts"] for n in d204.values())
+    sv = [n for n in d204.values() if n["key"].startswith("saving:")][0]
+    assert sv["tag"] == "Under review" and "saving" not in sv["title"].lower()
+    assert r.note_body({"facts": "17% over.", "text": "Heating gas bills ran high."}) == "Heating gas bills ran high."
+    assert r.note_body({"facts": "17% over.", "text": ""}) == "17% over."
+    assert r.board_title({"title": "Repairs: $74k over budget for the year", "tag": "One-time"}) == "Repairs: $74k over budget for the year  \u00b7  One-time"
+    assert r.board_title({"title": "X", "tag": "nonsense"}) == "X"
+    # the month-only band says what the rule means: the year can be a little over budget
+    assert "under budget or less than 10% over" in r.SCOPE_HINT["month"] and "within budget" not in r.SCOPE_HINT["month"]
+    # the "% over in Sep" flag fits its column (it overlapped the YTD variance before)
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.lib.pagesizes import letter
+    flag_w = (letter[0] - 1.4 * 72) * r.TABLE_COLS[-1] - 3
+    assert stringWidth("999% over in Sep", "Helvetica-Bold", r.FLAG_FONT) <= flag_w and abs(sum(r.TABLE_COLS) - 1) < 1e-9
     assert d204["overall"]["scope"] is None and d204["income"]["scope"] == "ytd"
     assert r.note_scope({"key": "cat:X", "title": "X, $5 over budget in August"}) == "month"        # older notes: read from the title
     assert r.note_scope({"key": "cat:X", "title": "X, $5 over budget year to date"}) == "ytd"
@@ -87,10 +104,11 @@ def run():
     d148 = r.draft_commentary(s148)
     keys = [n["key"] for n in d148]
     pf = [n for n in d148 if n["key"] == "cat:Professional Fees"][0]
-    assert pf["scope"] == "month" and pf["facts"].startswith("$7,927 over budget in August (53%). Year to date it is still $1,253 under budget."), pf["facts"]
+    assert pf["scope"] == "month" and pf["facts"] == "53% over budget in August; for the year it is $1k under budget.", pf["facts"]
+    assert pf["title"] == "Professional Fees: $8k over budget in August"
     assert keys.index("cat:Utility Expenses") < keys.index("cat:Professional Fees")                 # year-to-date items first
     t148 = " ".join(" ".join(p.get_text() for p in fitz.open(stream=r.render_pdf(s148, d148), filetype="pdf")).split())
-    assert t148.index("YEAR TO DATE") < t148.index("Utility Expenses, $55,239") < t148.index("THIS MONTH ONLY") < t148.index("Professional Fees, $7,927")
+    assert t148.index("YEAR TO DATE") < t148.index("Utility Expenses: $55k") < t148.index("THIS MONTH ONLY") < t148.index("Professional Fees: $8k")
     import snapshot_mail
     body = snapshot_mail._notes([("Overall", "x", None), ("Pro Fees", "y", "month"), ("Utilities", "z", "ytd")])
     assert body.index("Overall") < body.index("Year to date") < body.index("Utilities") < body.index("This month only") < body.index("Pro Fees")
@@ -154,7 +172,7 @@ def run():
     ut = byk["cat:Utility Expenses"]                                            # moved $1,239 (2%): not worse
     assert ut["status"] == "continuing" and ut["since"] == "July" and ut["text"] == "Steam ran high during the cold winter."
     pf = byk["cat:Professional Fees"]                                           # 53% over in August, YTD favorable
-    assert pf["status"] == "new" and pf["title"] == "Professional Fees, $7,927 over budget in August", pf["title"]
+    assert pf["status"] == "new" and pf["title"] == "Professional Fees: $8k over budget in August", pf["title"]
     assert "income" not in byk                                                  # 1.2% YTD, 4.6% in August
     assert byk["saving:Payroll Expenses"]["status"] == "new" and byk["overall"]["status"] == "new"
     assert "cat:Supplies" not in byk and v["resolved"] == ["Supplies"], v["resolved"]  # 9% YTD now: drops off
@@ -213,10 +231,10 @@ def run():
     v = c.get("/api/snapshots/%s?as=2" % rr).json
     assert v["can"]["send"], v["why_not"]                                           # removed note does not block sending
     t = "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rr).data, filetype="pdf"))
-    assert "Repairs, $53,205 over budget" not in t and "Utility Expenses, $113,797 over budget" in t
+    assert "Repairs: $53k over budget" not in t and "Utility Expenses: $114k over budget" in t
     assert P("/api/snapshots/%s/send?as=2" % rr).status_code == 200
     mail = app.snapshot_service.mailer.outbox[-1]["html"]
-    assert "Repairs, $53,205" not in mail and "Utility Expenses, $113,797" in mail
+    assert "Repairs: $53k" not in mail and "Utility Expenses: $114k" in mail
     # a removed note is not "explained": next month it is suggested again as new
     sept_prior, _ = real_prior("204", 2026, 9)
     assert "cat:Repairs" not in sept_prior and "cat:Utility Expenses" in sept_prior
@@ -225,7 +243,7 @@ def run():
     v = c.get("/api/snapshots/%s?as=2" % rr).json
     rep = v["commentary"][i_rep]
     assert not rep.get("removed") and not rep.get("confirmed") and not v["can"]["send"]
-    assert "Repairs, $53,205 over budget" in "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rr).data, filetype="pdf"))
+    assert "Repairs: $53k over budget" in "\n".join(p.get_text() for p in fitz.open(stream=c.get("/api/snapshots/%s/pdf?as=2" % rr).data, filetype="pdf"))
     # removing changes what the board reads, so the content hash changes
     from snapshot_signoff import content_hash
     notes = [dict(n) for n in v["commentary"]]

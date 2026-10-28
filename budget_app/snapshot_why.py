@@ -25,12 +25,18 @@ ledger: the accounts driving the variance, each account's actual spending by mon
 rest of the year, this month's largest ledger entries (vendor, amount, remark), and under "drivers" the largest
 entries from the earlier months that drove the variance, read from those months' own statements.
 
-For each note write a suggested reason in 1 or 2 plain sentences:
-- Say WHY the line is over budget: which accounts, which months, which vendors or kinds of work.
-- Use only facts in the evidence. Never invent causes, vendors, dates or amounts. Round to whole dollars.
-- When you say "about", round to the nearest thousand ("about $85,000", never "about $85,001"); otherwise give the
-  exact whole-dollar amount without "about".
-- When you infer (for example a bill covering more than one month), say "appears to".
+Board members read this in a minute. For each note write a suggested reason of 1 or 2 short, plain sentences,
+at most 35 words in all (Jacob 2026-10-28):
+- Lead with the cause in everyday words ("heating gas bills", "chiller and boiler repairs", "the annual building
+  software subscription"), not account names or codes.
+- Use at most two dollar amounts, rounded to the nearest thousand and written like "$34k" (under $1,000: "$850").
+  Never list several accounts, months or invoices with their amounts; the FA sees that detail separately.
+- Name a vendor only when it is the main cause and a board would recognize it (Con Edison, BuildingLink). Never list
+  several vendors.
+- No accounting terms: not "reclass", "accrual", "journal entry", "GL". Say "a cost correction", "a bill covering
+  several months".
+- Use only facts in the evidence. Never invent causes, vendors, dates or amounts.
+- When you infer (for example a bill covering more than one month), say "appears to", at most once.
 - Budgets exist only for this month ("this_month"), year to date, the full year, and the months still ahead
   ("budget_rest_of_year"). There is no budget for earlier individual months: never state or imply one, and never
   apply this month's budget to another month (not "a monthly budget of $X" for July when X is August's).
@@ -49,7 +55,15 @@ For each note write a suggested reason in 1 or 2 plain sentences:
 - No people's names other than vendors. No apartment owners or residents.
 - If the evidence does not explain the variance, return an empty reason. Never use placeholders or brackets.
 
-Answer with JSON only: {"notes": [{"key": "<key>", "reason": "<text>"}]}"""
+Also give each note a tag for the board, judged only from the evidence:
+- "One-time": a single bill, purchase or repair that is not likely to repeat.
+- "Ongoing": spending has run higher for several months and the evidence shows no end.
+- "Timing": billed earlier or later than budgeted (an annual bill, a bill covering several months).
+- "" when the evidence does not make it clear. The FA chooses the final tag.
+
+Answer with JSON only: {"notes": [{"key": "<key>", "reason": "<text>", "tag": "<tag>"}]}"""
+
+TAGS = ("One-time", "Ongoing", "Timing")  # what the AI may suggest; "Under review" is the FA's own call
 
 
 SPIKE_FACTOR = 1.5   # an earlier month "drove it" when it is 1.5x the account's typical month...
@@ -199,8 +213,9 @@ def round_abouts(text):
     return _ABOUT.sub(fix, text)
 
 
-def parse_reply(text, keys):
-    """{key: reason} from Claude's JSON. Anything malformed is dropped, never guessed."""
+def parse_reply(text, keys, tags=False):
+    """{key: reason} from Claude's JSON ({key: {"reason", "tag"}} with tags=True). Anything malformed is dropped,
+    never guessed; an unknown tag becomes "" (the FA picks one)."""
     m = re.search(r"\{.*\}", text or "", re.S)
     if not m:
         return {}
@@ -213,8 +228,9 @@ def parse_reply(text, keys):
         if not isinstance(n, dict):
             continue
         k, r = n.get("key"), (n.get("reason") or "").strip()
-        if k in keys and r and len(r) <= 700 and not _BAD.search(r):
-            out[k] = round_abouts(r)
+        if k in keys and r and len(r) <= 500 and not _BAD.search(r):
+            r = round_abouts(r)
+            out[k] = {"reason": r, "tag": n.get("tag") if n.get("tag") in TAGS else ""} if tags else r
     return out
 
 
@@ -240,4 +256,4 @@ class ClaudeDrafter:
         msg = client.messages.create(model=self.model, max_tokens=2000, system=SYSTEM,
                                      messages=[{"role": "user", "content": json.dumps({"notes": items})}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        return parse_reply(text, {i["key"] for i in items})
+        return parse_reply(text, {i["key"] for i in items}, tags=True)

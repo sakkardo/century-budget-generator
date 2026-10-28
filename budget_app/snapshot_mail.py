@@ -144,7 +144,7 @@ def _notes(notes):
     rows = [tuple(n) + (None,) * (3 - len(n)) for n in notes]
     out = "".join(p(t, x) for t, x, sc in rows if sc is None)
     for code, label, hint, fill, ink in (("ytd", "Year to date", "Over budget for the year so far.", "#E6EEFB", "#1F3F8F"),
-                                         ("month", "This month only", "Over budget this month but within budget for the year, usually timing.", "#FCEFD2", "#7A4A00")):
+                                         ("month", "This month only", "Over budget this month; for the year it is under budget or less than 10% over.", "#FCEFD2", "#7A4A00")):
         group = [(t, x) for t, x, sc in rows if sc == code]
         if group:
             out += ('<p style="margin:16px 0 8px;padding:6px 10px;background:%s;border-left:3px solid %s;font-size:11px;'

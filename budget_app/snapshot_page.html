@@ -171,6 +171,8 @@ details.checks[open] summary .chev::after { content:" (hide)" }
 .pill.sugg { background:var(--info-bg); border-color:var(--info-bd); color:var(--info) }
 .facts { display:flex; gap:8px; align-items:flex-start; justify-content:space-between }
 .ficons { display:flex; gap:4px; flex:none }
+.tagsel { display:flex; align-items:center; gap:8px; margin:8px 0 0; font-size:13px; color:var(--muted) }
+.tagsel select { font:inherit; color:var(--ink, inherit); padding:4px 8px; border-radius:6px; border:1px solid var(--line, #ccc); background:transparent }
 .ico { all:unset; cursor:pointer; width:28px; height:28px; display:grid; place-items:center; border-radius:6px; color:var(--label); border:1px solid transparent }
 .ico:hover { color:var(--ink); border-color:var(--border); background:var(--surface-warm) }
 .ico.del:hover { color:var(--bad); border-color:var(--bad-bd); background:var(--bad-bg) }
@@ -522,13 +524,15 @@ function commentaryHtml(v) {
     var prior = c.status === "worse" && c.prior_text ? '<p class="muted" style="margin:0"><i>Your ' + esc(c.since || "earlier") + " note:</i> " + esc(c.prior_text) + "</p>" : "";
     if (!editable) {
       var wait = '<span class="pill">&#9719; Waiting on ' + esc(fa) + " to confirm</span>";
-      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + statusPill(c) + "</div>" + facts +
+      return '<div class="note' + (c.confirmed ? " done" : "") + '"><div class="ct">' + esc(c.title) + (c.tag ? ' <span class="pill">' + esc(c.tag) + "</span>" : "") + statusPill(c) + "</div>" + facts +
         (c.text ? '<p style="margin:0">' + esc(c.text) + "</p>" : "") + ev + '<div class="foot">' + (stamp || wait) + "</div></div>";
     }
     var orig = c.text || "";
-    var ph = c.key === "overall" ? "Optional: add context for the board" : (c.status === "new" ? "Add the reason (optional; the line above prints either way)" : "Reason");
+    var ph = c.key === "overall" ? "Optional: add context for the board" : "Reason for the board, 1-2 short sentences. Prints instead of the grey line above.";
+    var tagSel = c.key === "overall" ? "" : '<label class="tagsel">Board tag <select data-tag="' + i + '"><option value="">No tag</option>' +
+      ["One-time", "Ongoing", "Timing", "Under review"].map(function (t) { return '<option' + (c.tag === t ? " selected" : "") + ">" + t + "</option>"; }).join("") + "</select></label>";
     return '<div class="note' + (c.confirmed ? " done" : "") + '"><label class="ct" for="ci' + i + '">' + esc(c.title) + statusPill(c) + "</label>" + facts + prior +
-      '<textarea id="ci' + i + '" rows="' + (orig.length > 160 ? 4 : 2) + '" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" + ev +
+      '<textarea id="ci' + i + '" rows="' + (orig.length > 160 ? 4 : 2) + '" data-ci="' + i + '" data-orig="' + esc(orig) + '" placeholder="' + esc(ph) + '">' + esc(orig) + "</textarea>" + tagSel + ev +
       '<div class="foot"><button class="btn' + (c.confirmed ? "" : " approve") + '" data-ni="' + i + '"' + (c.confirmed ? " disabled" : "") + ">" +
       (c.confirmed ? "&#10003; Confirmed" : (c.status === "continuing" ? "Still applies" : "Confirm")) + "</button>" +
       (c.key === "overall" ? "" : '<button class="btn rm" data-rm="' + i + '" title="Leave this note out of the snapshot">Remove</button>') + stamp + '<span class="hint" style="display:none">Replace the [bracketed] text with the real cause, then save.</span></div></div>';
@@ -549,7 +553,7 @@ function commentaryHtml(v) {
     ')<span class="muted"> &middot; not on the snapshot</span></summary>' + gone + "</details>" : "";
   // new notes: the headline, then year-to-date items, then items over this month only (usually timing)
   var news = group(false, null) + sub("Year to date", "Over budget for the year so far", group(false, "ytd"), "ngrp-ytd") +
-    sub("This month only", "Over this month, within budget for the year (usually timing)", group(false, "month"), "ngrp-month");
+    sub("This month only", "Over budget this month; for the year under budget or less than 10% over", group(false, "month"), "ngrp-month");
   var prevs = group(true);
   var body = (news || '<p class="muted" style="margin:0 0 14px">No new notes this month.</p>') +
     (prevs ? '<p class="label" style="margin:22px 0 4px">Previous notes</p><p class="muted" style="margin:0 0 12px">Explained in an earlier month and not materially changed since. The reasons carry forward.</p>' +
@@ -648,15 +652,18 @@ function wire(v) {
     // the FA's screen, as they see it; nothing here acts on their behalf
     el("detail").insertAdjacentHTML("afterbegin", '<div class="msg info" style="margin-bottom:var(--gap)"><b>Preview of ' + esc(v.preview_of) +
       "&rsquo;s screen (FA).</b> This is exactly what they see. Buttons are inactive here; only the FA can confirm and send.</div>");
-    Array.prototype.forEach.call(document.querySelectorAll("#detail button, #detail textarea, #detail input"), function (n) {
+    Array.prototype.forEach.call(document.querySelectorAll("#detail button, #detail textarea, #detail input, #detail select"), function (n) {
       if (n.id === "fapreview") { return; }
-      if (n.tagName === "BUTTON") { n.disabled = true; n.title = "Preview: only the FA can do this"; } else { n.readOnly = true; }
+      if (n.tagName === "BUTTON" || n.tagName === "SELECT") { n.disabled = true; n.title = "Preview: only the FA can do this"; } else { n.readOnly = true; }
     });
     return;
   }
   on("release", function () { act("POST", "/api/snapshots/" + v.id + "/release"); });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rm]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/remove", { index: Number(b.getAttribute("data-rm")) }); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-tag]"), function (s) {
+    s.onchange = function () { act("POST", "/api/snapshots/" + v.id + "/note/tag", { index: Number(s.getAttribute("data-tag")), tag: s.value }); };
   });
   Array.prototype.forEach.call(document.querySelectorAll("[data-rs]"), function (b) {
     b.onclick = function () { act("POST", "/api/snapshots/" + v.id + "/note/restore", { index: Number(b.getAttribute("data-rs")) }); };

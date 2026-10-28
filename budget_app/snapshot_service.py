@@ -512,6 +512,27 @@ class Service:
             self._new_version(rec, user_id, notes=notes, what='Edited and confirmed note "%s"' % note["title"])
         self._mutate(rid, fn)
 
+    def set_tag(self, rid, user_id, index, tag):
+        """FA's one-word read on a note for the board: One-time / Ongoing / Timing / Under review, or none.
+        It prints with the note, so it makes a new version like any other wording change."""
+        tag = (tag or "").strip()
+        if tag and tag not in snapshot_render.TAGS:
+            raise ValueError("Pick one of: %s." % ", ".join(snapshot_render.TAGS))
+
+        def fn(rec):
+            self._editable(rec)
+            if not self._is_fa(rec, user_id):
+                raise ValueError(self._not_fa(rec, "tag the notes"))
+            cur = self._cur(rec)
+            if not 0 <= index < len(cur["commentary"]):
+                raise ValueError("That note no longer exists. Reload the page.")
+            if (cur["commentary"][index].get("tag") or "") == tag:
+                return
+            notes = copy.deepcopy(cur["commentary"])
+            notes[index]["tag"] = tag
+            self._new_version(rec, user_id, notes=notes, what='Tagged note "%s": %s' % (notes[index]["title"], tag or "no tag"))
+        self._mutate(rid, fn)
+
     def confirm_continuing(self, rid, user_id):
         """One click: confirm every continuing note whose explanation is unchanged (FA only)."""
         def fn(rec):
@@ -629,8 +650,12 @@ class Service:
             done = 0
             for n in notes:
                 if n.get("key") in reasons and snapshot_why.eligible(n):
-                    n["text"] = reasons[n["key"]]
-                    n["suggested"] = {"by": "Claude", "at": now_s(), "model": self.why.model}
+                    got = reasons[n["key"]]  # a reason, or {"reason", "tag"}
+                    reason, tag = (got, "") if isinstance(got, str) else (got["reason"], got.get("tag") or "")
+                    n["text"] = reason
+                    n["suggested"] = {"by": "Claude", "at": now_s(), "model": self.why.model, "tag": tag}
+                    if tag and not n.get("tag"):
+                        n["tag"] = tag
                     done += 1
             if done:
                 self._new_version(rec, user_id, notes=notes, snapshot=snap,
@@ -721,7 +746,7 @@ class Service:
                      ("Net income YTD", m(s["net_income"]["ytd_actual"]), "Budget " + m(s["net_income"]["ytd_budget"])),
                      ("%s NOI" % MONTHS[rec["month"] - 1], m(s["noi"]["month_actual"]), "Budget " + m(s["noi"]["month_budget"])),
                      ("Cash excl. security", m(cash_x) if cash_x is not None else "n/a", "At month end")],
-            "notes": [(c["title"], snapshot_render.note_body(c), snapshot_render.note_scope(c))
+            "notes": [(snapshot_render.board_title(c), snapshot_render.note_body(c), snapshot_render.note_scope(c))
                       for c in active(v["commentary"]) if c.get("status") != "continuing"],
             "ongoing": [(c.get("label") or c["title"], (c.get("text") or c.get("facts") or "").strip(), c.get("since") or "")
                         for c in active(v["commentary"]) if c.get("status") == "continuing"],
